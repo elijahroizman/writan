@@ -81,6 +81,20 @@ export const TextLayer = memo(function TextLayer({ store, index, page }: { store
   )
 })
 
+/**
+ * Drops a text selection that reaches into the pages (or `within`). Clicks that a tool handles
+ * itself, and pages leaving the DOM, would otherwise leave it behind or let it grow.
+ */
+export function clearTextSelection(within?: Node) {
+  const sel = window.getSelection()
+  if (!sel?.rangeCount) return
+  for (const root of within ? [within] : document.querySelectorAll('.pdf-pages')) {
+    for (let i = 0; i < sel.rangeCount; i++) {
+      if (sel.getRangeAt(i).intersectsNode(root)) return sel.removeAllRanges()
+    }
+  }
+}
+
 /** Characters picked by the current text selection, per page: [first, last] PDFium indices. */
 export async function selectedCharacters(store: DocStore): Promise<{ index: number; key: number; start: number; end: number }[]> {
   const sel = window.getSelection()
@@ -437,6 +451,7 @@ export function DrawLayer({ unit, color, width, strokes, onStroke }: { unit: num
       onPointerDown={(e) => {
         if (e.button !== 0) return
         e.preventDefault()
+        clearTextSelection()
         const el = e.currentTarget
         el.setPointerCapture(e.pointerId)
         const r = el.getBoundingClientRect()
@@ -488,6 +503,7 @@ export function TextToolLayer({ unit, onPlace }: { unit: number; onPlace(x: numb
       onPointerDown={(e) => {
         if (e.button !== 0) return
         e.preventDefault()
+        clearTextSelection()
         const r = e.currentTarget.getBoundingClientRect()
         onPlace((e.clientX - r.left) / unit, (e.clientY - r.top) / unit)
       }}
