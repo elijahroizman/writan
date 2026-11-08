@@ -116,7 +116,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
     }
     // WebView2 and Chromium keep the selection when the click lands between pages.
     const onDown = (e: PointerEvent) => {
-      if (!(e.target as Element).closest('.page')) clearTextSelection(el)
+      if (e.button === 0 && !(e.target as Element).closest('.page')) clearTextSelection(el)
     }
     el.addEventListener('pointerdown', onDown)
     for (const type of ['wheel', 'pointerdown', 'keydown', 'touchstart']) el.addEventListener(type, release, { passive: true })

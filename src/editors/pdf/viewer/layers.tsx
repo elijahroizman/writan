@@ -88,9 +88,10 @@ export const TextLayer = memo(function TextLayer({ store, index, page }: { store
 export function clearTextSelection(within?: Node) {
   const sel = window.getSelection()
   if (!sel?.rangeCount) return
-  const range = sel.getRangeAt(0)
   for (const root of within ? [within] : document.querySelectorAll('.pdf-pages')) {
-    if (range.intersectsNode(root)) return sel.removeAllRanges()
+    for (let i = 0; i < sel.rangeCount; i++) {
+      if (sel.getRangeAt(i).intersectsNode(root)) return sel.removeAllRanges()
+    }
   }
 }
 

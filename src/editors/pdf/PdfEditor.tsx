@@ -701,14 +701,14 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     commitInk()
     ;(document.activeElement as HTMLElement | null)?.blur?.()
     setSelected(null)
+    // Picking Highlight with text already selected highlights it right away.
+    if (id === 'highlight') void highlightSelection()
+    else clearTextSelection()
     if (id === 'image') {
       setTool('image')
       void placeImage()
       return
     }
-    // Picking Highlight with text already selected highlights it right away.
-    if (id === 'highlight') void highlightSelection()
-    else clearTextSelection()
     setTool(id)
   }
 
