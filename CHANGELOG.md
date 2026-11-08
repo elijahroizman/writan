@@ -11,6 +11,11 @@ Every release's notes. The release workflow copies a version's section into its 
 ### Presentations
 - Legacy PowerPoint `.ppt` files open in the presentation editor. Saving one saves a `.pptx` copy (asking before replacing an existing file) and never overwrites the `.ppt`. Autosave starts once the deck is saved as `.pptx`.
 
+### Office documents
+- A Word, PowerPoint or Excel file whose main part uses an unrecognised XML namespace now shows an error instead of opening empty and losing its contents when saved. Strict Open XML files still open.
+- Page and column breaks in Word documents keep their text formatting when saved.
+- Deeply nested slide groups and large documents open with fewer copies of their XML in memory.
+
 ## 0.10.5 — 2026-10-24
 
 ### Safer saves
