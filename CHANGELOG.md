@@ -2,6 +2,15 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.10.6 — 2026-11-08
+
+### PDF
+- Selected text no longer stays highlighted after switching to another tool (Text, Draw, Sign) or clicking the page with one, or after clicking between pages.
+- Scrolling away from a selection and back no longer highlights whole pages of text you didn't select.
+
+### Presentations
+- Legacy PowerPoint `.ppt` files open in the presentation editor. Saving one saves a `.pptx` copy (asking before replacing an existing file) and never overwrites the `.ppt`. Autosave starts once the deck is saved as `.pptx`.
+
 ## 0.10.5 — 2026-10-24
 
 ### Safer saves
