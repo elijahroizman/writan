@@ -18,6 +18,8 @@ export interface KindInfo {
   /** In a sentence: “Open Word, PowerPoint and PDF files.” */
   prose: string
   extensions: string[]
+  /** Extensions offered when saving; defaults to `extensions`. */
+  saveExtensions?: string[]
   /** CSS custom property used for this kind's accent dot. */
   color: string
   icon: ComponentType<{ size?: number; strokeWidth?: number }>
@@ -79,7 +81,8 @@ export const PLUGINS: PluginInfo[] = [
         prose: 'PowerPoint',
         label: 'PowerPoint Presentation',
         short: 'Presentation',
-        extensions: ['pptx'],
+        extensions: ['pptx', 'ppt'],
+        saveExtensions: ['pptx'],
         color: 'var(--kind-pptx)',
         icon: Presentation,
         untitled: 'Untitled Presentation',

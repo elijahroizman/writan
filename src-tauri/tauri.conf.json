@@ -84,6 +84,15 @@
       },
       {
         "ext": [
+          "ppt"
+        ],
+        "name": "PowerPoint Presentation",
+        "role": "Editor",
+        "rank": "Alternate",
+        "mimeType": "application/vnd.ms-powerpoint"
+      },
+      {
+        "ext": [
           "xlsx"
         ],
         "name": "Excel Workbook",

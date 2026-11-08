@@ -22,6 +22,7 @@ unicode-linebreak = "0.1"
 office-word = { path = "office-word" }
 office-slides = { path = "office-slides" }
 office-sheets = { path = "office-sheets" }
+office_oxide = "0.1.16"
 
 # The app's engine is built from here for WebAssembly (office-wasm): fast code matters more
 # than a few hundred kilobytes.

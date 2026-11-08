@@ -476,10 +476,12 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
           const editor = getEditor(first.id)
           if (!tab || !editor) return false
           let path = opts?.to ?? tab.path
-          if (!path || opts?.saveAs) {
+          const saveAsPpt = tab.kind === 'pptx' && !opts?.to && !!path && path.toLowerCase().endsWith('.ppt')
+          if (!path || opts?.saveAs || saveAsPpt) {
             path = await platform.pickSavePath(tab.title, tab.kind)
             if (!path) return false
           }
+          if (tab.kind === 'pptx' && path.toLowerCase().endsWith('.ppt')) path = path.replace(/\.ppt$/i, '.pptx')
           const savePath = path
           return await withSaveLock(savePath, async () => {
             editor.prepareSave?.()

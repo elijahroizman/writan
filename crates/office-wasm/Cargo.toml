@@ -17,3 +17,4 @@ serde_json.workspace = true
 wasm-bindgen = "=0.2.129"
 office-slides.workspace = true
 office-sheets.workspace = true
+office_oxide.workspace = true
