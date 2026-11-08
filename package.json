@@ -1,7 +1,7 @@
 {
   "name": "writan",
   "private": true,
-  "version": "0.10.5",
+  "version": "0.10.6",
   "type": "module",
   "scripts": {
     "predev": "node scripts/engine.mjs && node scripts/licenses.mjs && npm run plugins:bundled",

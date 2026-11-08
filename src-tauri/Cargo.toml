@@ -1,6 +1,6 @@
 [package]
 name = "writan"
-version = "0.10.5"
+version = "0.10.6"
 description = "A fast, tabbed editor for Word, PowerPoint, PDF and Markdown files"
 edition = "2021"
 

@@ -2,6 +2,20 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.10.6 — 2026-11-08
+
+### PDF
+- Selected text no longer stays highlighted after switching to another tool (Text, Draw, Sign) or clicking the page with one, or after clicking between pages.
+- Scrolling away from a selection and back no longer highlights whole pages of text you didn't select.
+
+### Presentations
+- Legacy PowerPoint `.ppt` files open in the presentation editor. Saving one saves a `.pptx` copy (asking before replacing an existing file) and never overwrites the `.ppt`. Autosave starts once the deck is saved as `.pptx`.
+
+### Office documents
+- A Word, PowerPoint or Excel file whose main part uses an unrecognised XML namespace now shows an error instead of opening empty and losing its contents when saved. Strict Open XML files still open.
+- Page and column breaks in Word documents keep their text formatting when saved.
+- Deeply nested slide groups and large documents open with fewer copies of their XML in memory.
+
 ## 0.10.5 — 2026-10-24
 
 ### Safer saves
