@@ -357,7 +357,7 @@ export async function pickSavePath(suggestedName: string, kind: DocKind): Promis
   const { save } = await dialog()
   const path = await save({
     defaultPath: name,
-    filters: [{ name: KINDS[kind].label, extensions: KINDS[kind].extensions }],
+    filters: [{ name: KINDS[kind].label, extensions: KINDS[kind].saveExtensions ?? KINDS[kind].extensions }],
   })
   if (!path) return null
   // The macOS save panel can drop the extension if the user deletes it.

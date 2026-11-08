@@ -33,6 +33,7 @@ export function autosaveBlocker(tab: DocTab, s: AutosaveSettings = useSettings.g
   if (s.kinds[tab.kind] === false) return `Autosave is off for ${KINDS[tab.kind].short.toLowerCase()} files.`
   if (!tab.path) return 'Save this file once. After that, changes autosave.'
   if (tab.path.startsWith('browser:')) return 'Only files saved on this computer can autosave.'
+  if (tab.kind === 'pptx' && tab.path.toLowerCase().endsWith('.ppt')) return 'Save this PowerPoint file as .pptx first.'
   // Two tabs writing the same file would overwrite each other's changes.
   if (useWorkspace.getState().tabs.some((t) => t.id !== tab.id && t.path === tab.path)) return 'This file is open in another tab too.'
   return null

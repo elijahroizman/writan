@@ -88,12 +88,38 @@ struct TextPatchIn {
     align: Option<String>,
 }
 
+fn open_view(bytes: &[u8]) -> office_core::Result<SlidesView> {
+    if is_compound_file(bytes) {
+        let pptx = legacy_ppt_to_pptx(bytes)?;
+        SlidesView::open(&pptx)
+    } else {
+        SlidesView::open(bytes)
+    }
+}
+
+fn is_compound_file(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0])
+}
+
+fn legacy_ppt_to_pptx(bytes: &[u8]) -> office_core::Result<Vec<u8>> {
+    let doc = office_oxide::Document::from_reader(std::io::Cursor::new(bytes.to_vec()), office_oxide::DocumentFormat::Ppt)
+        .map_err(|e| office_core::Error::Invalid(format!("couldn't read this PowerPoint file: {e}")))?;
+    if doc.format() != office_oxide::DocumentFormat::Ppt {
+        return Err(office_core::Error::Invalid("this isn't a PowerPoint file".into()));
+    }
+    let ir = doc.to_ir();
+    let mut out = std::io::Cursor::new(Vec::new());
+    office_oxide::create::create_from_ir_to_writer(&ir, office_oxide::DocumentFormat::Pptx, &mut out)
+        .map_err(|e| office_core::Error::Invalid(format!("couldn't convert this PowerPoint file to .pptx: {e}")))?;
+    Ok(out.into_inner())
+}
+
 #[wasm_bindgen]
 impl SlidesDoc {
     /// Opens a PowerPoint file, or makes a new deck when `bytes` is empty.
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8], host: Host) -> Result<SlidesDoc, JsError> {
-        let view = if bytes.is_empty() { SlidesView::blank() } else { SlidesView::open(bytes).map_err(err)? };
+        let view = if bytes.is_empty() { SlidesView::blank() } else { open_view(bytes).map_err(err)? };
         Ok(SlidesDoc { view, host, matches: Vec::new(), query: String::new() })
     }
 
@@ -435,5 +461,109 @@ impl SlidesDoc {
     #[wasm_bindgen(js_name = mediaType)]
     pub fn media_type(&self, id: &str) -> Option<String> {
         self.view.media_type(id)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Entry {
+        name: &'static str,
+        kind: u8,
+        right: u32,
+        child: u32,
+        data: Vec<u8>,
+    }
+
+    const NO_ENTRY: u32 = 0xFFFF_FFFF;
+
+    fn rec(rec_type: u16, ver: u16, data: &[u8]) -> Vec<u8> {
+        let mut b = ver.to_le_bytes().to_vec();
+        b.extend_from_slice(&rec_type.to_le_bytes());
+        b.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        b.extend_from_slice(data);
+        b
+    }
+
+    fn slide_stream(text: &str) -> Vec<u8> {
+        let mut textbox = rec(0x0F9F, 0, &0u32.to_le_bytes());
+        textbox.extend(rec(0x0FA8, 0, text.as_bytes()));
+        let textbox = rec(0xF00D, 0x000F, &textbox);
+        rec(0x03EE, 0x000F, &textbox)
+    }
+
+    fn build_cfb(entries: &[Entry]) -> Vec<u8> {
+        const END_OF_CHAIN: u32 = 0xFFFF_FFFE;
+        const FAT_SECT: u32 = 0xFFFF_FFFD;
+        const FREE_SECT: u32 = 0xFFFF_FFFF;
+        let streams: Vec<usize> = entries.iter().enumerate().filter(|(_, e)| e.kind == 2).map(|(i, _)| i).collect();
+        let sectors = 2 + streams.len();
+        let mut file = vec![0u8; 512 * (1 + sectors)];
+        file[0..8].copy_from_slice(&[0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1]);
+        file[0x18..0x1A].copy_from_slice(&0x003Eu16.to_le_bytes());
+        file[0x1A..0x1C].copy_from_slice(&3u16.to_le_bytes());
+        file[0x1C..0x1E].copy_from_slice(&0xFFFEu16.to_le_bytes());
+        file[0x1E..0x20].copy_from_slice(&9u16.to_le_bytes());
+        file[0x20..0x22].copy_from_slice(&6u16.to_le_bytes());
+        file[0x2C..0x30].copy_from_slice(&1u32.to_le_bytes());
+        file[0x38..0x3C].copy_from_slice(&4096u32.to_le_bytes());
+        file[0x3C..0x40].copy_from_slice(&END_OF_CHAIN.to_le_bytes());
+        file[0x44..0x48].copy_from_slice(&END_OF_CHAIN.to_le_bytes());
+        file[0x4C..0x50].copy_from_slice(&1u32.to_le_bytes());
+        for i in 1..109 {
+            file[0x4C + i * 4..0x50 + i * 4].copy_from_slice(&FREE_SECT.to_le_bytes());
+        }
+        let fat = 1024;
+        let mut fat_entries = vec![END_OF_CHAIN, FAT_SECT];
+        for (n, e) in entries.iter().enumerate() {
+            let buf = &mut file[512 + n * 128..512 + (n + 1) * 128];
+            for (i, unit) in e.name.encode_utf16().enumerate() {
+                buf[i * 2..i * 2 + 2].copy_from_slice(&unit.to_le_bytes());
+            }
+            let name_size = ((e.name.encode_utf16().count() + 1) * 2) as u16;
+            buf[0x40..0x42].copy_from_slice(&name_size.to_le_bytes());
+            buf[0x42] = if n == 0 { 5 } else { e.kind };
+            buf[0x43] = 1;
+            buf[0x44..0x48].copy_from_slice(&NO_ENTRY.to_le_bytes());
+            buf[0x48..0x4C].copy_from_slice(&e.right.to_le_bytes());
+            buf[0x4C..0x50].copy_from_slice(&e.child.to_le_bytes());
+            let (start, size) = if e.kind == 2 {
+                let sector = 2 + streams.iter().position(|&s| s == n).unwrap();
+                let off = 512 + sector * 512;
+                file[off..off + e.data.len()].copy_from_slice(&e.data);
+                fat_entries.push(END_OF_CHAIN);
+                (sector as u32, e.data.len() as u32)
+            } else {
+                (END_OF_CHAIN, 0)
+            };
+            let buf = &mut file[512 + n * 128..512 + (n + 1) * 128];
+            buf[0x74..0x78].copy_from_slice(&start.to_le_bytes());
+            buf[0x78..0x7C].copy_from_slice(&size.to_le_bytes());
+        }
+        for i in 0..128 {
+            let v = fat_entries.get(i).copied().unwrap_or(FREE_SECT);
+            file[fat + i * 4..fat + i * 4 + 4].copy_from_slice(&v.to_le_bytes());
+        }
+        file
+    }
+
+    fn minimal_ppt(text: &str) -> Vec<u8> {
+        build_cfb(&[
+            Entry { name: "Root Entry", kind: 5, right: NO_ENTRY, child: 1, data: vec![] },
+            Entry { name: "PowerPoint Document", kind: 2, right: NO_ENTRY, child: NO_ENTRY, data: slide_stream(text) },
+        ])
+    }
+
+    #[test]
+    fn legacy_ppt_converts_to_a_readable_pptx() {
+        let ppt = minimal_ppt("Legacy slide");
+        let pptx = legacy_ppt_to_pptx(&ppt).unwrap();
+        assert!(pptx.starts_with(b"PK"));
+        let mut view = open_view(&ppt).unwrap();
+        assert_eq!(view.slide_infos().len(), 1);
+        let saved = view.save().unwrap();
+        assert!(saved.starts_with(b"PK"));
+        assert_eq!(SlidesView::open(&saved).unwrap().slide_infos().len(), 1);
     }
 }

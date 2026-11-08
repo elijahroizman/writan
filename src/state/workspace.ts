@@ -476,9 +476,15 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
           const editor = getEditor(first.id)
           if (!tab || !editor) return false
           let path = opts?.to ?? tab.path
-          if (!path || opts?.saveAs) {
+          const saveAsPpt = tab.kind === 'pptx' && !opts?.to && !!path && path.toLowerCase().endsWith('.ppt')
+          let normalizedPpt = false
+          if (!path || opts?.saveAs || saveAsPpt) {
             path = await platform.pickSavePath(tab.title, tab.kind)
             if (!path) return false
+          }
+          if (tab.kind === 'pptx' && path.toLowerCase().endsWith('.ppt')) {
+            path = path.replace(/\.ppt$/i, '.pptx')
+            normalizedPpt = true
           }
           const savePath = path
           return await withSaveLock(savePath, async () => {
@@ -494,6 +500,10 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
                 okLabel: 'Save Anyway',
                 danger: true,
               })
+              if (!ok) return false
+            }
+            if (normalizedPpt && savePath !== tab.path && (await platform.pathExists(savePath))) {
+              const ok = await platform.confirmDialog(`“${platform.basename(savePath)}” already exists. Saving replaces it.`, { title: 'Replace file?', okLabel: 'Replace', danger: true })
               if (!ok) return false
             }
             await platform.writeFile(savePath, bytes, { history: useSettings.getState().history, label: opts?.label })
