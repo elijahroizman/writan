@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import { Button, Modal, Segmented } from '../../components/ui'
 import * as platform from '../../lib/platform'
+import { clearTextSelection } from './viewer/layers'
 
 /**
  * Signatures and initials you've made, kept on this computer (in the app's storage, never in a
@@ -435,6 +436,7 @@ export function PlaceLayer({ unit, onPlace }: { unit: number; onPlace(x: number,
       onPointerDown={(e) => {
         if (e.button !== 0) return
         e.preventDefault()
+        clearTextSelection()
         const r = e.currentTarget.getBoundingClientRect()
         onPlace((e.clientX - r.left) / unit, (e.clientY - r.top) / unit)
       }}

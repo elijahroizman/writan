@@ -6,6 +6,7 @@ import type { Box, PageInfo } from '../engine/protocol'
 import type { DocStore } from '../engine/store'
 import type { Layout, ZoomMode } from './layout'
 import { clampZoom, computeLayout, fitZoom, mostVisible, pageAt, pageLeft, pagesIn, stepZoom } from './layout'
+import { clearTextSelection } from './layers'
 import { PageRenderer } from './PageRenderer'
 
 export interface ViewerHandle {
@@ -113,6 +114,11 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
     const release = () => {
       held.current = false
     }
+    // WebView2 and Chromium keep the selection when the click lands between pages.
+    const onDown = (e: PointerEvent) => {
+      if (!(e.target as Element).closest('.page')) clearTextSelection(el)
+    }
+    el.addEventListener('pointerdown', onDown)
     for (const type of ['wheel', 'pointerdown', 'keydown', 'touchstart']) el.addEventListener(type, release, { passive: true })
     const resize = new ResizeObserver(() => {
       if (!el.clientWidth) return // hidden
@@ -123,6 +129,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
     return () => {
       cancelAnimationFrame(frame)
       el.removeEventListener('scroll', onScroll)
+      el.removeEventListener('pointerdown', onDown)
       for (const type of ['wheel', 'pointerdown', 'keydown', 'touchstart']) el.removeEventListener(type, release)
       resize.disconnect()
     }
@@ -381,6 +388,13 @@ const PageView = memo(function PageView({
   const height = layout.heights[index]
   const geometry = useRef({ top, left })
   geometry.current = { top, left }
+
+  // A selection that ends on this page would snap to the page list once the page is gone, and
+  // swallow whatever pages are put back before it.
+  useLayoutEffect(() => {
+    const el = pageRef.current!
+    return () => clearTextSelection(el)
+  }, [])
 
   useEffect(() => {
     const r = new PageRenderer(hostRef.current!, pageRef.current!, store)

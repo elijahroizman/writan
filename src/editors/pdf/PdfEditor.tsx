@@ -40,7 +40,7 @@ import { Outline, Thumbnails } from './Sidebar'
 import type { SavedSignature, SignChoice } from './signatures'
 import { markPng, PlaceLayer, pngBytes, SignaturePad, SignPanel, useSignatures } from './signatures'
 import type { AnnotationActions, Stroke } from './viewer/layers'
-import { AnnotationLayer, DrawLayer, InkPreview, SearchLayer, selectedCharacters, TextDraft, TextLayer, TextToolLayer } from './viewer/layers'
+import { AnnotationLayer, clearTextSelection, DrawLayer, InkPreview, SearchLayer, selectedCharacters, TextDraft, TextLayer, TextToolLayer } from './viewer/layers'
 import type { PageSlot, ViewerHandle } from './viewer/Viewer'
 import { Viewer } from './viewer/Viewer'
 import './pdf.css'
@@ -708,6 +708,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     }
     // Picking Highlight with text already selected highlights it right away.
     if (id === 'highlight') void highlightSelection()
+    else clearTextSelection()
     setTool(id)
   }
 
