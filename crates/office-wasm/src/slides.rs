@@ -560,6 +560,10 @@ mod tests {
         let ppt = minimal_ppt("Legacy slide");
         let pptx = legacy_ppt_to_pptx(&ppt).unwrap();
         assert!(pptx.starts_with(b"PK"));
-        assert_eq!(open_view(&ppt).unwrap().slide_infos().len(), 1);
+        let mut view = open_view(&ppt).unwrap();
+        assert_eq!(view.slide_infos().len(), 1);
+        let saved = view.save().unwrap();
+        assert!(saved.starts_with(b"PK"));
+        assert_eq!(SlidesView::open(&saved).unwrap().slide_infos().len(), 1);
     }
 }
