@@ -2,6 +2,17 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.10.7 — 2026-11-12
+
+### Spelling
+- Misspelled words in Word documents and PowerPoint presentations get a red wavy underline. Right-click one for corrections, **Ignore Spelling** or **Learn Spelling**. Writan uses your computer's spell checker in your language: the Mac's, Windows', or on Linux the installed Hunspell dictionaries. Word and PowerPoint text is drawn by Writan itself, so the system's checker never saw it before; this is why nothing was underlined.
+
+### LaTeX
+- Typing `\` lists LaTeX's commands, as VS Code's LaTeX extension does: `\frac{}{}`, `\section{}`, `\alpha` and the rest. Tab or Return puts one in, and Tab moves between its braces. `\begin{` lists environments and adds the matching `\end`; `\ref{` lists the document's labels. The LaTeX plugin updates itself to 1.1.0 when Writan starts.
+
+### Word
+- A selected picture shows just its frame and handles, like a picture in a presentation. The highlight no longer reaches above it.
+
 ## 0.10.6 — 2026-11-08
 
 ### PDF

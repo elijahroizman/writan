@@ -26,6 +26,8 @@ export interface SourcePreviewOptions {
   placeholder?: string
   /** Line numbers in the source (code-like files want them; prose doesn't). */
   lineNumbers?: boolean
+  /** More CodeMirror extensions for the source, like suggestions while typing. */
+  extensions?: Extension
   /** Milliseconds to wait after the last keystroke before onIdle. Read each time. */
   delay(): number
   /** Typing paused (and once at the start): render the preview from `text`. */
@@ -97,6 +99,7 @@ export function mountSourcePreview(options: SourcePreviewOptions): SourcePreview
         options.highlight ? syntaxHighlighting(options.highlight) : [],
         EditorView.lineWrapping,
         options.placeholder ? placeholder(options.placeholder) : [],
+        options.extensions ?? [],
         EditorView.contentAttributes.of({ spellcheck: 'false', autocorrect: 'off', autocapitalize: 'off' }),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged) return

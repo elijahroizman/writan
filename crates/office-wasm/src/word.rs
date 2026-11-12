@@ -180,7 +180,7 @@ fn fnv(bytes: &[u8]) -> u64 {
 }
 
 /// A UTF-16 offset into a paragraph's text as a byte offset into its flat text.
-fn byte_offset(text: &str, units: u32) -> u32 {
+pub(crate) fn byte_offset(text: &str, units: u32) -> u32 {
     let mut n = 0;
     for (i, c) in text.char_indices() {
         if n >= units {

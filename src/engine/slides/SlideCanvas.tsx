@@ -4,8 +4,13 @@
 // text frame) edits its text, with the caret and selection drawn inside the frame.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { MenuEntry } from '../../components/ui'
+import { PopoverMenu } from '../../components/ui'
 import { isMac } from '../../lib/platform'
+import { spellingMenu } from '../../lib/spelling'
 import type { Box, SlidesEngine } from './engine'
+import type { SlideSpelling } from './spelling'
+import { slideWordAt, watchSlideSpelling } from './spelling'
 import './slides.css'
 
 export const SLIDES_CLIPBOARD = 'application/x-workspace-slides'
@@ -46,8 +51,12 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
   const dragRef = useRef<Drag | null>(null)
   dragRef.current = drag
   const composing = useRef(false)
+  const [spelling, setSpelling] = useState<SlideSpelling | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null)
 
   useEffect(() => engine.subscribe(() => setTick((t) => t + 1)), [engine])
+  // Misspelled words get a wavy underline; right-clicking one offers corrections.
+  useEffect(() => watchSlideSpelling(engine, setSpelling), [engine])
 
   useLayoutEffect(() => {
     const el = viewport.current
@@ -184,6 +193,19 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
 
   const onContext = (e: React.MouseEvent) => {
     e.preventDefault()
+    const at = toSlide(e.clientX, e.clientY)
+    const word = spelling?.slide === engine.slides[st.active]?.id ? slideWordAt(spelling, at.x, at.y) : null
+    if (word) {
+      const { clientX: x, clientY: y } = e
+      const select = () => run({ cmd: 'selectText', id: Number(word.frame), anchor: [word.path, word.start], focus: [word.path, word.end] })
+      // The word is selected, as other apps do, so the correction replaces it.
+      select()
+      void spellingMenu(word.word, (w) => {
+        select()
+        run({ cmd: 'insertText', text: w })
+      }).then((items) => items.length && setMenu({ x, y, items }))
+      return
+    }
     if (!st.editing) {
       const p = toSlide(e.clientX, e.clientY)
       const hit = engine.doc.frameAt(p.x, p.y)
@@ -390,6 +412,17 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
               )}
             </div>
           ))}
+          {spelling?.slide === engine.slides[st.active]?.id && (!drag || drag.kind === 'text' || drag.kind === 'marquee') && (
+            <div className="sc-spelling" style={{ ['--sc-px' as string]: 1 / px }}>
+              {spelling.boxes.map((b) => (
+                <div key={b.frame} style={{ position: 'absolute', left: b.x, top: b.y, width: b.w, height: b.h, rotate: `${b.rot}deg`, transformOrigin: '50% 50%' }}>
+                  {b.rects.map((r, i) => (
+                    <div key={i} className="sc-squiggle" style={{ left: r[1], top: r[2], width: r[3], height: r[4] }} />
+                  ))}
+                </div>
+              ))}
+            </div>
+          )}
           {text && (
             <div style={{ position: 'absolute', left: text.x, top: text.y, width: text.w, height: text.h, rotate: `${text.rot}deg`, transformOrigin: '50% 50%' }}>
               {text.rects.map((r, i) => (
@@ -438,6 +471,16 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
           onPaste={onPaste}
         />
       </div>
+      {menu && (
+        <PopoverMenu
+          anchor={menu}
+          items={menu.items}
+          onClose={() => {
+            setMenu(null)
+            inputRef.current?.focus({ preventScroll: true })
+          }}
+        />
+      )}
     </div>
   )
 }

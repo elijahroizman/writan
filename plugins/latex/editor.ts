@@ -1,5 +1,6 @@
 // The LaTeX editor: source on the left, the compiled PDF on the right (drawn by Writan's own
-// PDF viewer), and the outline, problems and PDF actions in the sidebar. It compiles with the
+// PDF viewer), and the outline, problems and PDF actions in the sidebar. Typing `\` lists the
+// commands with what each does (complete.ts). It compiles with the
 // system's TeX (context.tex) a few seconds after typing stops (Settings › Plugins sets how many).
 
 import { HighlightStyle, StreamLanguage } from '@codemirror/language'
@@ -7,6 +8,7 @@ import { stex } from '@codemirror/legacy-modes/mode/stex'
 import { tags } from '@lezer/highlight'
 import type { PdfView, PluginEditor, PluginEditorContext, TexStatus } from '../../src/plugins/api'
 import { encode, mountSourcePreview, sidebarHint, sidebarItem, sidebarSection } from '../shared/source-preview'
+import { latexAutocomplete } from './complete'
 import css from './latex.css?inline'
 import type { Problem } from './log'
 import { parseLog } from './log'
@@ -91,6 +93,7 @@ export function mountEditor(element: HTMLElement, context: PluginEditorContext):
     language: StreamLanguage.define(stex),
     highlight,
     lineNumbers: true,
+    extensions: latexAutocomplete(),
     placeholder: '\\documentclass{article} …',
     delay: () => (context.previewDelay?.() ?? 3) * 1000,
     onIdle: (text) => {

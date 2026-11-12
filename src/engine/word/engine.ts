@@ -110,8 +110,8 @@ export class WordEngine {
   /** Maps between the screen and page coordinates, set by the page view. */
   pagePoint: ((clientX: number, clientY: number) => { page: number; x: number; y: number }) | null = null
   toClient: ((page: number, x: number, y: number) => { x: number; y: number }) | null = null
-  /** Colors for each set of marks (find's matches, comments). */
-  markStyles: Record<string, { color: string; activeColor?: string; activeId?: string }> = { search: { color: 'rgba(255, 210, 63, 0.55)' } }
+  /** Colors for each set of marks (find's matches, comments), or a wavy underline (spelling). */
+  markStyles: Record<string, { color: string; activeColor?: string; activeId?: string; squiggle?: boolean }> = { search: { color: 'rgba(255, 210, 63, 0.55)' } }
   private listeners = new Set<() => void>()
   private stopFonts: () => void
   private disposed = false

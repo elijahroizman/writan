@@ -17,6 +17,10 @@ Every file opens as a tab across the top. Each kind of document gets its own sid
 
 In Word, typing `- `, `* `, `1. ` or `1) ` at the start of a paragraph starts a bulleted or numbered list. ⌘Z takes it back.
 
+## Spelling
+
+Misspelled words get a red wavy underline in Word documents and PowerPoint presentations, and on a Mac or Windows in Markdown and text files too. Right-click one for corrections, **Ignore Spelling** (until Writan quits) or **Learn Spelling** (adds it to your dictionary). Writan uses your computer's spell checker in the language you've set: a Mac's (sharing the words you've taught other apps), Windows', or on Linux the Hunspell dictionaries installed (such as `hunspell-en-au`). In Word the word you're typing is checked once you've moved on from it.
+
 ## Signing PDFs and filling in forms
 
 Pick **Sign** in a PDF's inspector. The first time, make a signature: draw it with the trackpad or mouse, type your name in a handwriting style, or use a picture of it (Writan can make the white paper see-through). Make initials the same way. They're kept on this computer only, and you can have a few of each.
