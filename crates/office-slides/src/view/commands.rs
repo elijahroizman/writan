@@ -38,6 +38,19 @@ pub struct TextOverlay {
     pub rects: Vec<Rect>,
 }
 
+/// Where ranges of a frame's text are: the frame's box, and rectangles inside it tagged with
+/// the index of the range they underline (see `SlidesView::text_ranges`).
+#[derive(Clone, Debug, Serialize)]
+pub struct RangeBoxes {
+    pub frame: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub rot: f64,
+    pub rects: Vec<(usize, f64, f64, f64, f64)>,
+}
+
 /// A change to a frame's text formatting, from the inspector.
 #[derive(Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -1579,6 +1592,67 @@ impl SlidesView {
         Some(out)
     }
 
+    // ---- spelling ----
+
+    /// The text of each frame on the current slide that holds text, paragraph by paragraph:
+    /// (frame id, paragraph path, text). Spelling checks it.
+    pub fn slide_text(&self) -> Vec<(u32, Path, String)> {
+        let Some(slide) = self.slides().get(self.sel.active) else { return Vec::new() };
+        let mut out = Vec::new();
+        for f in slide.frames.iter().filter(|f| has_text(f)) {
+            let blocks = frame_blocks(f);
+            let mut at = pos::story_start(&blocks).map(|p| p.path);
+            while let Some(path) = at {
+                if let Some(p) = pos::para(&blocks, &path) {
+                    out.push((f.id, path.clone(), text::flat(p).text));
+                }
+                at = pos::next_para(&blocks, &path);
+            }
+        }
+        out
+    }
+
+    /// Where ranges of text in frames on the current slide are, for underlining misspelled
+    /// words: per frame, its box and the rectangles under each range (one per line), tagged with
+    /// the range's index in `ranges` and placed like `text_overlay`'s selection. A range stays
+    /// within one paragraph.
+    pub fn text_ranges(&mut self, host: &mut dyn Measurer, ranges: &[(u32, Pos, Pos)]) -> Vec<RangeBoxes> {
+        let mut ids: Vec<u32> = ranges.iter().map(|r| r.0).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        let mut out = Vec::new();
+        for id in ids {
+            let Some((flow, ox, oy, b)) = self.edit_flow(host, id) else { continue };
+            let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
+            let mut boxes = RangeBoxes { frame: id.to_string(), x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot, rects: Vec::new() };
+            for (i, (_, from, to)) in ranges.iter().enumerate().filter(|(_, r)| r.0 == id) {
+                if from.path != to.path {
+                    continue;
+                }
+                let Some((pb, dx, dy)) = flow.find(&from.path) else { continue };
+                for (x, y, w, h) in display::selection_rects(&mut ctx, pb, ox + dx, oy + dy, from.offset, to.offset, false) {
+                    boxes.rects.push((i, x, y, w, h));
+                }
+            }
+            out.push(boxes);
+        }
+        out
+    }
+
+    /// Starts editing frame `id` with `sel` selected (a misspelled word, to replace it).
+    pub fn select_text(&mut self, id: u32, sel: Selection) -> bool {
+        let Some(slide) = self.slides().get(self.sel.active) else { return false };
+        if !slide.frames.iter().any(|f| f.id == id && has_text(f)) {
+            return false;
+        }
+        let cell = sel.focus.path.cell().map(|(_, r, c)| (r, c));
+        self.sel.frames = vec![id];
+        self.sel.editing = Some(Editing { frame: id, cell, sel });
+        self.pending = None;
+        self.history.seal();
+        true
+    }
+
     // ---- find and replace ----
 
     /// Frames whose text holds `query` (any case): (slide, frame id).
@@ -1698,6 +1772,11 @@ fn for_each_paragraph(f: &mut Frame, cb: &mut dyn FnMut(&mut Paragraph)) {
 
 /// A frame's text as engine blocks: a shape's paragraphs (paths `[i]`), or the table itself
 /// (cells' paragraphs at `[0, row, col, i]`).
+/// A frame whose text can be edited: a shape with text, or a table.
+fn has_text(f: &Frame) -> bool {
+    matches!(&f.content, FrameContent::Shape { text: Some(_), .. } | FrameContent::Table { .. })
+}
+
 fn frame_blocks(f: &Frame) -> Vec<Block> {
     match &f.content {
         FrameContent::Shape { text: Some(body), .. } => body.paragraphs.iter().cloned().map(Block::Paragraph).collect(),

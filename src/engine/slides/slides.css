@@ -162,3 +162,25 @@
   color: #111;
   field-sizing: content;
 }
+
+/* Misspelled words: a red wavy line along the bottom of each, the same size at any zoom
+   (--sc-px is one screen pixel in slide pixels). */
+.sc-spelling {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.sc-squiggle {
+  position: absolute;
+}
+
+.sc-squiggle::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(3px * var(--sc-px, 1));
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='3'%3E%3Cpath d='M0 2.5 1.5 .5 3 2.5 4.5 .5 6 2.5' fill='none' stroke='%23e5484d' stroke-width='1'/%3E%3C/svg%3E") repeat-x left bottom / calc(6px * var(--sc-px, 1)) calc(3px * var(--sc-px, 1));
+}

@@ -23,7 +23,7 @@ use office_engine::pos::Selection;
 use serde::Serialize;
 
 use crate::Decks;
-pub use commands::{TextOverlay, TextPatch};
+pub use commands::{RangeBoxes, TextOverlay, TextPatch};
 pub use draw::Boxed;
 pub use elements::{Element, SlideInfo};
 

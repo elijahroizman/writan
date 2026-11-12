@@ -4,7 +4,7 @@ Word, PowerPoint, PDF, Markdown, text and images are built in. LaTeX is optional
 
 | Plugin | Opens | Size | How it arrives |
 | --- | --- | --- | --- |
-| LaTeX | `.tex` documents | about 120 KB (TeX itself is separate) | Downloaded |
+| LaTeX | `.tex` documents | about 140 KB (TeX itself is separate) | Downloaded |
 
 Writan checks every downloaded plugin's signature before installing it. Turning a downloaded plugin off removes its files; turning it back on downloads it again. Tabs using a plugin close first (Writan asks about unsaved changes).
 
@@ -21,6 +21,8 @@ It doesn't pick out text in pictures (OCR).
 ## LaTeX
 
 LaTeX works like Markdown: source and preview side by side, and ⌘E (Ctrl+E on Windows and Linux) switches between the preview, both, and the source.
+
+Typing `\` lists LaTeX's commands, as VS Code's LaTeX extension does: `\frac{}{}`, `\section{}`, `\alpha` and the rest. Keep typing to narrow the list, then press Tab or Return to put one in; Tab then moves between its braces. `\begin{` lists the environments and adds the matching `\end`, `\ref{` lists the document's labels, and commands made with `\newcommand` are listed too.
 
 LaTeX compiles with the TeX installed on your computer a few seconds after you stop typing (set how long in **Settings › Plugins**). The PDF shows in Writan's own viewer, and errors and the outline are in the sidebar. A document compiles from the folder it's saved in, so `\input` and pictures beside it work.
 

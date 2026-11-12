@@ -12,6 +12,7 @@ mod menu;
 mod open_dialog;
 mod plugins;
 mod quit;
+mod spelling;
 mod tex;
 mod update;
 #[cfg(windows)]
@@ -180,6 +181,9 @@ pub fn run() {
             update::package_upgrade,
             menu::set_menu_shortcuts,
             open_dialog::pick_paths,
+            spelling::spell_check,
+            spelling::spell_suggest,
+            spelling::spell_learn,
             set_window_chrome,
             icon::set_app_icon,
             plugins::installed_plugins,

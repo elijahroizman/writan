@@ -3,9 +3,13 @@
 // field taking the keyboard (and the input method's composition, which shows at the caret).
 
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import type { MenuEntry } from '../../components/ui'
+import { PopoverMenu } from '../../components/ui'
 import { isMac, openExternal, shortcut } from '../../lib/platform'
+import { spellingMenu } from '../../lib/spelling'
 import { itemsHtml } from '../paint'
 import type { WordEngine } from './engine'
+import { spellingAt, watchSpelling } from './spelling'
 
 /** Space above the first page and between pages, before zoom. */
 const TOP = 24
@@ -34,6 +38,10 @@ export function Pages({ engine, zoom, scroller }: Props) {
   /** The viewport's scroll position and height, read on scroll and resize (never right after a
    * DOM change, which would make the browser lay out every page at once). */
   const view = useRef({ top: 0, height: 0 })
+  const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null)
+
+  // Misspelled words get a wavy underline; right-clicking one offers corrections.
+  useEffect(() => watchSpelling(engine), [engine])
 
   const sizes = engine.sizes
   const tops: number[] = []
@@ -271,6 +279,19 @@ export function Pages({ engine, zoom, scroller }: Props) {
     }
   })
 
+  const onContextMenu = (e: React.MouseEvent) => {
+    const mark = spellingAt(engine, e.clientX, e.clientY)
+    if (!mark) return
+    e.preventDefault()
+    const { clientX: x, clientY: y } = e
+    // The word is selected, as other apps do, so the correction replaces it.
+    run({ cmd: 'select', anchor: [mark.path, mark.start], focus: [mark.path, mark.end] }, false)
+    void spellingMenu(mark.word, (word) => {
+      run({ cmd: 'select', anchor: [mark.path, mark.start], focus: [mark.path, mark.end] }, false)
+      run({ cmd: 'insertText', text: word })
+    }).then((items) => items.length && setMenu({ x, y, items }))
+  }
+
   // Links show where they go, and a hand while ⌘ (Ctrl) is held.
   const onMouseOver = (e: React.MouseEvent) => {
     const link = (e.target as HTMLElement).closest<HTMLElement>('.ln[data-link]')
@@ -421,7 +442,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
   const focusBoxes = overlay.paragraph?.length ? overlay.paragraph : c ? [[c[0], c[1], c[2], 1, c[3]] as const] : []
 
   return (
-    <div className="docx-content-mount" ref={mountRef} style={{ height, minWidth: width }} onMouseDown={onMouseDown} onMouseOver={onMouseOver}>
+    <div className="docx-content-mount" ref={mountRef} style={{ height, minWidth: width }} onMouseDown={onMouseDown} onMouseOver={onMouseOver} onContextMenu={onContextMenu}>
       <div className="docx-pages">
         {sizes.map(([w, h], i) => (
           <PageFrame key={i} index={i} width={w} height={h} top={tops[i]} zoom={zoom} els={pageEls.current} />
@@ -439,6 +460,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
         {overlay.marks?.map((m, k) => {
           const style = engine.markStyles[m[5]]
           if (!style) return null
+          if (style.squiggle) return <div key={`m${k}`} className="wp-mark wp-squiggle" style={place(m[0], m[1], m[2], m[3], m[4])} />
           const active = style.activeId !== undefined && style.activeId === m[6]
           return <div key={`m${k}`} className="wp-mark" style={{ ...place(m[0], m[1], m[2], m[3], m[4]), background: active ? (style.activeColor ?? style.color) : style.color }} />
         })}
@@ -475,6 +497,16 @@ export function Pages({ engine, zoom, scroller }: Props) {
         onCut={(e) => onCopy(e, true)}
         onPaste={(e) => void onPaste(e)}
       />
+      {menu && (
+        <PopoverMenu
+          anchor={menu}
+          items={menu.items}
+          onClose={() => {
+            setMenu(null)
+            engine.focus()
+          }}
+        />
+      )}
     </div>
   )
 }

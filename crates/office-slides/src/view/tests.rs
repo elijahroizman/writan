@@ -438,3 +438,30 @@ fn a_document_named_pptx_is_an_error_not_a_crash() {
     let e = SlidesView::open(&doc).err().expect("a Word file isn't a deck");
     assert_eq!(e.to_string(), "this is a Word document, not a PowerPoint presentation");
 }
+
+#[test]
+fn spelling_reads_text_and_places_ranges() {
+    use office_engine::pos::{Path, Pos};
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::open(&deck(&[&["Teh title", "A secnod line"]])).unwrap();
+    let text = v.slide_text();
+    let words: Vec<_> = text.iter().map(|(f, p, t)| (*f, p.0.clone(), t.as_str())).collect();
+    assert_eq!(words, vec![(2, vec![0], "Teh title"), (3, vec![0], "A secnod line")]);
+    // "Teh" in the first box and "secnod" in the second.
+    let ranges = [(2, Pos::new(Path(vec![0]), 0), Pos::new(Path(vec![0]), 3)), (3, Pos::new(Path(vec![0]), 2), Pos::new(Path(vec![0]), 8))];
+    let boxes = v.text_ranges(&mut host, &ranges);
+    assert_eq!(boxes.len(), 2);
+    assert_eq!(boxes[0].frame, "2");
+    assert_eq!(boxes[0].rects.len(), 1);
+    assert_eq!(boxes[0].rects[0].0, 0);
+    assert_eq!(boxes[1].rects[0].0, 1);
+    // The second range starts two characters in, so further right than the first.
+    let (_, x0, _, w0, _) = boxes[0].rects[0];
+    let (_, x1, _, w1, _) = boxes[1].rects[0];
+    assert!(x1 > x0 && w0 > 0.0 && w1 > w0);
+    // Picking a correction selects the word in its box, ready to type over.
+    assert!(v.select_text(3, Selection { anchor: Pos::new(Path(vec![0]), 2), focus: Pos::new(Path(vec![0]), 8) }));
+    v.insert_text("second");
+    assert_eq!(v.slide_text()[1].2, "A second line");
+    assert!(!v.select_text(99, Selection::caret(Pos::new(Path(vec![0]), 0))));
+}

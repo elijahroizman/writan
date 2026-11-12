@@ -4,6 +4,9 @@ use office_slides::view::{Boxed, SlidesView, TextPatch};
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
+use office_engine::pos::{Path, Pos, Selection};
+
+use crate::word::byte_offset;
 use crate::{err, json, Host, JsMeasurer};
 
 #[wasm_bindgen]
@@ -70,6 +73,7 @@ enum Cmd {
     BeginGroup,
     EndGroup,
     MarkSaved,
+    SelectText { id: u32, anchor: (Vec<u32>, u32), focus: (Vec<u32>, u32) },
     Find { query: String },
     ReplaceMatch { index: usize, text: String },
     ReplaceAll { text: String },
@@ -185,6 +189,37 @@ impl SlidesDoc {
             "text": text,
             "restack": restack,
         }))
+    }
+
+    /// The text of each frame on the current slide, for spelling: `[{ frame, path, text }]`.
+    #[wasm_bindgen(js_name = slideText)]
+    pub fn slide_text(&self) -> String {
+        let out: Vec<_> = self
+            .view
+            .slide_text()
+            .into_iter()
+            .map(|(f, p, t)| serde_json::json!({ "frame": f.to_string(), "path": p.0, "text": t }))
+            .collect();
+        json(&out)
+    }
+
+    /// Where ranges of text on the current slide are, to underline them. `ranges` is
+    /// `[[frame, path, start, end]]` with UTF-16 offsets into `slideText`'s text; the answer is
+    /// `[{ frame, x, y, w, h, rot, rects: [[range, x, y, w, h]] }]`, rectangles inside the frame.
+    #[wasm_bindgen(js_name = textRanges)]
+    pub fn text_ranges(&mut self, ranges: &str) -> Result<String, JsError> {
+        let ranges: Vec<(String, Vec<u32>, u32, u32)> = serde_json::from_str(ranges).map_err(err)?;
+        let texts = self.view.slide_text();
+        let ranges: Vec<(u32, Pos, Pos)> = ranges
+            .into_iter()
+            .map(|(frame, path, a, b)| {
+                let id = frame.parse().unwrap_or(u32::MAX);
+                let text = texts.iter().find(|(f, p, _)| *f == id && p.0 == path).map(|(_, _, t)| t.as_str()).unwrap_or("");
+                (id, Pos::new(Path(path.clone()), byte_offset(text, a)), Pos::new(Path(path), byte_offset(text, b)))
+            })
+            .collect();
+        let mut m = JsMeasurer(&self.host);
+        Ok(json(&self.view.text_ranges(&mut m, &ranges)))
     }
 
     /// The topmost frame at a slide point, if any.
@@ -425,6 +460,16 @@ impl SlidesDoc {
             Cmd::MarkSaved => {
                 v.mark_saved();
                 null
+            }
+            // Edits frame `id` with a range selected: (paragraph path, UTF-16 offset) at each
+            // end, as `slideText` gives the paragraphs.
+            Cmd::SelectText { id, anchor, focus } => {
+                let texts = v.slide_text();
+                let conv = |(path, units): (Vec<u32>, u32)| {
+                    let text = texts.iter().find(|(f, p, _)| *f == id && p.0 == path).map(|(_, _, t)| t.as_str()).unwrap_or("");
+                    Pos::new(Path(path), byte_offset(text, units))
+                };
+                serde_json::json!(v.select_text(id, Selection { anchor: conv(anchor), focus: conv(focus) }))
             }
             Cmd::Find { query } => {
                 self.matches = v.find(&query);
