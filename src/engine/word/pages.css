@@ -179,45 +179,46 @@
 .wp-image-frame {
   position: absolute;
   border: 1.5px solid var(--ws-accent, #4f8cff);
+  box-sizing: border-box;
   pointer-events: none;
   z-index: 3;
 }
 
+/* The same handles as a picture in a presentation (.sc-handle in slides.css). */
 .wp-handle {
   position: absolute;
-  width: 10px;
-  height: 10px;
+  width: 9px;
+  height: 9px;
   border: 1.5px solid var(--ws-accent, #4f8cff);
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   pointer-events: auto;
 }
 
 .wp-handle::before {
   content: '';
   position: absolute;
-  inset: -7px;
+  inset: -6px;
 }
 
 .wp-handle.nw {
-  left: -6px;
-  top: -6px;
+  left: -5px;
+  top: -5px;
   cursor: nwse-resize;
 }
 .wp-handle.ne {
-  right: -6px;
-  top: -6px;
+  right: -5px;
+  top: -5px;
   cursor: nesw-resize;
 }
 .wp-handle.sw {
-  left: -6px;
-  bottom: -6px;
+  left: -5px;
+  bottom: -5px;
   cursor: nesw-resize;
 }
 .wp-handle.se {
-  right: -6px;
-  bottom: -6px;
+  right: -5px;
+  bottom: -5px;
   cursor: nwse-resize;
 }
 

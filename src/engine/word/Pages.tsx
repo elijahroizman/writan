@@ -442,9 +442,10 @@ export function Pages({ engine, zoom, scroller }: Props) {
           const active = style.activeId !== undefined && style.activeId === m[6]
           return <div key={`m${k}`} className="wp-mark" style={{ ...place(m[0], m[1], m[2], m[3], m[4]), background: active ? (style.activeColor ?? style.color) : style.color }} />
         })}
-        {overlay.rects.map((r, k) => (
-          <div key={k} className="wp-sel" style={place(r[0], r[1], r[2], r[3], r[4])} />
-        ))}
+        {/* A selected picture shows only its frame and handles, as in a presentation. Its line's
+            selection band would reach above the picture by the line's spacing. */}
+        {!overlay.image &&
+          overlay.rects.map((r, k) => <div key={k} className="wp-sel" style={place(r[0], r[1], r[2], r[3], r[4])} />)}
         {overlay.caret && !engine.state.hasSelection && !overlay.image && (
           <div key={`c${engine.tick}`} className="wp-caret" style={{ ...place(overlay.caret[0], overlay.caret[1], overlay.caret[2], 0, overlay.caret[3]), width: undefined }} />
         )}

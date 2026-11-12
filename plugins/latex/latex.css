@@ -67,3 +67,45 @@
   border-radius: 6px;
   padding: 3px 6px;
 }
+
+/* Suggestions while typing (complete.ts): the commands alone, as VS Code lists them, in a list
+   that looks like the formula help in a spreadsheet (src/editors/xlsx/sheets.css). */
+.cm-tooltip.cm-tooltip-autocomplete.tex-complete {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--fg);
+  box-shadow: var(--shadow-pop);
+}
+
+.cm-tooltip.cm-tooltip-autocomplete.tex-complete > ul {
+  min-width: 240px;
+  max-width: min(420px, 90vw);
+  max-height: 232px;
+  padding: 4px;
+  font-family: var(--font-mono);
+  scrollbar-width: thin;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete.tex-complete > ul > li {
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 5px;
+  line-height: 26px;
+  cursor: default;
+}
+
+.cm-tooltip.cm-tooltip-autocomplete.tex-complete > ul > li[aria-selected] {
+  background: var(--accent-soft);
+  color: var(--fg);
+}
+
+.tex-complete .cm-completionLabel {
+  font: 600 12px var(--font-mono);
+}
+
+.tex-complete .cm-completionMatchedText {
+  color: var(--accent);
+  text-decoration: none;
+}
