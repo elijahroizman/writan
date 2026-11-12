@@ -426,8 +426,19 @@ impl WordResolver<'_> {
                         items.push(Item { start, end, kind: ItemKind::Hidden });
                         continue;
                     }
-                    let style = self.style(ctx, &self.run_props(p, &r.props, path), r.link.is_some());
-                    split_text(&r.text, start, style, &mut items);
+                    let props = self.run_props(p, &r.props, path);
+                    let style = self.style(ctx, &props, r.link.is_some());
+                    let complex = complex_props(&props);
+                    if complex == props {
+                        split_text(&r.text, start, style, &mut items);
+                    } else {
+                        // Word shows complex-script text (and all of a right-to-left run) in
+                        // its own font, size, bold and italic.
+                        let cs = self.style(ctx, &complex, r.link.is_some());
+                        for (a, b, is_cs) in script_runs(&r.text, props.rtl == Some(true)) {
+                            split_text(&r.text[a..b], start + a as u32, if is_cs { cs } else { style }, &mut items);
+                        }
+                    }
                 }
                 Inline::Break { kind, .. } => items.push(Item {
                     start,
@@ -536,15 +547,19 @@ impl WordResolver<'_> {
             props.underline = None;
             Label { text: text.clone(), style: self.style(ctx, &props, false) }
         });
+        let rtl = resolved.rtl == Some(true);
         let spec = ParaSpec {
             text: flat.text,
             items,
-            align: match resolved.align {
-                Some(Align::Center) => para::Align::Center,
-                Some(Align::Right) => para::Align::Right,
-                Some(Align::Justify | Align::Distribute) => para::Align::Justify,
+            // Word's left and right are the start and end: in a right-to-left paragraph,
+            // "left" is the right.
+            align: match (resolved.align, rtl) {
+                (Some(Align::Center), _) => para::Align::Center,
+                (Some(Align::Justify | Align::Distribute), _) => para::Align::Justify,
+                (Some(Align::Right), false) | (Some(Align::Left) | None, true) => para::Align::Right,
                 _ => para::Align::Left,
             },
+            rtl,
             indent_start: px(indent_start),
             indent_end: px(resolved.indent_end),
             first_line: px(first_line),
@@ -688,8 +703,69 @@ impl WordResolver<'_> {
                 Some((h, exact))
             })
             .collect();
-        TableLook { columns, indent, cells, heights }
+        // A right-to-left table starts at the right, its indent from the right edge.
+        let rtl = tbl_pr.and_then(|p| office_core::formats::docx::toggle(p, "bidiVisual")).unwrap_or(false);
+        let indent = if rtl { (width - indent - columns.iter().sum::<f64>()).max(0.0) } else { indent };
+        TableLook { columns, indent, cells, heights, rtl }
     }
+}
+
+/// How complex-script text in a run formatted `r` looks: Word's `w:cs` font, `w:szCs`,
+/// `w:bCs` and `w:iCs`, each falling back to the run's other formatting where nothing sets it.
+pub fn complex_props(r: &RunProps) -> RunProps {
+    let mut c = r.clone();
+    if let Some(f) = r.font_complex.as_ref().filter(|f| !f.is_empty() && !f.starts_with('+')) {
+        c.font = Some(f.clone());
+    }
+    if r.size_complex.is_some() {
+        c.size = r.size_complex;
+    }
+    if r.bold_complex.is_some() {
+        c.bold = r.bold_complex;
+    }
+    if r.italic_complex.is_some() {
+        c.italic = r.italic_complex;
+    }
+    c
+}
+
+/// Scripts Word formats with the complex-script properties: Hebrew, Arabic, Syriac, Thaana,
+/// N'Ko, the Indic scripts, Thai, Lao, Tibetan, Myanmar and Khmer.
+pub fn is_complex_script(c: char) -> bool {
+    matches!(c as u32,
+        0x0590..=0x08FF | 0x0900..=0x0DFF | 0x0E00..=0x0FFF | 0x1000..=0x109F | 0x1780..=0x17FF
+        | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF)
+}
+
+/// A run's text cut where it changes between complex-script text and the rest: (start, end,
+/// complex) by byte. Spaces, digits and punctuation go with the text before them. All of a
+/// right-to-left run is complex script.
+pub fn script_runs(text: &str, rtl: bool) -> Vec<(usize, usize, bool)> {
+    if rtl {
+        return vec![(0, text.len(), true)];
+    }
+    let mut out: Vec<(usize, usize, bool)> = Vec::new();
+    for (i, c) in text.char_indices() {
+        let end = i + c.len_utf8();
+        let kind = if is_complex_script(c) {
+            Some(true)
+        } else if c.is_alphabetic() {
+            Some(false)
+        } else {
+            None
+        };
+        match (out.last_mut(), kind) {
+            (Some(last), None) => last.1 = end,
+            (Some(last), Some(k)) if last.2 == k => last.1 = end,
+            (_, k) => out.push((i, end, k.unwrap_or(false))),
+        }
+    }
+    // Leading neutrals take the kind of the text after them.
+    if out.len() > 1 && !out[0].2 && !text[out[0].0..out[0].1].chars().any(char::is_alphabetic) {
+        out[1].0 = out[0].0;
+        out.remove(0);
+    }
+    out
 }
 
 /// Adds items for a run's text, splitting out tabs and line breaks.

@@ -9,6 +9,7 @@ publish.workspace = true
 office-core.workspace = true
 serde.workspace = true
 unicode-linebreak.workspace = true
+unicode-bidi.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

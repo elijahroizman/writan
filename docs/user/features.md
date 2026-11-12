@@ -17,9 +17,13 @@ Every file opens as a tab across the top. Each kind of document gets its own sid
 
 In Word, typing `- `, `* `, `1. ` or `1) ` at the start of a paragraph starts a bulleted or numbered list. ⌘Z takes it back.
 
+## Right-to-left text
+
+Hebrew, Arabic and other right-to-left text runs right to left in Word documents and PowerPoint presentations, mixed with English and numbers the way Word shows it. Right-to-left paragraphs start at the right, with their indents, tabs and list numbers on that side, and a right-to-left table's first column is at the right. In Word, the two paragraph buttons next to the indents make a paragraph left to right or right to left, and typing Hebrew or Arabic into an empty paragraph makes it right to left. The arrow keys move the way the text runs. Word's separate size, bold and italic for Hebrew and Arabic text (and its font for them) show as Word shows them.
+
 ## Spelling
 
-Misspelled words get a red wavy underline in Word documents and PowerPoint presentations, and on a Mac or Windows in Markdown and text files too. Right-click one for corrections, **Ignore Spelling** (until Writan quits) or **Learn Spelling** (adds it to your dictionary). Writan uses your computer's spell checker in the language you've set: a Mac's (sharing the words you've taught other apps), Windows', or on Linux the Hunspell dictionaries installed (such as `hunspell-en-au`). In Word the word you're typing is checked once you've moved on from it.
+Misspelled words get a red wavy underline in Word documents and PowerPoint presentations, and on a Mac or Windows in Markdown and text files too. Right-click one for corrections, **Ignore Spelling** (until Writan quits) or **Learn Spelling** (adds it to your dictionary). Writan uses your computer's spell checker in the language you've set: a Mac's (sharing the words you've taught other apps), Windows', or on Linux the Hunspell dictionaries installed (such as `hunspell-en-au`). On Windows and Linux, words in the Hebrew or Arabic alphabet are checked only when that's the language you've set. In Word the word you're typing is checked once you've moved on from it.
 
 ## Signing PDFs and filling in forms
 

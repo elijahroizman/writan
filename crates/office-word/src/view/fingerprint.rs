@@ -45,6 +45,7 @@ fn color(h: &mut Fnv, c: &Option<Color>) {
 pub fn run_props(h: &mut Fnv, r: &RunProps) {
     (&r.font, &r.font_east_asian, &r.font_complex, r.size.map(|s| s.0), r.bold, r.italic, &r.underline).hash(h);
     (r.strike.map(|s| s as u8), r.caps, r.small_caps, r.baseline.map(|b| b as u8), &r.style, &r.lang).hash(h);
+    (r.size_complex.map(|s| s.0), r.bold_complex, r.italic_complex, r.rtl).hash(h);
     color(h, &r.color);
     color(h, &r.highlight);
 }

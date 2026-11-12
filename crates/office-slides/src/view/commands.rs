@@ -1479,6 +1479,18 @@ impl SlidesView {
     /// `wordRight`, `lineStart`, `lineEnd`, `start`, `end`.
     pub fn move_caret(&mut self, host: &mut dyn Measurer, to: &str, extend: bool) {
         let Some(e) = self.sel.editing.clone() else { return };
+        // In a right-to-left paragraph the text goes on to the left: the arrows swap.
+        let rtl = matches!(to, "left" | "right" | "wordLeft" | "wordRight")
+            && self
+                .edit_flow(host, e.frame)
+                .is_some_and(|(flow, _, _, _)| flow.find(&e.sel.focus.path).is_some_and(|(pb, _, _)| pb.spec.rtl));
+        let to = match (to, rtl) {
+            ("left", true) => "right",
+            ("right", true) => "left",
+            ("wordLeft", true) => "wordRight",
+            ("wordRight", true) => "wordLeft",
+            (to, _) => to,
+        };
         let blocks = self.editing_blocks();
         let focus = e.sel.focus.clone();
         let collapse = !extend && !e.sel.is_collapsed();

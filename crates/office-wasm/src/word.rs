@@ -73,6 +73,9 @@ enum Cmd {
     Align {
         to: String,
     },
+    Direction {
+        rtl: bool,
+    },
     Style {
         id: String,
     },
@@ -445,6 +448,10 @@ impl WordDoc {
             }
             Cmd::Align { to } => {
                 v.align(&to);
+                serde_json::Value::Null
+            }
+            Cmd::Direction { rtl } => {
+                v.set_direction(rtl);
                 serde_json::Value::Null
             }
             Cmd::Style { id } => {

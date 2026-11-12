@@ -24,6 +24,10 @@ pub enum Item {
         /// A hyperlink's address, for ⌘-click.
         #[serde(skip_serializing_if = "Option::is_none")]
         link: Option<String>,
+        /// Right-to-left text: the host draws it with that base direction. The engine has
+        /// already split and ordered mixed text, so each piece runs one way.
+        #[serde(skip_serializing_if = "is_false")]
+        rtl: bool,
     },
     Rect {
         x: f64,
@@ -90,6 +94,10 @@ pub enum Item {
         id: Option<String>,
         items: Vec<Item>,
     },
+}
+
+fn is_false(v: &bool) -> bool {
+    !*v
 }
 
 fn is_zero(v: &f64) -> bool {
@@ -177,13 +185,32 @@ pub fn paint_line(ctx: &mut Ctx, p: &ParaBox, line: &crate::para::Line, x: f64, 
                     text: shown,
                     ws: r(f.space),
                     link: links(&p.path, f.start),
+                    rtl: f.rtl,
                 });
             }
             FragKind::Label { text, style } => {
-                out.push(Item::Text { x: r(x + f.x), y: r(baseline), w: r(f.width), s: style.0, text: text.clone(), ws: 0.0, link: None });
+                out.push(Item::Text {
+                    x: r(x + f.x),
+                    y: r(baseline),
+                    w: r(f.width),
+                    s: style.0,
+                    text: text.clone(),
+                    ws: 0.0,
+                    link: None,
+                    rtl: f.rtl,
+                });
             }
             FragKind::Atomic { text, style, .. } => {
-                out.push(Item::Text { x: r(x + f.x), y: r(baseline), w: r(f.width), s: style.0, text: text.clone(), ws: 0.0, link: None });
+                out.push(Item::Text {
+                    x: r(x + f.x),
+                    y: r(baseline),
+                    w: r(f.width),
+                    s: style.0,
+                    text: text.clone(),
+                    ws: 0.0,
+                    link: None,
+                    rtl: f.rtl && !text.is_ascii(),
+                });
             }
             FragKind::Object { inline, height } => {
                 objects.object(&p.path, *inline, (r(x + f.x), r(baseline - height), r(f.width), r(*height)), out)
@@ -200,6 +227,7 @@ pub fn paint_line(ctx: &mut Ctx, p: &ParaBox, line: &crate::para::Line, x: f64, 
                         text: "\u{a0}".repeat(((f.width / 4.0).ceil() as usize).max(1)),
                         ws: 0.0,
                         link: None,
+                        rtl: false,
                     });
                 }
             }
@@ -272,6 +300,10 @@ pub fn selection_rects(ctx: &mut Ctx, p: &ParaBox, x: f64, y: f64, from: u32, to
         }
         let a = from.max(line.start);
         let b = to.min(line.end);
+        if line.bidi {
+            out.extend(bidi_line_rects(ctx, p, line, (x, y), (a, b), (from, to, to_end)));
+            continue;
+        }
         let x0 = crate::para::x_in_line(ctx, &p.spec, line, a);
         let mut x1 = crate::para::x_in_line(ctx, &p.spec, line, b);
         let through_end = to > line.end || (to == line.end && line.ends == LineEnd::Wrap);
@@ -285,11 +317,70 @@ pub fn selection_rects(ctx: &mut Ctx, p: &ParaBox, x: f64, y: f64, from: u32, to
     out
 }
 
+/// [`selection_rects`] for a line with right-to-left text: a selection in text order covers
+/// pieces scattered across the line, so each frag gets its own rectangle (merged where they
+/// touch).
+fn bidi_line_rects(
+    ctx: &mut Ctx,
+    p: &ParaBox,
+    line: &crate::para::Line,
+    (x, y): (f64, f64),
+    (a, b): (u32, u32),
+    (from, to, to_end): (u32, u32, bool),
+) -> Vec<Rect> {
+    let mut spans: Vec<(f64, f64)> = Vec::new();
+    for f in &line.frags {
+        if matches!(f.kind, FragKind::Label { .. }) || f.end <= a || f.start >= b {
+            continue;
+        }
+        let x0 = crate::para::frag_x(ctx, &p.spec, f, a.max(f.start));
+        let x1 = if b >= f.end { f.end_x() } else { crate::para::frag_x(ctx, &p.spec, f, b) };
+        spans.push((x0.min(x1), x0.max(x1)));
+    }
+    // Through the end of the line: a little past it, on its end side.
+    let through_end = to > line.end || (to == line.end && line.ends == LineEnd::Wrap);
+    if through_end || (to_end && b == line.end) {
+        let end = crate::para::x_in_line(ctx, &p.spec, line, line.end);
+        let end = if p.spec.rtl { spans.iter().map(|s| s.0).fold(end, f64::min) } else { spans.iter().map(|s| s.1).fold(end, f64::max) };
+        spans.push(if p.spec.rtl { (end - 5.0, end) } else { (end, end + 5.0) });
+    }
+    if spans.is_empty() {
+        if from == to {
+            return Vec::new();
+        }
+        // Nothing but the line's end selected: a sliver at the caret.
+        let at = crate::para::x_in_line(ctx, &p.spec, line, a);
+        spans.push(if p.spec.rtl { (at - 2.0, at) } else { (at, at + 2.0) });
+    }
+    spans.sort_by(|l, r| l.0.total_cmp(&r.0));
+    let mut merged: Vec<(f64, f64)> = Vec::new();
+    for s in spans {
+        match merged.last_mut() {
+            Some(last) if s.0 <= last.1 + 0.5 => last.1 = last.1.max(s.1),
+            _ => merged.push(s),
+        }
+    }
+    merged.into_iter().map(|(x0, x1)| (r(x + x0), r(y + p.y + line.top), r((x1 - x0).max(2.0)), r(line.height))).collect()
+}
+
 /// The caret for `offset` in a laid-out paragraph whose box is at (`x`, `y`): a vertical bar
 /// as (x, top, height).
 pub fn caret_rect(ctx: &mut Ctx, p: &ParaBox, x: f64, y: f64, offset: u32, before: bool) -> (f64, f64, f64) {
-    let (cx, li) = p.layout.caret(ctx, &p.spec, offset, before);
+    caret_rect_near(ctx, p, x, y, offset, before, None)
+}
+
+/// [`caret_rect`], where the offset shows in two places (text changing direction), at the one
+/// nearer `near` (where it was clicked).
+pub fn caret_rect_near(ctx: &mut Ctx, p: &ParaBox, x: f64, y: f64, offset: u32, before: bool, near: Option<f64>) -> (f64, f64, f64) {
+    let (mut cx, li) = p.layout.caret(ctx, &p.spec, offset, before);
     let line = &p.layout.lines[li];
+    if let Some(near) = near {
+        if let Some(other) = crate::para::other_x_in_line(ctx, &p.spec, line, offset) {
+            if (x + other - near).abs() < (x + cx - near).abs() {
+                cx = other;
+            }
+        }
+    }
     (r(x + cx), r(y + p.y + line.top), r(line.height))
 }
 
@@ -304,7 +395,7 @@ mod tests {
 
     #[test]
     fn items_serialize_compactly() {
-        let item = Item::Text { x: 1.0, y: 2.0, w: 3.0, s: 0, text: "hi".into(), ws: 0.0, link: None };
+        let item = Item::Text { x: 1.0, y: 2.0, w: 3.0, s: 0, text: "hi".into(), ws: 0.0, link: None, rtl: false };
         let json = serde_json_like(&item);
         assert!(json.contains("\"t\":\"text\""));
         assert!(!json.contains("ws"));

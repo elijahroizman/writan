@@ -19,6 +19,7 @@ serde_json = "1"
 office-core = { path = "office-core" }
 office-engine = { path = "office-engine" }
 unicode-linebreak = "0.1"
+unicode-bidi = "0.3"
 office-word = { path = "office-word" }
 office-slides = { path = "office-slides" }
 office-sheets = { path = "office-sheets" }

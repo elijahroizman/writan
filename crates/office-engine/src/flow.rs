@@ -47,6 +47,9 @@ pub struct TableLook {
     pub cells: Vec<Vec<CellLook>>,
     /// Per row: (height, exact?) where the row has one.
     pub heights: Vec<Option<(f64, bool)>>,
+    /// The first column is at the right (Word's `w:bidiVisual`). Each cell's look is mirrored
+    /// with it: its start margin and border go on the right.
+    pub rtl: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -320,7 +323,11 @@ fn table(ctx: &mut Ctx, cache: &mut Cache, resolver: &mut dyn Resolver, t: &Tabl
             }
             let cs = (cell.col_span.max(1) as usize).min(ncols.saturating_sub(c).max(1));
             let rs = (cell.row_span.max(1) as usize).min(t.rows.len() - r);
-            let cl = look.cells.get(r).and_then(|row| row.get(c)).cloned().unwrap_or_default();
+            let mut cl = look.cells.get(r).and_then(|row| row.get(c)).cloned().unwrap_or_default();
+            if look.rtl {
+                cl.margins.swap(1, 3);
+                cl.borders.swap(1, 3);
+            }
             let width = cols[(c + cs).min(ncols)] - cols[c];
             let inner = (width - cl.margins[1] - cl.margins[3]).max(1.0);
             let mut container = path.0.clone();
@@ -336,7 +343,7 @@ fn table(ctx: &mut Ctx, cache: &mut Cache, resolver: &mut dyn Resolver, t: &Tabl
                 col: c as u32,
                 row_span: rs as u32,
                 col_span: cs as u32,
-                x: cols[c],
+                x: if look.rtl { cols[ncols] - cols[c] - width } else { cols[c] },
                 y: 0.0,
                 width,
                 height: need,
