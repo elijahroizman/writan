@@ -452,3 +452,39 @@ fn right_to_left_documents_from_word() {
     let body = saved_body(&mut v);
     assert!(body.contains(r#"<w:szCs w:val="40"/>"#) && body.contains("<w:rtl/>") && body.contains("<w:bidiVisual/>"), "{body}");
 }
+
+#[test]
+fn a_runs_own_complex_script_size_beats_its_styles() {
+    let mut host = FixedMeasurer::default();
+    // A character style with a big complex-script size; one run sets its own, equal to its
+    // other size (10 pt), as Word writes it.
+    let style = r#"<w:style w:type="character" w:styleId="Big"><w:name w:val="Big"/><w:rPr><w:sz w:val="20"/><w:szCs w:val="40"/></w:rPr></w:style>"#;
+    let body = r#"<w:p><w:r><w:rPr><w:rStyle w:val="Big"/></w:rPr><w:t>אב</w:t></w:r></w:p><w:p><w:r><w:rPr><w:rStyle w:val="Big"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t>גד</w:t></w:r></w:p>"#;
+    let mut pkg = office_core::opc::Package::read(&markup_bytes(body)).unwrap();
+    let styles = String::from_utf8(pkg.part("word/styles.xml").unwrap().to_vec()).unwrap();
+    pkg.replace("word/styles.xml", styles.replacen("</w:styles>", &format!("{style}</w:styles>"), 1).into_bytes()).unwrap();
+    let mut v = WordView::open(&pkg.to_bytes().unwrap()).unwrap();
+    v.layout(&mut host);
+    let items = text_items(&mut v, &mut host);
+    let width = |t: &str| items.iter().find(|i| i.0 == t).unwrap_or_else(|| panic!("{t} in {items:?}")).2;
+    // 20 pt and 10 pt: two letters of 26.67 and 13.33 px.
+    assert!((width("אב") - 2.0 * width("גד")).abs() < 0.05, "{items:?}");
+}
+
+#[test]
+fn pasting_lines_into_an_empty_paragraph_leaves_their_direction() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&[""])).unwrap();
+    v.layout(&mut host);
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 0)));
+    v.paste("שלום\nworld wide", None);
+    let rtl: Vec<Option<bool>> = v
+        .blocks(StoryId::Body)
+        .iter()
+        .map(|b| match b {
+            Block::Paragraph(p) => p.props.rtl,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rtl, vec![None, None]);
+}

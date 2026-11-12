@@ -101,24 +101,16 @@ pub fn read_run_props(rpr: &Element) -> RunProps {
         (Some(false), _) | (_, Some(false)) => Some(Strike::None),
         _ => None,
     };
-    let size = rpr.child(ns::W, "sz").and_then(val).and_then(|v| v.parse().ok()).map(FontSize::from_half_points);
-    let (bold, italic) = (toggle(rpr, "b"), toggle(rpr, "i"));
     RunProps {
         font: font("ascii", "asciiTheme"),
         font_east_asian: font("eastAsia", "eastAsiaTheme"),
         font_complex: font("cs", "cstheme"),
-        size,
-        bold,
-        italic,
-        // Only where they differ from the others: Word sets both alike.
-        size_complex: rpr
-            .child(ns::W, "szCs")
-            .and_then(val)
-            .and_then(|v| v.parse().ok())
-            .map(FontSize::from_half_points)
-            .filter(|s| Some(*s) != size),
-        bold_complex: toggle(rpr, "bCs").filter(|b| Some(*b) != bold),
-        italic_complex: toggle(rpr, "iCs").filter(|i| Some(*i) != italic),
+        size: rpr.child(ns::W, "sz").and_then(val).and_then(|v| v.parse().ok()).map(FontSize::from_half_points),
+        bold: toggle(rpr, "b"),
+        italic: toggle(rpr, "i"),
+        size_complex: rpr.child(ns::W, "szCs").and_then(val).and_then(|v| v.parse().ok()).map(FontSize::from_half_points),
+        bold_complex: toggle(rpr, "bCs"),
+        italic_complex: toggle(rpr, "iCs"),
         rtl: toggle(rpr, "rtl"),
         underline: rpr.child(ns::W, "u").map(|u| val(u).unwrap_or("single").to_string()),
         strike,
@@ -612,7 +604,9 @@ mod write_tests {
         };
         let mut rpr = Element::new(ns::W, "rPr");
         patch_run_props(&props, &mut rpr, &theme);
-        assert_eq!(read_run_props(&rpr), props);
+        // Complex-script bold, italic and size are written with the others, as Word does.
+        let complex = RunProps { size_complex: props.size, bold_complex: props.bold, italic_complex: props.italic, ..props.clone() };
+        assert_eq!(read_run_props(&rpr), complex);
         let names: Vec<&str> = rpr.elements().map(|e| e.local.as_str()).collect();
         assert_eq!(
             names,

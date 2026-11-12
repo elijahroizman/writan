@@ -810,7 +810,8 @@ impl Builder<'_, '_, '_> {
 
         // Split text frags where the level changes.
         let mut runs: Vec<(Frag, u8)> = Vec::with_capacity(frags.len());
-        for f in frags.drain(..) {
+        let last = frags.len().saturating_sub(1);
+        for (index, f) in frags.drain(..).enumerate() {
             match f.kind {
                 FragKind::Text(style) if f.end > f.start => {
                     let s = &text[f.start as usize..f.end as usize];
@@ -830,8 +831,14 @@ impl Builder<'_, '_, '_> {
                     }
                     for (a, b, l) in cuts {
                         let part = &text[a as usize..b as usize];
-                        let width = self.ctx.width(style, part) + part.matches(' ').count() as f64 * f.space;
-                        runs.push((Frag { x: 0.0, width, start: a, end: b, kind: f.kind.clone(), space: f.space, rtl: false }, l));
+                        // Justifying stretched every space but those ending the line.
+                        let mut spaces = part.matches(' ').count();
+                        if index == last && b == f.end {
+                            spaces -= part.len() - part.trim_end_matches(' ').len();
+                        }
+                        let width = self.ctx.width(style, part) + spaces as f64 * f.space;
+                        // Where the frag started, so the stretch keeps its place on the line.
+                        runs.push((Frag { x: f.x, width, start: a, end: b, kind: f.kind.clone(), space: f.space, rtl: false }, l));
                     }
                 }
                 FragKind::Tab(_) | FragKind::Label { .. } => runs.push((f, base)),
@@ -1633,6 +1640,51 @@ mod tests {
         let spec = ParaSpec::plain("ab cd", s);
         let l = layout(&mut ctx, &spec, 100.0);
         assert!(!l.lines[0].bidi && !l.lines[0].frags[0].rtl);
+    }
+
+    #[test]
+    fn mixed_lines_keep_their_place() {
+        let (mut host, mut measure, mut styles, s) = setup();
+        let mut ctx = Ctx { host: &mut host, measure: &mut measure, styles: &mut styles };
+        let starts = |spec: &ParaSpec, l: &ParaLayout| frags_of(spec, &l.lines[0]).iter().map(|f| f.1).fold(f64::INFINITY, f64::min);
+        let ends = |spec: &ParaSpec, l: &ParaLayout| frags_of(spec, &l.lines[0]).iter().map(|f| f.1 + f.2).fold(0.0, f64::max);
+        // Centered: "abc אבג" is 32.5 px.
+        let mut spec = ParaSpec::plain("abc אבג", s);
+        spec.align = Align::Center;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(starts(&spec, &l), 33.75);
+        // Indented, and after a list label.
+        let mut spec = ParaSpec::plain("see שלום here", s);
+        spec.indent_start = 24.0;
+        spec.first_line = -24.0;
+        spec.label = Some(Label { text: "1.".into(), style: s });
+        let l = layout(&mut ctx, &spec, 200.0);
+        assert_eq!(starts(&spec, &l), 24.0);
+        // After a right tab.
+        let mut spec = ParaSpec::plain("a\tאבג abc", s);
+        spec.tabs = vec![Tab { pos: 200.0, kind: TabKind::Right }];
+        let l = layout(&mut ctx, &spec, 500.0);
+        let after: Vec<_> = frags_of(&spec, &l.lines[0]).into_iter().skip(1).collect();
+        assert_eq!(after.iter().map(|f| f.1 + f.2).fold(0.0, f64::max), 200.0, "{after:?}");
+        // A right-to-left paragraph's start indent, and its far-side alignment.
+        let mut spec = ParaSpec::plain("אבג abc דהו", s);
+        spec.rtl = true;
+        spec.align = Align::Right;
+        spec.indent_start = 20.0;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(ends(&spec, &l), 80.0);
+        let mut spec = ParaSpec::plain("abc דהו", s);
+        spec.rtl = true;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(starts(&spec, &l), 0.0);
+        // Justified: the space ending the line isn't stretched.
+        // 45 px of text on a 50 px line: 2.5 px more for each of the two spaces inside it, and
+        // the trailing one hangs 2.5 px past the end.
+        let mut spec = ParaSpec::plain("abc אבג dd ee", s);
+        spec.align = Align::Justify;
+        let l = layout(&mut ctx, &spec, 50.0);
+        let first = frags_of(&spec, &l.lines[0]);
+        assert_eq!(first.iter().map(|f| f.1 + f.2).fold(0.0, f64::max), 52.5, "{first:?}");
     }
 
     #[test]

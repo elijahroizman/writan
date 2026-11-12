@@ -101,8 +101,8 @@ pub struct RunProps {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub italic: Option<bool>,
     /// Word keeps complex-script text (Hebrew, Arabic, Thai…) formatted apart: its size, bold
-    /// and italic (`w:szCs`, `w:bCs`, `w:iCs`) and font ([`RunProps::font_complex`]). Set only
-    /// where they differ from `size`, `bold` and `italic`, which they otherwise follow.
+    /// and italic (`w:szCs`, `w:bCs`, `w:iCs`) and font ([`RunProps::font_complex`]). Unset,
+    /// they follow `size`, `bold` and `italic` (and are written so).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub size_complex: Option<FontSize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

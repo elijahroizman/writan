@@ -330,6 +330,7 @@ impl WordView {
     }
 
     pub fn undo(&mut self) -> bool {
+        self.caret_near = None;
         let Some(e) = self.history.undo() else { return false };
         for step in e.steps.iter().rev() {
             self.undo_step(step);
@@ -343,6 +344,7 @@ impl WordView {
     }
 
     pub fn redo(&mut self) -> bool {
+        self.caret_near = None;
         let Some(e) = self.history.redo() else { return false };
         for step in &e.steps {
             self.redo_step(step);
@@ -428,6 +430,7 @@ impl WordView {
         // Right-to-left text typed into an empty paragraph with no direction of its own makes it
         // a right-to-left paragraph.
         let turn_rtl = sel.is_collapsed()
+            && !s.contains('\n')
             && para::first_strong_rtl(s) == Some(true)
             && pos::para(self.blocks(self.story), &sel.focus.path)
                 .is_some_and(|p| text::len(p) == 0 && !self.is_rtl(&p.props) && p.props.rtl.is_none());
@@ -708,7 +711,7 @@ impl WordView {
         // Turning something off that a style turns on needs an explicit "off".
         let styled = self.styled_props();
         self.format(&move |r: &mut RunProps| match t {
-            // Complex-script bold and italic follow (Word sets both).
+            // Word sets complex-script bold and italic with the others.
             Toggle::Bold => {
                 r.bold = if on {
                     Some(true)
@@ -717,7 +720,7 @@ impl WordView {
                 } else {
                     None
                 };
-                r.bold_complex = None;
+                r.bold_complex = r.bold;
             }
             Toggle::Italic => {
                 r.italic = if on {
@@ -727,7 +730,7 @@ impl WordView {
                 } else {
                     None
                 };
-                r.italic_complex = None;
+                r.italic_complex = r.italic;
             }
             Toggle::Underline => {
                 r.underline = if on {
@@ -768,7 +771,7 @@ impl WordView {
         let hp = half_points.clamp(2, 3276);
         self.format(&move |r| {
             r.size = Some(FontSize::from_half_points(hp));
-            r.size_complex = None;
+            r.size_complex = Some(FontSize::from_half_points(hp));
         });
     }
 
