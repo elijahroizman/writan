@@ -88,6 +88,7 @@ pub fn read_run_props(el: &Element) -> RunProps {
         }),
         style: None,
         lang: el.attr("lang").map(str::to_string),
+        ..Default::default()
     }
 }
 

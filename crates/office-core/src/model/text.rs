@@ -100,6 +100,18 @@ pub struct RunProps {
     pub bold: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub italic: Option<bool>,
+    /// Word keeps complex-script text (Hebrew, Arabic, Thai…) formatted apart: its size, bold
+    /// and italic (`w:szCs`, `w:bCs`, `w:iCs`) and font ([`RunProps::font_complex`]). Unset,
+    /// they follow `size`, `bold` and `italic` (and are written so).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_complex: Option<FontSize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bold_complex: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub italic_complex: Option<bool>,
+    /// Word's `w:rtl`: right-to-left text, all of it shown with the complex-script formatting.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rtl: Option<bool>,
     /// Word's names: `single`, `double`, `thick`, `dotted`, `wave`… and `none`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub underline: Option<String>,
@@ -141,6 +153,10 @@ impl RunProps {
             size,
             bold,
             italic,
+            size_complex,
+            bold_complex,
+            italic_complex,
+            rtl,
             underline,
             strike,
             caps,

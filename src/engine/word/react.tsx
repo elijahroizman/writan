@@ -520,6 +520,8 @@ type Slot =
   | 'alignment.center'
   | 'alignment.right'
   | 'alignment.justify'
+  | 'direction.ltr'
+  | 'direction.rtl'
   | 'insert.pageBreak'
 
 /** What a toolbar button for one of the editor's commands needs. */
@@ -562,6 +564,11 @@ export function slotCommand(engine: WordEngine | null, slot: Slot) {
     case 'alignment.justify': {
       const to = slot.split('.')[1]
       return { isActive: s?.align === to, isEnabled: !!s, execute: run({ cmd: 'align', to }) }
+    }
+    case 'direction.ltr':
+    case 'direction.rtl': {
+      const rtl = slot === 'direction.rtl'
+      return { isActive: !!s && s.rtl === rtl, isEnabled: !!s, execute: run({ cmd: 'direction', rtl }) }
     }
     case 'insert.pageBreak':
       return { isActive: false, isEnabled: !!s && inBody, execute: run({ cmd: 'pageBreak' }) }

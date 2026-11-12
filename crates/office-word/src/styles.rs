@@ -183,10 +183,13 @@ impl Styles {
         for id in [para_style, direct.style.as_deref()].into_iter().flatten() {
             for s in self.chain(id) {
                 let (bold, italic, caps, small_caps) = (r.bold, r.italic, r.caps, r.small_caps);
+                let (bold_cs, italic_cs) = (r.bold_complex, r.italic_complex);
                 over_run(&mut r, &s.run);
                 let toggle = |base: Option<bool>, over: Option<bool>| over.map(|v| base.unwrap_or(false) ^ v).or(base);
                 r.bold = toggle(bold, s.run.bold);
                 r.italic = toggle(italic, s.run.italic);
+                r.bold_complex = toggle(bold_cs, s.run.bold_complex);
+                r.italic_complex = toggle(italic_cs, s.run.italic_complex);
                 r.caps = toggle(caps, s.run.caps);
                 r.small_caps = toggle(small_caps, s.run.small_caps);
                 toggles.apply(&s.run_toggles, true);

@@ -16,7 +16,7 @@ export interface PaintStyle {
 }
 
 export type PaintItem =
-  | { t: 'text'; x: number; y: number; w: number; s: number; text: string; ws?: number; link?: string }
+  | { t: 'text'; x: number; y: number; w: number; s: number; text: string; ws?: number; link?: string; rtl?: boolean }
   | { t: 'rect'; x: number; y: number; w: number; h: number; fill?: string }
   | { t: 'line'; x1: number; y1: number; x2: number; y2: number; color: string; w: number; dash?: string }
   | { t: 'image'; x: number; y: number; w: number; h: number; media: string; crop?: [number, number, number, number]; id?: string }
@@ -109,6 +109,8 @@ export function itemsHtml(items: PaintItem[], styles: StyleSheet, media: MediaUr
         const top = styles.top(it.s, it.y)
         let style = `left:${n(it.x)}px;top:${n(top)}px`
         if (it.ws) style += `;word-spacing:${n(it.ws)}px`
+        // The engine orders mixed-direction text into pieces that each run one way.
+        if (it.rtl) style += ';direction:rtl'
         const link = it.link ? ` data-link="${esc(it.link)}"` : ''
         out += `<span class="${styles.prefix}${it.s}${it.link ? ' ln' : ''}" style="${style}"${link}>${esc(it.text)}</span>`
         break

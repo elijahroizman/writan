@@ -39,12 +39,28 @@ fn same<T: serde::Serialize + PartialEq>(a: &T, b: &T) {
 }
 
 /// The model in a form that doesn't depend on how a format happens to split things: runs
-/// joined, covered cells' (invisible) content dropped, where things were read from forgotten.
+/// joined, covered cells' (invisible) content dropped, where things were read from forgotten,
+/// and Word's complex-script size, bold and italic left out where they're the others' (Word
+/// writes both).
 fn canon(mut doc: Document) -> Body {
     fn blocks(blocks: &mut [Block]) {
         for b in blocks {
             match b {
                 Block::Paragraph(p) => {
+                    for i in &mut p.content {
+                        if let Inline::Text(r) = i {
+                            let r = &mut r.props;
+                            if r.size_complex == r.size {
+                                r.size_complex = None;
+                            }
+                            if r.bold_complex == r.bold {
+                                r.bold_complex = None;
+                            }
+                            if r.italic_complex == r.italic {
+                                r.italic_complex = None;
+                            }
+                        }
+                    }
                     p.merge_runs();
                     for i in &mut p.content {
                         if let Inline::Image(img) = i {

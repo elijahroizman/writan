@@ -21,6 +21,8 @@ import {
   Minus,
   PanelBottom,
   PanelTop,
+  PilcrowLeft,
+  PilcrowRight,
   Plus,
   Redo2,
   RemoveFormatting,
@@ -537,6 +539,12 @@ function Inspector({
           </CommandButton>
           <CommandButton slot="list.indent" label="Increase indent">
             <IndentIncrease size={15} />
+          </CommandButton>
+          <CommandButton slot="direction.ltr" label="Left-to-right paragraph">
+            <PilcrowRight size={15} />
+          </CommandButton>
+          <CommandButton slot="direction.rtl" label="Right-to-left paragraph">
+            <PilcrowLeft size={15} />
           </CommandButton>
         </div>
         <SelectField

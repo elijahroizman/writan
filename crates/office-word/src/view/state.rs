@@ -27,7 +27,10 @@ pub struct WordState {
     /// Word's highlight name.
     pub highlight: Option<String>,
     pub style: Option<String>,
+    /// As on the page: a right-to-left paragraph aligned to its start is `right`.
     pub align: Option<&'static str>,
+    /// The paragraph is right to left.
+    pub rtl: bool,
     /// `bullet` or `numbered`.
     pub list: Option<String>,
     /// Set on the paragraph itself (not from its style).
@@ -147,6 +150,13 @@ impl WordView {
                 runs.push(resolve(p, &text::props_at(p, from.offset)));
             }
         }
+        // Right-to-left runs show Word's complex-script formatting, as Word's toolbar does.
+        for r in &mut runs {
+            if r.rtl == Some(true) {
+                let c = super::resolve::complex_props(r);
+                (r.font, r.size, r.bold, r.italic) = (c.font, c.size, c.bold, c.italic);
+            }
+        }
         let all = |f: &dyn Fn(&RunProps) -> bool| runs.iter().all(f);
         st.bold = all(&|r| r.bold == Some(true));
         st.italic = all(&|r| r.italic == Some(true));
@@ -175,10 +185,11 @@ impl WordView {
             None => p.props.clone(),
         };
         st.style = para.style.clone();
-        st.align = Some(match para.align {
-            Some(office_core::model::Align::Center) => "center",
-            Some(office_core::model::Align::Right) => "right",
-            Some(office_core::model::Align::Justify | office_core::model::Align::Distribute) => "justify",
+        st.rtl = para.rtl == Some(true);
+        st.align = Some(match (para.align, st.rtl) {
+            (Some(office_core::model::Align::Center), _) => "center",
+            (Some(office_core::model::Align::Justify | office_core::model::Align::Distribute), _) => "justify",
+            (Some(office_core::model::Align::Right), false) | (Some(office_core::model::Align::Left) | None, true) => "right",
             _ => "left",
         });
         st.line_spacing = match p.props.line_spacing {

@@ -21,6 +21,8 @@ export interface WordState {
   highlight: string | null
   style: string | null
   align: 'left' | 'center' | 'right' | 'justify' | null
+  /** The paragraph runs right to left. */
+  rtl: boolean
   list: 'bullet' | 'numbered' | null
   lineSpacing: number | null
   canUndo: boolean
@@ -65,6 +67,7 @@ const EMPTY_STATE: WordState = {
   highlight: null,
   style: null,
   align: null,
+  rtl: false,
   list: null,
   lineSpacing: null,
   canUndo: false,

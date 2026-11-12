@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
+use unicode_bidi::{bidi_class, BidiClass, BidiInfo, Level};
 use unicode_linebreak::{linebreaks, BreakOpportunity};
 
 use crate::measure::{Fnv, FontId, Measure, Measurer, Metrics};
@@ -151,7 +152,14 @@ pub struct Label {
 pub struct ParaSpec {
     pub text: String,
     pub items: Vec<Item>,
+    /// Left, center, right or justified, as seen on the page (a layer whose format says "start"
+    /// and "end" turns them into sides).
     pub align: Align,
+    /// A right-to-left paragraph: lines start at the right, indents and tab stops count from
+    /// the right edge, and text runs in the Unicode bidirectional algorithm's right-to-left
+    /// order. Left-to-right paragraphs reorder right-to-left text inside them too.
+    pub rtl: bool,
+    /// From the start edge: the left in a left-to-right paragraph, the right in a right-to-left one.
     pub indent_start: f64,
     pub indent_end: f64,
     /// Extra indent of the first line; negative hangs it.
@@ -192,6 +200,7 @@ impl ParaSpec {
             text: text.to_string(),
             items,
             align: Align::Left,
+            rtl: false,
             indent_start: 0.0,
             indent_end: 0.0,
             first_line: 0.0,
@@ -234,7 +243,7 @@ impl ParaSpec {
             (t.pos.to_bits(), t.kind as u8).hash(&mut h);
         }
         self.label.as_ref().map(|l| (&l.text, l.style)).hash(&mut h);
-        (self.mark, self.line_gap).hash(&mut h);
+        (self.mark, self.line_gap, self.rtl).hash(&mut h);
         h.finish()
     }
 
@@ -276,6 +285,29 @@ pub struct Frag {
     pub kind: FragKind,
     /// Extra space after each space character, from justifying the line.
     pub space: f64,
+    /// Runs right to left: its text starts at `x + width`. Set for text at an odd bidi
+    /// level, and for tabs and labels in a right-to-left paragraph.
+    pub rtl: bool,
+}
+
+impl Frag {
+    /// The x where the frag's first character starts.
+    pub fn start_x(&self) -> f64 {
+        if self.rtl {
+            self.x + self.width
+        } else {
+            self.x
+        }
+    }
+
+    /// The x where the frag's last character ends.
+    pub fn end_x(&self) -> f64 {
+        if self.rtl {
+            self.x
+        } else {
+            self.x + self.width
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -291,6 +323,8 @@ pub struct Line {
     pub ends: LineEnd,
     /// Caret x when the line has no text, after indents, a list label and alignment.
     pub origin: f64,
+    /// Frags are in text order. With mixed directions their x order differs; this says so.
+    pub bidi: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -372,8 +406,19 @@ enum PieceKind {
 /// Lays `spec` out across `width` pixels.
 pub fn layout(ctx: &mut Ctx, spec: &ParaSpec, width: f64) -> ParaLayout {
     let pieces = pieces(ctx, spec);
-    let mut b =
-        Builder { ctx, spec, width, lines: Vec::new(), frags: Vec::new(), x: 0.0, line_start: 0, top: 0.0, pending_tabs: Vec::new() };
+    let levels = bidi_levels(&spec.text, spec.rtl);
+    let mut b = Builder {
+        ctx,
+        spec,
+        width,
+        lines: Vec::new(),
+        frags: Vec::new(),
+        x: 0.0,
+        line_start: 0,
+        top: 0.0,
+        pending_tabs: Vec::new(),
+        levels,
+    };
     b.start_line(true);
     let mut i = 0;
     while i < pieces.len() {
@@ -520,6 +565,58 @@ struct Builder<'a, 'b, 'c> {
     top: f64,
     /// Center, right and decimal tabs on this line: (frag index, stop, kind).
     pending_tabs: Vec<(usize, f64, TabKind)>,
+    /// Each byte's bidi embedding level, when the paragraph has any right-to-left text or
+    /// direction (`None` for plain left-to-right text, which needs no reordering).
+    levels: Option<Vec<u8>>,
+}
+
+/// The paragraph's bidi embedding levels by byte, or `None` when it's left to right with
+/// nothing right to left in it.
+fn bidi_levels(text: &str, rtl: bool) -> Option<Vec<u8>> {
+    if !rtl
+        && !text.chars().any(|c| {
+            matches!(bidi_class(c), BidiClass::R | BidiClass::AL | BidiClass::AN | BidiClass::RLE | BidiClass::RLO | BidiClass::RLI)
+        })
+    {
+        return None;
+    }
+    let base = if rtl { Level::rtl() } else { Level::ltr() };
+    let info = BidiInfo::new(text, Some(base));
+    Some(info.levels.iter().map(|l| l.number()).collect())
+}
+
+/// Whether the first letter in `s` that has a direction is right to left (`None` with none).
+pub fn first_strong_rtl(s: &str) -> Option<bool> {
+    s.chars().find_map(|c| match bidi_class(c) {
+        BidiClass::L => Some(false),
+        BidiClass::R | BidiClass::AL => Some(true),
+        _ => None,
+    })
+}
+
+/// The order to show `levels`' runs in, left to right (rule L2 of the bidi algorithm).
+fn visual_order(levels: &[u8]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..levels.len()).collect();
+    let (Some(&max), Some(&min)) = (levels.iter().max(), levels.iter().min()) else { return order };
+    let lowest_odd = min | 1;
+    let mut level = max;
+    while level >= lowest_odd {
+        let mut i = 0;
+        while i < order.len() {
+            if levels[order[i]] >= level {
+                let mut j = i;
+                while j < order.len() && levels[order[j]] >= level {
+                    j += 1;
+                }
+                order[i..j].reverse();
+                i = j;
+            } else {
+                i += 1;
+            }
+        }
+        level -= 1;
+    }
+    order
 }
 
 impl Builder<'_, '_, '_> {
@@ -553,6 +650,7 @@ impl Builder<'_, '_, '_> {
                     end: 0,
                     kind: FragKind::Label { text: label.text.clone(), style: label.style },
                     space: 0.0,
+                    rtl: false,
                 });
                 let after = at + w;
                 self.x = if after < self.spec.indent_start - 0.5 { self.spec.indent_start } else { self.next_stop(after).0 };
@@ -586,7 +684,7 @@ impl Builder<'_, '_, '_> {
                 return;
             }
         }
-        self.frags.push(Frag { x: self.x, width, start: p.start, end: p.end, kind, space: 0.0 });
+        self.frags.push(Frag { x: self.x, width, start: p.start, end: p.end, kind, space: 0.0, rtl: false });
         self.x += width;
     }
 
@@ -643,7 +741,7 @@ impl Builder<'_, '_, '_> {
         if kind != TabKind::Left {
             self.pending_tabs.push((self.frags.len(), stop, kind));
         }
-        self.frags.push(Frag { x: self.x, width, start: p.start, end: p.end, kind: FragKind::Tab(style), space: 0.0 });
+        self.frags.push(Frag { x: self.x, width, start: p.start, end: p.end, kind: FragKind::Tab(style), space: 0.0, rtl: false });
         self.x += width;
     }
 
@@ -667,6 +765,133 @@ impl Builder<'_, '_, '_> {
         }
     }
 
+    /// Puts a finished line's frags in bidi order, then mirrors a right-to-left paragraph's
+    /// line, whose frags were placed from the start edge. Text whose direction changes is split
+    /// into a frag per run. Tabs and the label stay where they are: each stretch between them is
+    /// reordered on its own. Says whether the line needed any of this.
+    fn reorder(&mut self, frags: &mut Vec<Frag>, from: u32, to: u32) -> bool {
+        let rtl = self.spec.rtl;
+        let Some(levels) = &self.levels else { return false };
+        let text = self.spec.text.as_str();
+        let to = to.min(text.len() as u32).max(from);
+        // The line's levels, with rule L1: separators, and spaces before them or at the end of
+        // the line, go back to the paragraph's level.
+        let base = rtl as u8;
+        let mut line: Vec<u8> = levels[from as usize..to as usize].to_vec();
+        let mut trailing = true;
+        for (i, c) in text[from as usize..to as usize].char_indices().rev() {
+            let class = bidi_class(c);
+            let reset = match class {
+                BidiClass::S | BidiClass::B => {
+                    trailing = true;
+                    true
+                }
+                BidiClass::WS
+                | BidiClass::FSI
+                | BidiClass::LRI
+                | BidiClass::RLI
+                | BidiClass::PDI
+                | BidiClass::BN
+                | BidiClass::LRE
+                | BidiClass::RLE
+                | BidiClass::LRO
+                | BidiClass::RLO
+                | BidiClass::PDF => trailing,
+                _ => {
+                    trailing = false;
+                    false
+                }
+            };
+            if reset {
+                line[i..i + c.len_utf8()].fill(base);
+            }
+        }
+        let level_at = |offset: u32| -> u8 { line.get(offset.saturating_sub(from) as usize).copied().unwrap_or(base) };
+
+        // Split text frags where the level changes.
+        let mut runs: Vec<(Frag, u8)> = Vec::with_capacity(frags.len());
+        let last = frags.len().saturating_sub(1);
+        for (index, f) in frags.drain(..).enumerate() {
+            match f.kind {
+                FragKind::Text(style) if f.end > f.start => {
+                    let s = &text[f.start as usize..f.end as usize];
+                    let mut cuts: Vec<(u32, u32, u8)> = Vec::new();
+                    for (i, c) in s.char_indices() {
+                        let at = f.start + i as u32;
+                        let l = level_at(at);
+                        match cuts.last_mut() {
+                            Some(last) if last.2 == l => last.1 = at + c.len_utf8() as u32,
+                            _ => cuts.push((at, at + c.len_utf8() as u32, l)),
+                        }
+                    }
+                    if cuts.len() <= 1 {
+                        let l = cuts.first().map(|c| c.2).unwrap_or(base);
+                        runs.push((f, l));
+                        continue;
+                    }
+                    for (a, b, l) in cuts {
+                        let part = &text[a as usize..b as usize];
+                        // Justifying stretched every space but those ending the line.
+                        let mut spaces = part.matches(' ').count();
+                        if index == last && b == f.end {
+                            spaces -= part.len() - part.trim_end_matches(' ').len();
+                        }
+                        let width = self.ctx.width(style, part) + spaces as f64 * f.space;
+                        // Where the frag started, so the stretch keeps its place on the line.
+                        runs.push((Frag { x: f.x, width, start: a, end: b, kind: f.kind.clone(), space: f.space, rtl: false }, l));
+                    }
+                }
+                FragKind::Tab(_) | FragKind::Label { .. } => runs.push((f, base)),
+                _ => {
+                    let l = level_at(f.start);
+                    runs.push((f, l));
+                }
+            }
+        }
+
+        // Lay each stretch between tabs out again in visual order, from the start edge.
+        let mut mixed = rtl;
+        let mut i = 0;
+        while i < runs.len() {
+            if matches!(runs[i].0.kind, FragKind::Tab(_) | FragKind::Label { .. }) {
+                i += 1;
+                continue;
+            }
+            let mut j = i;
+            while j < runs.len() && !matches!(runs[j].0.kind, FragKind::Tab(_) | FragKind::Label { .. }) {
+                j += 1;
+            }
+            let stretch = &mut runs[i..j];
+            let levels: Vec<u8> = stretch.iter().map(|r| r.1).collect();
+            if levels.iter().any(|&l| l != base) {
+                mixed = true;
+                let mut order = visual_order(&levels);
+                if rtl {
+                    // From the start edge, which is the right.
+                    order.reverse();
+                }
+                let mut x = stretch[0].0.x;
+                let mut placed = vec![0.0; stretch.len()];
+                for &k in &order {
+                    placed[k] = x;
+                    x += stretch[k].0.width;
+                }
+                for (k, r) in stretch.iter_mut().enumerate() {
+                    r.0.x = placed[k];
+                }
+            }
+            i = j;
+        }
+        for (mut f, l) in runs {
+            f.rtl = l % 2 == 1;
+            if rtl {
+                f.x = self.width - f.x - f.width;
+            }
+            frags.push(f);
+        }
+        mixed
+    }
+
     fn finish_line(&mut self, end_start: u32, end_end: u32, ends: LineEnd, break_style: Option<StyleId>) {
         self.resolve_tabs();
         let first = self.lines.is_empty();
@@ -684,9 +909,11 @@ impl Builder<'_, '_, '_> {
         }
         let left = self.left(first);
         let free = (self.width - self.spec.indent_end - content_end).max(0.0);
-        let shift = match self.spec.align {
-            Align::Center => free / 2.0,
-            Align::Right => free,
+        // Lines are laid out from the start edge; a right-to-left paragraph is mirrored after,
+        // so its right alignment is no shift at all.
+        let shift = match (self.spec.align, self.spec.rtl) {
+            (Align::Center, _) => free / 2.0,
+            (Align::Right, false) | (Align::Left, true) => free,
             _ => 0.0,
         };
         if self.spec.align == Align::Justify && ends == LineEnd::Wrap && free > 0.0 {
@@ -727,6 +954,7 @@ impl Builder<'_, '_, '_> {
             }
         }
         let _ = left;
+        let bidi = self.reorder(&mut frags, self.line_start, if ends == LineEnd::Wrap { end_start } else { end_end });
 
         // Height: the tallest text and objects on the line, then line spacing.
         let mut ascent: f64 = 0.0;
@@ -774,8 +1002,11 @@ impl Builder<'_, '_, '_> {
         let _ = end_start;
         // `self.x` is where the next glyph would be placed, before the alignment shift.
         // An empty line has no fragment to move, so the caret has to remember it.
-        let origin = self.x + shift;
-        self.lines.push(Line { top: self.top, height, baseline, start, end, frags, ends, origin });
+        let mut origin = self.x + shift;
+        if self.spec.rtl {
+            origin = self.width - origin;
+        }
+        self.lines.push(Line { top: self.top, height, baseline, start, end, frags, ends, origin, bidi });
         self.top += height;
         self.line_start = end;
     }
@@ -825,43 +1056,117 @@ impl ParaLayout {
             line.end
         };
         let Some(first) = frags.first() else { return line.start };
-        if x <= first.x {
-            return first.start;
-        }
-        for f in &frags {
-            if x >= f.x + f.width {
-                continue;
+        if !line.bidi {
+            if x <= first.x {
+                return first.start;
             }
-            return match f.kind {
-                FragKind::Text(_) => {
-                    let mut best = f.start;
-                    let mut prev_x = f.x;
-                    let text = &spec.text[f.start as usize..f.end as usize];
-                    for (i, c) in text.char_indices() {
-                        let next = f.start + (i + c.len_utf8()) as u32;
-                        let nx = x_in_line(ctx, spec, line, next);
-                        if x < (prev_x + nx) / 2.0 {
-                            return best;
+            for f in &frags {
+                if x >= f.x + f.width {
+                    continue;
+                }
+                return match f.kind {
+                    FragKind::Text(_) => {
+                        let mut best = f.start;
+                        let mut prev_x = f.x;
+                        let text = &spec.text[f.start as usize..f.end as usize];
+                        for (i, c) in text.char_indices() {
+                            let next = f.start + (i + c.len_utf8()) as u32;
+                            let nx = x_in_line(ctx, spec, line, next);
+                            if x < (prev_x + nx) / 2.0 {
+                                return best;
+                            }
+                            best = next;
+                            prev_x = nx;
                         }
-                        best = next;
-                        prev_x = nx;
+                        best.min(line_end)
                     }
-                    best.min(line_end)
-                }
-                _ => {
-                    if x < f.x + f.width / 2.0 {
-                        f.start
-                    } else {
-                        f.end.min(line_end)
+                    _ => {
+                        if x < f.x + f.width / 2.0 {
+                            f.start
+                        } else {
+                            f.end.min(line_end)
+                        }
                     }
-                }
-            };
+                };
+            }
+            return line_end;
         }
-        line_end
+        // Mixed directions: the frag under x (or the nearest), then its nearest boundary. Past
+        // the end of the line (the left of a right-to-left one) is the line's end.
+        let left = frags.iter().map(|f| f.x).fold(f64::INFINITY, f64::min);
+        let right = frags.iter().map(|f| f.x + f.width).fold(f64::NEG_INFINITY, f64::max);
+        if (spec.rtl && x <= left) || (!spec.rtl && x >= right) {
+            return line_end;
+        }
+        let distance = |f: &Frag| {
+            if x < f.x {
+                f.x - x
+            } else if x > f.x + f.width {
+                x - f.x - f.width
+            } else {
+                0.0
+            }
+        };
+        let f = frags.iter().min_by(|a, b| distance(a).total_cmp(&distance(b))).copied().unwrap_or(first);
+        let off = match f.kind {
+            FragKind::Text(_) => {
+                let text = &spec.text[f.start as usize..f.end as usize];
+                let mut best = (f.start, (frag_x(ctx, spec, f, f.start) - x).abs());
+                for (i, c) in text.char_indices() {
+                    let next = f.start + (i + c.len_utf8()) as u32;
+                    let d = (frag_x(ctx, spec, f, next) - x).abs();
+                    if d < best.1 {
+                        best = (next, d);
+                    }
+                }
+                best.0
+            }
+            _ => {
+                let before = if f.rtl { x > f.x + f.width / 2.0 } else { x < f.x + f.width / 2.0 };
+                if before {
+                    f.start
+                } else {
+                    f.end
+                }
+            }
+        };
+        off.min(line_end)
     }
 }
 
-/// The x of `offset` on `line`.
+/// The x of `offset` inside frag `f`, which holds it.
+pub fn frag_x(ctx: &mut Ctx, spec: &ParaSpec, f: &Frag, offset: u32) -> f64 {
+    if offset <= f.start {
+        return f.start_x();
+    }
+    match f.kind {
+        FragKind::Text(style) => {
+            let part = &spec.text[f.start as usize..offset.min(f.end) as usize];
+            let spaces = part.matches(' ').count() as f64;
+            let advance = ctx.width(style, part) + spaces * f.space;
+            if f.rtl {
+                f.x + f.width - advance
+            } else {
+                f.x + advance
+            }
+        }
+        _ => f.end_x(),
+    }
+}
+
+/// Where text changes direction one offset shows in two places: after the character before it,
+/// and before the one after it. The second, when there is one and it's elsewhere.
+pub fn other_x_in_line(ctx: &mut Ctx, spec: &ParaSpec, line: &Line, offset: u32) -> Option<f64> {
+    if !line.bidi {
+        return None;
+    }
+    let f = line.frags.iter().find(|f| !matches!(f.kind, FragKind::Label { .. }) && f.start == offset && f.end > offset)?;
+    let x = f.start_x();
+    ((x - x_in_line(ctx, spec, line, offset)).abs() > 0.5).then_some(x)
+}
+
+/// The x of `offset` on `line`. Where two frags meet, the caret stands after the character
+/// before it, as Word puts it.
 pub fn x_in_line(ctx: &mut Ctx, spec: &ParaSpec, line: &Line, offset: u32) -> f64 {
     let mut last_x = None;
     for f in &line.frags {
@@ -869,22 +1174,12 @@ pub fn x_in_line(ctx: &mut Ctx, spec: &ParaSpec, line: &Line, offset: u32) -> f6
             continue;
         }
         if offset < f.start {
-            return last_x.unwrap_or(f.x);
+            return last_x.unwrap_or(f.start_x());
         }
         if offset <= f.end {
-            if offset == f.start {
-                return f.x;
-            }
-            return match f.kind {
-                FragKind::Text(style) => {
-                    let part = &spec.text[f.start as usize..offset as usize];
-                    let spaces = part.matches(' ').count() as f64;
-                    f.x + ctx.width(style, part) + spaces * f.space
-                }
-                _ => f.x + f.width,
-            };
+            return frag_x(ctx, spec, f, offset);
         }
-        last_x = Some(f.x + f.width);
+        last_x = Some(f.end_x());
     }
     // No text on this line. `origin` is the aligned start, including a list label and indents.
     last_x.unwrap_or(line.origin)
@@ -918,7 +1213,7 @@ pub fn next_boundary(text: &str, offset: u32) -> u32 {
 /// The word around `offset`: letters and digits, or a run of anything else that isn't space.
 pub fn word_at(text: &str, offset: u32) -> (u32, u32) {
     let kind = |c: char| {
-        if c.is_alphanumeric() || c == '_' || c == '\'' || c == '’' {
+        if in_word(c) || c == '_' {
             1
         } else if c.is_whitespace() {
             0
@@ -947,16 +1242,23 @@ pub fn word_move(text: &str, offset: u32, forward: bool) -> u32 {
     if forward {
         let rest = &text[at..];
         let skip_space: usize = rest.chars().take_while(|c| !c.is_alphanumeric()).map(char::len_utf8).sum();
-        let word: usize =
-            rest[skip_space..].chars().take_while(|c| c.is_alphanumeric() || *c == '\'' || *c == '’').map(char::len_utf8).sum();
+        let word: usize = rest[skip_space..].chars().take_while(|c| in_word(*c)).map(char::len_utf8).sum();
         (at + skip_space + word) as u32
     } else {
         let head = &text[..at];
         let skip_space: usize = head.chars().rev().take_while(|c| !c.is_alphanumeric()).map(char::len_utf8).sum();
-        let word: usize =
-            head[..at - skip_space].chars().rev().take_while(|c| c.is_alphanumeric() || *c == '\'' || *c == '’').map(char::len_utf8).sum();
+        let word: usize = head[..at - skip_space].chars().rev().take_while(|c| in_word(*c)).map(char::len_utf8).sum();
         (at - skip_space - word) as u32
     }
+}
+
+/// A character that's part of a word: letters and digits, apostrophes, the marks written over
+/// and under letters (Hebrew points, Arabic vowels, accents), and Hebrew's geresh and gershayim
+/// (צה״ל).
+fn in_word(c: char) -> bool {
+    c.is_alphanumeric()
+        || matches!(c, '\'' | '’' | '\u{5F3}' | '\u{5F4}')
+        || matches!(c as u32, 0x0300..=0x036F | 0x0591..=0x05C7 | 0x0610..=0x061A | 0x064B..=0x065F | 0x0670 | 0x06D6..=0x06ED)
 }
 
 impl Item {
@@ -1209,6 +1511,206 @@ mod tests {
         }
     }
 
+    /// Each text frag on a line: its text, x, width and direction.
+    fn frags_of(spec: &ParaSpec, line: &Line) -> Vec<(String, f64, f64, bool)> {
+        line.frags
+            .iter()
+            .filter(|f| matches!(f.kind, FragKind::Text(_)))
+            .map(|f| (spec.text[f.start as usize..f.end as usize].to_string(), f.x, f.width, f.rtl))
+            .collect()
+    }
+
+    #[test]
+    fn right_to_left_paragraphs_start_at_the_right() {
+        let (mut host, mut measure, mut styles, s) = setup();
+        let mut ctx = Ctx { host: &mut host, measure: &mut measure, styles: &mut styles };
+        // Six letters and a space: 32.5 px.
+        let mut spec = ParaSpec::plain("אבג דהו", s);
+        spec.rtl = true;
+        spec.align = Align::Right;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(frags_of(&spec, &l.lines[0]), vec![("אבג דהו".into(), 67.5, 32.5, true)]);
+        // The caret starts at the right and moves left as the text goes on.
+        assert_eq!(l.caret(&mut ctx, &spec, 0, false).0, 100.0);
+        assert_eq!(l.caret(&mut ctx, &spec, 2, false).0, 95.0);
+        assert_eq!(l.caret(&mut ctx, &spec, spec.text.len() as u32, false).0, 67.5);
+        assert_eq!(l.offset_at(&mut ctx, &spec, 0, 99.0), 0);
+        assert_eq!(l.offset_at(&mut ctx, &spec, 0, 94.0), 2);
+        assert_eq!(l.offset_at(&mut ctx, &spec, 0, 10.0), spec.text.len() as u32);
+
+        // Indents count from the right; "left" alignment is the far side.
+        spec.indent_start = 20.0;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(frags_of(&spec, &l.lines[0])[0].1, 47.5);
+        spec.align = Align::Left;
+        spec.indent_end = 10.0;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(frags_of(&spec, &l.lines[0])[0].1, 10.0);
+        spec.align = Align::Center;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(frags_of(&spec, &l.lines[0])[0].1, 28.75);
+
+        // An empty line's caret stands at the right.
+        let mut empty = ParaSpec::plain("", s);
+        empty.rtl = true;
+        empty.align = Align::Right;
+        empty.indent_start = 15.0;
+        let l = layout(&mut ctx, &empty, 100.0);
+        assert_eq!(l.caret(&mut ctx, &empty, 0, false).0, 85.0);
+    }
+
+    #[test]
+    fn right_to_left_wrapping_justification_labels_and_tabs() {
+        let (mut host, mut measure, mut styles, s) = setup();
+        let mut ctx = Ctx { host: &mut host, measure: &mut measure, styles: &mut styles };
+        let mut spec = ParaSpec::plain("אאאא בבבב גגגג", s);
+        spec.rtl = true;
+        spec.align = Align::Justify;
+        let l = layout(&mut ctx, &spec, 45.0);
+        assert_eq!(lines_text(&spec, &l), vec!["אאאא בבבב ", "גגגג"]);
+        // The first line fills the width, from the right; the last starts at the right.
+        let first = &frags_of(&spec, &l.lines[0])[0];
+        assert!(first.3 && (first.1 - (45.0 - first.2)).abs() < 1e-9, "{first:?}");
+        assert_eq!(frags_of(&spec, &l.lines[1])[0].1, 25.0);
+
+        // A list label hangs at the right, the text starts left of it.
+        let mut spec = ParaSpec::plain("אב", s);
+        spec.rtl = true;
+        spec.align = Align::Right;
+        spec.indent_start = 24.0;
+        spec.first_line = -24.0;
+        spec.label = Some(Label { text: "1.".into(), style: s });
+        let l = layout(&mut ctx, &spec, 100.0);
+        let label = &l.lines[0].frags[0];
+        assert!(matches!(label.kind, FragKind::Label { .. }) && label.rtl);
+        assert_eq!((label.x, label.width), (90.0, 10.0));
+        assert_eq!(frags_of(&spec, &l.lines[0])[0].1, 66.0);
+
+        // Tab stops count from the right too.
+        let mut spec = ParaSpec::plain("א\tב", s);
+        spec.rtl = true;
+        spec.align = Align::Right;
+        spec.default_tab = 48.0;
+        let l = layout(&mut ctx, &spec, 500.0);
+        let f = frags_of(&spec, &l.lines[0]);
+        assert_eq!((f[0].1, f[1].1), (495.0, 447.0));
+    }
+
+    #[test]
+    fn mixed_directions_reorder_by_the_bidi_algorithm() {
+        let (mut host, mut measure, mut styles, s) = setup();
+        let mut ctx = Ctx { host: &mut host, measure: &mut measure, styles: &mut styles };
+        // English inside Hebrew: the Hebrew before it is rightmost, the English keeps its order.
+        let mut spec = ParaSpec::plain("אבג abc דהו", s);
+        spec.rtl = true;
+        spec.align = Align::Right;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(
+            frags_of(&spec, &l.lines[0]),
+            vec![("אבג ".into(), 82.5, 17.5, true), ("abc".into(), 67.5, 15.0, false), (" דהו".into(), 50.0, 17.5, true)]
+        );
+        let abc = "אבג ".len() as u32;
+        // In the English the caret moves right; where the runs meet it follows the text before.
+        assert_eq!(l.caret(&mut ctx, &spec, abc, false).0, 82.5);
+        assert_eq!(l.caret(&mut ctx, &spec, abc + 1, false).0, 72.5);
+        assert_eq!(l.caret(&mut ctx, &spec, abc + 3, false).0, 82.5);
+        assert_eq!(l.offset_at(&mut ctx, &spec, 0, 73.0), abc + 1);
+        assert_eq!(l.offset_at(&mut ctx, &spec, 0, 56.0), spec.text.len() as u32 - 2);
+
+        // Numbers in right-to-left text read left to right; the full stop ends up at the left.
+        let mut spec = ParaSpec::plain("אבג 123.", s);
+        spec.rtl = true;
+        spec.align = Align::Right;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(
+            frags_of(&spec, &l.lines[0]),
+            vec![("אבג ".into(), 82.5, 17.5, true), ("123".into(), 67.5, 15.0, false), (".".into(), 62.5, 5.0, true)]
+        );
+
+        // Hebrew inside an English paragraph runs right to left in place.
+        let spec = ParaSpec::plain("ab אבג cd", s);
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(
+            frags_of(&spec, &l.lines[0]),
+            vec![("ab ".into(), 0.0, 12.5, false), ("אבג".into(), 12.5, 15.0, true), (" cd".into(), 27.5, 12.5, false)]
+        );
+        // Two letters into the Hebrew: 5 px left of its right edge.
+        assert_eq!(l.caret(&mut ctx, &spec, 3 + 2, false).0, 22.5);
+        // Plain left-to-right text isn't touched.
+        let spec = ParaSpec::plain("ab cd", s);
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert!(!l.lines[0].bidi && !l.lines[0].frags[0].rtl);
+    }
+
+    #[test]
+    fn mixed_lines_keep_their_place() {
+        let (mut host, mut measure, mut styles, s) = setup();
+        let mut ctx = Ctx { host: &mut host, measure: &mut measure, styles: &mut styles };
+        let starts = |spec: &ParaSpec, l: &ParaLayout| frags_of(spec, &l.lines[0]).iter().map(|f| f.1).fold(f64::INFINITY, f64::min);
+        let ends = |spec: &ParaSpec, l: &ParaLayout| frags_of(spec, &l.lines[0]).iter().map(|f| f.1 + f.2).fold(0.0, f64::max);
+        // Centered: "abc אבג" is 32.5 px.
+        let mut spec = ParaSpec::plain("abc אבג", s);
+        spec.align = Align::Center;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(starts(&spec, &l), 33.75);
+        // Indented, and after a list label.
+        let mut spec = ParaSpec::plain("see שלום here", s);
+        spec.indent_start = 24.0;
+        spec.first_line = -24.0;
+        spec.label = Some(Label { text: "1.".into(), style: s });
+        let l = layout(&mut ctx, &spec, 200.0);
+        assert_eq!(starts(&spec, &l), 24.0);
+        // After a right tab.
+        let mut spec = ParaSpec::plain("a\tאבג abc", s);
+        spec.tabs = vec![Tab { pos: 200.0, kind: TabKind::Right }];
+        let l = layout(&mut ctx, &spec, 500.0);
+        let after: Vec<_> = frags_of(&spec, &l.lines[0]).into_iter().skip(1).collect();
+        assert_eq!(after.iter().map(|f| f.1 + f.2).fold(0.0, f64::max), 200.0, "{after:?}");
+        // A right-to-left paragraph's start indent, and its far-side alignment.
+        let mut spec = ParaSpec::plain("אבג abc דהו", s);
+        spec.rtl = true;
+        spec.align = Align::Right;
+        spec.indent_start = 20.0;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(ends(&spec, &l), 80.0);
+        let mut spec = ParaSpec::plain("abc דהו", s);
+        spec.rtl = true;
+        let l = layout(&mut ctx, &spec, 100.0);
+        assert_eq!(starts(&spec, &l), 0.0);
+        // Justified: the space ending the line isn't stretched.
+        // 45 px of text on a 50 px line: 2.5 px more for each of the two spaces inside it, and
+        // the trailing one hangs 2.5 px past the end.
+        let mut spec = ParaSpec::plain("abc אבג dd ee", s);
+        spec.align = Align::Justify;
+        let l = layout(&mut ctx, &spec, 50.0);
+        let first = frags_of(&spec, &l.lines[0]);
+        assert_eq!(first.iter().map(|f| f.1 + f.2).fold(0.0, f64::max), 52.5, "{first:?}");
+    }
+
+    #[test]
+    fn selections_across_directions_cover_each_piece() {
+        use crate::display::selection_rects;
+        use crate::flow::{Keep, ParaBox};
+        use crate::pos::Path;
+        use std::sync::Arc;
+
+        let (mut host, mut measure, mut styles, s) = setup();
+        let mut ctx = Ctx { host: &mut host, measure: &mut measure, styles: &mut styles };
+        let mut spec = ParaSpec::plain("אבג abc דהו", s);
+        spec.rtl = true;
+        spec.align = Align::Right;
+        let l = layout(&mut ctx, &spec, 100.0);
+        let p = ParaBox { path: Path::top(0), spec: Arc::new(spec.clone()), layout: Arc::new(l), keep: Keep::default(), y: 0.0 };
+        // From the second Hebrew letter to the middle of the English: two pieces apart.
+        let from = 2;
+        let to = "אבג a".len() as u32;
+        let rects = selection_rects(&mut ctx, &p, 0.0, 0.0, from, to, false);
+        assert_eq!(rects, vec![(67.5, 0.0, 5.0, 10.0), (82.5, 0.0, 12.5, 10.0)]);
+        // Everything: one rectangle, a little past the end at the left.
+        let rects = selection_rects(&mut ctx, &p, 0.0, 0.0, 0, spec.text.len() as u32, true);
+        assert_eq!(rects, vec![(45.0, 0.0, 55.0, 10.0)]);
+    }
+
     #[test]
     fn words() {
         assert_eq!(word_at("hello, world", 2), (0, 5));
@@ -1218,6 +1720,12 @@ mod tests {
         assert_eq!(word_move("hello, world", 5, true), 12);
         assert_eq!(word_move("hello, world", 12, false), 7);
         assert_eq!(word_move("hello, world", 7, false), 0);
+        // Hebrew with points, and an abbreviation with gershayim, are each one word.
+        let pointed = "שָׁלוֹם עוֹלָם";
+        assert_eq!(word_at(pointed, 2), (0, "שָׁלוֹם".len() as u32));
+        assert_eq!(word_move(pointed, 0, true), "שָׁלוֹם".len() as u32);
+        let abbr = "של צה״ל היום";
+        assert_eq!(word_at(abbr, "של צ".len() as u32), ("של ".len() as u32, "של צה״ל".len() as u32));
     }
 
     #[test]

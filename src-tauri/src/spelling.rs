@@ -24,6 +24,22 @@ pub async fn spell_learn<R: Runtime>(app: AppHandle<R>, word: String) -> Result<
     run(app, move |s| s.learn(&word)).await
 }
 
+/// Whether a checker for `language` (`en-US`, `he_IL`) can judge `word`. Windows' and Hunspell's
+/// checkers know one language, and would call every word in another alphabet wrong: words in the
+/// Hebrew or Arabic alphabet go only to a checker for a language written in it.
+#[cfg(any(windows, target_os = "linux"))]
+fn can_judge(language: &str, word: &str) -> bool {
+    let lang = language.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
+    let has = |ranges: &[std::ops::RangeInclusive<u32>]| word.chars().any(|c| ranges.iter().any(|r| r.contains(&(c as u32))));
+    if has(&[0x0590..=0x05FF, 0xFB1D..=0xFB4F]) {
+        return matches!(lang.as_str(), "he" | "iw" | "yi");
+    }
+    if has(&[0x0600..=0x06FF, 0x0750..=0x077F, 0x08A0..=0x08FF, 0xFB50..=0xFDFF, 0xFE70..=0xFEFF]) {
+        return matches!(lang.as_str(), "ar" | "fa" | "ur" | "ps" | "ug" | "ku" | "ckb" | "sd");
+    }
+    true
+}
+
 trait Speller {
     fn misspelled(&mut self, words: &[String]) -> Vec<String>;
     fn suggest(&mut self, word: &str) -> Vec<String>;
@@ -96,7 +112,8 @@ mod win {
     use windows::Win32::Globalization::{GetUserDefaultLocaleName, ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory};
     use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
 
-    pub struct Win(ISpellChecker);
+    /// The checker, and its language's tag.
+    pub struct Win(ISpellChecker, String);
 
     impl Win {
         /// A checker for the user's language, or English when Windows has none for it.
@@ -112,10 +129,10 @@ mod win {
                     if tag.is_empty() {
                         continue;
                     }
-                    let tag = HSTRING::from(tag);
-                    if factory.IsSupported(&tag).map(|b| b.as_bool()).unwrap_or(false) {
-                        if let Ok(checker) = factory.CreateSpellChecker(&tag) {
-                            return Some(Win(checker));
+                    let name = HSTRING::from(tag);
+                    if factory.IsSupported(&name).map(|b| b.as_bool()).unwrap_or(false) {
+                        if let Ok(checker) = factory.CreateSpellChecker(&name) {
+                            return Some(Win(checker, tag.to_string()));
                         }
                     }
                 }
@@ -128,6 +145,7 @@ mod win {
         fn misspelled(&mut self, words: &[String]) -> Vec<String> {
             words
                 .iter()
+                .filter(|w| super::can_judge(&self.1, w))
                 .filter(|w| unsafe {
                     let Ok(errors) = self.0.Check(&HSTRING::from(w.as_str())) else { return false };
                     let mut error = None;
@@ -193,6 +211,8 @@ pub(crate) mod linux {
 
     pub struct Hunspell {
         dict: Option<spellbook::Dictionary>,
+        /// The dictionary's language: `en_US`.
+        lang: String,
         /// Where learned words are kept, one per line.
         words: Option<PathBuf>,
     }
@@ -237,12 +257,14 @@ pub(crate) mod linux {
     impl Hunspell {
         pub fn load(words: Option<PathBuf>) -> Self {
             let dirs: Vec<&Path> = DIRS.iter().map(Path::new).collect();
-            let dict = find_dictionary(&dirs, language().as_deref()).and_then(|(aff, dic)| {
+            let found = find_dictionary(&dirs, language().as_deref());
+            let lang = found.as_ref().and_then(|(aff, _)| aff.file_stem()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let dict = found.and_then(|(aff, dic)| {
                 let aff = std::fs::read_to_string(aff).ok()?;
                 let dic = std::fs::read_to_string(dic).ok()?;
                 spellbook::Dictionary::new(&aff, &dic).ok()
             });
-            let mut s = Hunspell { dict, words };
+            let mut s = Hunspell { dict, lang, words };
             if let (Some(dict), Some(path)) = (&mut s.dict, &s.words) {
                 for w in std::fs::read_to_string(path).unwrap_or_default().lines().filter(|l| !l.trim().is_empty()) {
                     let _ = dict.add(w.trim());
@@ -253,14 +275,14 @@ pub(crate) mod linux {
 
         #[cfg(test)]
         pub fn from_files(aff: &str, dic: &str) -> Self {
-            Hunspell { dict: spellbook::Dictionary::new(aff, dic).ok(), words: None }
+            Hunspell { dict: spellbook::Dictionary::new(aff, dic).ok(), lang: "en_US".into(), words: None }
         }
     }
 
     impl super::Speller for Hunspell {
         fn misspelled(&mut self, words: &[String]) -> Vec<String> {
             let Some(dict) = &self.dict else { return Vec::new() };
-            words.iter().filter(|w| !dict.check(w)).cloned().collect()
+            words.iter().filter(|w| super::can_judge(&self.lang, w) && !dict.check(w)).cloned().collect()
         }
 
         fn suggest(&mut self, word: &str) -> Vec<String> {
@@ -291,6 +313,15 @@ pub(crate) mod linux {
     mod tests {
         use super::super::Speller;
         use super::*;
+
+        #[test]
+        fn words_in_another_alphabet_are_left_to_their_own_checker() {
+            use super::super::can_judge;
+            assert!(can_judge("en_US", "hello") && can_judge("he_IL", "hello"));
+            assert!(!can_judge("en_US", "שלום") && !can_judge("en-US", "مرحبا"));
+            assert!(can_judge("he_IL", "שלום") && can_judge("he-IL", "שלום") && can_judge("ar", "مرحبا"));
+            assert!(!can_judge("ar_EG", "שלום"));
+        }
 
         #[test]
         fn finds_the_users_language_or_falls_back() {

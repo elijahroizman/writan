@@ -474,6 +474,8 @@ fn para_spec(
             Some(Align::Justify | Align::Distribute) => para::Align::Justify,
             _ => para::Align::Left,
         },
+        // DrawingML's `algn` names sides, and `marL` is the start margin.
+        rtl: pp.rtl == Some(true),
         indent_start: px(pp.indent_start),
         indent_end: px(pp.indent_end),
         first_line: px(pp.indent_first_line),

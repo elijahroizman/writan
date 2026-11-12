@@ -352,3 +352,139 @@ fn a_workbook_named_docx_is_an_error_not_a_crash() {
     let e = WordView::open(&book).err().expect("a workbook isn't a Word document");
     assert_eq!(e.to_string(), "this is an Excel workbook, not a Word document");
 }
+
+/// A Word file whose body is `body` (Word markup), as Word would have saved it.
+fn markup_bytes(body: &str) -> Vec<u8> {
+    let bytes = doc_bytes(&[]);
+    let mut pkg = office_core::opc::Package::read(&bytes).unwrap();
+    let text = String::from_utf8(pkg.part("word/document.xml").unwrap().to_vec()).unwrap();
+    let text = text.replacen("<w:body>", &format!("<w:body>{body}"), 1);
+    pkg.replace("word/document.xml", text.into_bytes()).unwrap();
+    pkg.to_bytes().unwrap()
+}
+
+fn saved_body(v: &mut WordView) -> String {
+    let bytes = v.save().unwrap();
+    let pkg = office_core::opc::Package::read(&bytes).unwrap();
+    String::from_utf8(pkg.part("word/document.xml").unwrap().to_vec()).unwrap()
+}
+
+/// The page's text items: (text, x, width, right to left).
+fn text_items(v: &mut WordView, host: &mut FixedMeasurer) -> Vec<(String, f64, f64, bool)> {
+    v.paint(host, 0)
+        .items
+        .into_iter()
+        .filter_map(|i| if let Item::Text { text, x, w, rtl, .. } = i { Some((text, x, w, rtl)) } else { None })
+        .collect()
+}
+
+#[test]
+fn hebrew_typed_into_an_empty_paragraph_makes_it_right_to_left() {
+    use office_core::model::Align;
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&[""])).unwrap();
+    v.layout(&mut host);
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 0)));
+    for c in ["ש", "ל", "ו", "ם"] {
+        v.insert_text(c);
+    }
+    let para = |v: &WordView| match &v.blocks(StoryId::Body)[0] {
+        Block::Paragraph(p) => p.clone(),
+        _ => unreachable!(),
+    };
+    assert_eq!(para(&v).props.rtl, Some(true));
+    let st = v.state();
+    assert!(st.rtl);
+    assert_eq!(st.align, Some("right"));
+    // Drawn right to left against the right margin.
+    let (w, _) = v.page_size(0);
+    let items = text_items(&mut v, &mut host);
+    assert_eq!(items.len(), 1, "{items:?}");
+    let (text, x, width, rtl) = &items[0];
+    assert!(text == "שלום" && *rtl && x + width > w / 2.0 && (w - (x + width) - 96.0).abs() < 2.0, "{items:?} on {w}");
+
+    // The arrows swap: left goes on through the text.
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 0)));
+    v.move_caret(&mut host, Move::Left, false);
+    assert_eq!(v.selection().focus.offset, 2);
+    v.move_caret(&mut host, Move::Right, false);
+    assert_eq!(v.selection().focus.offset, 0);
+
+    // Word's left and right mean start and end: aligned right on the page is "left".
+    v.align("left");
+    assert_eq!((para(&v).props.align, v.state().align), (Some(Align::Right), Some("left")));
+    let body = saved_body(&mut v);
+    assert!(body.contains("<w:bidi/>") && body.contains(r#"<w:jc w:val="right"/>"#), "{body}");
+    v.align("right");
+    assert_eq!((para(&v).props.align, v.state().align), (Some(Align::Left), Some("right")));
+
+    // Back to left to right: the direction goes, and the paragraph's start is the left again.
+    v.set_direction(false);
+    assert_eq!(para(&v).props.rtl, None);
+    assert_eq!(v.state().align, Some("left"));
+    // Typed English doesn't turn an empty paragraph right to left.
+    v.enter();
+    v.insert_text("a");
+    assert_eq!(para(&v).props.rtl, None);
+}
+
+#[test]
+fn right_to_left_documents_from_word() {
+    let mut host = FixedMeasurer::default();
+    // Word's markup: a right-to-left paragraph of a Hebrew run with complex-script size and bold,
+    // an English run, and a right-to-left table.
+    let body = r#"<w:p><w:pPr><w:bidi/></w:pPr><w:r><w:rPr><w:rtl/><w:sz w:val="20"/><w:szCs w:val="40"/><w:bCs/></w:rPr><w:t xml:space="preserve">אבג </w:t></w:r><w:r><w:rPr><w:sz w:val="20"/><w:szCs w:val="40"/></w:rPr><w:t>abc</w:t></w:r></w:p><w:tbl><w:tblPr><w:bidiVisual/></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="3000"/></w:tblGrid><w:tr><w:tc><w:p><w:r><w:t>first</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>second</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
+    let mut v = WordView::open(&markup_bytes(body)).unwrap();
+    v.layout(&mut host);
+    let items = text_items(&mut v, &mut host);
+    let find = |t: &str| items.iter().find(|i| i.0 == t).unwrap_or_else(|| panic!("{t} in {items:?}")).clone();
+    let (hebrew, english) = (find("אבג "), find("abc"));
+    // The Hebrew is twice the size (20 pt against 10) and starts the line at the right; the
+    // English follows to its left.
+    assert!(hebrew.3 && !english.3);
+    // (Three letters and a space, which is half a letter wide.)
+    assert!((hebrew.2 / 3.5 - 2.0 * (english.2 / 3.0)).abs() < 0.01 * hebrew.2, "{hebrew:?} {english:?}");
+    assert!((english.1 + english.2 - hebrew.1).abs() < 0.05, "{english:?} left of {hebrew:?}");
+    // The table's first column is at the right.
+    let (first, second) = (find("first"), find("second"));
+    assert!(first.1 > second.1, "{first:?} {second:?}");
+    // Saving leaves the Hebrew run's formatting as it was.
+    let body = saved_body(&mut v);
+    assert!(body.contains(r#"<w:szCs w:val="40"/>"#) && body.contains("<w:rtl/>") && body.contains("<w:bidiVisual/>"), "{body}");
+}
+
+#[test]
+fn a_runs_own_complex_script_size_beats_its_styles() {
+    let mut host = FixedMeasurer::default();
+    // A character style with a big complex-script size; one run sets its own, equal to its
+    // other size (10 pt), as Word writes it.
+    let style = r#"<w:style w:type="character" w:styleId="Big"><w:name w:val="Big"/><w:rPr><w:sz w:val="20"/><w:szCs w:val="40"/></w:rPr></w:style>"#;
+    let body = r#"<w:p><w:r><w:rPr><w:rStyle w:val="Big"/></w:rPr><w:t>אב</w:t></w:r></w:p><w:p><w:r><w:rPr><w:rStyle w:val="Big"/><w:sz w:val="20"/><w:szCs w:val="20"/></w:rPr><w:t>גד</w:t></w:r></w:p>"#;
+    let mut pkg = office_core::opc::Package::read(&markup_bytes(body)).unwrap();
+    let styles = String::from_utf8(pkg.part("word/styles.xml").unwrap().to_vec()).unwrap();
+    pkg.replace("word/styles.xml", styles.replacen("</w:styles>", &format!("{style}</w:styles>"), 1).into_bytes()).unwrap();
+    let mut v = WordView::open(&pkg.to_bytes().unwrap()).unwrap();
+    v.layout(&mut host);
+    let items = text_items(&mut v, &mut host);
+    let width = |t: &str| items.iter().find(|i| i.0 == t).unwrap_or_else(|| panic!("{t} in {items:?}")).2;
+    // 20 pt and 10 pt: two letters of 26.67 and 13.33 px.
+    assert!((width("אב") - 2.0 * width("גד")).abs() < 0.05, "{items:?}");
+}
+
+#[test]
+fn pasting_lines_into_an_empty_paragraph_leaves_their_direction() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&[""])).unwrap();
+    v.layout(&mut host);
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 0)));
+    v.paste("שלום\nworld wide", None);
+    let rtl: Vec<Option<bool>> = v
+        .blocks(StoryId::Body)
+        .iter()
+        .map(|b| match b {
+            Block::Paragraph(p) => p.props.rtl,
+            _ => None,
+        })
+        .collect();
+    assert_eq!(rtl, vec![None, None]);
+}

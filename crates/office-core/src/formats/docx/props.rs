@@ -108,6 +108,10 @@ pub fn read_run_props(rpr: &Element) -> RunProps {
         size: rpr.child(ns::W, "sz").and_then(val).and_then(|v| v.parse().ok()).map(FontSize::from_half_points),
         bold: toggle(rpr, "b"),
         italic: toggle(rpr, "i"),
+        size_complex: rpr.child(ns::W, "szCs").and_then(val).and_then(|v| v.parse().ok()).map(FontSize::from_half_points),
+        bold_complex: toggle(rpr, "bCs"),
+        italic_complex: toggle(rpr, "iCs"),
+        rtl: toggle(rpr, "rtl"),
         underline: rpr.child(ns::W, "u").map(|u| val(u).unwrap_or("single").to_string()),
         strike,
         caps: toggle(rpr, "caps"),
@@ -336,13 +340,22 @@ pub fn patch_run_props(props: &RunProps, rpr: &mut Element, theme: &crate::drawi
             rpr.place(fonts, RPR);
         }
     }
+    // Complex-script bold, italic and size are the others' unless set apart, and written
+    // alongside them, as Word does.
     if props.bold != old.bold {
         set_toggle(rpr, "b", props.bold);
-        set_toggle(rpr, "bCs", props.bold);
+    }
+    if props.bold_complex.or(props.bold) != old.bold_complex.or(old.bold) {
+        set_toggle(rpr, "bCs", props.bold_complex.or(props.bold));
     }
     if props.italic != old.italic {
         set_toggle(rpr, "i", props.italic);
-        set_toggle(rpr, "iCs", props.italic);
+    }
+    if props.italic_complex.or(props.italic) != old.italic_complex.or(old.italic) {
+        set_toggle(rpr, "iCs", props.italic_complex.or(props.italic));
+    }
+    if props.rtl != old.rtl {
+        set_toggle(rpr, "rtl", props.rtl);
     }
     if props.caps != old.caps {
         set_toggle(rpr, "caps", props.caps);
@@ -368,11 +381,14 @@ pub fn patch_run_props(props: &RunProps, rpr: &mut Element, theme: &crate::drawi
     }
     if props.size != old.size {
         match props.size {
-            Some(s) => {
-                rpr.place(w_val("sz", s.half_points().to_string()), RPR);
-                rpr.place(w_val("szCs", s.half_points().to_string()), RPR);
-            }
-            None => rpr.clear(ns::W, &["sz", "szCs"]),
+            Some(s) => rpr.place(w_val("sz", s.half_points().to_string()), RPR),
+            None => rpr.clear(ns::W, &["sz"]),
+        }
+    }
+    if props.size_complex.or(props.size) != old.size_complex.or(old.size) {
+        match props.size_complex.or(props.size) {
+            Some(s) => rpr.place(w_val("szCs", s.half_points().to_string()), RPR),
+            None => rpr.clear(ns::W, &["szCs"]),
         }
     }
     if props.highlight != old.highlight {
@@ -588,13 +604,32 @@ mod write_tests {
         };
         let mut rpr = Element::new(ns::W, "rPr");
         patch_run_props(&props, &mut rpr, &theme);
-        assert_eq!(read_run_props(&rpr), props);
+        // Complex-script bold, italic and size are written with the others, as Word does.
+        let complex = RunProps { size_complex: props.size, bold_complex: props.bold, italic_complex: props.italic, ..props.clone() };
+        assert_eq!(read_run_props(&rpr), complex);
         let names: Vec<&str> = rpr.elements().map(|e| e.local.as_str()).collect();
         assert_eq!(
             names,
             ["rStyle", "rFonts", "b", "bCs", "i", "iCs", "dstrike", "color", "sz", "szCs", "highlight", "u", "vertAlign", "lang"]
         );
         assert_eq!(rpr.child(ns::W, "color").unwrap().attr_ns(ns::W, "themeShade"), Some("BF"));
+
+        // Set apart, they stay apart; a right-to-left run says so.
+        let hebrew = RunProps {
+            size: Some(FontSize::from_half_points(22)),
+            size_complex: Some(FontSize::from_half_points(28)),
+            bold: Some(false),
+            bold_complex: Some(true),
+            italic_complex: Some(true),
+            font_complex: Some("David".into()),
+            rtl: Some(true),
+            ..Default::default()
+        };
+        let mut rpr = Element::new(ns::W, "rPr");
+        patch_run_props(&hebrew, &mut rpr, &theme);
+        assert_eq!(read_run_props(&rpr), hebrew);
+        let names: Vec<&str> = rpr.elements().map(|e| e.local.as_str()).collect();
+        assert_eq!(names, ["rFonts", "b", "bCs", "iCs", "sz", "szCs", "rtl"]);
 
         let para = ParaProps {
             style: Some("Heading1".into()),

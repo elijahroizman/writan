@@ -67,6 +67,7 @@ impl WordView {
         self.sel = self.clamp(sel);
         self.pending = None;
         self.goal_x = None;
+        self.caret_near = None;
         self.history.seal();
     }
 
@@ -118,6 +119,7 @@ impl WordView {
                     return true;
                 }
                 self.set_selection(Selection::caret(at));
+                self.caret_near = Some((page, x));
             }
         }
         true
@@ -173,6 +175,7 @@ impl WordView {
         if let Some(at) = self.hit(host, page, x, y) {
             let anchor = self.sel.anchor.clone();
             self.sel = Selection { anchor, focus: at };
+            self.caret_near = None;
             self.pending = None;
         }
     }
@@ -202,6 +205,15 @@ impl WordView {
     /// Moves the caret, or the selection's focus with `extend`.
     pub fn move_caret(&mut self, host: &mut dyn Measurer, m: Move, extend: bool) {
         let focus = self.sel.focus.clone();
+        // In a right-to-left paragraph the text goes on to the left: the arrows swap.
+        let rtl = pos::para(self.blocks(self.story), &focus.path).is_some_and(|p| self.is_rtl(&p.props));
+        let m = match (m, rtl) {
+            (Move::Left, true) => Move::Right,
+            (Move::Right, true) => Move::Left,
+            (Move::WordLeft, true) => Move::WordRight,
+            (Move::WordRight, true) => Move::WordLeft,
+            (m, _) => m,
+        };
         let collapse = !extend && !self.sel.is_collapsed();
         let goal = self.goal_x;
         let target = match m {
@@ -264,6 +276,7 @@ impl WordView {
         self.sel = Selection { anchor, focus: target };
         self.pending = None;
         self.goal_x = None;
+        self.caret_near = None;
         self.history.seal();
     }
 
@@ -309,6 +322,7 @@ impl WordView {
         self.history.record(steps, before, (self.story, self.sel.clone()), kind);
         self.stale = true;
         self.goal_x = None;
+        self.caret_near = None;
     }
 
     fn apply_edit(&mut self, e: Edit, kind: Option<&'static str>) {
@@ -316,6 +330,7 @@ impl WordView {
     }
 
     pub fn undo(&mut self) -> bool {
+        self.caret_near = None;
         let Some(e) = self.history.undo() else { return false };
         for step in e.steps.iter().rev() {
             self.undo_step(step);
@@ -329,6 +344,7 @@ impl WordView {
     }
 
     pub fn redo(&mut self) -> bool {
+        self.caret_near = None;
         let Some(e) = self.history.redo() else { return false };
         for step in &e.steps {
             self.redo_step(step);
@@ -411,13 +427,29 @@ impl WordView {
                 pos::para(self.blocks(self.story), &from.path).map(|p| text::props_at(p, from.offset + 1)).unwrap_or_default()
             })
         });
+        // Right-to-left text typed into an empty paragraph with no direction of its own makes it
+        // a right-to-left paragraph.
+        let turn_rtl = sel.is_collapsed()
+            && !s.contains('\n')
+            && para::first_strong_rtl(s) == Some(true)
+            && pos::para(self.blocks(self.story), &sel.focus.path)
+                .is_some_and(|p| text::len(p) == 0 && !self.is_rtl(&p.props) && p.props.rtl.is_none());
+        if turn_rtl {
+            self.history.seal();
+            self.begin_group();
+            self.para_change(&|p| p.props.rtl = Some(true));
+        }
         let root = self.blocks_mut(self.story);
         let e = edit::insert_text(root, &sel, s, props.as_ref());
-        let typing = s.chars().count() == 1 && sel.is_collapsed() && !s.contains('\n');
+        let typing = s.chars().count() == 1 && sel.is_collapsed() && !s.contains('\n') && !turn_rtl;
         if s == " " {
             self.history.seal();
         }
         self.apply_edit(e, if typing { Some("typing") } else { None });
+        if turn_rtl {
+            self.end_group();
+            self.history.seal();
+        }
         if s == " " && sel.is_collapsed() {
             self.list_autoformat();
         }
@@ -679,23 +711,26 @@ impl WordView {
         // Turning something off that a style turns on needs an explicit "off".
         let styled = self.styled_props();
         self.format(&move |r: &mut RunProps| match t {
+            // Word sets complex-script bold and italic with the others.
             Toggle::Bold => {
                 r.bold = if on {
                     Some(true)
-                } else if styled.bold == Some(true) {
+                } else if styled.bold.or(styled.bold_complex) == Some(true) {
                     Some(false)
                 } else {
                     None
-                }
+                };
+                r.bold_complex = r.bold;
             }
             Toggle::Italic => {
                 r.italic = if on {
                     Some(true)
-                } else if styled.italic == Some(true) {
+                } else if styled.italic.or(styled.italic_complex) == Some(true) {
                     Some(false)
                 } else {
                     None
-                }
+                };
+                r.italic_complex = r.italic;
             }
             Toggle::Underline => {
                 r.underline = if on {
@@ -724,13 +759,20 @@ impl WordView {
 
     pub fn set_font(&mut self, family: &str) {
         let f = family.to_string();
-        self.format(&move |r| r.font = Some(f.clone()));
+        // The font for complex-script text too (Hebrew, Arabic…), which Word keeps apart.
+        self.format(&move |r| {
+            r.font = Some(f.clone());
+            r.font_complex = Some(f.clone());
+        });
     }
 
     /// Size in half-points (Word's unit: 22 is 11 pt).
     pub fn set_size(&mut self, half_points: u32) {
         let hp = half_points.clamp(2, 3276);
-        self.format(&move |r| r.size = Some(FontSize::from_half_points(hp)));
+        self.format(&move |r| {
+            r.size = Some(FontSize::from_half_points(hp));
+            r.size_complex = Some(FontSize::from_half_points(hp));
+        });
     }
 
     /// `RRGGBB`, or `auto` for the automatic color.
@@ -759,14 +801,48 @@ impl WordView {
         self.record(s, None, None);
     }
 
+    /// Aligns the selected paragraphs: `left`, `center`, `right` or `justify`, as on the page.
+    /// Word's left and right are the start and end, so a right-to-left paragraph aligned right
+    /// is aligned to its start ("left").
     pub fn align(&mut self, a: &str) {
+        use office_core::model::Align;
         let align = match a {
-            "center" => office_core::model::Align::Center,
-            "right" => office_core::model::Align::Right,
-            "justify" => office_core::model::Align::Justify,
-            _ => office_core::model::Align::Left,
+            "center" => Align::Center,
+            "right" => Align::Right,
+            "justify" => Align::Justify,
+            _ => Align::Left,
         };
-        self.para_change(&move |p| p.props.align = Some(align));
+        let rtl = self.rtl_resolver();
+        self.para_change(&move |p| {
+            p.props.align = Some(match (align, rtl(&p.props)) {
+                (Align::Left, true) => Align::Right,
+                (Align::Right, true) => Align::Left,
+                (a, _) => a,
+            })
+        });
+    }
+
+    /// Makes the selected paragraphs right to left (Word's `w:bidi`), or left to right.
+    pub fn set_direction(&mut self, rtl: bool) {
+        let resolve = self.rtl_resolver();
+        self.para_change(&move |p| {
+            let styled = resolve(&office_core::model::ParaProps { rtl: None, ..p.props.clone() });
+            p.props.rtl = if styled == rtl { None } else { Some(rtl) };
+        });
+    }
+
+    /// Whether a paragraph with these properties is right to left, its style included.
+    pub(crate) fn is_rtl(&self, props: &office_core::model::ParaProps) -> bool {
+        props.rtl.unwrap_or_else(|| word(&self.doc).is_some_and(|w| w.styles.resolve_para(props).rtl == Some(true)))
+    }
+
+    /// [`WordView::is_rtl`] to keep, for changing paragraphs.
+    pub(crate) fn rtl_resolver(&self) -> impl Fn(&office_core::model::ParaProps) -> bool + 'static {
+        let styles = word(&self.doc).map(|w| w.styles.clone());
+        move |props| match props.rtl {
+            Some(rtl) => rtl,
+            None => styles.as_ref().is_some_and(|s| s.resolve_para(props).rtl == Some(true)),
+        }
     }
 
     pub fn set_style(&mut self, id: &str) {

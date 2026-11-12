@@ -105,6 +105,9 @@ pub struct WordView {
     pub(crate) pending: Option<office_core::model::RunProps>,
     /// Where up and down arrows aim, kept across a run of them.
     pub(crate) goal_x: Option<f64>,
+    /// Where the caret was clicked (page, x), for drawing it on that side of a change of text
+    /// direction, where one offset shows in two places.
+    pub(crate) caret_near: Option<(usize, f64)>,
     pub(crate) saved: u64,
     pub(crate) stale: bool,
     /// Styles the host has been sent.
@@ -253,6 +256,7 @@ impl WordView {
             history: History::new(),
             pending: None,
             goal_x: None,
+            caret_near: None,
             saved: 0,
             stale: true,
             styles_sent: 0,
@@ -603,6 +607,13 @@ impl WordView {
                 if let Some((pb, dx, dy)) = sections[si].flow.find(&sel.focus.path) {
                     let before = sel.focus.offset > 0 && from != to && sel.focus == to;
                     let (x, y, h) = display::caret_rect(&mut ctx, pb, dx, dy, sel.focus.offset, before);
+                    let (page, px, _) = to_page(pages, si, x, y);
+                    let near = self.caret_near.filter(|n| n.0 == page && from == to).map(|n| n.1 - (px - x));
+                    let (x, y, h) = if near.is_some() {
+                        display::caret_rect_near(&mut ctx, pb, dx, dy, sel.focus.offset, before, near)
+                    } else {
+                        (x, y, h)
+                    };
                     let (page, px, py) = to_page(pages, si, x, y);
                     out.caret = Some((page, px, py, h));
                 }

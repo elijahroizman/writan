@@ -307,7 +307,7 @@ pub fn look(paint: &Paint, t: &Table, style: &TableStyle, width: f64) -> TableLo
         })
         .collect();
     let heights = t.rows.iter().map(|row| row.height.map(|h| (emu_px(h), false))).collect();
-    TableLook { columns, indent: 0.0, cells, heights }
+    TableLook { columns, indent: 0.0, cells, heights, rtl: false }
 }
 
 #[cfg(test)]
