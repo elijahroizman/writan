@@ -92,4 +92,4 @@ node scripts/tour-shots.mjs http://localhost:1420/ palette  # just some
 
 On Linux with `makensis` installed, run `python3 scripts/check-windows-hooks.py`. This compiles the installer and uninstaller hooks against NSIS's real Restart Manager, LogicLib and FileFunc includes. The harness substitutes Tauri's `CheckIfAppIsRunning` macro, which otherwise needs its Windows plugin DLL. It checks the hook code, not a complete installer or a running Windows upgrade.
 
-Release outputs are `Writan.app`, `Writan_<version>_aarch64.dmg`, `Writan_<version>_x64-setup.exe`, `Writan_<version>_amd64.deb` and `Writan-<version>-1.x86_64.rpm`. The Linux package name is `writan`. See [the rename upgrade paths](releasing.md#rename-to-writan-0100).
+Release outputs are `Writan.app`, `Writan_<version>_aarch64.dmg`, `Writan_<version>_x64-setup.exe`, `Writan_<version>_amd64.deb`, `Writan-<version>-1.x86_64.rpm`, `writan-<version>-1-x86_64.pkg.tar.zst` and `writan-<version>-1-aarch64.pkg.tar.zst`. The Linux package name is `writan`. See [the rename upgrade paths](releasing.md#rename-to-writan-0100).

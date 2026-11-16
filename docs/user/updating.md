@@ -44,7 +44,7 @@ To stop updates, set `enabled=0` in `writan.repo`. If an older package wrote `wo
 
 ## Arch Linux
 
-The release page has a `writan-<version>-1-x86_64.pkg.tar.zst`. Install it, or a newer one over it, with:
+The release page has a `writan-<version>-1-x86_64.pkg.tar.zst` for Arch Linux and Omarchy on Intel and AMD machines, and a `writan-<version>-1-aarch64.pkg.tar.zst` for ARM ones (Arch Linux ARM, Asahi Linux, Omarchy on Apple silicon). `uname -m` prints which you have. Install it, or a newer one over it, with:
 
 ```
 sudo pacman -U writan-<version>-1-x86_64.pkg.tar.zst

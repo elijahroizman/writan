@@ -70,7 +70,8 @@ fn search_dirs() -> Vec<PathBuf> {
     }
     #[cfg(not(any(target_os = "macos", windows)))]
     {
-        dirs.extend(texlive_bins(Path::new("/usr/local/texlive"), "x86_64-linux"));
+        let platform = if cfg!(target_arch = "aarch64") { "aarch64-linux" } else { "x86_64-linux" };
+        dirs.extend(texlive_bins(Path::new("/usr/local/texlive"), platform));
     }
     if let Some(path) = std::env::var_os("PATH") {
         dirs.extend(std::env::split_paths(&path));

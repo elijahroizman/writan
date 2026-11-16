@@ -1,14 +1,16 @@
 name: Release
 
 # Builds the Windows (x64) installer, the macOS (Apple silicon) disk image, a Debian/Ubuntu
-# (x64) .deb package, a Fedora (x64) .rpm and an Arch Linux (x64) .pkg.tar.zst, and attaches them to a GitHub Release. Push a tag like v0.4.0 to publish one. Running it
+# (x64) .deb package, a Fedora (x64) .rpm and Arch Linux .pkg.tar.zst packages (x86_64, and aarch64 for Arch Linux ARM
+# and Omarchy on ARM), and attaches them to a GitHub Release. Push a tag like v0.4.0 to publish one. Running it
 # from the Actions tab only builds (and signs and notarizes), unless "publish" is ticked.
 # It also signs the update bundles and publishes latest.json, which installed copies check
 # for updates (see plugins.updater in src-tauri/tauri.conf.json). The update bundles are only
 # made here, via tauri.release.conf.json, because signing them needs the private key. The .deb
 # and .rpm have no update bundle (Tauri's updater can't replace a package-managed install), so the Linux
 # job leaves latest.json alone and publishes an APT and a dnf repository instead (see their steps below).
-# The Arch package is the .deb's files repacked (scripts/arch-package.sh); there's no pacman repository.
+# The Arch packages are the .deb's files repacked (scripts/arch-package.sh); there's no pacman repository.
+# The aarch64 one comes from its own job on an ARM runner, which builds a .deb only to repack it.
 # The release notes are the version's section of CHANGELOG.md.
 #
 # The Mac app is signed with the Developer ID certificate in APPLE_CERTIFICATE and notarized
@@ -45,6 +47,14 @@ jobs:
             # The .rpm is built from the same binary and is for Fedora, and so is the Arch package.
             os: ubuntu-22.04
             args: --bundles deb,rpm
+            arch_package: true
+          - name: Linux ARM64 (Arch)
+            # Only the Arch package (aarch64) is released from this job. Its .deb isn't uploaded:
+            # the APT and dnf repositories are x64 only.
+            os: ubuntu-22.04-arm
+            args: --bundles deb
+            arch_package: true
+            build_only: true
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     env:
@@ -54,7 +64,7 @@ jobs:
         with:
           fetch-depth: 0
       - name: Linux build dependencies
-        if: matrix.os == 'ubuntu-22.04'
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf createrepo-c
@@ -133,22 +143,27 @@ jobs:
           APPLE_API_KEY: ${{ matrix.os == 'macos-latest' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ matrix.os == 'macos-latest' && secrets.APPLE_API_ISSUER || '' }}
         with:
-          tagName: ${{ env.PUBLISH == 'true' && 'v__VERSION__' || '' }}
-          releaseName: ${{ env.PUBLISH == 'true' && 'Writan v__VERSION__' || '' }}
+          # A build_only job doesn't upload what Tauri bundles; it publishes its own asset later.
+          tagName: ${{ env.PUBLISH == 'true' && !matrix.build_only && 'v__VERSION__' || '' }}
+          releaseName: ${{ env.PUBLISH == 'true' && !matrix.build_only && 'Writan v__VERSION__' || '' }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           # A .deb or .rpm has no update bundle, so only the Mac and Windows jobs write latest.json.
-          uploadUpdaterJson: ${{ matrix.os != 'ubuntu-22.04' }}
+          uploadUpdaterJson: ${{ runner.os != 'Linux' }}
           args: ${{ matrix.args }}
       - name: Build and publish the Arch Linux package
         # The .deb's files repacked as a pacman package (scripts/arch-package.sh), built on every run so
         # a broken repack shows up before a release, and uploaded to the release when publishing. It
         # runs before the APT step, which rewrites the .deb for apt's sake. Arch has no repository
         # for it: people install the asset with `pacman -U`.
-        if: matrix.os == 'ubuntu-22.04'
+        #
+        # The ARM job (build_only) didn't create the release, so it waits for another job's
+        # tauri-action to make it before uploading.
+        if: matrix.arch_package
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BUILD_ONLY: ${{ matrix.build_only && 'true' || 'false' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -161,6 +176,12 @@ jobs:
           tar --zstd -tvf "$pkg"
           if [ "$PUBLISH" = "true" ]; then
             tag="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+            if [ "$BUILD_ONLY" = "true" ]; then
+              for _ in $(seq 1 90); do
+                gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 && break
+                sleep 60
+              done
+            fi
             gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pkg" --clobber
           fi
       - name: Publish the APT repository
