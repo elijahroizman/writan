@@ -42,6 +42,16 @@ The repository's index is signed, and dnf refuses an index whose signature doesn
 
 To stop updates, set `enabled=0` in `writan.repo`. If an older package wrote `workspace.repo`, upgrading moves it to `writan.repo` and keeps `enabled=0` if you set it. Removing Writan deletes the file.
 
+## Arch Linux
+
+The release page has a `writan-<version>-1-x86_64.pkg.tar.zst`. Install it, or a newer one over it, with:
+
+```
+sudo pacman -U writan-<version>-1-x86_64.pkg.tar.zst
+```
+
+There's no pacman repository, so nothing updates itself: pacman won't offer new versions, and the **Update** button shows the release notes without installing. Download the newer package when the button says there is one. The package depends on `gtk3`, `webkit2gtk-4.1`, `libayatana-appindicator`, `openssl` and `xdotool`, which pacman installs from the official repositories. For spell checking in Word and PowerPoint documents, install a Hunspell dictionary such as `hunspell-en_us`.
+
 ## Builds you make yourself
 
 A copy you build from source isn't signed and doesn't update itself. Pull the new code and build again.

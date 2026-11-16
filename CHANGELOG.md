@@ -2,6 +2,11 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.10.8 — 2026-11-16
+
+### Linux
+- Writan has an Arch Linux package, `writan-0.10.8-1-x86_64.pkg.tar.zst`, on the release page. Install it with `sudo pacman -U`. Arch has no Writan repository yet, so new versions are installed by hand the same way; the Check for updates button shows the release notes.
+
 ## 0.10.7 — 2026-11-12
 
 ### Spelling

@@ -7,9 +7,13 @@
 3. If a downloaded plugin's version in `plugins/<id>/plugin.json` changed, check that its `plugin-<id>-<version>` pre-release exists. The Plugins workflow makes it when the change reaches `main`; if it didn't run, push the tag.
 4. Push a tag like `v0.7.2`.
 
-The **Release** workflow (`.github/workflows/release.yml`) builds the Mac `.dmg`, the Windows `.exe`, the Debian/Ubuntu `.deb` and the Fedora `.rpm`, attaches them to the release, and publishes `latest.json`, the feed installed Mac and Windows copies check. The Linux job also refreshes the APT and dnf repositories. Running the workflow from the Actions tab only builds, unless "publish" is ticked.
+The **Release** workflow (`.github/workflows/release.yml`) builds the Mac `.dmg`, the Windows `.exe`, the Debian/Ubuntu `.deb`, the Fedora `.rpm` and the Arch Linux `.pkg.tar.zst`, attaches them to the release, and publishes `latest.json`, the feed installed Mac and Windows copies check. The Linux job also refreshes the APT and dnf repositories. Running the workflow from the Actions tab only builds, unless "publish" is ticked.
 
 The **Plugins** workflow (`.github/workflows/plugins.yml`) publishes downloaded plugins. When a `plugin.json` changes on `main`, it builds, zips and signs every plugin version that has no pre-release yet, and attaches it to a new `plugin-<id>-<version>` pre-release. A `plugin-*` tag publishes that one version.
+
+## The Arch package
+
+Tauri has no pacman bundle. `scripts/arch-package.sh` takes the built `.deb`, drops the APT keyring and the `/usr/bin/workspace` wrapper, and writes `.PKGINFO` (dependencies: `gtk3`, `webkit2gtk-4.1`, `libayatana-appindicator`, `openssl`, `xdotool`) and an `.INSTALL` that refreshes the icon and desktop caches. The Linux job runs it on every build, so a broken repack fails before a release, and uploads `writan-<version>-1-x86_64.pkg.tar.zst` to the release when publishing. The package is unsigned and has no `.MTREE`, and there's no pacman repository, so Arch copies don't update themselves (`linux_package` in `src-tauri/src/update.rs` sees neither dpkg nor rpm and reports no package manager). The binary is built on Ubuntu 22.04; Arch's newer glibc and webkit2gtk run it. It hasn't been installed on a real Arch system by this repository's tests.
 
 ## Signing keys
 

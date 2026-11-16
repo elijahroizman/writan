@@ -1,13 +1,14 @@
 name: Release
 
 # Builds the Windows (x64) installer, the macOS (Apple silicon) disk image, a Debian/Ubuntu
-# (x64) .deb package and a Fedora (x64) .rpm, and attaches them to a GitHub Release. Push a tag like v0.4.0 to publish one. Running it
+# (x64) .deb package, a Fedora (x64) .rpm and an Arch Linux (x64) .pkg.tar.zst, and attaches them to a GitHub Release. Push a tag like v0.4.0 to publish one. Running it
 # from the Actions tab only builds (and signs and notarizes), unless "publish" is ticked.
 # It also signs the update bundles and publishes latest.json, which installed copies check
 # for updates (see plugins.updater in src-tauri/tauri.conf.json). The update bundles are only
 # made here, via tauri.release.conf.json, because signing them needs the private key. The .deb
 # and .rpm have no update bundle (Tauri's updater can't replace a package-managed install), so the Linux
 # job leaves latest.json alone and publishes an APT and a dnf repository instead (see their steps below).
+# The Arch package is the .deb's files repacked (scripts/arch-package.sh); there's no pacman repository.
 # The release notes are the version's section of CHANGELOG.md.
 #
 # The Mac app is signed with the Developer ID certificate in APPLE_CERTIFICATE and notarized
@@ -39,9 +40,9 @@ jobs:
           - name: macOS Apple silicon
             os: macos-latest
             args: --target aarch64-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
-          - name: Linux x64 (Debian, Ubuntu, Fedora)
+          - name: Linux x64 (Debian, Ubuntu, Fedora, Arch)
             # The oldest runner with webkit2gtk-4.1, so the .deb installs on Ubuntu 22.04+ and Debian 12+.
-            # The .rpm is built from the same binary and is for Fedora.
+            # The .rpm is built from the same binary and is for Fedora, and so is the Arch package.
             os: ubuntu-22.04
             args: --bundles deb,rpm
     name: ${{ matrix.name }}
@@ -140,6 +141,28 @@ jobs:
           # A .deb or .rpm has no update bundle, so only the Mac and Windows jobs write latest.json.
           uploadUpdaterJson: ${{ matrix.os != 'ubuntu-22.04' }}
           args: ${{ matrix.args }}
+      - name: Build and publish the Arch Linux package
+        # The .deb's files repacked as a pacman package (scripts/arch-package.sh), built on every run so
+        # a broken repack shows up before a release, and uploaded to the release when publishing. It
+        # runs before the APT step, which rewrites the .deb for apt's sake. Arch has no repository
+        # for it: people install the asset with `pacman -U`.
+        if: matrix.os == 'ubuntu-22.04'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=(src-tauri/target/release/bundle/deb/*.deb)
+          if [ "${#debs[@]}" -ne 1 ]; then
+            echo "expected one .deb, found ${#debs[@]}"
+            exit 1
+          fi
+          pkg="$(scripts/arch-package.sh "${debs[0]}" "$RUNNER_TEMP/arch")"
+          tar --zstd -tvf "$pkg"
+          if [ "$PUBLISH" = "true" ]; then
+            tag="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
+            gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pkg" --clobber
+          fi
       - name: Publish the APT repository
         # A flat APT repository in the assets of the release tagged "apt" (a pre-release, so the
         # updater and the app's "latest release" never pick it). The .deb's postinst points
