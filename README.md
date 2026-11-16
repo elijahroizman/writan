@@ -20,10 +20,11 @@ Download the latest build from [Releases](https://github.com/elijahroizman/writa
 | **Windows** | Run `Writan_…_x64-setup.exe`. If Windows says it protected your PC, click **More info → Run anyway** (the app isn't code-signed for Windows yet). |
 | **Debian, Ubuntu** | `sudo apt install ./Writan_…_amd64.deb` (Ubuntu 22.04 or Debian 12 and newer). |
 | **Fedora** | `sudo dnf install ./Writan-…x86_64.rpm` |
+| **Arch Linux** | `sudo pacman -U ./writan-…-x86_64.pkg.tar.zst` |
 
 The package name and the terminal command are `writan`. A machine that already has the `workspace` package picks up `writan` on its next system update. The command `workspace` remains and runs `writan`.
 
-Writan keeps itself up to date. On Mac and Windows, new versions download in the background and install when you quit. On Linux, the .deb adds Writan's APT repository and the .rpm its dnf repository, so updates come with your system's other updates. See [Updating](docs/user/updating.md).
+Writan keeps itself up to date. On Mac and Windows, new versions download in the background and install when you quit. On Linux, the .deb adds Writan's APT repository and the .rpm its dnf repository, so updates come with your system's other updates. Arch has no repository yet: download each new `.pkg.tar.zst` and install it the same way. See [Updating](docs/user/updating.md).
 
 ## Some notes
 
