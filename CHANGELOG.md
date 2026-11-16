@@ -2,6 +2,12 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.10.9 — 2026-11-16
+
+### Linux
+- Writan has an Arch Linux package for ARM: `writan-…-aarch64.pkg.tar.zst`, for Arch Linux ARM, Asahi Linux and Omarchy on ARM machines such as Apple silicon Macs. Install it with `sudo pacman -U`, as with the x86_64 package.
+- On ARM Linux, LaTeX finds a TeX Live installed under `/usr/local/texlive` (its `aarch64-linux` folder).
+
 ## 0.10.8 — 2026-11-16
 
 ### Linux

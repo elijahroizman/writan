@@ -20,7 +20,7 @@ Download the latest build from [Releases](https://github.com/elijahroizman/writa
 | **Windows** | Run `Writan_…_x64-setup.exe`. If Windows says it protected your PC, click **More info → Run anyway** (the app isn't code-signed for Windows yet). |
 | **Debian, Ubuntu** | `sudo apt install ./Writan_…_amd64.deb` (Ubuntu 22.04 or Debian 12 and newer). |
 | **Fedora** | `sudo dnf install ./Writan-…x86_64.rpm` |
-| **Arch Linux** | `sudo pacman -U ./writan-…-x86_64.pkg.tar.zst` |
+| **Arch Linux, Omarchy** | `sudo pacman -U ./writan-…-x86_64.pkg.tar.zst`, or `writan-…-aarch64.pkg.tar.zst` on ARM (Arch Linux ARM, Asahi) |
 
 The package name and the terminal command are `writan`. A machine that already has the `workspace` package picks up `writan` on its next system update. The command `workspace` remains and runs `writan`.
 
