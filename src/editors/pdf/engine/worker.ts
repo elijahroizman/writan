@@ -5,7 +5,7 @@
 
 import { PdfiumNative } from '@embedpdf/engines/pdfium'
 import type { PdfAnnotationObject, PdfDocumentObject, PdfPageObject, PdfBookmarkObject, PdfLinkTarget, PdfWidgetAnnoObject, Rect } from '@embedpdf/models'
-import { PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfActionType, PdfAnnotationSubtype, PdfZoomMode } from '@embedpdf/models'
+import { PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfActionType, PdfAnnotationSubtype, PdfPageFlattenFlag, PdfPageFlattenResult, PdfZoomMode } from '@embedpdf/models'
 import { init } from '@embedpdf/pdfium'
 import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, Method, OpenResult, OutlineItem, PageInfo, Request, Response, TextRun } from './protocol'
 
@@ -363,9 +363,14 @@ function clean(annot: PdfAnnotationObject, index: number): PdfAnnotationObject {
   return a
 }
 
+/** New marks print. Without the flag, printing and the flattened copy leave them out. */
+function printable(annot: PdfAnnotationObject): PdfAnnotationObject {
+  return annot.flags ? annot : { ...annot, flags: ['print'] }
+}
+
 async function createAnnotation(key: number, annot: PdfAnnotationObject, image: ArrayBuffer | null) {
   const p = page(key)
-  return task(engine.createPageAnnotation(doc!, p, clean(annot, p.index), (image ? { data: image } : undefined) as never))
+  return task(engine.createPageAnnotation(doc!, p, printable(clean(annot, p.index)), (image ? { data: image } : undefined) as never))
 }
 
 async function updateAnnotation(key: number, annot: PdfAnnotationObject) {
@@ -394,7 +399,7 @@ async function restoreAnnotation(token: number) {
   if (!saved) throw new Error('Nothing to restore')
   removedAnnots.delete(token)
   const p = page(saved.page)
-  return task(engine.createPageAnnotation(doc!, p, clean(saved.annot, p.index), (saved.appearance ? { appearance: saved.appearance } : undefined) as never))
+  return task(engine.createPageAnnotation(doc!, p, printable(clean(saved.annot, p.index)), (saved.appearance ? { appearance: saved.appearance } : undefined) as never))
 }
 
 async function setField(key: number, annot: PdfAnnotationObject, value: { text: string } | { checked: boolean } | { option: number }) {
@@ -556,8 +561,8 @@ async function flatten(): Promise<ArrayBuffer> {
     for (let i = 0; i < copy.pageCount; i++) {
       const pc = c.acquirePage(i)
       try {
-        // FLAT_PRINT. Returns 0 when a page had nothing to flatten, which is fine.
-        if (mod.FPDFPage_Flatten(pc.pagePtr, 1) === 2) throw new Error(`Couldn’t flatten page ${i + 1}`)
+        // A page with nothing to flatten reports NothingToDo, which is fine.
+        if (mod.FPDFPage_Flatten(pc.pagePtr, PdfPageFlattenFlag.Print) === PdfPageFlattenResult.Fail) throw new Error(`Couldn’t flatten page ${i + 1}`)
       } finally {
         pc.release()
       }

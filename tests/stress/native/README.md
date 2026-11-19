@@ -37,6 +37,13 @@ node tests/stress/native/pdf-unchanged.mjs http://localhost:4173/ webkit
 pdfsig /tmp/writan-pdf-chromium-unchanged.pdf
 ```
 
+- `pdf-flatten.mjs`: Save flattened copy on a two-page PDF succeeds when a page has nothing to flatten, bakes highlights into the copy's pages, and a cancelled export writes nothing:
+
+```sh
+node tests/stress/native/pdf-flatten.mjs http://localhost:4173/ chromium
+node tests/stress/native/pdf-flatten.mjs http://localhost:4173/ webkit
+```
+
 The scripts use the repository's documented Playwright workflow on bbb. Browser plugin not available. The PDF script writes its saved revisions and screenshot under `/tmp` on the test host.
 
 `files::tests::partial_write_failure_keeps_original_and_removes_temp` injects a full-disk error after a partial write. It runs without mounting a filesystem. To test real ENOSPC, provide an isolated tiny filesystem in `WRITAN_FULL_DIR` and run the ignored `full_disk_keeps_the_original_and_no_scraps` test. The `unshare` recipe in its source requires a host that permits user namespace mappings and mounts.
