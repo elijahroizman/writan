@@ -11,7 +11,7 @@ Every release's notes. The release workflow copies a version's section into its 
 - The apt, dnf and pacman repositories carry both architectures at once, so ARM Linux machines get updates the same way x64 ones do.
 
 ### Reliability
-- After a crash or a reload, Writan offers to recover your unsaved edits and untitled tabs.
+- After a crash or a reload, Writan reopens your unsaved edits and untitled tabs automatically.
 
 ### Word
 - Footnotes show at the bottom of the page their reference is on, and endnotes show after the document's last line.
