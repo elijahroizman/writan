@@ -149,6 +149,8 @@
 
 .present-video {
   position: absolute;
+  /* Above the slide's swap layers, which stack with z-index 1 and 2. */
+  z-index: 3;
   background: #000;
   box-shadow: 0 10px 40px rgba(0, 0, 0, 0.6);
 }

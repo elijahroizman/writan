@@ -140,6 +140,14 @@
   animation: wp-blink 1.05s steps(1) infinite;
 }
 
+.sc-frame-overlay {
+  position: absolute;
+}
+
+.sc-frame-overlay > * {
+  inset: 0;
+}
+
 .sc-input {
   position: absolute;
   left: 0;

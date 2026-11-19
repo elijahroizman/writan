@@ -60,6 +60,7 @@ import { SlideSwap } from './SlideSwap'
 import type { TableLook } from './table'
 import { TABLE_LOOKS, isTable, themeLook } from './table'
 import { DIRECTIONS, TRANSITIONS, changeTransition } from './transitions'
+import { parseVideoLink } from './video'
 import type { Deck, Element, Transition } from './types'
 import type { ShapeLook, TextLook } from '../../engine/slides/engine'
 import { hasText } from './types'
@@ -94,6 +95,7 @@ export function Inspector({
   onArrange,
   canArrange,
   onCrop,
+  onPlayVideo,
 }: {
   deck: Deck
   onInsertImage: () => void
@@ -106,6 +108,8 @@ export function Inspector({
   canArrange: (how: Restack) => boolean
   /** Crop the selected picture; null when it can't be cropped. */
   onCrop: (() => void) | null
+  /** Play a frame's video link on the slide. */
+  onPlayVideo: (id: string) => void
 }) {
   const { engine, slides, activeIndex, selectedSlides } = deck
   const [shapeMenu, setShapeMenu] = useState<{ x: number; y: number } | null>(null)
@@ -159,6 +163,7 @@ export function Inspector({
           <UrlField
             placeholder="Paste a YouTube or Vimeo link"
             submitLabel="Add"
+            autoFocus
             onSubmit={async (url) => {
               if (await onInsertVideo(url)) setVideoOpen(false)
             }}
@@ -175,7 +180,7 @@ export function Inspector({
           {hasText(el) && <TextSection deck={deck} el={el} />}
           {(el.type === 'shape' || el.type === 'text' || el.type === 'connector') && <FillSection deck={deck} el={el} />}
           <ArrangeSection deck={deck} el={el} update={update} onArrange={onArrange} canArrange={canArrange} onCrop={onCrop} />
-          <LinkSection deck={deck} el={el} />
+          <LinkSection deck={deck} el={el} onPlayVideo={onPlayVideo} />
         </>
       ) : selectedSlides.length > 1 ? (
         <>
@@ -257,7 +262,7 @@ export function Inspector({
   )
 }
 
-function UrlField({ placeholder, submitLabel, initial = '', onSubmit, onClear }: { placeholder: string; submitLabel: string; initial?: string; onSubmit: (url: string) => void; onClear?: () => void }) {
+function UrlField({ placeholder, submitLabel, initial = '', autoFocus = false, onSubmit, onClear }: { placeholder: string; submitLabel: string; initial?: string; autoFocus?: boolean; onSubmit: (url: string) => void; onClear?: () => void }) {
   const [value, setValue] = useState(initial)
   const [busy, setBusy] = useState(false)
   useEffect(() => setValue(initial), [initial])
@@ -276,7 +281,7 @@ function UrlField({ placeholder, submitLabel, initial = '', onSubmit, onClear }:
         icon={<Link size={13} className="faint" />}
         value={value}
         placeholder={placeholder}
-        autoFocus={!initial}
+        autoFocus={autoFocus}
         onChange={(e) => setValue(e.currentTarget.value)}
         onKeyDown={(e) => {
           if (e.key === 'Enter') void submit()
@@ -524,10 +529,16 @@ function LayerButtons({ onArrange, canArrange }: { onArrange: (how: Restack) => 
   )
 }
 
-function LinkSection({ deck, el }: { deck: Deck; el: Element }) {
+function LinkSection({ deck, el, onPlayVideo }: { deck: Deck; el: Element; onPlayVideo: (id: string) => void }) {
   const url = el.link?.url
+  const video = url ? parseVideoLink(url) : null
   return (
     <Section title="Link" collapsible defaultOpen={!!url}>
+      {video && video.provider !== 'other' && (
+        <Button onClick={() => onPlayVideo(el.id)}>
+          <Play size={14} /> Play video
+        </Button>
+      )}
       <UrlField
         key={el.id}
         initial={url ?? ''}
@@ -539,7 +550,7 @@ function LinkSection({ deck, el }: { deck: Deck; el: Element }) {
         }}
         onClear={() => deck.engine.run({ cmd: 'link', id: Number(el.id), url: null })}
       />
-      <Hint tone="faint" as="p">Clicking this object during a slideshow opens the link. Video links play in the slide.</Hint>
+      <Hint tone="faint" as="p">Clicking this object during a slideshow opens the link. Video links play in the slide; double-click one to play it here.</Hint>
     </Section>
   )
 }

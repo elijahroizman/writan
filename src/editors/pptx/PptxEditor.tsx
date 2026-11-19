@@ -47,6 +47,7 @@ import { SlideStrip } from './SlideStrip'
 import { NEW_SLIDE_TEMPLATES, templateLabel } from './templates'
 import type { Deck } from './types'
 import { parseVideoLink, videoPoster } from './video'
+import { VideoFrame } from './VideoFrame'
 import './pptx.css'
 
 export default function PptxEditor({ tab, active }: EditorProps) {
@@ -153,6 +154,22 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
   const elements = engine.elements
   const selectedIds = st.frames
   const selectedElement = selectedIds.length === 1 ? (elements.find((e) => e.id === selectedIds[0]) ?? null) : null
+
+  // ── A video link playing over its poster while editing. It plays while its frame, with that link, is the one picked.
+  const [playing, setPlaying] = useState<{ slide: string; id: string; url: string; embed: string } | null>(null)
+  const playVideo = (id: string) => {
+    const url = engine.elements.find((x) => x.id === id)?.link?.url
+    const video = url ? parseVideoLink(url) : null
+    const slide = engine.slides[engine.state.active]?.id
+    if (!url || !video || video.provider === 'other' || !slide || engine.state.frames.join() !== id) return false
+    setPlaying({ slide, id, url, embed: video.embedUrl })
+    return true
+  }
+  const shownVideo =
+    playing && presenting === null && slides[activeIndex]?.id === playing.slide && selectedElement?.id === playing.id && selectedElement.link?.url === playing.url ? playing : null
+  useEffect(() => {
+    if (playing && !shownVideo) setPlaying(null)
+  }, [playing, shownVideo])
 
   // ── Cropping the selected picture, on the slide.
   const [crop, setCrop] = useState<{ el: Element; src: string; frame: Rect; image: Rect } | null>(null)
@@ -500,11 +517,15 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
           onArrange={arrange}
           canArrange={canArrange}
           onCrop={croppable(selectedElement, selectedIds.length) ? startCrop : null}
+          onPlayVideo={(id) => void playVideo(id)}
         />
       }
     >
       <div className={`deck-stage ${crop ? 'cropping' : ''} ${scale > 1.01 ? 'slide-enlarged' : ''}`} ref={stageRef}>
-        <SlideCanvas engine={engine} scale={scale} padding={40} active={active} onContextMenu={objectMenu} viewportRef={viewportRef} wrapperRef={wrapperRef} onPixelScale={(s) => (pixelScale.current = s)} />
+        <SlideCanvas engine={engine} scale={scale} padding={40} active={active} onContextMenu={objectMenu} viewportRef={viewportRef} wrapperRef={wrapperRef} onPixelScale={(s) => (pixelScale.current = s)}
+          onOpenFrame={playVideo}
+          frameOverlay={shownVideo && { id: shownVideo.id, node: <VideoFrame embed={shownVideo.embed} style={{}} onClose={() => setPlaying(null)} /> }}
+        />
       </div>
       {notesOpen && slides[activeIndex] && <NotesPane key={slides[activeIndex].id} slide={slides[activeIndex]} onChange={(text) => engine.run({ cmd: 'notes', index: activeIndex, text })} />}
       <FindBar

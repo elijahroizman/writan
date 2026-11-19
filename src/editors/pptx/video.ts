@@ -60,18 +60,39 @@ export async function videoPoster(link: VideoLink): Promise<string> {
       /* offline: keep the plain poster */
     }
   }
-  ctx.fillStyle = 'rgba(0,0,0,0.25)'
-  ctx.fillRect(0, 0, canvas.width, canvas.height)
-  ctx.beginPath()
-  ctx.arc(640, 360, 78, 0, Math.PI * 2)
-  ctx.fillStyle = link.provider === 'youtube' ? 'rgba(255,0,0,0.92)' : 'rgba(0,0,0,0.7)'
-  ctx.fill()
-  ctx.beginPath()
-  ctx.moveTo(612, 318)
-  ctx.lineTo(612, 402)
-  ctx.lineTo(684, 360)
-  ctx.closePath()
-  ctx.fillStyle = '#fff'
-  ctx.fill()
+  drawPlayButton(ctx, canvas.width / 2, canvas.height / 2)
   return canvas.toDataURL('image/jpeg', 0.86)
+}
+
+/** A quiet play button: a dark glass disc with a thin light ring and a rounded white triangle. */
+function drawPlayButton(ctx: CanvasRenderingContext2D, cx: number, cy: number) {
+  const r = 60
+  ctx.save()
+  ctx.shadowColor = 'rgba(0,0,0,0.35)'
+  ctx.shadowBlur = 24
+  ctx.shadowOffsetY = 4
+  ctx.beginPath()
+  ctx.arc(cx, cy, r, 0, Math.PI * 2)
+  ctx.fillStyle = 'rgba(20,20,20,0.55)'
+  ctx.fill()
+  ctx.restore()
+  ctx.beginPath()
+  ctx.arc(cx, cy, r - 1.5, 0, Math.PI * 2)
+  ctx.lineWidth = 3
+  ctx.strokeStyle = 'rgba(255,255,255,0.85)'
+  ctx.stroke()
+  // The triangle's centroid sits on the disc's centre, so it looks centred.
+  const h = 42
+  const w = h * 0.9
+  const x0 = cx - w / 3
+  ctx.beginPath()
+  ctx.moveTo(x0, cy - h / 2)
+  ctx.lineTo(x0 + w, cy)
+  ctx.lineTo(x0, cy + h / 2)
+  ctx.closePath()
+  ctx.lineJoin = 'round'
+  ctx.lineWidth = 6
+  ctx.fillStyle = ctx.strokeStyle = '#fff'
+  ctx.fill()
+  ctx.stroke()
 }

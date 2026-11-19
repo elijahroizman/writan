@@ -1,4 +1,3 @@
-import { X } from 'lucide-react'
 import { resolveTransitionDurationMs } from './transitions'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
@@ -7,6 +6,7 @@ import { SlideImage } from '../../engine/slides/SlideImage'
 import { SlideSwap } from './SlideSwap'
 import type { Element, SlideInfo, SlidesEngine } from '../../engine/slides/engine'
 import { parseVideoLink } from './video'
+import { VideoFrame } from './VideoFrame'
 import type { AnimationStep } from '../../engine/slides/engine'
 import { NO_STEPS, hiddenAfter, showSteps, stepBack, stepDuration } from './animations'
 
@@ -173,20 +173,7 @@ export function PresentMode({
           />
         </div>
       )}
-      {video && (
-        <div className="present-video" style={video.rect} onClick={(e) => e.stopPropagation()}>
-          <iframe
-            src={video.embed}
-            title="Video"
-            allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
-            allowFullScreen
-            referrerPolicy="strict-origin-when-cross-origin"
-          />
-          <button type="button" className="present-video-close" aria-label="Close video" onClick={() => setVideo(null)}>
-            <X size={16} />
-          </button>
-        </div>
-      )}
+      {video && <VideoFrame embed={video.embed} style={video.rect} onClose={() => setVideo(null)} />}
       <div className="present-hud">
         {pos + 1} / {order.length} · Esc to exit
       </div>
