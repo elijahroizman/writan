@@ -326,6 +326,8 @@ fn axes(
     let px = ctx.styles.get(style).full_px;
     let bar = chart.kind == ChartKind::Bar;
     let scatter = chart.kind == ChartKind::Scatter;
+    let zero_blanks = matches!(chart.kind, ChartKind::Line | ChartKind::Area | ChartKind::Scatter) && blanks == Some("zero");
+    let preview_value = |v: Option<f64>| v.filter(|v| v.is_finite()).or(zero_blanks.then_some(0.0));
     let n = chart.series.iter().map(|s| s.cache.values.len()).max()?;
     let categories = &chart.series.iter().max_by_key(|s| s.cache.categories.len())?.cache.categories;
     let ticks: Vec<f64> = (0..=4).map(|i| low + (high - low) * f64::from(i) / 4.0).collect();
@@ -358,7 +360,7 @@ fn axes(
         }
     };
     let xs = chart.series.iter().flat_map(|s| {
-        s.cache.values.iter().enumerate().filter_map(|(i, y)| if scatter && y.is_some_and(f64::is_finite) { scatter_x(s, i) } else { None })
+        s.cache.values.iter().enumerate().filter_map(|(i, &y)| if scatter && preview_value(y).is_some() { scatter_x(s, i) } else { None })
     });
     let x_scale = xs.clone().map(f64::abs).fold(0.0, f64::max);
     let x_scale = if x_scale > 0.0 { x_scale } else { 1.0 };
@@ -373,14 +375,13 @@ fn axes(
     };
     let before = out.len();
     let columns = matches!(chart.kind, ChartKind::Column | ChartKind::Bar);
-    let connected = matches!(chart.kind, ChartKind::Line | ChartKind::Area);
     let bands = (if columns { 0.76 } else { 0.0 }) / n as f64 / chart.series.len() as f64;
     for (i, s) in chart.series.iter().enumerate() {
         let mut run = Vec::new();
         let c = colors.at(i, None);
         for (j, value) in s.cache.values.iter().enumerate() {
             let category = if scatter { scatter_position(s, j) } else { Some((j as f64 + 0.5) / n as f64) };
-            let value = value.filter(|v| v.is_finite()).or((connected && blanks == Some("zero")).then_some(0.0));
+            let value = preview_value(*value);
             let Some((cat, v)) = category.zip(value.map(|v| v / scale)) else {
                 if !run.is_empty() && blanks != Some("span") {
                     plot_run(chart.kind, &c, xy(0.0, 0.0).1, &run, out);

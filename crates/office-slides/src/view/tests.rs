@@ -281,6 +281,32 @@ fn imported_scatter_without_x_values_uses_point_numbers() {
 }
 
 #[test]
+fn imported_scatter_plots_blank_y_as_zero_when_requested() {
+    let group = r#"<c:scatterChart><c:ser>
+        <c:xVal><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>100</c:v></c:pt></c:numLit></c:xVal>
+        <c:yVal><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>4</c:v></c:pt></c:numLit></c:yVal>
+        </c:ser></c:scatterChart>"#;
+    for (mode, count) in [("gap", 1), ("zero", 2)] {
+        let props = format!(r#"<c:dispBlanksAs val="{mode}"/>"#);
+        let mut view = SlidesView::open(&chart_deck_with_properties(group, false, &props)).unwrap();
+        let p = view.paint(&mut FixedMeasurer::default(), 0);
+        let items = chart_items(&p);
+        let markers: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Path { x, y, fill: Some(_), .. } => Some((*x, *y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers.len(), count);
+        assert_eq!(texts(items).iter().any(|t| t == "100"), mode == "zero");
+        if mode == "zero" {
+            assert!(markers[1].0 > markers[0].0 && markers[1].1 > markers[0].1);
+        }
+    }
+}
+
+#[test]
 fn imported_line_uses_the_saved_blank_cell_mode() {
     let group = format!("<c:lineChart>{CHART_SERIES}</c:lineChart>");
     for (mode, segments) in [("gap", 0), ("span", 1), ("zero", 2)] {
