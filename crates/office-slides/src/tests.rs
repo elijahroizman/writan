@@ -281,6 +281,7 @@ fn animation_steps_follow_the_main_sequence() {
         subtype,
         delay_ms,
         duration_ms,
+        paragraph: None,
     };
     let steps = animation_steps(&slides_of(&doc)[0]);
     assert_eq!(
@@ -320,4 +321,53 @@ fn without_the_layer_nothing_is_lost() {
     let plain = office_core::read(&bytes, Some("x.pptx")).unwrap();
     let doc = compiler().read(&office_core::write(&plain, Kind::Slides).unwrap(), Some("x.pptx")).unwrap();
     assert_eq!(notes(&doc, 0).iter().map(|p| p.plain_text()).collect::<Vec<_>>(), ["Kept"]);
+}
+
+#[test]
+fn text_built_by_paragraph_is_drawn_a_paragraph_per_group() {
+    use office_engine::display::Item;
+    let sp = r#"<p:sp><p:nvSpPr><p:cNvPr id="9" name="List"/><p:cNvSpPr txBox="1"/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="5486400" cy="1828800"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></p:spPr><p:txBody><a:bodyPr/><a:lstStyle/><a:p><a:r><a:t>One</a:t></a:r></a:p><a:p><a:r><a:t>Two</a:t></a:r></a:p></p:txBody></p:sp>"#;
+    let target = |p: u32| format!(r#"<p:spTgt spid="9"><p:txEl><p:pRg st="{p}" end="{p}"/></p:txEl></p:spTgt>"#);
+    let click = |id: u32, p: u32| {
+        format!(
+            r#"<p:par><p:cTn id="{id}" fill="hold"><p:stCondLst><p:cond delay="indefinite"/></p:stCondLst><p:childTnLst><p:par><p:cTn id="{}" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:par><p:cTn id="{}" presetID="10" presetClass="entr" presetSubtype="0" fill="hold" nodeType="clickEffect"><p:stCondLst><p:cond delay="0"/></p:stCondLst><p:childTnLst><p:animEffect transition="in" filter="fade"><p:cBhvr><p:cTn id="{}" dur="500"/><p:tgtEl>{}</p:tgtEl></p:cBhvr></p:animEffect></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par></p:childTnLst></p:cTn></p:par>"#,
+            id + 1,
+            id + 2,
+            id + 3,
+            target(p)
+        )
+    };
+    let timing = format!(
+        r#"<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst><p:seq concurrent="1" nextAc="seek"><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst>{}{}</p:childTnLst></p:cTn></p:seq></p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>"#,
+        click(3, 0),
+        click(7, 1)
+    );
+    let bytes = edited(&deck(vec![slide(vec![placeholder(2, Some("title"), None, "Title")])]), |part, text| {
+        if part == "ppt/slides/slide1.xml" {
+            text.replacen("</p:spTree>", &format!("{sp}</p:spTree>"), 1).replacen("</p:sld>", &format!("{timing}</p:sld>"), 1)
+        } else {
+            text
+        }
+    });
+    let steps = animation_steps(&slides_of(&bytes)[0]);
+    assert_eq!(steps.iter().map(|s| (s.effects[0].frame, s.effects[0].paragraph)).collect::<Vec<_>>(), [(9, Some(0)), (9, Some(1))]);
+
+    fn find<'a>(items: &'a [Item], want: &str) -> Option<&'a [Item]> {
+        items.iter().find_map(|i| match i {
+            Item::Group { id: Some(id), items, .. } if id == want => Some(items.as_slice()),
+            Item::Group { items, .. } => find(items, want),
+            _ => None,
+        })
+    }
+    fn text(items: &[Item]) -> String {
+        items.iter().map(|i| if let Item::Text { text, .. } = i { text.clone() } else { String::new() }).collect()
+    }
+    let mut host = office_engine::measure::FixedMeasurer::default();
+    let mut view = crate::view::SlidesView::open(&office_core::write(&bytes, Kind::Slides).unwrap()).unwrap();
+    let items = view.paint(&mut host, 0).items;
+    let list = find(&items, "9").expect("the list frame is drawn");
+    assert_eq!(text(find(list, "p0").expect("paragraph 0 has a group")), "One");
+    assert_eq!(text(find(list, "p1").expect("paragraph 1 has a group")), "Two");
+    let title = find(&items, "2").expect("the title is drawn");
+    assert!(find(title, "p0").is_none(), "text that doesn't build by paragraph isn't split up");
 }
