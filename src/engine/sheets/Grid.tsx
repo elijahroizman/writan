@@ -539,6 +539,7 @@ export function Grid({
           )}
           {editing === null && engine.cell?.validation?.list && (
             <ValidationList
+              key={engine.cell.address}
               items={engine.cell.validation.list}
               style={{ left: curX + curW + 1, top: curY }}
               height={curH}
