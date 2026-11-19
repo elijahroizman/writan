@@ -31,7 +31,7 @@ Additional findings recovered after the 0.10.5 release are tracked in [FOLLOWUP-
 | --- | --- | --- |
 | CORPUS-004: block content controls, including a university thesis TOC, are invisible. | Fixed for the saved content of block controls. The preview is read-only and the original XML survives saving. | Pinned `ucsd-ThesisTemplate_Master_v2.3.docx`; [corpus report](BUGS-corpus.md). |
 | CORPUS-005: footnote bodies are absent although reference marks appear. | Open. | Pinned `lo-footnote.docx` and `au-budget-bp1_bs-4.docx`. |
-| CORPUS-006: existing PowerPoint charts show empty rectangles. | Open. | Pinned `lo-chart_pt_color_bg1.pptx`. |
+| CORPUS-006: existing PowerPoint charts show empty rectangles. | Fixed for the pinned doughnut and other supported 2D charts with cached data. | Pinned `lo-chart_pt_color_bg1.pptx`; slide display-list and save regressions. |
 | CORPUS-007: SmartArt is absent in Word and PowerPoint. | Open. | Pinned `lo-smartart.docx` and `lo-smartart-accent-process.pptx`. |
 | CORPUS-008: Office Math equations render blank. | Fixed for display: equations show as one line of linear text (accents as combining marks, Unicode scripts, written-out fractions and roots), not built-up math. The original XML survives saving. | Pinned `lo-math-accents.docx`; Rust `office_math_equations_are_drawn_and_survive_saving`, and `original_corpus_math_accents_are_drawn` with `CORPUS_FILES`. |
 | CORPUS-010: conditional-formatting colors are missing. | Open; original rules survive saves. | Pinned `lo-conditional_fmt_checkpriority.xlsx`. |

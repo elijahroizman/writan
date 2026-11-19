@@ -4,6 +4,7 @@
 //! slide operations, notes and transitions.
 
 mod art;
+mod chart;
 mod commands;
 mod draw;
 mod elements;

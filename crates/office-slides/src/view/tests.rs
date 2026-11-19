@@ -66,6 +66,310 @@ fn draws_slides() {
     assert_eq!(v.slide_infos().len(), 2);
 }
 
+const CHART_PART: &str = "ppt/charts/chart1.xml";
+const CHART_BOOK: &str = "ppt/embeddings/data.xlsx";
+
+fn chart_deck(groups: &str, external: bool) -> Vec<u8> {
+    chart_deck_with_properties(groups, external, "")
+}
+
+fn chart_deck_with_properties(groups: &str, external: bool, properties: &str) -> Vec<u8> {
+    use office_core::opc::Package;
+    use office_core::xml::ns;
+
+    let part = "ppt/slides/slide1.xml";
+    let mut pkg = Package::read(&deck(&[&["Editable title"]])).unwrap();
+    let rid = if external {
+        pkg.relate_external(part, "chart", "https://example.com/chart.xml").unwrap()
+    } else {
+        let xlsx = office_core::write(&Document::new(Kind::Sheets), Kind::Sheets).unwrap();
+        pkg.put(CHART_BOOK, xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        let data = pkg.relate(CHART_PART, "package", CHART_BOOK).unwrap();
+        let xml = format!(
+            r#"<c:chartSpace xmlns:c="{c}" xmlns:a="{a}" xmlns:r="{r}">
+              <c:clrMapOvr bg1="lt1"/><c:chart><c:autoTitleDeleted val="1"/><c:plotArea>{groups}</c:plotArea>{properties}</c:chart>
+              <c:externalData r:id="{data}"/>
+            </c:chartSpace>"#,
+            c = ns::C,
+            a = ns::A,
+            r = ns::R,
+        );
+        pkg.put(CHART_PART, xml.into_bytes(), office_core::formats::xlsx::chart::CHART_TYPE);
+        pkg.relate(part, "chart", CHART_PART).unwrap()
+    };
+    let frame = format!(
+        r#"<p:graphicFrame xmlns:c="{c}" xmlns:r="{r}">
+          <p:nvGraphicFramePr><p:cNvPr id="20" name="Imported chart"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>
+          <p:xfrm><a:off x="952500" y="1905000"/><a:ext cx="3810000" cy="2857500"/></p:xfrm>
+          <a:graphic><a:graphicData uri="{c}"><c:chart r:id="{rid}"/></a:graphicData></a:graphic>
+        </p:graphicFrame>"#,
+        c = ns::C,
+        r = ns::R,
+    );
+    let slide = String::from_utf8(pkg.part(part).unwrap().to_vec()).unwrap();
+    let slide = slide
+        .replace("</p:spTree>", &format!("{frame}</p:spTree>"))
+        .replace("</p:sld>", r#"<p:clrMapOvr><a:overrideClrMapping bg1="dk1"/></p:clrMapOvr></p:sld>"#);
+    pkg.replace(part, slide.into_bytes()).unwrap();
+    pkg.to_bytes().unwrap()
+}
+
+const CHART_SERIES: &str = r#"<c:ser>
+    <c:idx val="0"/><c:order val="0"/>
+    <c:spPr><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></c:spPr>
+    <c:dPt><c:idx val="2"/><c:spPr><a:solidFill><a:schemeClr val="bg1"><a:lumMod val="85000"/></a:schemeClr></a:solidFill></c:spPr></c:dPt>
+    <c:cat><c:strRef><c:f>Data!$A$2:$A$4</c:f><c:strCache><c:ptCount val="3"/>
+      <c:pt idx="0"><c:v>April</c:v></c:pt><c:pt idx="1"><c:v>May</c:v></c:pt><c:pt idx="2"><c:v>June</c:v></c:pt>
+    </c:strCache></c:strRef></c:cat>
+    <c:val><c:numRef><c:f>Data!$B$2:$B$4</c:f><c:numCache><c:ptCount val="3"/>
+      <c:pt idx="2"><c:v>5</c:v></c:pt><c:pt idx="0"><c:v>95</c:v></c:pt>
+    </c:numCache></c:numRef></c:val>
+  </c:ser>"#;
+
+fn chart_items(paint: &SlidePaint) -> &[Item] {
+    let frame = paint
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Group { id: Some(id), x, y, w, h, items, .. } if id == "20" => {
+                assert_eq!((*x, *y, *w, *h), (100.0, 200.0, 400.0, 300.0));
+                Some(items)
+            }
+            _ => None,
+        })
+        .unwrap();
+    match frame.as_slice() {
+        [Item::Group { clip: true, items, .. }] => items,
+        _ => frame,
+    }
+}
+
+#[test]
+fn imported_doughnut_paints_cached_slices_and_preserves_chart_parts() {
+    use office_core::opc::Package;
+
+    let groups = format!(r#"<c:doughnutChart><c:varyColors val="1"/>{CHART_SERIES}<c:holeSize val="60"/></c:doughnutChart>"#);
+    let bytes = chart_deck(&groups, false);
+    let original = Package::read(&bytes).unwrap();
+    let mut view = SlidesView::open(&bytes).unwrap();
+    let mut host = FixedMeasurer::default();
+    let p = view.paint(&mut host, 0);
+    let items = chart_items(&p);
+    assert_eq!(items.len(), 2, "missing values aren't plotted");
+    for (item, color) in items.iter().zip(["#4472c4", "#d9d9d9"]) {
+        let Item::Path { d, fill: Some(fill), dash: "solid", .. } = item else { panic!("{item:?}") };
+        assert_eq!(fill.to_ascii_lowercase(), color);
+        assert_eq!(d.matches('A').count(), 2, "both arcs of the doughnut slice: {d}");
+    }
+    view.set_link(2, Some("https://example.com/"));
+    let saved = view.save().unwrap();
+    let after = Package::read(&saved).unwrap();
+    for part in [CHART_PART, "ppt/charts/_rels/chart1.xml.rels", CHART_BOOK] {
+        assert_eq!(after.part(part).unwrap(), original.part(part).unwrap());
+    }
+    let mut reopened = SlidesView::open(&saved).unwrap();
+    assert_eq!(chart_items(&reopened.paint(&mut host, 0)), items);
+}
+
+#[test]
+fn duplicated_chart_slides_keep_their_relationships() {
+    let groups = format!("<c:doughnutChart>{CHART_SERIES}</c:doughnutChart>");
+    for with_notes in [false, true] {
+        let mut view = SlidesView::open(&chart_deck(&groups, false)).unwrap();
+        if with_notes {
+            crate::set_notes(&mut view.doc, 0, vec![Paragraph::text("Chart notes")]);
+        }
+        let mut host = FixedMeasurer::default();
+        let original = view.paint(&mut host, 0);
+        view.duplicate_slides(&[0]);
+        assert_eq!(chart_items(&view.paint(&mut host, 1)), chart_items(&original));
+        let mut reopened = SlidesView::open(&view.save().unwrap()).unwrap();
+        assert_eq!(chart_items(&reopened.paint(&mut host, 1)), chart_items(&original));
+        view.delete_slides(&[0]);
+        let mut reopened = SlidesView::open(&view.save().unwrap()).unwrap();
+        assert_eq!(chart_items(&reopened.paint(&mut host, 0)), chart_items(&original));
+        assert_eq!(reopened.slide_infos()[0].notes, if with_notes { "Chart notes" } else { "" });
+    }
+}
+
+#[test]
+fn duplicating_a_slide_does_not_reuse_its_link_to_a_deleted_slide() {
+    use office_core::opc::Package;
+    use office_core::xml::{ns, Element};
+
+    let source = "ppt/slides/slide1.xml";
+    let deleted = "ppt/slides/slide2.xml";
+    let kept = "ppt/slides/slide3.xml";
+    let mut pkg = Package::read(&deck(&[&["Source"], &["Deleted"], &["Kept"]])).unwrap();
+    let removed_id = pkg.relate(source, "slide", deleted).unwrap();
+    let jump = kept.to_ascii_uppercase();
+    let kept_id = pkg.relate(source, "slide", &jump).unwrap();
+    let missing_id = pkg.relate(source, "slide", "PPT/SLIDES/SLIDE4.XML").unwrap();
+    let mut xml = pkg.xml(source).unwrap();
+    let nv = xml
+        .root
+        .child_mut(ns::P, "cSld")
+        .unwrap()
+        .child_mut(ns::P, "spTree")
+        .unwrap()
+        .child_mut(ns::P, "sp")
+        .unwrap()
+        .child_mut(ns::P, "nvSpPr")
+        .unwrap()
+        .child_mut(ns::P, "cNvPr")
+        .unwrap();
+    for (name, rid) in [("hlinkClick", &removed_id), ("hlinkMouseOver", &kept_id)] {
+        nv.push(Element::new(ns::A, name).with_attr(ns::R, "id", rid).with_attr("", "action", "ppaction://hlinksldjump"));
+    }
+    pkg.replace(source, xml.to_bytes()).unwrap();
+    let mut view = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
+    view.duplicate_slides(&[0]);
+    view.delete_slides(&[2]);
+    view.add_slide(2, None);
+    crate::set_notes(&mut view.doc, 3, vec![Paragraph::text("New slide notes")]);
+    let bytes = view.save().unwrap();
+    let saved = Package::read(&bytes).unwrap();
+    let reopened = SlidesView::open(&bytes).unwrap();
+    let duplicate = reopened.slides()[1].part.as_deref().unwrap();
+    let links = saved.rels(duplicate).unwrap();
+    assert!(links.get(&removed_id).is_none());
+    assert_eq!(reopened.slides()[3].part.as_deref(), Some("ppt/slides/slide4.xml"));
+    assert!(links.get(&missing_id).is_none());
+    let target = saved.target(duplicate, links.get(&kept_id).unwrap()).unwrap();
+    assert_eq!(target, jump);
+    assert_eq!(saved.part(&target).unwrap(), saved.part(kept).unwrap());
+    let xml = saved.xml(duplicate).unwrap();
+    assert!(xml.root.descendant(ns::A, "hlinkClick").is_none());
+    assert_eq!(xml.root.descendant(ns::A, "hlinkMouseOver").unwrap().attr_ns(ns::R, "id"), Some(kept_id.as_str()));
+}
+
+#[test]
+fn duplicated_slides_do_not_share_the_original_comments_part() {
+    use office_core::opc::Package;
+
+    let source = "ppt/slides/slide1.xml";
+    let comments = "ppt/comments/comment1.xml";
+    let mut pkg = Package::read(&deck(&[&["Source"]])).unwrap();
+    pkg.put(
+        comments,
+        br#"<p:cmLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>"#.to_vec(),
+        "application/vnd.openxmlformats-officedocument.presentationml.comments+xml",
+    );
+    pkg.relate(source, "comments", comments).unwrap();
+    let mut view = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
+    view.duplicate_slides(&[0]);
+    let bytes = view.save().unwrap();
+    let saved = Package::read(&bytes).unwrap();
+    let reopened = SlidesView::open(&bytes).unwrap();
+    let duplicate = reopened.slides()[1].part.as_deref().unwrap();
+    assert_eq!(saved.related(source, "comments").unwrap()[0].1, comments);
+    assert_eq!(saved.part(comments).unwrap(), pkg.part(comments).unwrap());
+    assert!(saved.related(duplicate, "comments").unwrap().is_empty());
+}
+
+#[test]
+fn imported_columns_show_cached_values_and_categories() {
+    let groups = format!(r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{CHART_SERIES}</c:barChart>"#);
+    let mut view = SlidesView::open(&chart_deck(&groups, false)).unwrap();
+    let mut host = FixedMeasurer::default();
+    let p = view.paint(&mut host, 0);
+    let items = chart_items(&p);
+    let bars: Vec<_> = items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Rect { h, .. } => Some(*h),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bars.len(), 2);
+    assert!((bars[0] / bars[1] - 19.0).abs() < 0.05);
+    let labels = texts(items);
+    assert!(labels.contains(&"April".to_string()));
+    assert!(labels.contains(&"June".to_string()));
+}
+
+#[test]
+fn imported_scatter_without_x_values_uses_point_numbers() {
+    let groups = r#"<c:scatterChart><c:scatterStyle val="marker"/><c:ser><c:yVal><c:numLit><c:ptCount val="3"/>
+       <c:pt idx="0"><c:v>4</c:v></c:pt><c:pt idx="2"><c:v>4</c:v></c:pt>
+       </c:numLit></c:yVal></c:ser></c:scatterChart>"#;
+    let mut view = SlidesView::open(&chart_deck(groups, false)).unwrap();
+    let p = view.paint(&mut FixedMeasurer::default(), 0);
+    let items = chart_items(&p);
+    let xs: Vec<_> = items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Path { x, fill: Some(_), .. } => Some(*x),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(xs.len(), 2);
+    assert!(xs[1] - xs[0] > 300.0);
+    let labels = texts(items);
+    assert_eq!(&labels[labels.len() - 2..], ["1", "3"]);
+}
+
+#[test]
+fn imported_scatter_plots_blank_y_as_zero_when_requested() {
+    let group = r#"<c:scatterChart><c:ser>
+        <c:xVal><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>1</c:v></c:pt><c:pt idx="1"><c:v>100</c:v></c:pt></c:numLit></c:xVal>
+        <c:yVal><c:numLit><c:ptCount val="2"/><c:pt idx="0"><c:v>4</c:v></c:pt></c:numLit></c:yVal>
+        </c:ser></c:scatterChart>"#;
+    for (mode, count) in [("gap", 1), ("zero", 2)] {
+        let props = format!(r#"<c:dispBlanksAs val="{mode}"/>"#);
+        let mut view = SlidesView::open(&chart_deck_with_properties(group, false, &props)).unwrap();
+        let p = view.paint(&mut FixedMeasurer::default(), 0);
+        let items = chart_items(&p);
+        let markers: Vec<_> = items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Path { x, y, fill: Some(_), .. } => Some((*x, *y)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(markers.len(), count);
+        assert_eq!(texts(items).iter().any(|t| t == "100"), mode == "zero");
+        if mode == "zero" {
+            assert!(markers[1].0 > markers[0].0 && markers[1].1 > markers[0].1);
+        }
+    }
+}
+
+#[test]
+fn imported_line_uses_the_saved_blank_cell_mode() {
+    let group = format!("<c:lineChart>{CHART_SERIES}</c:lineChart>");
+    for (mode, segments) in [("gap", 0), ("span", 1), ("zero", 2)] {
+        let props = format!(r#"<c:dispBlanksAs val="{mode}"/>"#);
+        let mut view = SlidesView::open(&chart_deck_with_properties(&group, false, &props)).unwrap();
+        let p = view.paint(&mut FixedMeasurer::default(), 0);
+        let lines: String = chart_items(&p)
+            .iter()
+            .filter_map(|i| match i {
+                Item::Path { d, stroke: Some(_), .. } => Some(d.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines.matches('L').count(), segments, "{mode}: {lines}");
+    }
+}
+
+#[test]
+fn unsupported_or_unavailable_charts_keep_the_placeholder() {
+    let malformed = CHART_SERIES.replace(r#"idx="2""#, r#"idx="18446744073709551615""#);
+    for (groups, external) in [
+        ("<c:radarChart/>".to_string(), false),
+        (format!(r#"<c:lineChart>{CHART_SERIES}</c:lineChart><c:valAx><c:scaling><c:logBase val="10"/></c:scaling></c:valAx>"#), false),
+        (format!(r#"<c:lineChart>{CHART_SERIES}</c:lineChart><c:valAx><c:scaling><c:max val="4"/></c:scaling></c:valAx>"#), false),
+        (format!("<c:doughnutChart>{malformed}</c:doughnutChart>"), false),
+        (String::new(), true),
+    ] {
+        let mut view = SlidesView::open(&chart_deck(&groups, external)).unwrap();
+        let mut host = FixedMeasurer::default();
+        let p = view.paint(&mut host, 0);
+        assert!(matches!(chart_items(&p), [Item::Path { dash: "dash", .. }]));
+    }
+}
+
 #[test]
 fn blank_deck() {
     let mut host = FixedMeasurer::default();
