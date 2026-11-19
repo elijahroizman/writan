@@ -101,72 +101,6 @@ const n = (v: number) => (Math.round(v * 100) / 100).toString()
 /** Pictures' URLs by media id. */
 export type MediaUrl = (id: string) => string | undefined
 
-type Box = [number, number, number, number]
-
-/** A box holding everything an absolute path draws: its points, Bézier control points and whole arc ellipses. */
-export function pathBox(d: string): Box | null {
-  const tokens = d.match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) ?? []
-  const box: Box = [Infinity, Infinity, -Infinity, -Infinity]
-  const add = (x: number, y: number) => {
-    box[0] = Math.min(box[0], x)
-    box[1] = Math.min(box[1], y)
-    box[2] = Math.max(box[2], x)
-    box[3] = Math.max(box[3], y)
-  }
-  let cmd = 'M'
-  let cx = 0
-  let cy = 0
-  let args: number[] = []
-  for (const t of tokens) {
-    if (/[A-Za-z]/.test(t)) {
-      cmd = t.toUpperCase()
-      args = []
-      continue
-    }
-    args.push(Number(t))
-    if (cmd === 'A') {
-      if (args.length < 7) continue
-      const [rx, ry, , , , x, y] = args
-      // The arc lies on an ellipse whose centre is at most one radius from each end, scaled up
-      // when the radii are too small to reach between them.
-      const half = Math.hypot(x - cx, y - cy) / 2
-      const scale = Math.max(1, half / Math.max(Math.min(Math.abs(rx), Math.abs(ry)), 1e-9))
-      const r = 2 * Math.max(Math.abs(rx), Math.abs(ry)) * scale
-      add(cx - r, cy - r)
-      add(cx + r, cy + r)
-      add(x, y)
-      cx = x
-      cy = y
-      args = []
-    } else if (cmd === 'H' || cmd === 'V') {
-      if (cmd === 'H') cx = args[0]
-      else cy = args[0]
-      add(cx, cy)
-      args = []
-    } else if (args.length === 2) {
-      add(args[0], args[1])
-      cx = args[0]
-      cy = args[1]
-      args = []
-    }
-  }
-  return box[0] <= box[2] ? box : null
-}
-
-/**
- * An SVG's position, size and view box covering what it draws (`box`, in the SVG's own units,
- * at `x`, `y`). Drawing only through `overflow: visible` from a tiny box leaves shapes out in
- * some renderers (WebView2 without a GPU).
- */
-function svgBox(x: number, y: number, box: Box | null, stroke: number): string {
-  if (!box) return ` style="left:${n(x)}px;top:${n(y)}px"`
-  // SVG's default miter limit lets a sharp corner reach twice the stroke width past its point.
-  const pad = stroke * 2 + 1
-  const [l, t] = [box[0] - pad, box[1] - pad]
-  const [w, h] = [box[2] - box[0] + 2 * pad, box[3] - box[1] + 2 * pad]
-  return ` style="left:${n(x + l)}px;top:${n(y + t)}px;width:${n(w)}px;height:${n(h)}px" viewBox="${n(l)} ${n(t)} ${n(w)} ${n(h)}"`
-}
-
 export function itemsHtml(items: PaintItem[], styles: StyleSheet, media: MediaUrl): string {
   let out = ''
   for (const it of items) {
@@ -193,8 +127,7 @@ export function itemsHtml(items: PaintItem[], styles: StyleSheet, media: MediaUr
           const y = Math.min(it.y1, it.y2)
           out += `<div class="ln-v" style="left:${n(it.x1 - it.w / 2)}px;top:${n(y)}px;height:${n(Math.abs(it.y2 - it.y1))}px;border-left:${n(it.w)}px ${dash} ${esc(it.color)}"></div>`
         } else {
-          const box = [Math.min(it.x1, it.x2), Math.min(it.y1, it.y2), Math.max(it.x1, it.x2), Math.max(it.y1, it.y2)] as Box
-          out += `<svg class="pa"${svgBox(0, 0, box, it.w)}><line x1="${n(it.x1)}" y1="${n(it.y1)}" x2="${n(it.x2)}" y2="${n(it.y2)}" stroke="${esc(it.color)}" stroke-width="${n(it.w)}"/></svg>`
+          out += `<svg class="pa"><line x1="${n(it.x1)}" y1="${n(it.y1)}" x2="${n(it.x2)}" y2="${n(it.y2)}" stroke="${esc(it.color)}" stroke-width="${n(it.w)}"/></svg>`
         }
         break
       }
@@ -213,7 +146,7 @@ export function itemsHtml(items: PaintItem[], styles: StyleSheet, media: MediaUr
       }
       case 'path': {
         const dash = it.dash === 'dash' || it.dash === 'dashed' ? ' stroke-dasharray="6 4"' : it.dash === 'dot' || it.dash === 'sysDot' || it.dash === 'dotted' ? ' stroke-dasharray="1.5 3"' : ''
-        out += `<svg class="pa"${svgBox(it.x, it.y, pathBox(it.d), it.stroke ? it.sw || 1 : 0)}><path d="${esc(it.d)}" fill="${esc(it.fill ?? 'none')}" stroke="${esc(it.stroke ?? 'none')}"${it.sw ? ` stroke-width="${n(it.sw)}"` : ''}${dash}/></svg>`
+        out += `<svg class="pa" style="left:${n(it.x)}px;top:${n(it.y)}px"><path d="${esc(it.d)}" fill="${esc(it.fill ?? 'none')}" stroke="${esc(it.stroke ?? 'none')}"${it.sw ? ` stroke-width="${n(it.sw)}"` : ''}${dash}/></svg>`
         break
       }
       case 'group': {
