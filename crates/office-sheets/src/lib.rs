@@ -394,10 +394,7 @@ fn uncached(cell: &SheetCell) -> bool {
 /// empty `v`.
 fn claimed_empty_text(cell: &SheetCell) -> bool {
     cell.value.is_empty()
-        && cell
-            .origin
-            .get()
-            .is_some_and(|c| c.attr("t") == Some("str") && c.child(ns::X, "v").is_some_and(|v| v.text().is_empty()))
+        && cell.origin.get().is_some_and(|c| c.attr("t") == Some("str") && c.child(ns::X, "v").is_some_and(|v| v.text().is_empty()))
 }
 
 fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Recalculation {
