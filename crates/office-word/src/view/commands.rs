@@ -458,8 +458,7 @@ impl WordView {
             self.begin_group();
             self.para_change(&|p| p.props.rtl = Some(true));
         }
-        let root = self.blocks_mut(self.story);
-        let e = edit::insert_text(root, &sel, s, props.as_ref());
+        let e = self.replace_sel(&sel, |root, at| edit::insert_text(root, at, s, props.as_ref()));
         let typing = s.chars().count() == 1 && sel.is_collapsed() && !s.contains('\n') && !turn_rtl;
         if s == " " {
             self.history.seal();
@@ -499,6 +498,113 @@ impl WordView {
         self.list(Some(kind));
     }
 
+    /// The flat offsets of the current note's own marks (`w:footnoteRef`/`w:endnoteRef`): one
+    /// object character each, at the start of the note's text. Empty outside a note.
+    fn own_marks(&self) -> Vec<(Path, u32, u32)> {
+        if !matches!(self.story, StoryId::Note(_)) {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        fn walk(blocks: &[Block], base: &mut Vec<u32>, out: &mut Vec<(Path, u32, u32)>) {
+            for (i, b) in blocks.iter().enumerate() {
+                match b {
+                    Block::Paragraph(p) => {
+                        base.push(i as u32);
+                        let flat = text::flat(p);
+                        for (k, inline) in p.content.iter().enumerate() {
+                            let mark = matches!(inline, Inline::Raw { xml }
+                                if xml.is(ns::W, "r")
+                                    && (xml.child(ns::W, "footnoteRef").is_some() || xml.child(ns::W, "endnoteRef").is_some()));
+                            if mark {
+                                out.push((Path(base.clone()), flat.spans[k].0, flat.spans[k].1));
+                            }
+                        }
+                        base.pop();
+                    }
+                    Block::Table(t) => {
+                        base.push(i as u32);
+                        for (r, row) in t.rows.iter().enumerate() {
+                            for (c, cell) in row.cells.iter().enumerate() {
+                                base.extend([r as u32, c as u32]);
+                                walk(&cell.blocks, base, out);
+                                base.truncate(base.len() - 2);
+                            }
+                        }
+                        base.pop();
+                    }
+                    Block::Raw { .. } => {}
+                }
+            }
+        }
+        walk(self.blocks(self.story), &mut Vec::new(), &mut out);
+        out
+    }
+
+    /// Deletes `sel` in the current story. In a note its own mark can't be deleted, so the
+    /// range is cut around each covered mark and the caret lands after any kept at the cut.
+    fn delete_sel(&mut self, sel: &Selection) -> Edit {
+        let marks = self.own_marks();
+        if marks.is_empty() || sel.is_collapsed() {
+            let root = self.blocks_mut(self.story);
+            return edit::delete(root, sel);
+        }
+        let (from, to) = sel.ordered();
+        // What's left to delete once each covered mark is carved out, in order.
+        let mut pieces = Vec::new();
+        let mut cursor = from.clone();
+        let mut kept_at_cut = 0;
+        for (path, start, end) in marks {
+            let ms = Pos::new(path.clone(), start);
+            let me = Pos::new(path.clone(), end);
+            if me <= from || ms >= to {
+                continue;
+            }
+            if cursor < ms {
+                pieces.push((cursor, ms));
+            }
+            cursor = me;
+            if path == from.path {
+                kept_at_cut += end - start;
+            }
+        }
+        if cursor < to {
+            pieces.push((cursor, to));
+        }
+        if pieces.is_empty() {
+            // Only the mark was in the range: nothing to delete, and the caret stays put.
+            return Edit::default();
+        }
+        // Back to front, so positions earlier in the story still hold.
+        let mut splices = Vec::new();
+        let root = self.blocks_mut(self.story);
+        for (a, b) in pieces.into_iter().rev() {
+            let e = edit::delete(root, &Selection { anchor: a.clone(), focus: b });
+            splices.extend(e.splices);
+        }
+        let mut caret = from;
+        caret.offset += kept_at_cut;
+        Edit { splices, selection: Some(Selection::caret(caret)) }
+    }
+
+    /// Deletes `sel` with [`Self::delete_sel`], then runs `op` on the story's blocks at the
+    /// resulting caret and folds its edit in.
+    fn replace_sel(&mut self, sel: &Selection, op: impl FnOnce(&mut Vec<Block>, &Selection) -> Edit) -> Edit {
+        let mut e = self.delete_sel(sel);
+        let at = e.selection.as_ref().map(|s| s.focus.clone()).unwrap_or_else(|| sel.focus.clone());
+        let mut e2 = op(self.blocks_mut(self.story), &Selection::caret(at));
+        e.splices.append(&mut e2.splices);
+        e.selection = e2.selection;
+        e
+    }
+
+    /// Applies `e` unless it changed nothing (a delete that only covered a note's mark).
+    fn apply_nonempty(&mut self, e: Edit, kind: Option<&'static str>) {
+        if e.splices.is_empty() && e.selection.is_none() {
+            return;
+        }
+        self.apply_edit(e, kind);
+    }
+
     pub fn backspace(&mut self, word: bool) {
         self.delete_dir(false, word);
     }
@@ -510,9 +616,8 @@ impl WordView {
     fn delete_dir(&mut self, forward: bool, word: bool) {
         let sel = self.sel.clone();
         if !sel.is_collapsed() {
-            let root = self.blocks_mut(self.story);
-            let e = edit::delete(root, &sel);
-            self.apply_edit(e, None);
+            let e = self.delete_sel(&sel);
+            self.apply_nonempty(e, None);
             return;
         }
         let at = sel.focus.clone();
@@ -569,9 +674,8 @@ impl WordView {
             Plan::Unlist => self.list(None),
             Plan::Range(other) if other != at => {
                 let range = Selection { anchor: at, focus: other };
-                let root = self.blocks_mut(self.story);
-                let e = edit::delete(root, &range);
-                self.apply_edit(e, if word { None } else { Some("deleting") });
+                let e = self.delete_sel(&range);
+                self.apply_nonempty(e, if word { None } else { Some("deleting") });
             }
             _ => {}
         }
@@ -607,9 +711,9 @@ impl WordView {
             }
         };
         let sel = self.sel.clone();
-        let root = self.blocks_mut(self.story);
-        let mut e = edit::delete(root, &sel);
+        let mut e = self.delete_sel(&sel);
         let at = e.selection.clone().map(|s| s.focus).unwrap_or(sel.focus);
+        let root = self.blocks_mut(self.story);
         let num_pr = pos::para(root, &at.path).and_then(|p| p.origin.get()).and_then(|o| o.path(ns::W, &["pPr", "numPr"])).cloned();
         let s = edit::split_para(root, &at, Some(&next_style));
         e.splices.extend(s.splices);
@@ -629,9 +733,9 @@ impl WordView {
     pub fn line_break(&mut self) {
         let sel = self.sel.clone();
         let props = self.pending.take();
-        let root = self.blocks_mut(self.story);
-        let mut e = edit::delete(root, &sel);
+        let mut e = self.delete_sel(&sel);
         let at = e.selection.clone().map(|s| s.focus).unwrap_or(sel.focus);
+        let root = self.blocks_mut(self.story);
         if let Some(s) = edit::change_para(root, &at.path, |p| text::insert_text(p, at.offset, "\n", props.as_ref())) {
             edit::push(&mut e.splices, s);
         }
@@ -644,8 +748,9 @@ impl WordView {
             return;
         }
         let sel = self.sel.clone();
-        let root = self.blocks_mut(self.story);
-        let e = edit::insert_inline(root, &sel, Inline::Break { kind: office_core::model::BreakKind::Page, origin: Default::default() });
+        let e = self.replace_sel(&sel, |root, at| {
+            edit::insert_inline(root, at, Inline::Break { kind: office_core::model::BreakKind::Page, origin: Default::default() })
+        });
         self.apply_edit(e, None);
     }
 
@@ -984,9 +1089,8 @@ impl WordView {
         let out = self.copy();
         if !self.sel.is_collapsed() {
             let sel = self.sel.clone();
-            let root = self.blocks_mut(self.story);
-            let e = edit::delete(root, &sel);
-            self.apply_edit(e, None);
+            let e = self.delete_sel(&sel);
+            self.apply_nonempty(e, None);
         }
         out
     }
@@ -1001,9 +1105,9 @@ impl WordView {
                 // One paragraph pastes into the text; more become paragraphs of their own.
                 if let [Block::Paragraph(p)] = blocks.as_slice() {
                     let p = p.clone();
-                    let root = self.blocks_mut(self.story);
-                    let mut e = edit::delete(root, &sel);
+                    let mut e = self.delete_sel(&sel);
                     let at = e.selection.clone().map(|s| s.focus).unwrap_or(sel.focus);
+                    let root = self.blocks_mut(self.story);
                     let n = text::len(&p);
                     if let Some(s) = edit::change_para(root, &at.path, |target| {
                         let i = text::boundary(target, at.offset);
@@ -1016,8 +1120,7 @@ impl WordView {
                     e.selection = Some(Selection::caret(Pos::new(at.path, at.offset + n)));
                     self.apply_edit(e, None);
                 } else {
-                    let root = self.blocks_mut(self.story);
-                    let e = edit::insert_blocks(root, &sel, blocks);
+                    let e = self.replace_sel(&sel, |root, at| edit::insert_blocks(root, at, blocks));
                     self.apply_edit(e, None);
                 }
             }
@@ -1148,9 +1251,8 @@ impl WordView {
             self.sel = self.clamp(sel);
             if by.is_empty() {
                 let sel = self.sel.clone();
-                let root = self.blocks_mut(self.story);
-                let e = edit::delete(root, &sel);
-                self.apply_edit(e, None);
+                let e = self.delete_sel(&sel);
+                self.apply_nonempty(e, None);
             } else {
                 self.insert_text(by);
             }
@@ -1260,8 +1362,7 @@ impl WordView {
             origin: Origin::new(Element::new(ns::W, "tbl").with_child(tbl_pr)),
         };
         let sel = self.sel.clone();
-        let root = self.blocks_mut(self.story);
-        let mut e = edit::insert_blocks(root, &sel, vec![Block::Table(table)]);
+        let mut e = self.replace_sel(&sel, |root, at| edit::insert_blocks(root, at, vec![Block::Table(table)]));
         // The caret goes into the first cell.
         if let Some(Splice { container, index, inserted, .. }) = e.splices.last() {
             if let Some(off) = inserted.iter().position(|b| matches!(b, Block::Table(_))) {
@@ -1483,8 +1584,7 @@ impl WordView {
             origin: Origin::default(),
         };
         let sel = self.sel.clone();
-        let root = self.blocks_mut(self.story);
-        let e = edit::insert_inline(root, &sel, Inline::Image(img));
+        let e = self.replace_sel(&sel, |root, at| edit::insert_inline(root, at, Inline::Image(img)));
         self.apply_edit(e, None);
     }
 
@@ -1692,14 +1792,12 @@ impl WordView {
         };
         self.begin_group();
         let sel = self.sel.clone();
-        let root = self.blocks_mut(self.story);
-        let e = edit::insert_inline(root, &sel, simple("PAGE"));
+        let e = self.replace_sel(&sel, |root, at| edit::insert_inline(root, at, simple("PAGE")));
         self.apply_edit(e, None);
         if field == "PAGE_X_OF_Y" {
             self.insert_text(" of ");
             let sel = self.sel.clone();
-            let root = self.blocks_mut(self.story);
-            let e = edit::insert_inline(root, &sel, simple("NUMPAGES"));
+            let e = self.replace_sel(&sel, |root, at| edit::insert_inline(root, at, simple("NUMPAGES")));
             self.apply_edit(e, None);
         }
         self.end_group();

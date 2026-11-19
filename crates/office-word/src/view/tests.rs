@@ -1251,6 +1251,39 @@ fn footnote_text_can_be_edited_undone_and_saved() {
     assert!(text.contains("Foo") && text.contains("bar baz"), "{text}");
 }
 
+#[test]
+fn selecting_all_in_a_footnote_and_typing_keeps_its_mark() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&footnoted_doc(&footnote_para("Foo", "1"), &[("1", "bar")])).unwrap();
+    v.layout(&mut host);
+    let p = v.pages[0].clone();
+    let (s, oy) = super::note_places(&p)[0];
+    let y = oy + (s.top + s.bottom) / 2.0;
+    assert!(v.edit_note(&mut host, 0, p.width - 1.0, y));
+    // Cmd+A in the note, then typing: the note's own mark stays, the text is replaced.
+    v.select_all();
+    v.insert_text("baz");
+    let shown = |v: &mut WordView, host: &mut FixedMeasurer| {
+        v.layout(host);
+        page_texts(&v.paint(host, 0).items)
+    };
+    let texts = shown(&mut v, &mut host);
+    assert_eq!(texts.iter().filter(|(t, _)| t.trim() == "1").count(), 2, "{texts:?}");
+    assert!(texts.iter().any(|(t, _)| t.trim() == "baz"), "{texts:?}");
+    v.undo();
+    assert!(shown(&mut v, &mut host).iter().any(|(t, _)| t.trim() == "bar"), "undo brings the note's text back");
+    v.redo();
+    // And the mark is still there in the saved file.
+    let bytes = v.save().unwrap();
+    let pkg = office_core::opc::Package::read(&bytes).unwrap();
+    let xml = String::from_utf8(pkg.part("word/footnotes.xml").unwrap().to_vec()).unwrap();
+    assert!(xml.contains("<w:footnoteRef"), "{xml}");
+    let mut back = WordView::open(&bytes).unwrap();
+    let texts = shown(&mut back, &mut host);
+    assert_eq!(texts.iter().filter(|(t, _)| t.trim() == "1").count(), 2, "{texts:?}");
+    assert!(texts.iter().any(|(t, _)| t.trim() == "baz"), "{texts:?}");
+}
+
 fn smartart_paint(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
     fn walk(items: &[Item], texts: &mut Vec<String>, fills: &mut Vec<String>) {
         for i in items {
