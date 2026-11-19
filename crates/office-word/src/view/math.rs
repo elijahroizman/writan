@@ -60,6 +60,9 @@ fn push(el: &Element, out: &mut String) {
     match el.local.as_str() {
         "t" => out.push_str(&el.text()),
         "r" => {
+            if hidden(el) {
+                return;
+            }
             for c in el.elements() {
                 if c.is(ns::M, "t") || c.in_ns(ns::W) {
                     push(c, out);
@@ -206,6 +209,14 @@ fn push(el: &Element, out: &mut String) {
         // Groups, boxes and the arguments of everything else show their content.
         _ => push_children(el, out),
     }
+}
+
+/// A run whose Word properties hide it (`w:vanish`).
+fn hidden(run: &Element) -> bool {
+    run.elements()
+        .filter(|c| c.is(ns::W, "rPr"))
+        .flat_map(|p| p.elements())
+        .any(|v| v.is(ns::W, "vanish") && !matches!(v.attr_ns(ns::W, "val"), Some("0" | "false" | "off")))
 }
 
 fn is_mark(c: char) -> bool {
@@ -360,5 +371,10 @@ mod tests {
     fn properties_and_deleted_text_show_nothing() {
         let body = r#"<m:r><w:rPr><w:rFonts w:ascii="Cambria Math"/></w:rPr><m:t>x</m:t></m:r><w:del><m:r><m:t>y</m:t></m:r></w:del><m:ctrlPr><w:rPr/></m:ctrlPr>"#;
         assert_eq!(math(body), "x");
+        let hidden = format!(
+            r#"{}<m:r><w:rPr><w:vanish/></w:rPr><m:t>y</m:t></m:r><m:r><w:rPr><w:vanish w:val="0"/></w:rPr><m:t>z</m:t></m:r>"#,
+            r("x")
+        );
+        assert_eq!(math(&hidden), "xz");
     }
 }
