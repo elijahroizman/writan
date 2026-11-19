@@ -168,14 +168,15 @@ impl Validation {
                 let cmp = |x: &V| compare(&subject, x);
                 match self.operator.as_str() {
                     "equal" => cmp(&a) == Some(Equal),
-                    "notEqual" => cmp(&a) != Some(Equal),
+                    "notEqual" => matches!(cmp(&a), Some(Less | Greater)),
                     "greaterThan" => cmp(&a) == Some(Greater),
                     "lessThan" => cmp(&a) == Some(Less),
                     "greaterThanOrEqual" => matches!(cmp(&a), Some(Greater | Equal)),
                     "lessThanOrEqual" => matches!(cmp(&a), Some(Less | Equal)),
                     op => {
                         let Some(b) = b else { return true };
-                        let inside = matches!(cmp(&a), Some(Greater | Equal)) && matches!(cmp(&b), Some(Less | Equal));
+                        let (Some(from), Some(to)) = (cmp(&a), cmp(&b)) else { return false };
+                        let inside = from != Less && to != Greater;
                         inside == (op != "notBetween")
                     }
                 }

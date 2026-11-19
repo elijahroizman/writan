@@ -280,7 +280,7 @@ impl Rules {
                 use std::cmp::Ordering::*;
                 match rule.attr("operator").unwrap_or("equal") {
                     "equal" => cmp(&a) == Some(Equal),
-                    "notEqual" => cmp(&a) != Some(Equal),
+                    "notEqual" => matches!(cmp(&a), Some(Less | Greater)),
                     "greaterThan" => cmp(&a) == Some(Greater),
                     "lessThan" => cmp(&a) == Some(Less),
                     "greaterThanOrEqual" => matches!(cmp(&a), Some(Greater | Equal)),
@@ -288,7 +288,8 @@ impl Rules {
                     op @ ("between" | "notBetween") => {
                         let b = self.formula(book, rule, 1, at);
                         let (lo, hi) = if compare(&a, &b) == Some(Greater) { (b, a) } else { (a, b) };
-                        let inside = matches!(cmp(&lo), Some(Greater | Equal)) && matches!(cmp(&hi), Some(Less | Equal));
+                        let (Some(from), Some(to)) = (cmp(&lo), cmp(&hi)) else { return false };
+                        let inside = from != Less && to != Greater;
                         inside == (op == "between")
                     }
                     _ => false,
