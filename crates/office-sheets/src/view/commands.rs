@@ -1076,6 +1076,21 @@ fn shared_mark(origin: &Origin) -> Option<(String, bool)> {
     Some((f.attr("si").unwrap_or("").to_string(), f.attr("ref").is_some()))
 }
 
+/// Puts `text` in the stored `<f>` of an array formula or a shared formula's leader, so the
+/// writer keeps its markup.
+fn set_formula_markup(origin: &mut Origin, text: &str) {
+    let Some(el) = origin.get() else { return };
+    let Some(f) = el.child(ns::X, "f") else { return };
+    if !matches!(f.attr("t"), Some("array" | "shared")) || f.text().is_empty() {
+        return;
+    }
+    let mut el = el.clone();
+    if let Some(f) = el.child_mut(ns::X, "f") {
+        f.children = vec![Node::Text(text.to_string())];
+    }
+    *origin = Origin::new(el);
+}
+
 /// Drops the stored `<f>` so a materialized formula is written as an ordinary formula.
 fn drop_formula_markup(origin: &mut Origin) {
     let Some(el) = origin.get() else { return };
@@ -1092,6 +1107,7 @@ fn drop_formula_markup(origin: &mut Origin) {
 /// from. Followers whose leader is deleted keep the formula they had. Returns each cell changed,
 /// as it was.
 fn prepare_shift(sheet: &mut Sheet, target: &str, axis: Axis, at: u32, n: i64) -> Vec<(CellRef, SheetCell)> {
+    let shift_at = at;
     let local = sheet.name.eq_ignore_ascii_case(target);
     let adjust = |f: &str| adjust_formula_on(f, target, local, axis, at, n);
     let mut old = Vec::new();
@@ -1138,6 +1154,7 @@ fn prepare_shift(sheet: &mut Sheet, target: &str, axis: Axis, at: u32, n: i64) -
             strip.push(at);
         }
     }
+    let stripped: HashSet<CellRef> = strip.iter().copied().collect();
     for row in &mut sheet.rows {
         for c in &mut row.cells {
             let Some(current) = c.formula.as_deref() else { continue };
@@ -1146,6 +1163,10 @@ fn prepare_shift(sheet: &mut Sheet, target: &str, axis: Axis, at: u32, n: i64) -
                 let at = CellRef::new(row.index, c.col);
                 if seen.insert(at) {
                     old.push((at, c.clone()));
+                }
+                // An array formula or a shared leader that stays put keeps its markup, with the new text.
+                if !stripped.contains(&at) && (!local || axis_index(axis, at.row, at.col) < shift_at) {
+                    set_formula_markup(&mut c.origin, &next);
                 }
                 c.formula = Some(next);
             }
@@ -1381,7 +1402,9 @@ fn adjust_formula_on(src: &str, sheet_name: &str, local: bool, axis: Axis, at: u
             c if c == '$' || c == '_' || c == '\\' || c.is_alphabetic() => {
                 let word_end = scan_word(src, i);
                 if word_end > i && b.get(word_end) == Some(&b'!') {
-                    let sheet = src[i..word_end].to_string();
+                    // A sheet in another workbook (`[1]Data!A1`) is never the shifted one.
+                    let external = i > 0 && b[i - 1] == b']';
+                    let sheet = if external { format!("]{}", &src[i..word_end]) } else { src[i..word_end].to_string() };
                     if let Some((r, len)) = parse_ref(src, word_end + 1, Some(sheet)) {
                         rewrite(&mut out, src, i, word_end + 1, word_end + 1 + len, r, &shift);
                         i = word_end + 1 + len;
