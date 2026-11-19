@@ -266,9 +266,26 @@ pub struct Extras {
     pub levels: HashMap<String, Vec<LevelLook>>,
     /// The default tab stop interval, in pixels.
     pub default_tab: f64,
+    /// The document's number formats for footnote and endnote marks (`w:numFmt`), when set.
+    pub footnote_format: Option<String>,
+    pub endnote_format: Option<String>,
 }
 
 impl Extras {
+    /// A note's mark as it shows: its number in the document's format (Word numbers footnotes
+    /// 1, 2, 3 and endnotes i, ii, iii unless told otherwise).
+    pub fn note_label(&self, kind: crate::NoteKind, id: &str) -> String {
+        let format = match kind {
+            crate::NoteKind::Footnote => self.footnote_format.as_deref().unwrap_or("decimal"),
+            crate::NoteKind::Endnote => self.endnote_format.as_deref().unwrap_or("lowerRoman"),
+        };
+        // Letter formats repeat a letter once per 26, so a huge id would make a huge mark.
+        match id.parse::<u32>() {
+            Ok(n) if n <= 32_767 => crate::numbering::format_number(n, format),
+            _ => id.to_string(),
+        }
+    }
+
     pub fn read(styles: Option<&XmlDoc>, numbering: Option<&XmlDoc>, settings: Option<&XmlDoc>) -> Extras {
         let mut out = Extras { default_tab: 48.0, ..Default::default() };
         if let Some(s) = settings {
@@ -277,6 +294,9 @@ impl Extras {
                     out.default_tab = twips_px(v);
                 }
             }
+            let format = |pr: &str| s.root.path(ns::W, &[pr, "numFmt"]).and_then(val).map(str::to_string);
+            out.footnote_format = format("footnotePr");
+            out.endnote_format = format("endnotePr");
         }
         if let Some(doc) = styles {
             let root = &doc.root;

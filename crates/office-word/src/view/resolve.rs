@@ -59,8 +59,8 @@ pub struct WordResolver<'a> {
     /// A preview's layout paths are local; its list labels are still keyed within the story.
     pub label_prefix: &'a [u32],
     pub fields: Option<PageFields>,
-    /// The note being laid out, by id: its own reference mark (`w:footnoteRef`) shows that number.
-    pub note: Option<&'a str>,
+    /// The note being laid out, by id: its own reference mark (`w:footnoteRef`) shows its number.
+    pub note: Option<(&'a str, crate::NoteKind)>,
     /// Specs worked out before, by what they were worked out from (see [`spec_key`]).
     pub specs: &'a mut SpecCache,
 }
@@ -254,8 +254,8 @@ enum RawShow {
     FieldSeparate,
     FieldEnd,
     Simple(String, String),
-    /// A footnote or endnote reference mark.
-    NoteRef(String),
+    /// A footnote or endnote reference mark, by note id.
+    NoteRef(String, crate::NoteKind),
     /// An equation, as text.
     Math(String),
     /// A note's own mark, at the start of its text.
@@ -274,8 +274,10 @@ fn raw_show(el: &Element) -> RawShow {
         if let Some(i) = el.child(ns::W, "instrText") {
             return RawShow::FieldInstr(i.text());
         }
-        if let Some(n) = el.child(ns::W, "footnoteReference").or_else(|| el.child(ns::W, "endnoteReference")) {
-            return RawShow::NoteRef(n.attr_ns(ns::W, "id").unwrap_or("").to_string());
+        for (local, kind) in [("footnoteReference", crate::NoteKind::Footnote), ("endnoteReference", crate::NoteKind::Endnote)] {
+            if let Some(n) = el.child(ns::W, local) {
+                return RawShow::NoteRef(n.attr_ns(ns::W, "id").unwrap_or("").to_string(), kind);
+            }
         }
         if el.child(ns::W, "footnoteRef").is_some() || el.child(ns::W, "endnoteRef").is_some() {
             return RawShow::OwnNoteRef;
@@ -514,7 +516,7 @@ impl WordResolver<'_> {
                 }
                 Inline::Raw { xml } => {
                     let shown = match raw_show(xml) {
-                        RawShow::OwnNoteRef => self.note.map_or(RawShow::Hidden, |id| RawShow::NoteRef(id.to_string())),
+                        RawShow::OwnNoteRef => self.note.map_or(RawShow::Hidden, |(id, kind)| RawShow::NoteRef(id.to_string(), kind)),
                         shown => shown,
                     };
                     let kind = match shown {
@@ -552,11 +554,15 @@ impl WordResolver<'_> {
                             }
                         }
                         RawShow::OwnNoteRef => ItemKind::Hidden,
-                        RawShow::NoteRef(id) => {
+                        RawShow::NoteRef(id, kind) => {
                             let rpr = xml.child(ns::W, "rPr").map(office_core::formats::docx::read_run_props).unwrap_or_default();
                             let mut props = self.run_props(p, &rpr, path);
                             props.baseline = Some(office_core::model::Baseline::Superscript);
-                            ItemKind::Atomic { text: id, style: self.style(ctx, &props, false), inline: i as u32 }
+                            ItemKind::Atomic {
+                                text: self.extras.note_label(kind, &id),
+                                style: self.style(ctx, &props, false),
+                                inline: i as u32,
+                            }
                         }
                         RawShow::Text(s) => {
                             if matches!(&field, Some((_, false, _))) {
