@@ -1154,6 +1154,11 @@ impl WordView {
             self.doc.body = Body::Flow { blocks: before };
             return 0;
         }
+        if let Body::Flow { blocks } = &mut self.doc.body {
+            if !blocks.iter().any(|b| matches!(b, Block::Paragraph(_))) {
+                blocks.push(Block::Paragraph(Paragraph::default()));
+            }
+        }
         let after = self.body().to_vec();
         let sel = self.clamp(self.sel.clone());
         self.record(vec![Splice { container: Vec::new(), index: 0, removed: before, inserted: after }], Some(sel), None);

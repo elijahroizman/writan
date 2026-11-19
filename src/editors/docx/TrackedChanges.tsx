@@ -13,6 +13,7 @@ const LABEL: Record<Revision['kind'], string> = {
   movedTo: 'Moved to',
   formatting: 'Formatted',
   paragraph: 'Paragraph mark',
+  row: 'Table row',
 }
 
 /** The body's tracked changes, with Accept all and Reject all. Hidden when there are none. */

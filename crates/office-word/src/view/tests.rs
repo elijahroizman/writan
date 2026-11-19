@@ -837,3 +837,29 @@ fn accepting_and_rejecting_tracked_changes_undoes_as_one_step() {
     assert!(v.undo());
     assert_eq!(v.revisions().len(), 2);
 }
+
+#[test]
+fn resolving_only_paragraph_marks_or_rows_takes_effect() {
+    let mut host = FixedMeasurer::default();
+    let marks = r#"<w:p><w:pPr><w:rPr><w:ins w:id="1" w:author="Ann"/></w:rPr></w:pPr><w:r><w:t>One</w:t></w:r></w:p><w:p><w:r><w:t>Two</w:t></w:r></w:p>"#;
+    let mut v = WordView::open(&markup_bytes(marks)).unwrap();
+    v.layout(&mut host);
+    assert_eq!(v.revisions().len(), 1);
+    assert_eq!(v.resolve_revisions(true), 1);
+    assert!(v.revisions().is_empty());
+    assert_eq!(texts(&v), vec!["One", "Two"]);
+    assert!(v.undo());
+    assert_eq!(v.revisions().len(), 1);
+
+    // A table whose only row was deleted: accepting removes the table and leaves somewhere to type.
+    let rows = r#"<w:tbl><w:tblPr/><w:tblGrid><w:gridCol w:w="2000"/></w:tblGrid><w:tr><w:trPr><w:del w:id="1" w:author="Bob"/></w:trPr><w:tc><w:p><w:r><w:t>gone</w:t></w:r></w:p></w:tc></w:tr></w:tbl>"#;
+    let mut v = WordView::open(&markup_bytes(rows)).unwrap();
+    v.layout(&mut host);
+    let kinds: Vec<_> = v.revisions().iter().map(|r| r.kind).collect();
+    assert_eq!(kinds, vec![crate::RevisionKind::Row]);
+    assert_eq!(v.resolve_revisions(true), 1);
+    v.layout(&mut host);
+    assert!(v.revisions().is_empty());
+    v.insert_text("typed");
+    assert_eq!(texts(&v), vec!["typed"]);
+}

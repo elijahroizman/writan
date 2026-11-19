@@ -46,7 +46,7 @@ export interface WordState {
 
 /** A tracked change in the body. */
 export interface Revision {
-  kind: 'insertion' | 'deletion' | 'movedFrom' | 'movedTo' | 'formatting' | 'paragraph'
+  kind: 'insertion' | 'deletion' | 'movedFrom' | 'movedTo' | 'formatting' | 'paragraph' | 'row'
   author: string
   date?: string
   text: string
