@@ -987,3 +987,29 @@ fn smartart_without_a_cached_drawing_shows_its_text() {
     let p = v.paint(&mut host, 0);
     assert_eq!(texts(&p.items), vec!["Title", "Plan", "Scope", "Build"]);
 }
+
+#[test]
+fn duplicated_smartart_keeps_its_diagram() {
+    use office_core::opc::Package;
+
+    for with_notes in [false, true] {
+        let mut view = SlidesView::open(&deck_with_diagram(true)).unwrap();
+        if with_notes {
+            crate::set_notes(&mut view.doc, 0, vec![Paragraph::text("Diagram notes")]);
+        }
+        let mut host = FixedMeasurer::default();
+        view.duplicate_slides(&[0]);
+        assert_eq!(texts(&view.paint(&mut host, 1).items), vec!["Title", "Cached"], "notes: {with_notes}");
+        let bytes = view.save().unwrap();
+        let mut reopened = SlidesView::open(&bytes).unwrap();
+        assert_eq!(texts(&reopened.paint(&mut host, 1).items), vec!["Title", "Cached"], "notes: {with_notes}");
+        let saved = Package::read(&bytes).unwrap();
+        let duplicate = reopened.slides()[1].part.clone().unwrap();
+        let data = saved.related(&duplicate, "diagramData").unwrap();
+        assert_eq!(data.len(), 1, "notes: {with_notes}");
+        // Deleting the original leaves the copy's diagram whole.
+        view.delete_slides(&[0]);
+        let mut reopened = SlidesView::open(&view.save().unwrap()).unwrap();
+        assert_eq!(texts(&reopened.paint(&mut host, 0).items), vec!["Title", "Cached"], "notes: {with_notes}");
+    }
+}
