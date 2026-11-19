@@ -372,3 +372,50 @@
 .docx-stage.cropping .docx-image-selection-overlay {
   visibility: hidden;
 }
+
+.revision-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.revision {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: 12px;
+}
+
+.revision-kind {
+  flex: none;
+  font-weight: 600;
+}
+
+.revision-author {
+  flex: none;
+  color: var(--fg-faint);
+}
+
+.revision-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg-muted);
+}
+
+.revision.insertion .revision-text,
+.revision.movedTo .revision-text {
+  text-decoration: underline;
+}
+
+.revision.deletion .revision-text,
+.revision.movedFrom .revision-text {
+  text-decoration: line-through;
+}

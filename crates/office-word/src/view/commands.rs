@@ -1135,6 +1135,34 @@ impl WordView {
         self.end_group();
     }
 
+    // ---- tracked changes ----
+
+    /// The tracked changes in the body.
+    pub fn revisions(&self) -> Vec<crate::Revision> {
+        crate::revisions(&self.doc)
+    }
+
+    /// Accepts (`true`) or rejects (`false`) every tracked change in the body, undone as one
+    /// change; returns how many there were.
+    pub fn resolve_revisions(&mut self, accept: bool) -> usize {
+        if self.story != StoryId::Body {
+            self.exit_header_footer();
+        }
+        let before = self.body().to_vec();
+        let count = match crate::revisions::resolve_all(&mut self.doc, accept) {
+            Ok(n) => n,
+            Err(_) => 0,
+        };
+        if count == 0 {
+            self.doc.body = Body::Flow { blocks: before };
+            return 0;
+        }
+        let after = self.body().to_vec();
+        let sel = self.clamp(self.sel.clone());
+        self.record(vec![Splice { container: Vec::new(), index: 0, removed: before, inserted: after }], Some(sel), None);
+        count
+    }
+
     // ---- headings ----
 
     /// The body's headings: (text, depth, path).

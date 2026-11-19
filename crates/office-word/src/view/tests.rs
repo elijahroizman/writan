@@ -800,3 +800,40 @@ fn original_corpus_math_accents_are_drawn() {
     assert_eq!(text.chars().filter(|c| *c == 'a').count(), 13, "{text:?}");
     assert!(text.contains("a\u{301}") && text.contains("a\u{20D7}") && text.contains("a\u{332}"), "{text:?}");
 }
+
+#[test]
+fn accepting_and_rejecting_tracked_changes_undoes_as_one_step() {
+    let body = r#"<w:p><w:r><w:t xml:space="preserve">Keep </w:t></w:r><w:ins w:id="1" w:author="Ann"><w:r><w:t>new</w:t></w:r></w:ins><w:del w:id="2" w:author="Bob"><w:r><w:delText>old</w:delText></w:r></w:del></w:p>"#;
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&markup_bytes(body)).unwrap();
+    v.layout(&mut host);
+    let kinds: Vec<_> = v.revisions().iter().map(|r| (r.kind, r.author.clone(), r.text.clone())).collect();
+    assert_eq!(
+        kinds,
+        vec![(crate::RevisionKind::Insertion, "Ann".into(), "new".into()), (crate::RevisionKind::Deletion, "Bob".into(), "old".into())]
+    );
+
+    assert_eq!(v.resolve_revisions(true), 2);
+    v.layout(&mut host);
+    assert!(v.revisions().is_empty());
+    assert_eq!(texts(&v)[0], "Keep new");
+    assert!(v.is_dirty());
+    let saved = saved_body(&mut v);
+    assert!(!saved.contains("w:ins") && !saved.contains("w:del") && saved.contains("new") && !saved.contains("old"), "{saved}");
+
+    assert!(v.undo());
+    v.layout(&mut host);
+    assert_eq!(v.revisions().len(), 2);
+    assert!(v.redo());
+    assert!(v.revisions().is_empty());
+    assert!(v.undo());
+
+    assert_eq!(v.resolve_revisions(false), 2);
+    v.layout(&mut host);
+    assert!(v.revisions().is_empty());
+    assert_eq!(texts(&v)[0], "Keep old");
+    // Nothing left to resolve: no change is recorded.
+    assert_eq!(v.resolve_revisions(true), 0);
+    assert!(v.undo());
+    assert_eq!(v.revisions().len(), 2);
+}
