@@ -1176,6 +1176,16 @@ fn enter_carries_a_bullet_on() {
     v.toggle_bullets("bullet");
     v.move_caret(&mut host, "end", false);
     v.enter();
+    // The empty new paragraph shows its bullet while the caret is in it, as in PowerPoint.
+    v.sync_caret();
+    let bullets = |v: &mut SlidesView, host: &mut FixedMeasurer| texts(&v.paint(host, 0).items).iter().filter(|t| *t == "•").count();
+    assert_eq!(bullets(&mut v, &mut host), 2);
+    let revision = v.revisions()[0];
+    v.move_caret(&mut host, "up", false);
+    v.sync_caret();
+    assert_eq!(bullets(&mut v, &mut host), 1);
+    assert!(v.revisions()[0] > revision, "the slide is redrawn when the caret leaves the empty paragraph");
+    v.move_caret(&mut host, "down", false);
     v.insert_text("Next");
     assert_eq!(bulleted(&v, 0, 2), [("Hello".to_string(), true), ("Next".to_string(), true)]);
     let back = SlidesView::open(&v.save().unwrap()).unwrap();

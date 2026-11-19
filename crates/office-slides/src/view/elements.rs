@@ -153,8 +153,9 @@ impl SlidesView {
     /// The slide's frames as the inspector sees them.
     pub fn elements(&mut self, host: &mut dyn Measurer, index: usize) -> Vec<Element> {
         let Some(slide) = self.slides().get(index).cloned() else { return Vec::new() };
+        let caret = self.caret_para(index);
         let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
-        let d = Drawer { doc: &self.doc, art: &self.art, tables: &self.tables, ctx: &mut ctx, cache: &mut self.cache };
+        let d = Drawer { doc: &self.doc, art: &self.art, tables: &self.tables, ctx: &mut ctx, cache: &mut self.cache, caret };
         slide.frames.iter().map(|f| element(&d, &slide, f, Map::IDENTITY)).collect()
     }
 }

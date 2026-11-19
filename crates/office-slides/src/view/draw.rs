@@ -95,6 +95,9 @@ pub struct Drawer<'a, 'b, 'c> {
     pub tables: &'a TableStyles,
     pub ctx: &'b mut Ctx<'c>,
     pub cache: &'b mut flow::Cache,
+    /// The frame and paragraph the caret is in while editing: an empty paragraph there shows its
+    /// bullet, as PowerPoint does.
+    pub caret: Option<(u32, u32)>,
 }
 
 /// What a frame resolves to, for drawing and for the inspector.
@@ -343,8 +346,19 @@ impl Drawer<'_, '_, '_> {
         let vertical = settings.vertical != 0;
         let (bw, bh) = if vertical { (bb - t, rr - l) } else { (rr - l, bb - t) };
         let width = (bw - settings.insets[0] - settings.insets[2]).max(1.0);
-        let flow =
-            text::layout_body(self.ctx, self.cache, &paint, &c, &settings, &body.paragraphs, &resolved, look.text_color.as_ref(), width);
+        let caret = self.caret.filter(|(id, _)| *id == f.id).map(|(_, i)| i as usize);
+        let flow = text::layout_body(
+            self.ctx,
+            self.cache,
+            &paint,
+            &c,
+            &settings,
+            &body.paragraphs,
+            &resolved,
+            look.text_color.as_ref(),
+            width,
+            caret,
+        );
         let room = bh - settings.insets[1] - settings.insets[3];
         let dy = match settings.anchor {
             1 => (room - flow.height) / 2.0,
@@ -498,7 +512,7 @@ pub fn paint_diagram(
     }
     let (art, tables, mut cache) = (ArtSet { parts: Default::default() }, TableStyles::default(), flow::Cache::new());
     let slide = Slide::default();
-    let mut d = Drawer { doc, art: &art, tables: &tables, ctx, cache: &mut cache };
+    let mut d = Drawer { doc, art: &art, tables: &tables, ctx, cache: &mut cache, caret: None };
     d.diagram(&slide, Some(part), &frames, size, &Boxed { w, h, ..Default::default() }, &mut out);
     out
 }

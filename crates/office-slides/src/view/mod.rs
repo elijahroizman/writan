@@ -92,6 +92,9 @@ pub struct SlidesView {
     /// Each slide's revision: goes up when the slide changes, so drawings can be reused.
     pub(crate) revisions: Vec<u64>,
     pub(crate) next_revision: u64,
+    /// The empty paragraph whose bullet shows because the caret is in it (slide, frame,
+    /// paragraph), as last drawn.
+    pub(crate) caret_shown: Option<(usize, u32, u32)>,
     /// Where the up and down arrows aim while editing text.
     pub(crate) goal_x: Option<f64>,
     /// Formatting picked with a caret while editing, for the next text typed.
@@ -182,6 +185,7 @@ impl SlidesView {
             styles_sent: 0,
             revisions: (1..=n as u64).collect(),
             next_revision: n as u64 + 1,
+            caret_shown: None,
             goal_x: None,
             pending: None,
             chart_clipboard_scope: Default::default(),
@@ -239,13 +243,41 @@ impl SlidesView {
         self.next_revision += n as u64;
     }
 
+    /// The frame and paragraph the caret is in on slide `index`, while editing text outside a table.
+    pub(crate) fn caret_para(&self, index: usize) -> Option<(u32, u32)> {
+        let e = self.sel.editing.as_ref().filter(|_| index == self.sel.active)?;
+        e.sel.focus.path.container().is_empty().then(|| (e.frame, e.sel.focus.path.block()))
+    }
+
+    /// After a command: redraws the slide where an empty paragraph's bullet shows or goes as the
+    /// caret moves into or out of it.
+    pub fn sync_caret(&mut self) {
+        let active = self.sel.active;
+        let now = self.caret_para(active).filter(|&(id, i)| {
+            self.slides().get(active).and_then(|s| find_frame(&s.frames, id)).is_some_and(|f| match &f.content {
+                FrameContent::Shape { text: Some(body), .. } => {
+                    body.paragraphs.get(i as usize).is_some_and(|p| office_engine::text::flat(p).text.trim().is_empty())
+                }
+                _ => false,
+            })
+        });
+        let now = now.map(|(id, i)| (active, id, i));
+        if now != self.caret_shown {
+            for (slide, _, _) in [self.caret_shown, now].into_iter().flatten() {
+                self.touch(slide);
+            }
+            self.caret_shown = now;
+        }
+    }
+
     /// Draws a slide.
     pub fn paint(&mut self, host: &mut dyn Measurer, index: usize) -> SlidePaint {
         let (w, h) = self.size();
         let Some(slide) = self.slides().get(index).cloned() else { return SlidePaint { width: w, height: h, items: Vec::new() } };
         let mut items = Vec::new();
+        let caret = self.caret_para(index);
         let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
-        let mut d = draw::Drawer { doc: &self.doc, art: &self.art, tables: &self.tables, ctx: &mut ctx, cache: &mut self.cache };
+        let mut d = draw::Drawer { doc: &self.doc, art: &self.art, tables: &self.tables, ctx: &mut ctx, cache: &mut self.cache, caret };
         d.slide(&slide, &mut items, w, h);
         SlidePaint { width: display::r(w), height: display::r(h), items }
     }

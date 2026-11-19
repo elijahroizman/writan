@@ -159,7 +159,8 @@ const RPR: &[&[&str]] = &[
 ];
 
 /// The children of `a:pPr`, in schema order.
-const PPR: &[&[&str]] = &[
+/// The order of `a:pPr`'s children, by slot.
+pub const PPR: &[&[&str]] = &[
     &["lnSpc"],
     &["spcBef"],
     &["spcAft"],

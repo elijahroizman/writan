@@ -492,6 +492,7 @@ impl SlidesDoc {
                 serde_json::json!(all.len())
             }
         };
+        v.sync_caret();
         Ok(json(&out))
     }
 
