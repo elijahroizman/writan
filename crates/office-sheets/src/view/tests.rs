@@ -161,18 +161,39 @@ fn cutting_a_formula_across_sheets_keeps_unmoved_dependencies_on_the_source_shee
     let a1 = CellRef::new(0, 0);
     let b1 = CellRef::new(0, 1);
     let c1 = CellRef::new(0, 2);
+    let d1 = CellRef::new(0, 3);
     let source = Range { start: b1, end: b1 };
     v.set_input(0, a1, "5");
     v.set_input(0, b1, "=$A$1");
+    v.set_input(0, d1, "=B1");
     let (text, clipboard) = v.copy(0, source, Some("cut"));
     v.cut(0, source, "cut".into());
     v.add_sheet();
+    v.rename_sheet(1, "New totals");
+    v.set_input(0, a1, "7");
+    v.set_input(1, a1, "99");
     v.paste(1, Range { start: c1, end: c1 }, &text, clipboard);
 
     assert_eq!(v.cell_info(1, c1).input, "='Owner''s Data'!$A$1");
-    assert_eq!(v.cell_info(1, c1).display, "5");
-    v.set_input(1, a1, "99");
-    assert_eq!(v.cell_info(1, c1).display, "5");
+    assert_eq!(v.cell_info(1, c1).display, "7");
+    assert_eq!(v.cell_info(0, d1).input, "='New totals'!C1");
+    assert_eq!(v.cell_info(0, d1).display, "7");
+}
+
+#[test]
+fn replacing_cut_source_leaves_its_dependents_at_that_address() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    let a1 = CellRef::new(0, 0);
+    let b1 = CellRef::new(0, 1);
+    let source = Range::parse("A1").unwrap();
+    v.set_input(0, a1, "5");
+    v.set_input(0, b1, "=A1");
+    let (text, clipboard) = v.copy(0, source, Some("cut"));
+    v.cut(0, source, "cut".into());
+    v.set_input(0, a1, "7");
+    v.clear(0, source);
+    v.paste(0, Range::parse("C1").unwrap(), &text, clipboard);
+    assert_eq!(v.cell_info(0, b1).input, "=A1");
 }
 
 #[test]

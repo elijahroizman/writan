@@ -50,9 +50,8 @@ pub struct ClipboardRange {
 
 pub(super) struct PendingCut {
     id: String,
-    sheet: usize,
+    sheet: String,
     source: Range,
-    revision: u64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -110,6 +109,13 @@ impl SheetsView {
                 steps.push((at, old, new));
             }
         }
+        if self.cut_on_sheet(sheet).is_some_and(|cut| {
+            steps
+                .iter()
+                .any(|(at, _, new)| cut.source.contains(*at) && new.as_ref().is_some_and(|c| c.formula.is_some() || !c.value.is_empty()))
+        }) {
+            self.pending_cut = None;
+        }
         (!steps.is_empty()).then_some(CStep::Cells { sheet, cells: steps })
     }
 
@@ -126,6 +132,7 @@ impl SheetsView {
     /// `change_sheet` for inserting or deleting rows or columns, or `change_book` when another
     /// sheet has charts whose references may move with it.
     fn change_for_shift(&mut self, sheet: usize, f: impl FnOnce(&mut SheetsView)) {
+        self.cancel_cut_on_sheet(sheet);
         if self.sheets().iter().enumerate().any(|(i, s)| i != sheet && !s.charts.is_empty()) {
             self.change_book(f);
         } else {
@@ -145,6 +152,7 @@ impl SheetsView {
 
     pub fn undo(&mut self) -> bool {
         let Some(e) = self.history.undo() else { return false };
+        self.pending_cut = None;
         for s in e.steps.iter().rev() {
             self.apply(s, true);
         }
@@ -156,6 +164,7 @@ impl SheetsView {
 
     pub fn redo(&mut self) -> bool {
         let Some(e) = self.history.redo() else { return false };
+        self.pending_cut = None;
         for s in &e.steps {
             self.apply(s, false);
         }
@@ -499,12 +508,7 @@ impl SheetsView {
         let n = self.sheets().len();
         let name =
             (n + 1..).map(|k| format!("Sheet{k}")).find(|name| !self.sheets().iter().any(|s| s.name.eq_ignore_ascii_case(name))).unwrap();
-        let before = self.revision;
         self.change_book(|v| v.sheets_mut().push(Sheet::new(name)));
-        // A new destination sheet does not change the pending cut's source.
-        if let Some(cut) = self.pending_cut.as_mut().filter(|cut| cut.revision == before) {
-            cut.revision = self.revision;
-        }
         self.sel = SheetSel { sheet: n, ..Default::default() };
     }
 
@@ -515,6 +519,9 @@ impl SheetsView {
             return;
         }
         let Some(old) = self.sheets().get(sheet).map(|s| s.name.clone()) else { return };
+        if old != name {
+            self.cancel_cut_on_sheet(sheet);
+        }
         self.change_book(|v| {
             super::charts::rename_charts(v.sheets_mut(), &old, &name);
             if let Some(s) = v.sheets_mut().get_mut(sheet) {
@@ -528,6 +535,7 @@ impl SheetsView {
         if self.sheets().len() <= 1 {
             return;
         }
+        self.cancel_cut_on_sheet(sheet);
         self.change_book(|v| {
             v.sheets_mut().remove(sheet);
         });
@@ -547,6 +555,16 @@ impl SheetsView {
     }
 
     // ---- clipboard ----
+
+    fn cut_on_sheet(&self, sheet: usize) -> Option<&PendingCut> {
+        self.pending_cut.as_ref().filter(|cut| self.sheets().get(sheet).is_some_and(|s| s.name == cut.sheet))
+    }
+
+    fn cancel_cut_on_sheet(&mut self, sheet: usize) {
+        if self.cut_on_sheet(sheet).is_some() {
+            self.pending_cut = None;
+        }
+    }
 
     /// A range as displayed TSV, plus spreadsheet data for formulas and cuts.
     pub fn copy(&self, sheet: usize, range: Range, move_id: Option<&str>) -> (String, Option<ClipboardRange>) {
@@ -603,6 +621,7 @@ impl SheetsView {
     pub fn cut(&mut self, sheet: usize, range: Range, move_id: String) {
         let source = clipboard_bounds(range);
         let Some(s) = self.sheets().get(sheet) else { return };
+        let sheet_name = s.name.clone();
         let mut cells = existing_cells(Some(s), source);
         let formulas = move_formula_edits(s, Some(source), None);
         cells.extend(formulas.keys().copied());
@@ -615,7 +634,7 @@ impl SheetsView {
                 v.clear_cell(sheet, at);
             }
         });
-        self.pending_cut = Some(PendingCut { id: move_id, sheet, source, revision: self.revision });
+        self.pending_cut = Some(PendingCut { id: move_id, sheet: sheet_name, source });
     }
 
     /// Pastes a range at `at`; a single cell fills the selection.
@@ -648,20 +667,15 @@ impl SheetsView {
             at.start.col.saturating_add(source.end.col - source.start.col),
         );
         let destination = Range { start: at.start, end };
-        let local_cut = self.pending_cut.as_ref().filter(|cut| {
-            cut.revision == self.revision && clipboard.cut && clipboard.move_id.as_deref() == Some(cut.id.as_str()) && source == cut.source
-        });
+        let local_cut = self
+            .pending_cut
+            .as_ref()
+            .filter(|cut| clipboard.cut && clipboard.move_id.as_deref() == Some(cut.id.as_str()) && source == cut.source);
         if local_cut.is_some() && (end.row > 1_048_575 || end.col > 16_383 || sheet >= self.sheets().len()) {
             return;
         }
-        let moved = local_cut.and_then(|cut| {
-            Some(MovedRange {
-                source,
-                from_sheet: &self.sheets().get(cut.sheet)?.name,
-                to: at.start,
-                to_sheet: &self.sheets().get(sheet)?.name,
-            })
-        });
+        let moved = local_cut
+            .and_then(|cut| Some(MovedRange { source, from_sheet: &cut.sheet, to: at.start, to_sheet: &self.sheets().get(sheet)?.name }));
         let single = source.start == source.end && moved.is_none();
         let inputs: HashMap<_, _> = clipboard
             .cells
