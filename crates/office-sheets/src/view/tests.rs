@@ -864,3 +864,69 @@ fn a_circular_reference_saved_with_a_result_opens_as_zero() {
     assert!(back.circular().is_empty());
     assert_ne!(back.cell_info(0, a1).display, "0");
 }
+
+/// CORPUS-010: conditional formatting, data validation and pictures show.
+#[test]
+fn conditional_formats_validation_and_pictures_show() {
+    let bytes = include_bytes!("../../../../tests/stress/samples/S2-xlsx-cf-validation-picture.xlsx");
+    let mut v = SheetsView::open(bytes, "visuals.xlsx").unwrap();
+    let mut host = FixedMeasurer::default();
+    let p = v.paint(&mut host, 0, 0, 6, 0, 6);
+    let grid = v.grid(0).clone();
+    let fill_at = |row: u32, col: u32| {
+        p.items.iter().find_map(|i| match i {
+            Item::Rect { x, y, fill: Some(f), .. } if (*x - grid.x(col)).abs() < 0.5 && (*y - grid.y(row)).abs() < 0.5 => Some(f.clone()),
+            _ => None,
+        })
+    };
+    assert_eq!(fill_at(1, 0).as_deref(), Some("#c6efce"));
+    assert_eq!(fill_at(2, 0), None);
+    assert_eq!(fill_at(2, 1).as_deref(), Some("#ffc7ce"));
+    assert_eq!(fill_at(1, 1), None);
+    // The color scale runs from red at the lowest score to green at the highest.
+    assert_eq!(fill_at(4, 2).as_deref(), Some("#f8696b"));
+    assert_eq!(fill_at(1, 2).as_deref(), Some("#63be7b"));
+    let bars: Vec<f64> = p
+        .items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Rect { x, w, fill: Some(f), .. } if f.starts_with("linear-gradient") && (*x - grid.x(3) - 2.0).abs() < 0.5 => Some(*w),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bars.len(), 4);
+    assert!(bars[0] > bars[2] && bars[2] > bars[1] && bars[1] > bars[3], "{bars:?}");
+    let icons = p.items.iter().filter(|i| matches!(i, Item::Path { .. })).count();
+    assert_eq!(icons, 4);
+    let info = v.cell_info(0, CellRef::new(5, 0));
+    let validation = info.validation.unwrap();
+    assert_eq!(validation.list, Some(vec!["Open".to_string(), "Late".into(), "Done".into()]));
+    assert_eq!(validation.prompt.as_deref(), Some("Pick a status"));
+    assert_eq!(v.refusal(0, CellRef::new(5, 0), "Lost").map(|r| r.message), Some(Some("Pick Open, Late or Done".into())));
+    assert!(v.refusal(0, CellRef::new(5, 0), "late").is_none());
+    assert!(v.refusal(0, CellRef::new(5, 1), "anything").is_none());
+    let pictures = v.pictures(0);
+    assert_eq!(pictures.len(), 1);
+    assert_eq!(pictures[0].media, "xl/media/image1.png");
+    assert_eq!((pictures[0].x, pictures[0].y), (grid.x(6), grid.y(1)));
+    assert!(v.media(&pictures[0].media).is_some_and(|(b, _)| b.starts_with(b"\x89PNG")));
+    // Saving keeps the rules and the picture.
+    v.set_input(0, CellRef::new(6, 0), "Done");
+    let back = SheetsView::open(&v.save().unwrap(), "visuals.xlsx").unwrap();
+    assert_eq!(back.sheets()[0].pictures.len(), 1);
+    assert!(back.cell_info(0, CellRef::new(5, 0)).validation.is_some());
+}
+
+#[test]
+fn conditional_formats_reach_cells_that_hold_nothing() {
+    use crate::conditional::tests::{book, row, s};
+    let rules = r#"<conditionalFormatting sqref="A1:B3"><cfRule type="containsBlanks" dxfId="0" priority="1"><formula>LEN(TRIM(A1))=0</formula></cfRule></conditionalFormatting>"#;
+    let green = r#"<dxf><fill><patternFill><bgColor rgb="FF00B050"/></patternFill></fill></dxf>"#;
+    let doc = book(&row(1, &[s("A1", "x")]), rules, "", green);
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "blanks.xlsx").unwrap();
+    let mut host = FixedMeasurer::default();
+    let p = v.paint(&mut host, 0, 0, 10, 0, 10);
+    let greens = p.items.iter().filter(|i| matches!(i, Item::Rect { fill: Some(f), .. } if f == "#00b050")).count();
+    assert_eq!(greens, 5);
+}

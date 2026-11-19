@@ -158,6 +158,8 @@ pub struct StyleSheet {
     fills: Vec<Fill>,
     borders: Vec<Border>,
     xfs: Vec<Xf>,
+    /// Differential formats, which conditional formatting applies by index.
+    dxfs: Vec<Dxf>,
     /// Whether anything was added since reading.
     changed: bool,
 }
@@ -226,6 +228,93 @@ fn read_border(el: &Element) -> Border {
             .unwrap_or_default()
     };
     Border { left: side("left"), right: side("right"), top: side("top"), bottom: side("bottom"), diagonal: side("diagonal") }
+}
+
+/// What a differential format changes: only what it sets, laid over a cell's own format.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Dxf {
+    pub number_format: Option<String>,
+    pub bold: Option<bool>,
+    pub italic: Option<bool>,
+    pub strike: Option<bool>,
+    /// `Some(None)` turns underlining off.
+    pub underline: Option<Option<String>>,
+    pub color: Option<Color>,
+    /// The fill color; a differential solid fill keeps it in `bgColor`.
+    pub fill: Option<Color>,
+    pub border: Border,
+}
+
+impl Dxf {
+    /// `f` with this format laid over it.
+    pub fn apply(&self, f: &mut CellFormat) {
+        if let Some(n) = &self.number_format {
+            f.number_format = n.clone();
+        }
+        if let Some(b) = self.bold {
+            f.font.bold = b;
+        }
+        if let Some(i) = self.italic {
+            f.font.italic = i;
+        }
+        if let Some(s) = self.strike {
+            f.font.strike = s;
+        }
+        if let Some(u) = &self.underline {
+            f.font.underline = u.clone();
+        }
+        if let Some(c) = &self.color {
+            f.font.color = Some(c.clone());
+        }
+        if let Some(c) = &self.fill {
+            f.fill = Fill { pattern: "solid".into(), fg: Some(c.clone()), bg: None };
+        }
+        for (to, from) in [
+            (&mut f.border.left, &self.border.left),
+            (&mut f.border.right, &self.border.right),
+            (&mut f.border.top, &self.border.top),
+            (&mut f.border.bottom, &self.border.bottom),
+        ] {
+            if from.style.is_some() {
+                *to = from.clone();
+            }
+        }
+    }
+}
+
+/// A `dxf` element, in the main namespace or (inline in an `x14:cfRule`) the 2009 one.
+pub fn read_dxf(el: &Element) -> Dxf {
+    let child = |e: &Element, local: &str| e.elements().find(|c| c.local == local).cloned();
+    let mut d = Dxf::default();
+    if let Some(n) = child(el, "numFmt") {
+        d.number_format = n.attr("formatCode").map(str::to_string);
+    }
+    if let Some(font) = child(el, "font") {
+        let on = |local: &str| child(&font, local).map(|e| e.attr("val").and_then(parse_bool).unwrap_or(true));
+        d.bold = on("b");
+        d.italic = on("i");
+        d.strike = on("strike");
+        d.underline = child(&font, "u").map(|u| Some(u.attr("val").unwrap_or("single").to_string()).filter(|v| v != "none"));
+        d.color = child(&font, "color").as_ref().and_then(read_color);
+    }
+    if let Some(p) = child(el, "fill").and_then(|f| child(&f, "patternFill")) {
+        if p.attr("patternType") != Some("none") {
+            d.fill = child(&p, "bgColor").as_ref().and_then(read_color).or_else(|| child(&p, "fgColor").as_ref().and_then(read_color));
+        }
+    }
+    if let Some(b) = child(el, "border") {
+        let side = |local: &str| {
+            child(&b, local)
+                .map(|s| BorderSide {
+                    style: s.attr("style").filter(|s| *s != "none").map(str::to_string),
+                    color: child(&s, "color").as_ref().and_then(read_color),
+                })
+                .unwrap_or_default()
+        };
+        d.border =
+            Border { left: side("left"), right: side("right"), top: side("top"), bottom: side("bottom"), diagonal: BorderSide::default() };
+    }
+    d
 }
 
 fn read_xf(el: &Element) -> Xf {
@@ -403,7 +492,8 @@ impl StyleSheet {
         let fills = list("fills", "fill").iter().map(read_fill).collect();
         let borders = list("borders", "border").iter().map(read_border).collect();
         let xfs = list("cellXfs", "xf").iter().map(read_xf).collect();
-        StyleSheet { num_fmts, fonts, fills, borders, xfs, doc, changed: false }
+        let dxfs = list("dxfs", "dxf").iter().map(read_dxf).collect();
+        StyleSheet { num_fmts, fonts, fills, borders, xfs, dxfs, doc, changed: false }
     }
 
     /// The style sheet a new workbook gets: what the core writes for one, so indexes agree.
@@ -449,6 +539,11 @@ impl StyleSheet {
     /// The format code for a number format id: the workbook's own, or a built-in.
     pub fn number_format(&self, id: u32) -> &str {
         self.num_fmts.iter().find(|(i, _)| *i == id).map(|(_, c)| c.as_str()).or_else(|| builtin(id)).unwrap_or("General")
+    }
+
+    /// Differential format `index`, as conditional formatting refers to it.
+    pub fn dxf(&self, index: usize) -> Option<&Dxf> {
+        self.dxfs.get(index)
     }
 
     /// What style index `index` says. An index past the end (a broken file) is the default.

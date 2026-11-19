@@ -27,6 +27,9 @@ pub struct Sheet {
     /// Charts on the sheet, back to front.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub charts: Vec<super::Chart>,
+    /// Pictures on the sheet, back to front.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pictures: Vec<super::SheetPicture>,
     /// The rows and columns the sheet is shown with, when someone set them. Excel has no such
     /// thing; the sheets layer keeps it in a hidden name.
     #[serde(default, skip_serializing_if = "Option::is_none")]

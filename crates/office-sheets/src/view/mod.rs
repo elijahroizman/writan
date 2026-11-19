@@ -23,7 +23,7 @@ use office_engine::style::TextStyle;
 use serde::Serialize;
 
 use crate::{format_of, CellFormat, Sheets};
-pub use charts::{ChartPatch, ChartView, SeriesView};
+pub use charts::{ChartPatch, ChartView, PictureView, SeriesView};
 pub use commands::{ClipboardRange, FormatPatch};
 
 /// A picked range: where it started and where it's been extended to.
@@ -158,6 +158,9 @@ pub struct CellInfo {
     pub wrap: bool,
     /// Whether the cell is part of a merged range.
     pub merged: bool,
+    /// The cell's data validation: its list and input message.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub validation: Option<crate::validation::ValidationInfo>,
 }
 
 /// Excel's default font and size, when the style sheet says nothing.
@@ -300,9 +303,14 @@ impl SheetsView {
         let Some(s) = self.sheets().get(sheet) else { return Grid::default() };
         let used = s.used_range();
         let merges_end = s.merges.iter().map(|m| (m.end.row, m.end.col)).fold((0, 0), |a, b| (a.0.max(b.0), a.1.max(b.1)));
-        // Room for the charts too.
-        let charts_end =
-            s.charts.iter().map(|c| c.anchor.to.unwrap_or(c.anchor.from)).fold((0, 0), |a, p| (a.0.max(p.row), a.1.max(p.col)));
+        // Room for the charts and pictures too.
+        let charts_end = s
+            .charts
+            .iter()
+            .map(|c| c.anchor)
+            .chain(s.pictures.iter().map(|p| p.anchor))
+            .map(|a| a.to.unwrap_or(a.from))
+            .fold((0, 0), |a, p| (a.0.max(p.row), a.1.max(p.col)));
         let content = (
             used.map(|u| u.end.row + 1).unwrap_or(0).max(merges_end.0 + 1).max(charts_end.0 + 1),
             used.map(|u| u.end.col + 1).unwrap_or(0).max(merges_end.1 + 1).max(charts_end.1 + 1),
@@ -387,8 +395,9 @@ impl SheetsView {
     pub fn paint(&mut self, host: &mut dyn Measurer, sheet: usize, r0: u32, r1: u32, c0: u32, c1: u32) -> GridPaint {
         self.grid(sheet);
         let gridlines = self.show_gridlines(sheet);
-        let SheetsView { doc, measure, styles, cache, grids, .. } = self;
+        let SheetsView { doc, measure, styles, cache, grids, now, .. } = self;
         let doc: &Document = doc;
+        let rules = crate::conditional::Rules::read(doc, sheet, *now);
         let grid = &grids[&sheet];
         let Some(s) = (match &doc.body {
             Body::Workbook { sheets } => sheets.get(sheet),
@@ -432,6 +441,24 @@ impl SheetsView {
                 cells.push(CellRef::new(row.index, c.col));
             }
         }
+        // Rules can format cells that hold nothing, which the rows don't list.
+        if !rules.is_empty() {
+            let have: std::collections::HashSet<CellRef> = cells.iter().copied().collect();
+            let mut blank = Vec::new();
+            for range in rules.blank_ranges() {
+                for row in range.start.row.max(r0)..=range.end.row.min(r1.saturating_sub(1)) {
+                    for col in range.start.col.max(c0)..=range.end.col.min(c1.saturating_sub(1)) {
+                        let at = CellRef::new(row, col);
+                        if !have.contains(&at) {
+                            blank.push(at);
+                        }
+                    }
+                }
+            }
+            blank.sort();
+            blank.dedup();
+            cells.extend(blank);
+        }
         for at in cells {
             let merge = covered(at);
             if merge.is_some_and(|m| m.start != at) {
@@ -445,7 +472,11 @@ impl SheetsView {
             if cw <= 0.0 || ch <= 0.0 {
                 continue;
             }
-            let f = format_of(doc, sheet, at);
+            let mut f = format_of(doc, sheet, at);
+            let look = if rules.is_empty() { None } else { rules.look(doc, at) };
+            if let Some(look) = &look {
+                look.dxf.apply(&mut f);
+            }
             if let Some(fill) = fill_css(doc, &f) {
                 items.push(Item::Rect { x: r(cx), y: r(cy), w: r(cw), h: r(ch), fill: Some(fill) });
             }
@@ -453,6 +484,37 @@ impl SheetsView {
             let value = s.value(at);
             if value.is_empty() {
                 continue;
+            }
+            let mut icon_room = 0.0;
+            if let Some(look) = &look {
+                if let Some(bar) = &look.bar {
+                    let c = bar.color.resolve(&|n| doc.theme.as_ref()?.scheme_color(n));
+                    let fill = if bar.gradient {
+                        format!("linear-gradient(90deg, {} 0%, {} 100%)", c.css(), Rgba { rgb: tint(c.rgb, 0.85), alpha: 1.0 }.css())
+                    } else {
+                        c.css()
+                    };
+                    let w = ((cw - 4.0) * bar.len).max(0.0);
+                    items.push(Item::Rect { x: r(cx + 2.0), y: r(cy + 2.0), w: r(w), h: r((ch - 4.0).max(0.0)), fill: Some(fill) });
+                }
+                if let Some(icon) = &look.icon {
+                    let size = 12.0f64.min(ch - 2.0).max(0.0);
+                    let (d, fill) = icon_path(icon);
+                    let k = size / 12.0;
+                    items.push(Item::Path {
+                        x: r(cx + 2.0),
+                        y: r(cy + (ch - size) / 2.0),
+                        d: scale_path(&d, k),
+                        fill: Some(fill),
+                        stroke: None,
+                        sw: 0.0,
+                        dash: "solid",
+                    });
+                    icon_room = size + 3.0;
+                }
+                if look.hide_value {
+                    continue;
+                }
             }
             let formatted = crate::numfmt::format(value, &f.number_format, crate::excel(doc).map(|x| x.date_system).unwrap_or_default());
             let mut shown = formatted.text.clone();
@@ -515,7 +577,7 @@ impl SheetsView {
                 "justify" | "distributed" => para::Align::Justify,
                 _ => para::Align::Left,
             };
-            spec.indent_start = 3.0 + f.alignment.indent as f64 * 9.0;
+            spec.indent_start = 3.0 + f.alignment.indent as f64 * 9.0 + icon_room;
             spec.indent_end = 3.0;
             spec.line_gap = false;
             // Unwrapped text is one line at its own width: centered or right-aligned text wider
@@ -677,6 +739,7 @@ impl SheetsView {
             valign: f.alignment.vertical.clone(),
             wrap: f.alignment.wrap,
             merged: s.is_some_and(|s| s.merges.iter().any(|m| m.contains(at))),
+            validation: crate::validation::at(&self.doc, sheet, at).map(|v| v.info(&self.doc, sheet, at, self.now)),
         }
     }
 }
@@ -707,6 +770,96 @@ fn fill_css(doc: &Document, f: &CellFormat) -> Option<String> {
     }
     let c = f.fill.fg.as_ref().or(f.fill.bg.as_ref())?;
     Some(c.resolve(&|n| doc.theme.as_ref()?.scheme_color(n)).css())
+}
+
+/// `c` taken `t` of the way to white.
+fn tint(c: Rgb, t: f64) -> Rgb {
+    let m = |x: u8| (f64::from(x) + (255.0 - f64::from(x)) * t).round() as u8;
+    Rgb(m(c.0), m(c.1), m(c.2))
+}
+
+/// An icon-set icon as a 12-pixel path and its color: arrows and triangles point the way the
+/// band goes, everything else is a dot colored from red (lowest) to green (highest).
+fn icon_path(icon: &crate::conditional::Icon) -> (String, String) {
+    let t = if icon.count > 1 { icon.index as f64 / (icon.count - 1) as f64 } else { 1.0 };
+    let gray = icon.set.contains("Gray");
+    let ramp = |t: f64| -> String {
+        if gray {
+            return Rgba { rgb: tint(Rgb(0x59, 0x59, 0x59), 0.6 * (1.0 - t)), alpha: 1.0 }.css();
+        }
+        let (red, yellow, green) = (Rgb(0xe0, 0x39, 0x3e), Rgb(0xf5, 0xc2, 0x42), Rgb(0x3e, 0xa0, 0x55));
+        let mix = |a: Rgb, b: Rgb, t: f64| {
+            let m = |x: u8, y: u8| (f64::from(x) + (f64::from(y) - f64::from(x)) * t).round() as u8;
+            Rgb(m(a.0, b.0), m(a.1, b.1), m(a.2, b.2))
+        };
+        let rgb = if t < 0.5 { mix(red, yellow, t * 2.0) } else { mix(yellow, green, (t - 0.5) * 2.0) };
+        Rgba { rgb, alpha: 1.0 }.css()
+    };
+    let up = t > 0.75;
+    let down = t < 0.25;
+    let shape = if icon.set.contains("Arrows") {
+        if up {
+            "M6 0L12 6L8.5 6L8.5 12L3.5 12L3.5 6L0 6Z"
+        } else if down {
+            "M3.5 0L8.5 0L8.5 6L12 6L6 12L0 6L3.5 6Z"
+        } else {
+            "M0 3.5L6 3.5L6 0L12 6L6 12L6 8.5L0 8.5Z"
+        }
+    } else if icon.set.contains("Triangles") {
+        if up {
+            "M6 1L11 11L1 11Z"
+        } else if down {
+            "M1 1L11 1L6 11Z"
+        } else {
+            "M1 5L11 5L11 7L1 7Z"
+        }
+    } else if icon.set.contains("Flags") {
+        "M1 0L2.5 0L2.5 1L11 1L8 4.5L11 8L2.5 8L2.5 12L1 12Z"
+    } else if icon.set.contains("Rating") || icon.set.contains("Quarters") || icon.set.contains("Boxes") || icon.set.contains("Stars") {
+        return (
+            "M0 6a6 6 0 1 0 12 0a6 6 0 1 0 -12 0Z".into(),
+            Rgba { rgb: tint(Rgb(0x44, 0x72, 0xc4), 0.8 * (1.0 - t)), alpha: 1.0 }.css(),
+        );
+    } else {
+        "M0 6a6 6 0 1 0 12 0a6 6 0 1 0 -12 0Z"
+    };
+    (shape.into(), ramp(t))
+}
+
+/// A path's numbers multiplied by `k`, for an icon drawn smaller than 12 pixels.
+fn scale_path(d: &str, k: f64) -> String {
+    if (k - 1.0).abs() < 1e-9 {
+        return d.into();
+    }
+    let mut out = String::new();
+    let mut num = String::new();
+    // In an `a` arc the 4th and 5th numbers are flags, which stay as they are.
+    let mut arc_index: Option<usize> = None;
+    let flush = |num: &mut String, out: &mut String, arc_index: &mut Option<usize>| {
+        if num.is_empty() {
+            return;
+        }
+        let v: f64 = num.parse().unwrap_or(0.0);
+        let flag = arc_index.is_some_and(|i| i % 7 == 3 || i % 7 == 4);
+        out.push_str(&if flag { num.clone() } else { format!("{}", (v * k * 100.0).round() / 100.0) });
+        if let Some(i) = arc_index {
+            *arc_index = Some(*i + 1);
+        }
+        num.clear();
+    };
+    for ch in d.chars() {
+        if ch.is_ascii_digit() || ch == '.' || (ch == '-' && num.is_empty()) {
+            num.push(ch);
+        } else {
+            flush(&mut num, &mut out, &mut arc_index);
+            if ch.is_ascii_alphabetic() {
+                arc_index = matches!(ch, 'a' | 'A').then_some(0);
+            }
+            out.push(ch);
+        }
+    }
+    flush(&mut num, &mut out, &mut arc_index);
+    out
 }
 
 /// A cell format's text style.

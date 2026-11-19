@@ -274,3 +274,65 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.sg-picture {
+  position: absolute;
+  overflow: hidden;
+  pointer-events: none;
+}
+.sg-picture img {
+  position: absolute;
+  max-width: none;
+}
+.sg-prompt {
+  position: absolute;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 240px;
+  padding: 6px 8px;
+  font-size: 12px;
+  color: var(--text, #1f1f1f);
+  background: var(--panel, #fffde7);
+  border: 1px solid var(--border, #c8c8c8);
+  border-radius: 4px;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 15%);
+  pointer-events: none;
+}
+.sg-dropdown {
+  position: absolute;
+  z-index: 7;
+}
+.sg-dropdown-button {
+  width: 18px;
+  padding: 0;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--text, #1f1f1f);
+  background: var(--panel, #f3f3f3);
+  border: 1px solid var(--border, #c8c8c8);
+  cursor: pointer;
+}
+.sg-dropdown-list {
+  position: absolute;
+  top: 100%;
+  max-height: 220px;
+  margin: 2px 0 0;
+  padding: 2px 0;
+  overflow-y: auto;
+  list-style: none;
+  font-size: 12px;
+  background: var(--panel, #fff);
+  border: 1px solid var(--border, #c8c8c8);
+  border-radius: 4px;
+  box-shadow: 0 4px 10px rgb(0 0 0 / 18%);
+}
+.sg-dropdown-list li {
+  padding: 4px 10px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.sg-dropdown-list li:hover {
+  background: var(--hover, #e8f0fe);
+}

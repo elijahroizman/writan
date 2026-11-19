@@ -10,7 +10,7 @@ use std::collections::HashSet;
 use crate::formats::common::{rel_attr, PartRels};
 use crate::model::{
     format_number, ref_numbers, ref_texts, AnchorPoint, Chart, ChartAnchor, ChartGrouping, ChartKind, ChartSeries, ChartSource,
-    LegendPosition, SeriesCache, Sheet,
+    LegendPosition, SeriesCache, Sheet, SheetPicture,
 };
 use crate::opc::{rels::kind, Package};
 use crate::xml::{ns, Element, Node, XmlDoc};
@@ -40,6 +40,38 @@ pub(super) fn read_charts(pkg: &Package, sheet_part: &str) -> Result<Vec<Chart>>
             chart.anchor = at;
             chart.source = Some(ChartSource { drawing: drawing.clone(), part, read_as: Box::new(chart.clone()) });
             out.push(chart);
+        }
+    }
+    Ok(out)
+}
+
+/// The pictures in a worksheet's drawing, back to front.
+pub(super) fn read_pictures(pkg: &Package, sheet_part: &str) -> Result<Vec<SheetPicture>> {
+    let mut out = Vec::new();
+    for (_, drawing) in pkg.related(sheet_part, kind::DRAWING)? {
+        if !pkg.has(&drawing) {
+            continue;
+        }
+        let Ok(doc) = pkg.xml(&drawing) else { continue };
+        let rels = PartRels::new(pkg, &drawing)?;
+        for anchor in doc.root.elements() {
+            let Some(at) = read_anchor(anchor) else { continue };
+            let Some(pic) = anchor.child(ns::XDR, "pic") else { continue };
+            let Some(blip) = pic.descendant(ns::A, "blip") else { continue };
+            let Some(media) = rel_attr(blip, "embed").and_then(|id| rels.part(id)).filter(|p| pkg.has(p)) else { continue };
+            let crop = pic.descendant(ns::A, "srcRect").map(|r| {
+                let f = |k: &str| r.attr(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) / 100_000.0;
+                [f("l"), f("t"), f("r"), f("b")]
+            });
+            let props = pic.child(ns::XDR, "nvPicPr").and_then(|n| n.child(ns::XDR, "cNvPr"));
+            let text = |k: &str| props.and_then(|p| p.attr(k)).filter(|v| !v.is_empty()).map(str::to_string);
+            out.push(SheetPicture {
+                anchor: at,
+                media,
+                crop: crop.filter(|c| c.iter().any(|v| *v != 0.0)),
+                name: text("name"),
+                description: text("descr"),
+            });
         }
     }
     Ok(out)

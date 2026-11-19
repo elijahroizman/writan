@@ -15,6 +15,7 @@ const scripts = [
   'tests/stress/ui/css-fonts.mjs',
   'tests/stress/ui/datasafety.mjs',
   'tests/stress/ui/hidden-sheets.mjs',
+  'tests/stress/ui/excel-visuals.mjs',
   'tests/stress/ui/nasty.mjs',
   'tests/stress/ui/row-header-menu.mjs',
   'tests/stress/ui/security.mjs',

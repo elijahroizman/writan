@@ -106,9 +106,31 @@ impl SheetsDoc {
         json(&self.view.charts(sheet))
     }
 
+    /// A sheet's pictures as the app draws them: `{ x, y, w, h, media, crop, name }`.
+    pub fn pictures(&mut self, sheet: usize) -> String {
+        json(&self.view.pictures(sheet))
+    }
+
+    /// A picture's bytes, by media id.
+    pub fn media(&self, id: &str) -> Option<Vec<u8>> {
+        self.view.media(id).map(|(b, _)| b.to_vec())
+    }
+
+    /// A picture's media type.
+    #[wasm_bindgen(js_name = mediaType)]
+    pub fn media_type(&self, id: &str) -> Option<String> {
+        self.view.media(id).and_then(|(_, t)| t.map(str::to_string))
+    }
+
     /// A cell as the formula bar and inspector see it.
     pub fn cell(&self, sheet: usize, row: u32, col: u32) -> String {
         json(&self.view.cell_info(sheet, CellRef::new(row, col)))
+    }
+
+    /// Why typing `text` into a cell would be refused by its data validation, as
+    /// `{ style, title, message }`, or `null` when it's taken.
+    pub fn validate(&self, sheet: usize, row: u32, col: u32, text: &str) -> String {
+        json(&self.view.refusal(sheet, CellRef::new(row, col), text))
     }
 
     /// `{ sheet, anchor, focus, canUndo, canRedo, dirty, csv, circular }`, `circular` being the

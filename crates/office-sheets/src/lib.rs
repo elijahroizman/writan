@@ -25,11 +25,13 @@
 //! assert_eq!(office_sheets::display(&back, 0, CellRef::new(0, 0)), "25.6%");
 //! ```
 
+pub mod conditional;
 pub mod dates;
 pub mod eval;
 pub mod formula;
 pub mod numfmt;
 pub mod styles;
+pub mod validation;
 pub mod view;
 
 use std::collections::{HashMap, HashSet};
