@@ -1049,7 +1049,9 @@ fn shift_rules(s: &mut Sheet, name: &str, axis: Axis, at: u32, n: i64) {
         walk(el, &sqref, &adjust);
         changed = true;
     }
-    root.children.retain(|c| !matches!(c, Node::Element(e) if e.local == "conditionalFormatting" && e.attr("sqref").is_some_and(|v| v.trim().is_empty())));
+    root.children.retain(
+        |c| !matches!(c, Node::Element(e) if e.local == "conditionalFormatting" && e.attr("sqref").is_some_and(|v| v.trim().is_empty())),
+    );
     if changed {
         s.origin = office_core::model::Origin::new(root);
     }

@@ -88,6 +88,9 @@ pub struct SheetPicture {
     pub name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    /// Where the drawing had it when read, so a picture that moved with its cells is found again.
+    #[serde(skip)]
+    pub read_as: Option<ChartAnchor>,
 }
 
 /// What a file had cached for a series, for references the app can't follow.

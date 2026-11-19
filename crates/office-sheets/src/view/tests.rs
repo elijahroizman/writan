@@ -930,3 +930,37 @@ fn conditional_formats_reach_cells_that_hold_nothing() {
     let greens = p.items.iter().filter(|i| matches!(i, Item::Rect { fill: Some(f), .. } if f == "#00b050")).count();
     assert_eq!(greens, 5);
 }
+
+/// Deleting a row moves conditional formatting, validation and pictures with the cells.
+#[test]
+fn rules_and_pictures_follow_deleted_rows() {
+    let bytes = include_bytes!("../../../../tests/stress/samples/S2-xlsx-cf-validation-picture.xlsx");
+    let mut v = SheetsView::open(bytes, "visuals.xlsx").unwrap();
+    v.shift_rows(0, 0, -1);
+    let check = |v: &mut SheetsView| {
+        let mut host = FixedMeasurer::default();
+        let p = v.paint(&mut host, 0, 0, 6, 0, 6);
+        let grid = v.grid(0).clone();
+        let fill_at = |row: u32, col: u32| {
+            p.items.iter().find_map(|i| match i {
+                Item::Rect { x, y, fill: Some(f), .. } if (*x - grid.x(col)).abs() < 0.5 && (*y - grid.y(row)).abs() < 0.5 => {
+                    Some(f.clone())
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(fill_at(0, 0).as_deref(), Some("#c6efce"));
+        assert_eq!(fill_at(3, 1).as_deref(), Some("#ffc7ce"));
+        assert_eq!(fill_at(4, 1), None);
+        assert!(v.cell_info(0, CellRef::new(0, 0)).validation.is_some());
+        assert!(v.cell_info(0, CellRef::new(9, 0)).validation.is_none());
+        let pictures = v.pictures(0);
+        assert_eq!((pictures[0].x, pictures[0].y), (grid.x(6), grid.y(0)));
+    };
+    check(&mut v);
+    let mut back = SheetsView::open(&v.save().unwrap(), "visuals.xlsx").unwrap();
+    check(&mut back);
+    // Deleting every row a rule covers takes the rule with it.
+    back.shift_rows(0, 0, -10);
+    assert!(back.cell_info(0, CellRef::new(0, 0)).validation.is_none());
+}

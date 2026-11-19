@@ -71,6 +71,7 @@ pub(super) fn read_pictures(pkg: &Package, sheet_part: &str) -> Result<Vec<Sheet
                 crop: crop.filter(|c| c.iter().any(|v| *v != 0.0)),
                 name: text("name"),
                 description: text("descr"),
+                read_as: Some(at),
             });
         }
     }
@@ -314,7 +315,8 @@ pub(super) fn write_charts(sheet: &Sheet, sheet_part: &str, sheets: &[Sheet], sa
     let in_drawing: Vec<&str> = shown.iter().flatten().map(String::as_str).collect();
     let unchanged = charts.iter().all(|c| c.untouched() && c.source.as_ref().is_some_and(|s| s.drawing == drawing))
         && in_drawing.len() == charts.len()
-        && in_drawing.iter().all(|p| kept.contains(p));
+        && in_drawing.iter().all(|p| kept.contains(p))
+        && sheet.pictures.iter().all(|p| p.read_as.is_none_or(|r| r == p.anchor));
     if unchanged {
         return Ok(DrawingLink::Same);
     }
@@ -324,13 +326,24 @@ pub(super) fn write_charts(sheet: &Sheet, sheet_part: &str, sheets: &[Sheet], sa
     let mut old_anchors: Vec<(String, Element)> = Vec::new();
     let mut children = Vec::new();
     let mut index = 0;
+    let mut placed = vec![false; sheet.pictures.len()];
     for n in std::mem::take(&mut doc.root.children) {
         match n {
             Node::Element(e) if e.in_ns(ns::XDR) && e.local.ends_with("Anchor") => {
                 if let Some(Some(part)) = shown.get(index) {
                     old_anchors.push((part.clone(), e));
                 } else {
-                    children.push(Node::Element(e));
+                    // A picture that moved with its cells gets its new anchor.
+                    let was = e.child(ns::XDR, "pic").and_then(|_| read_anchor(&e));
+                    let moved = was.and_then(|was| {
+                        let i = (0..sheet.pictures.len()).find(|&i| !placed[i] && sheet.pictures[i].read_as == Some(was))?;
+                        placed[i] = true;
+                        Some(sheet.pictures[i].anchor).filter(|a| *a != was)
+                    });
+                    children.push(Node::Element(match moved {
+                        Some(at) => moved_anchor(e, &at),
+                        None => e,
+                    }));
                 }
                 index += 1;
             }
