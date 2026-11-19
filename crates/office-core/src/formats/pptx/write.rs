@@ -49,6 +49,8 @@ pub fn write(doc: &Document) -> Result<Package> {
     let mut list = Element::new(ns::P, "sldIdLst");
     let mut layout = first_layout(&out.pkg, &main)?;
     let mut written: Vec<String> = Vec::new();
+    // Names new slides ask for, which a new slide before them mustn't take.
+    let requested: Vec<&str> = slides.iter().filter_map(|s| s.part.as_deref()).filter(|p| !out.pkg.has(p)).collect();
     for slide in slides {
         // The slide's own layout, if it names one this package has.
         let wanted = slide.layout.clone().filter(|l| same && out.pkg.has(l));
@@ -75,7 +77,9 @@ pub fn write(doc: &Document) -> Result<Package> {
                 // A new slide can say what its part is to be called (the PowerPoint layer does,
                 // to keep speaker notes with it), if the name is free.
                 let named = slide.part.clone().filter(|p| !out.pkg.has(p) && p.starts_with("ppt/slides/") && p.ends_with(".xml"));
-                let p = named.unwrap_or_else(|| out.pkg.unused_name("ppt/slides/slide{}.xml"));
+                let p = named.unwrap_or_else(|| {
+                    (1..).map(|n| format!("ppt/slides/slide{n}.xml")).find(|p| !out.pkg.has(p) && !requested.contains(&p.as_str())).unwrap()
+                });
                 out.pkg.put_xml(&p, &XmlDoc::new(Element::new(ns::P, "sld")), types::PPTX_SLIDE);
                 match copy_of {
                     // A copy takes its original's relationships, which the markup it kept refers
