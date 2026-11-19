@@ -3,8 +3,8 @@
 
 use office_core::model::CellRef;
 use office_core::model::{
-    make_ref, parse_ref, ref_cells, rename_in_ref, AnchorPoint, Chart, ChartAnchor, ChartGrouping, ChartKind, ChartSeries, LegendPosition,
-    Range, Sheet, Value,
+    make_ref, parse_ref, ref_cells, AnchorPoint, Chart, ChartAnchor, ChartGrouping, ChartKind, ChartSeries, LegendPosition, Range, Sheet,
+    Value,
 };
 use serde::{Deserialize, Serialize};
 
@@ -439,19 +439,6 @@ fn data_block(c: &Chart) -> Option<(String, Range)> {
 fn data_range(c: &Chart, here: &str) -> Option<String> {
     let (sheet, r) = data_block(c)?;
     Some(if sheet.eq_ignore_ascii_case(here) { r.to_string() } else { format!("{}!{}", office_core::model::quote_sheet(&sheet), r) })
-}
-
-/// Charts' references after sheet `old` became `new`.
-pub(super) fn rename_charts(sheets: &mut [Sheet], old: &str, new: &str) {
-    for s in sheets {
-        for c in &mut s.charts {
-            for ser in &mut c.series {
-                for f in [ser.name_ref.as_mut(), ser.categories.as_mut(), Some(&mut ser.values)].into_iter().flatten() {
-                    *f = rename_in_ref(f, old, new);
-                }
-            }
-        }
-    }
 }
 
 /// Moves references into sheet `skip` held by the other sheets' charts (chart references always

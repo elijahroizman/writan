@@ -188,7 +188,7 @@ pub fn parse_ref(f: &str) -> Option<(String, Range)> {
 pub fn quote_sheet(name: &str) -> String {
     let plain = !name.is_empty()
         && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.')
-        && !name.starts_with(|c: char| c.is_ascii_digit() || c == '.')
+        && name.starts_with(|c: char| c.is_alphabetic() || c == '_')
         && CellRef::parse(name).is_none()
         && !name.eq_ignore_ascii_case("TRUE")
         && !name.eq_ignore_ascii_case("FALSE")
@@ -280,6 +280,8 @@ mod tests {
         assert_eq!(make_ref("My data", Range::parse("A2:A9").unwrap()), "'My data'!$A$2:$A$9");
         assert_eq!(make_ref("Sheet1", Range::parse("C3").unwrap()), "Sheet1!$C$3");
         assert_eq!(quote_sheet("A1"), "'A1'");
+        assert_eq!(quote_sheet("٣ Data"), "'٣ Data'");
+        assert_eq!(quote_sheet("٣Data"), "'٣Data'");
         assert_eq!(rename_in_ref("Sheet1!$A$1:$A$3", "sheet1", "Q 3"), "'Q 3'!$A$1:$A$3");
         assert_eq!(rename_in_ref("Other!$A$1", "Sheet1", "X"), "Other!$A$1");
     }
