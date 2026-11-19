@@ -654,3 +654,59 @@ fn other_kinds_of_file_are_an_error_not_a_crash() {
     let e = SheetsView::open(&word, "renamed.xlsx").err().expect("a Word file isn't a workbook");
     assert_eq!(e.to_string(), "this is a Word document, not an Excel workbook");
 }
+
+#[test]
+fn a_circular_reference_is_reported_and_saves_zero() {
+    let a1 = CellRef::new(0, 0);
+    let mut v = SheetsView::blank(Kind::Sheets);
+    assert!(v.circular().is_empty());
+    v.set_input(0, a1, "=A1+1");
+    assert_eq!(v.cell_info(0, a1).display, "0", "not what one step round the loop gives");
+    assert_eq!(v.circular(), &[(0, a1)]);
+
+    let part = v.sheets()[0].part.clone().unwrap();
+    let bytes = v.save().unwrap();
+    let xml = sheet_xml(&bytes, &part);
+    assert!(xml.contains("<f>A1+1</f><v>0</v>"), "{xml}");
+
+    // Reopened, it's still reported, before any edit.
+    let mut back = SheetsView::open(&bytes, "Book.xlsx").unwrap();
+    assert_eq!(back.circular(), &[(0, a1)]);
+    assert_eq!(back.cell_info(0, a1).display, "0");
+
+    back.set_input(0, a1, "=5");
+    assert!(back.circular().is_empty());
+    assert_eq!(back.cell_info(0, a1).display, "5");
+    back.undo();
+    assert_eq!(back.circular(), &[(0, a1)]);
+}
+
+#[test]
+fn a_circular_reference_saved_with_a_result_opens_as_zero() {
+    let a1 = CellRef::new(0, 0);
+    let mut v = SheetsView::blank(Kind::Sheets);
+    let b1 = CellRef::new(0, 1);
+    v.set_input(0, a1, "=A1+1");
+    v.set_input(0, b1, "=A1+1");
+    // As 0.10.10 saved it: one step round the loop, and B1 with no result yet.
+    if let Body::Workbook { sheets } = &mut v.doc.body {
+        sheets[0].cell_mut(a1).value = Value::Number(1.0);
+        sheets[0].cell_mut(b1).value = Value::Empty;
+    }
+    let bytes = v.save().unwrap();
+    let mut back = SheetsView::open(&bytes, "Book.xlsx").unwrap();
+    back.set_now(46000.0);
+    assert_eq!(back.circular(), &[(0, a1)]);
+    assert_eq!(back.cell_info(0, a1).display, "0");
+    assert_eq!(back.cell_info(0, b1).display, "1", "worked out from the loop at 0");
+
+    // Only circular without the clock: it keeps its result.
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.set_now(46000.0);
+    v.set_input(0, a1, "=IFERROR(NOW(),A1)");
+    let bytes = v.save().unwrap();
+    let mut back = SheetsView::open(&bytes, "Book.xlsx").unwrap();
+    back.set_now(46001.0);
+    assert!(back.circular().is_empty());
+    assert_ne!(back.cell_info(0, a1).display, "0");
+}

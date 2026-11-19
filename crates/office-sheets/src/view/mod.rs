@@ -118,6 +118,8 @@ pub struct SheetsView {
     /// What NOW() and TODAY() give: a serial number.
     pub(crate) now: Option<f64>,
     pending_cut: Option<commands::PendingCut>,
+    /// The formulas in a circular reference, as of the last recalculation.
+    pub(crate) circular: Vec<(usize, CellRef)>,
 }
 
 /// A block of the grid drawn: items in grid pixels.
@@ -182,6 +184,7 @@ impl SheetsView {
     }
 
     pub fn from_document(doc: Document, kind: Kind) -> SheetsView {
+        let circular = crate::circular_references(&doc, None);
         SheetsView {
             doc,
             kind,
@@ -196,6 +199,7 @@ impl SheetsView {
             revision: 1,
             pending_cut: None,
             now: None,
+            circular,
         }
     }
 
@@ -220,9 +224,34 @@ impl SheetsView {
     /// formula Excel supports.
     pub fn set_now(&mut self, serial: f64) {
         self.now = Some(serial);
-        if crate::calculate_uncached(&mut self.doc, self.now) > 0 {
+        // A circular reference's cached result is whatever the app that saved it got to round
+        // the loop, so it is 0 instead, before the formulas that read it are worked out.
+        // Without the clock, NOW() would make some look circular.
+        self.circular = crate::circular_references(&self.doc, self.now);
+        let mut zeroed = false;
+        if let Body::Workbook { sheets } = &mut self.doc.body {
+            for &(s, c) in &self.circular {
+                let cell = sheets[s].cell_mut(c);
+                if cell.value != Value::Number(0.0) {
+                    cell.value = Value::Number(0.0);
+                    zeroed = true;
+                }
+            }
+        }
+        let worked_out = crate::calculate_uncached(&mut self.doc, self.now) > 0;
+        if worked_out || zeroed {
             self.changed(None);
         }
+    }
+
+    /// The formulas in a circular reference (sheet index and cell), in sheet order.
+    pub fn circular(&self) -> &[(usize, CellRef)] {
+        &self.circular
+    }
+
+    /// Works the formulas out again after a change.
+    pub(crate) fn recalculate(&mut self) {
+        self.circular = crate::recalculate_with_report(&mut self.doc, self.now).circular;
     }
 
     pub fn sheets(&self) -> &[Sheet] {

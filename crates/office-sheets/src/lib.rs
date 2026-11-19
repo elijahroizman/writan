@@ -351,11 +351,25 @@ impl<'a> SheetFormulas<'a> {
     }
 }
 
+/// What [`recalculate_with_report`] found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Recalculation {
+    /// How many formulas there were.
+    pub formulas: usize,
+    /// The formulas found in a circular reference (sheet index and cell), in sheet order.
+    pub circular: Vec<(usize, CellRef)>,
+}
+
 /// Works out every formula in the workbook again and puts the results in the cells, as Excel
 /// does when it recalculates. `now` (a serial number) is what NOW() and TODAY() give; without
-/// one they're #N/A. A formula that depends on itself comes to 0, as in Excel. Returns how many
-/// formulas there were.
+/// one they're #N/A. A formula in a circular reference comes to 0, as in Excel. Returns how
+/// many formulas there were.
 pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
+    recalculate_with_report(doc, now).formulas
+}
+
+/// [`recalculate`], also saying which formulas are in a circular reference.
+pub fn recalculate_with_report(doc: &mut Document, now: Option<f64>) -> Recalculation {
     calculate(doc, now, |_| true)
 }
 
@@ -363,7 +377,7 @@ pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
 /// without a calculation engine (openpyxl) has them; every other formula keeps the result
 /// Excel stored for it. Returns how many formulas were worked out.
 pub fn calculate_uncached(doc: &mut Document, now: Option<f64>) -> usize {
-    calculate(doc, now, uncached)
+    calculate(doc, now, uncached).formulas
 }
 
 /// Whether a formula cell has no stored result. An empty text result is stored as `t="str"`
@@ -372,8 +386,34 @@ fn uncached(cell: &SheetCell) -> bool {
     cell.value.is_empty() && !cell.origin.get().is_some_and(|c| c.attr("t") == Some("str") && c.child(ns::X, "v").is_some())
 }
 
-fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> usize {
-    let Body::Workbook { sheets } = &doc.body else { return 0 };
+fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Recalculation {
+    let (results, circular) = evaluate(doc, now, include);
+    let formulas = results.len();
+    if let Body::Workbook { sheets } = &mut doc.body {
+        for ((s, r, c), value) in results {
+            let cell = sheets[s].cell_mut(CellRef::new(r, c));
+            if cell.value != value {
+                cell.value = value;
+            }
+        }
+    }
+    Recalculation { formulas, circular }
+}
+
+/// The formulas in a circular reference (sheet index and cell), in sheet order, found by
+/// working the workbook out without changing it.
+pub fn circular_references(doc: &Document, now: Option<f64>) -> Vec<(usize, CellRef)> {
+    evaluate(doc, now, |_| true).1
+}
+
+type CellKey = (usize, u32, u32);
+
+/// Every formula's result, and the formulas in a circular reference (see [`evaluate`]).
+type Evaluated = (Vec<(CellKey, Value)>, Vec<(usize, CellRef)>);
+
+/// Works out the formulas of the cells `include` picks; the rest keep their stored results.
+fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Evaluated {
+    let Body::Workbook { sheets } = &doc.body else { return (Vec::new(), Vec::new()) };
     let mut formulas = HashMap::new();
     for (si, s) in sheets.iter().enumerate() {
         let mut reader = SheetFormulas::new(s);
@@ -395,43 +435,132 @@ fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) 
         formulas,
         done: HashMap::new(),
         working: HashSet::new(),
+        path: Vec::new(),
+        reads: HashMap::new(),
         current: vec![0],
         deep: None,
         extents: vec![Default::default(); sheets.len()],
     };
-    // Top to bottom, so a chain that runs down the sheet (a running total) is worked out a
-    // cell at a time instead of all at once from its last cell.
-    let mut keys: Vec<(usize, u32, u32)> = book.formulas.keys().copied().collect();
-    keys.sort_unstable();
-    for &key in &keys {
-        // A chain deeper than MAX_DEPTH stops where it gets too deep; that cell is worked out
-        // first, then the chain again, which now finds it done.
-        let mut stack = vec![key];
-        while let Some(&(s, r, c)) = stack.last() {
-            book.current = vec![s];
-            book.value(s, r, c);
-            match book.deep.take() {
-                // A loop that long is a circular reference all the same.
-                Some(d) if stack.contains(&d) => {
-                    book.done.insert(d, V::Num(0.0));
+    let keys = book.work_out();
+    // A formula is in a circular reference when, through the formulas it reads, it comes back
+    // to itself. What the loop got to depends on where it was entered, so the loop's formulas
+    // come to 0, as in Excel, and everything is worked out again with that.
+    // A loop at 0 can send a formula down another branch (an IF) into a loop of its own, so
+    // this goes on until no new one turns up.
+    let mut circular = HashSet::new();
+    loop {
+        let found = loops(&book.reads);
+        if found.is_subset(&circular) {
+            break;
+        }
+        circular.extend(found);
+        book.done = circular.iter().map(|&k| (k, V::Num(0.0))).collect();
+        book.reads.clear();
+        book.work_out();
+    }
+    let results = keys.iter().map(|k| (*k, book.done.get(k).map(V::to_value).unwrap_or(Value::Number(0.0)))).collect();
+    let mut circular: Vec<CellKey> = circular.into_iter().collect();
+    circular.sort_unstable();
+    (results, circular.into_iter().map(|(s, r, c)| (s, CellRef::new(r, c))).collect())
+}
+
+/// The formulas that, through the formulas they read, come back to themselves: every
+/// strongly connected component of more than one formula, and each formula that reads itself.
+fn loops(reads: &HashMap<CellKey, HashSet<CellKey>>) -> HashSet<CellKey> {
+    // Tarjan's algorithm, without recursion: a chain of formulas can be thousands long.
+    #[derive(Default)]
+    struct Search {
+        /// Each formula's (index, lowlink).
+        index: HashMap<CellKey, (usize, usize)>,
+        stack: Vec<CellKey>,
+        on_stack: HashSet<CellKey>,
+        /// The formulas being searched, each with the reads it has left to follow.
+        work: Vec<(CellKey, Vec<CellKey>)>,
+    }
+    impl Search {
+        fn visit(&mut self, k: CellKey, reads: &HashMap<CellKey, HashSet<CellKey>>) {
+            let n = self.index.len();
+            self.index.insert(k, (n, n));
+            self.stack.push(k);
+            self.on_stack.insert(k);
+            self.work.push((k, reads.get(&k).map(|r| r.iter().copied().collect()).unwrap_or_default()));
+        }
+    }
+    let mut search = Search::default();
+    let mut found = HashSet::new();
+    let mut roots: Vec<CellKey> = reads.keys().copied().collect();
+    roots.sort_unstable();
+    for root in roots {
+        if search.index.contains_key(&root) {
+            continue;
+        }
+        search.visit(root, reads);
+        while let Some((k, next)) = search.work.last_mut() {
+            let k = *k;
+            if let Some(d) = next.pop() {
+                match search.index.get(&d) {
+                    None => search.visit(d, reads),
+                    Some(&(di, _)) if search.on_stack.contains(&d) => {
+                        let e = search.index.get_mut(&k).unwrap();
+                        e.1 = e.1.min(di);
+                    }
+                    Some(_) => {}
                 }
-                Some(d) => stack.push(d),
-                None => {
-                    stack.pop();
+                continue;
+            }
+            search.work.pop();
+            let (ki, kl) = search.index[&k];
+            if let Some(&(parent, _)) = search.work.last() {
+                let e = search.index.get_mut(&parent).unwrap();
+                e.1 = e.1.min(kl);
+            }
+            if kl == ki {
+                let mut component = Vec::new();
+                while let Some(m) = search.stack.pop() {
+                    search.on_stack.remove(&m);
+                    component.push(m);
+                    if m == k {
+                        break;
+                    }
+                }
+                if component.len() > 1 || reads.get(&k).is_some_and(|r| r.contains(&k)) {
+                    found.extend(component);
                 }
             }
         }
     }
-    let results: Vec<((usize, u32, u32), Value)> =
-        keys.iter().map(|k| (*k, book.done.get(k).map(V::to_value).unwrap_or(Value::Number(0.0)))).collect();
-    let Body::Workbook { sheets } = &mut doc.body else { unreachable!() };
-    for ((s, r, c), value) in results {
-        let cell = sheets[s].cell_mut(CellRef::new(r, c));
-        if cell.value != value {
-            cell.value = value;
+    found
+}
+
+impl Workbook<'_> {
+    /// Works out every formula, returning their cells in order.
+    fn work_out(&mut self) -> Vec<CellKey> {
+        let book = self;
+        // Top to bottom, so a chain that runs down the sheet (a running total) is worked out a
+        // cell at a time instead of all at once from its last cell.
+        let mut keys: Vec<CellKey> = book.formulas.keys().copied().collect();
+        keys.sort_unstable();
+        for &key in &keys {
+            // A chain deeper than MAX_DEPTH stops where it gets too deep; that cell is worked out
+            // first, then the chain again, which now finds it done.
+            let mut stack = vec![key];
+            while let Some(&(s, r, c)) = stack.last() {
+                book.current = vec![s];
+                book.value(s, r, c);
+                match book.deep.take() {
+                    // A loop that long: it's found in `reads` all the same.
+                    Some(d) if stack.contains(&d) => {
+                        book.done.insert(d, V::Num(0.0));
+                    }
+                    Some(d) => stack.push(d),
+                    None => {
+                        stack.pop();
+                    }
+                }
+            }
         }
+        keys
     }
-    keys.len()
 }
 
 /// The workbook as formulas see it while they're worked out.
@@ -442,14 +571,18 @@ struct Workbook<'a> {
     now: Option<f64>,
     /// Shared, so working one out doesn't copy its tree: a copy recurses, and a sum of a
     /// hundred thousand terms overflowed the stack.
-    formulas: HashMap<(usize, u32, u32), std::rc::Rc<Expr>>,
-    done: HashMap<(usize, u32, u32), V>,
-    working: HashSet<(usize, u32, u32)>,
+    formulas: HashMap<CellKey, std::rc::Rc<Expr>>,
+    done: HashMap<CellKey, V>,
+    working: HashSet<CellKey>,
+    /// The formulas being worked out, outermost first.
+    path: Vec<CellKey>,
+    /// The formulas each formula reads, as found while working them out.
+    reads: HashMap<CellKey, HashSet<CellKey>>,
     /// The sheet of the formula being worked out, innermost last.
     current: Vec<usize>,
     /// The cell where a chain of formulas got too deep to follow; nothing worked out on the
     /// way to it is kept.
-    deep: Option<(usize, u32, u32)>,
+    deep: Option<CellKey>,
     /// Each sheet's last used row and column, once asked for.
     extents: Vec<std::cell::OnceCell<Option<(u32, u32)>>>,
 }
@@ -468,17 +601,20 @@ impl Workbook<'_> {
 
     fn value(&mut self, s: usize, r: u32, c: u32) -> V {
         let key = (s, r, c);
-        if let Some(v) = self.done.get(&key) {
-            return v.clone();
-        }
         let Some(expr) = self.formulas.get(&key).cloned() else {
             return V::from_value(self.sheets[s].value(CellRef::new(r, c)));
         };
+        if let Some(&from) = self.path.last() {
+            self.reads.entry(from).or_default().insert(key);
+        }
+        if let Some(v) = self.done.get(&key) {
+            return v.clone();
+        }
         if self.deep.is_some() {
             return V::Empty;
         }
         if !self.working.insert(key) {
-            // A circular reference.
+            // A circular reference, found in `reads` afterwards.
             return V::Num(0.0);
         }
         if self.working.len() > MAX_DEPTH || eval::depth() >= 64 {
@@ -486,9 +622,11 @@ impl Workbook<'_> {
             self.deep = Some(key);
             return V::Empty;
         }
+        self.path.push(key);
         self.current.push(s);
         let v = eval::eval(&expr, self);
         self.current.pop();
+        self.path.pop();
         self.working.remove(&key);
         if self.deep.is_some() {
             return V::Empty;

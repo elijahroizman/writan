@@ -31,12 +31,13 @@ import { FindBar, InspectorHeader, Workbench, formatZoom } from '../../component
 import type { MenuEntry } from '../../components/ui'
 import { Button, CenterState, ColorField, Hint, IconButton, NumberField, PopoverMenu, Section, Segmented, SelectField, TextField } from '../../components/ui'
 import type { ChartKind, ChartView } from '../../engine/sheets/engine'
-import { SheetsEngine } from '../../engine/sheets/engine'
+import { columnName, SheetsEngine } from '../../engine/sheets/engine'
 import { a1, callAt, canPointAt, nameAt, quoteSheet, REF_COLORS, refsIn } from '../../engine/sheets/formula'
 import type { SheetFunction } from '../../engine/sheets/functions'
 import { COMMON, FUNCTIONS, functionByName } from '../../engine/sheets/functions'
 import type { EditorHooks } from '../../engine/sheets/Grid'
 import { Grid } from '../../engine/sheets/Grid'
+import { showDialog } from '../../lib/dialogs'
 import { usePinchZoom } from '../../lib/pinch'
 import { FormulaHelp } from './FormulaHelp'
 import { registerEditor, useWorkspace } from '../../state/workspace'
@@ -138,6 +139,28 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
       }
     })
   }, [engine, markDirty, tab.id])
+
+  // A formula that comes to depend on itself gets a warning, as in Excel: once when the file
+  // opens with one, and again whenever an edit makes a new one.
+  const circularSeen = useRef<Set<string> | null>(null)
+  useEffect(() => {
+    const check = () => {
+      const now = new Set(engine.state.circular.map((c) => `${c.sheet}:${c.row}:${c.col}`))
+      const fresh = engine.state.circular.find((c) => !circularSeen.current?.has(`${c.sheet}:${c.row}:${c.col}`))
+      circularSeen.current = now
+      if (fresh) {
+        void showDialog({
+          kind: 'warning',
+          title: 'Circular reference',
+          message: `A formula refers to its own cell, directly or through other formulas (${circularName(engine, fresh)}), so it can’t be worked out. It shows 0 until you change or remove it.`,
+          buttons: [{ label: 'OK', value: 'ok', primary: true }],
+          cancelValue: 'ok',
+        })
+      }
+    }
+    check()
+    return engine.subscribe(check)
+  }, [engine])
 
   // ── Typing a formula: suggestions, hints, and clicking cells to put their references in.
   const editorEl = useRef<HTMLInputElement | HTMLTextAreaElement | null>(null)
@@ -753,6 +776,22 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
         <span className="sep" />
         <span className="readout">{engine.sheets[sheet]?.name}</span>
         <span className="sep" />
+        {st.circular.length > 0 && (
+          <>
+            <button
+              type="button"
+              className="readout circular"
+              title="A formula refers to its own cell. Click to go to it."
+              onClick={() => {
+                const c = st.circular.find((c) => c.sheet === sheet) ?? st.circular[0]
+                engine.run({ cmd: 'select', sheet: c.sheet, anchor: [c.row, c.col], focus: [c.row, c.col] })
+              }}
+            >
+              Circular reference: {circularName(engine, st.circular.find((c) => c.sheet === sheet) ?? st.circular[0])}
+            </button>
+            <span className="sep" />
+          </>
+        )}
         <IconButton label="Zoom out (⌘−)" size="sm" onClick={() => zoomStep('out')} disabled={zoom <= ZOOM_STEPS[0] + 0.001}>
           <Minus size={14} />
         </IconButton>
@@ -776,6 +815,12 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
       )}
     </Workbench>
   )
+}
+
+/** A cell in a circular reference as Excel's status bar names it: `A1`, or `Sheet2!A1` on another sheet. */
+function circularName(engine: SheetsEngine, c: { sheet: number; row: number; col: number }) {
+  const cell = `${columnName(c.col)}${c.row + 1}`
+  return c.sheet === engine.state.sheet ? cell : `${quoteSheet(engine.sheets[c.sheet]?.name ?? '')}!${cell}`
 }
 
 /** The inspector for a selected chart: its kind, title, cells, colors and legend. */

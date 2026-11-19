@@ -89,7 +89,7 @@ impl SheetsView {
     fn record(&mut self, steps: Vec<CStep>, before: SheetSel) {
         let after = self.sel;
         self.history.record(steps, before, after, None);
-        crate::recalculate(&mut self.doc, self.now);
+        self.recalculate();
     }
 
     /// Changes cells through `f`, recording each cell's before and after.
@@ -159,7 +159,7 @@ impl SheetsView {
             self.apply(s, true);
         }
         self.sel = e.before;
-        crate::recalculate(&mut self.doc, self.now);
+        self.recalculate();
         self.changed(None);
         true
     }
@@ -171,7 +171,7 @@ impl SheetsView {
             self.apply(s, false);
         }
         self.sel = e.after;
-        crate::recalculate(&mut self.doc, self.now);
+        self.recalculate();
         self.changed(None);
         true
     }
