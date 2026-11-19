@@ -169,9 +169,10 @@ fn element(d: &Drawer, slide: &office_core::model::Slide, f: &Frame, map: Map) -
     };
     let resolved = crate::resolve(d.doc, slide, f);
     let text_style = match &f.content {
-        FrameContent::Shape { text: Some(_), .. } => {
+        FrameContent::Shape { text: Some(body), .. } => {
             let first = resolved.paragraphs.first();
-            let run = first.and_then(|(_, runs)| runs.first()).cloned().unwrap_or_default();
+            let run =
+                first.and_then(|(_, runs)| runs.first()).or_else(|| body.paragraphs.first()?.mark.as_ref()).cloned().unwrap_or_default();
             let look = d.look(slide, f);
             let paint = super::text::Paint { doc: d.doc, slide };
             let color = run.color.as_ref().or(look.text_color.as_ref()).map(|c| paint.color(c).css());

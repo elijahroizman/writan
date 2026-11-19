@@ -84,6 +84,22 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
     if (active) inputRef.current?.focus({ preventScroll: true })
   }, [active, engine])
 
+  // WebKit validates native Copy and Cut before sending clipboard events. The
+  // textarea is empty even when the engine has selected frames or text.
+  useEffect(() => {
+    const input = inputRef.current!
+    const enableCopyCut = (event: Event) => {
+      const { editing, frames } = engine.state
+      if (editing ? engine.doc.copyText() : frames.length) event.preventDefault()
+    }
+    input.addEventListener('beforecopy', enableCopyCut)
+    input.addEventListener('beforecut', enableCopyCut)
+    return () => {
+      input.removeEventListener('beforecopy', enableCopyCut)
+      input.removeEventListener('beforecut', enableCopyCut)
+    }
+  }, [engine])
+
   const st = engine.state
   const html = engine.html(st.active)
 

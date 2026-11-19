@@ -1370,7 +1370,20 @@ impl SlidesView {
         let props = self.pending.take();
         let typing = s.chars().count() == 1;
         let s = s.to_string();
-        self.edit_text(if typing { Some("typing") } else { None }, |blocks, sel| edit::insert_text(blocks, sel, &s, props.as_ref()));
+        self.edit_text(if typing { Some("typing") } else { None }, |blocks, sel| {
+            if sel.is_collapsed() {
+                return edit::insert_text(blocks, sel, &s, props.as_ref());
+            }
+            let mut e = delete_text(blocks, sel);
+            if let Some(at) = e.selection.as_ref() {
+                let inserted = edit::insert_text(blocks, at, &s, props.as_ref());
+                for splice in inserted.splices {
+                    edit::push(&mut e.splices, splice);
+                }
+                e.selection = inserted.selection;
+            }
+            e
+        });
     }
 
     pub fn backspace(&mut self, word: bool) {
@@ -1409,14 +1422,14 @@ impl SlidesView {
         } else {
             e.sel.clone()
         };
-        self.edit_text(if word { None } else { Some("deleting") }, |blocks, _| edit::delete(blocks, &range));
+        self.edit_text(if word { None } else { Some("deleting") }, |blocks, _| delete_text(blocks, &range));
     }
 
     pub fn enter(&mut self) {
         // In a table cell, Enter is a new paragraph in the cell, like anywhere else.
         self.history.seal();
         self.edit_text(None, |blocks, sel| {
-            let mut e = edit::delete(blocks, sel);
+            let mut e = delete_text(blocks, sel);
             let at = e.selection.clone().map(|s| s.focus).unwrap_or_else(|| sel.focus.clone());
             let s = edit::split_para(blocks, &at, None);
             e.splices.extend(s.splices);
@@ -1428,7 +1441,7 @@ impl SlidesView {
     pub fn line_break(&mut self) {
         let props = self.pending.take();
         self.edit_text(None, |blocks, sel| {
-            let mut e = edit::delete(blocks, sel);
+            let mut e = delete_text(blocks, sel);
             let at = e.selection.clone().map(|s| s.focus).unwrap_or_else(|| sel.focus.clone());
             if let Some(s) = edit::change_para(blocks, &at.path, |p| text::insert_text(p, at.offset, "\n", props.as_ref())) {
                 e.splices.push(s);
@@ -1737,6 +1750,32 @@ fn renumber(f: &mut Frame, next: &mut u32) {
             renumber(c, next);
         }
     }
+}
+
+/// Keeps the typing style on the paragraph mark when a deletion leaves no text runs.
+fn delete_text(blocks: &mut Vec<Block>, sel: &Selection) -> Edit {
+    let start = sel.start();
+    let style = if !sel.is_collapsed() && start.offset == 0 {
+        pos::para(blocks, &start.path).and_then(|p| {
+            let mut style = p.runs().next()?.props.clone();
+            if let Some(mark) = &p.mark {
+                style.overlay(mark);
+            }
+            (!style.is_empty()).then_some(style)
+        })
+    } else {
+        None
+    };
+    let mut e = edit::delete(blocks, sel);
+    if let (Some(style), Some(caret)) = (style, &e.selection) {
+        let path = &caret.focus.path;
+        if pos::para(blocks, path).is_some_and(|p| p.content.is_empty() && p.mark.as_ref() != Some(&style)) {
+            if let Some(splice) = edit::change_para(blocks, path, |p| p.mark = Some(style)) {
+                edit::push(&mut e.splices, splice);
+            }
+        }
+    }
+    e
 }
 
 /// A frame's markup with its non-visual id removed, so the writer gives the copy its own.

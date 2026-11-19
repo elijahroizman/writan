@@ -257,6 +257,51 @@ fn typing_in_a_frame() {
 }
 
 #[test]
+fn clearing_a_title_keeps_its_text_style() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::blank();
+    let title = v.elements(&mut host, 0).remove(0);
+    let style = serde_json::to_value(title.text_style).unwrap();
+
+    assert!(v.begin_edit(&mut host, 2, None));
+    v.select_all_text();
+    v.backspace(false);
+    let empty = v.elements(&mut host, 0).remove(0);
+    assert_eq!(empty.text, "");
+    assert_eq!(serde_json::to_value(empty.text_style).unwrap(), style);
+
+    v.undo();
+    assert_eq!(v.elements(&mut host, 0)[0].text, title.text);
+    v.redo();
+    assert_eq!(v.elements(&mut host, 0)[0].text, "");
+
+    // The style must survive both typing immediately and reopening a saved, empty title.
+    let mut reopened = SlidesView::open(&v.save().unwrap()).unwrap();
+    assert!(reopened.begin_edit(&mut host, 2, None));
+    for view in [&mut v, &mut reopened] {
+        view.insert_text("Epic Games vs Apple");
+        let new_title = view.elements(&mut host, 0).remove(0);
+        assert_eq!(new_title.text, "Epic Games vs Apple");
+        assert_eq!(serde_json::to_value(new_title.text_style).unwrap(), style);
+    }
+}
+
+#[test]
+fn replacing_all_slide_text_keeps_its_text_style() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::blank();
+    assert!(v.begin_edit(&mut host, 2, None));
+    v.select_all_text();
+    v.insert_text("New title");
+    let title = v.elements(&mut host, 0).remove(0);
+    assert_eq!(title.text, "New title");
+    let style = title.text_style.unwrap();
+    assert_eq!(style.font_family.as_deref(), Some("Helvetica Neue"));
+    assert_eq!(style.font_size, Some(48.0));
+    assert!(style.bold);
+}
+
+#[test]
 fn slide_operations() {
     let mut host = FixedMeasurer::default();
     let mut v = SlidesView::open(&deck(&[&["One"], &["Two"], &["Three"]])).unwrap();
