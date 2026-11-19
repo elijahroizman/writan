@@ -6,7 +6,7 @@ use std::fmt::Write;
 
 use office_core::drawing::{Color, Rgba};
 use office_core::formats::xlsx::chart::read_chart;
-use office_core::model::{Chart, ChartGrouping, ChartKind, Document, LegendPosition, RunProps, Slide};
+use office_core::model::{Chart, ChartGrouping, ChartKind, ChartSeries, Document, LegendPosition, RunProps, Slide};
 use office_core::xml::{ns, Element};
 use office_engine::display::{r, Item};
 use office_engine::para::{Ctx, StyleId};
@@ -293,6 +293,13 @@ fn arc(d: &mut String, command: char, radius: f64, start: f64, end: f64) {
     let _ = write!(d, "A{radius} {radius} 0 {large} {sweep} {x} {y}");
 }
 
+fn scatter_x(series: &ChartSeries, i: usize) -> Option<f64> {
+    if series.categories.is_none() && series.cache.categories.is_empty() {
+        return Some((i + 1) as f64);
+    }
+    series.cache.categories.get(i)?.trim().parse::<f64>().ok().filter(|v| v.is_finite())
+}
+
 fn axes(ctx: &mut Ctx, style: StyleId, chart: &Chart, colors: &SeriesColors, ink: &str, mut b: Boxed, out: &mut Vec<Item>) -> Option<()> {
     let values = chart.series.iter().flat_map(|s| &s.cache.values).flatten().copied().filter(|v| v.is_finite());
     let scale = values.clone().map(f64::abs).fold(0.0, f64::max);
@@ -333,16 +340,18 @@ fn axes(ctx: &mut Ctx, style: StyleId, chart: &Chart, colors: &SeriesColors, ink
             (b.x + b.w * category, b.y + b.h * (1.0 - scaled(value)))
         }
     };
-    let xs = chart.series.iter().flat_map(|s| &s.cache.categories).filter_map(|s| s.trim().parse::<f64>().ok()).filter(|v| v.is_finite());
+    let xs = chart.series.iter().flat_map(|s| {
+        s.cache.values.iter().enumerate().filter_map(|(i, y)| if scatter && y.is_some_and(f64::is_finite) { scatter_x(s, i) } else { None })
+    });
     let x_scale = xs.clone().map(f64::abs).fold(0.0, f64::max);
     let x_scale = if x_scale > 0.0 { x_scale } else { 1.0 };
     let x_bounds = xs.fold(None, |a: Option<(f64, f64)>, v| {
         let v = v / x_scale;
         Some(a.map_or((v, v), |(lo, hi)| (lo.min(v), hi.max(v))))
     });
-    let scatter_x = |s: &[String], i: usize| {
+    let scatter_position = |s: &ChartSeries, i: usize| {
         let (lo, hi) = x_bounds?;
-        let x = s.get(i)?.trim().parse::<f64>().ok().filter(|v| v.is_finite())? / x_scale;
+        let x = scatter_x(s, i)? / x_scale;
         Some(if lo == hi { 0.5 } else { (x - lo) / (hi - lo) })
     };
     let before = out.len();
@@ -352,7 +361,7 @@ fn axes(ctx: &mut Ctx, style: StyleId, chart: &Chart, colors: &SeriesColors, ink
         let mut run = Vec::new();
         let c = colors.at(i, None);
         for (j, value) in s.cache.values.iter().chain(std::iter::once(&None)).enumerate() {
-            let category = if scatter { scatter_x(&s.cache.categories, j) } else { Some((j as f64 + 0.5) / n as f64) };
+            let category = if scatter { scatter_position(s, j) } else { Some((j as f64 + 0.5) / n as f64) };
             let Some((cat, v)) = category.zip(value.filter(|v| v.is_finite()).map(|v| v / scale)) else {
                 if !run.is_empty() {
                     plot_run(chart.kind, &c, xy(0.0, 0.0).1, &run, out);

@@ -189,6 +189,27 @@ fn imported_columns_show_cached_values_and_categories() {
 }
 
 #[test]
+fn imported_scatter_without_x_values_uses_point_numbers() {
+    let groups = r#"<c:scatterChart><c:scatterStyle val="marker"/><c:ser><c:yVal><c:numLit><c:ptCount val="3"/>
+       <c:pt idx="0"><c:v>4</c:v></c:pt><c:pt idx="2"><c:v>4</c:v></c:pt>
+       </c:numLit></c:yVal></c:ser></c:scatterChart>"#;
+    let mut view = SlidesView::open(&chart_deck(groups, false)).unwrap();
+    let p = view.paint(&mut FixedMeasurer::default(), 0);
+    let items = chart_items(&p);
+    let xs: Vec<_> = items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Path { x, fill: Some(_), .. } => Some(*x),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(xs.len(), 2);
+    assert!(xs[1] - xs[0] > 300.0);
+    let labels = texts(items);
+    assert_eq!(&labels[labels.len() - 2..], ["1", "3"]);
+}
+
+#[test]
 fn unsupported_or_unavailable_charts_keep_the_placeholder() {
     let malformed = CHART_SERIES.replace(r#"idx="2""#, r#"idx="18446744073709551615""#);
     for (groups, external) in
