@@ -171,6 +171,10 @@ enum Cmd {
         set: String,
         marks: Vec<(String, Vec<u32>, u32, u32)>,
     },
+    /// Accepts (`accept`) or rejects every tracked change; answers how many there were.
+    ResolveRevisions {
+        accept: bool,
+    },
 }
 
 fn fnv(bytes: &[u8]) -> u64 {
@@ -345,6 +349,11 @@ impl WordDoc {
     #[wasm_bindgen(js_name = hasComments)]
     pub fn has_comments(&self) -> bool {
         office_word::word(&self.view.doc).is_some_and(|w| !w.comments.is_empty())
+    }
+
+    /// The body's tracked changes: `[{ kind, author, date?, text }]`.
+    pub fn revisions(&self) -> String {
+        json(&self.view.revisions())
     }
 
     pub fn dirty(&self) -> bool {
@@ -636,6 +645,7 @@ impl WordDoc {
                 v.mark_saved();
                 serde_json::Value::Null
             }
+            Cmd::ResolveRevisions { accept } => serde_json::json!(v.resolve_revisions(accept)),
             Cmd::Select { anchor, focus } => {
                 let blocks = v.current_blocks().to_vec();
                 let conv = |(path, units): (Vec<u32>, u32)| {

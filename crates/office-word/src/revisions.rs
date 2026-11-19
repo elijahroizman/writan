@@ -22,6 +22,8 @@ pub enum RevisionKind {
     Formatting,
     /// A paragraph mark inserted or deleted: paragraphs split or joined.
     Paragraph,
+    /// A table row inserted or deleted.
+    Row,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -94,6 +96,11 @@ fn list_blocks(blocks: &[Block], out: &mut Vec<Revision>) {
                 }
                 for row in &t.rows {
                     if let Some(o) = row.origin.get() {
+                        if let Some(trpr) = o.child(ns::W, "trPr") {
+                            for m in trpr.elements().filter(|e| e.is(ns::W, "ins") || e.is(ns::W, "del")) {
+                                out.push(Revision { kind: RevisionKind::Row, ..revision(m, RevisionKind::Row) });
+                            }
+                        }
                         find_marks(o, out, false);
                     }
                     for cell in &row.cells {
@@ -185,7 +192,7 @@ fn resolve_blocks(doc: &mut Document, part: &str, blocks: &mut Vec<Block>, accep
                 // A paragraph mark that goes (deleted and accepted, inserted and rejected) joins
                 // the paragraph to the next, which gives the joined one its formatting.
                 let goes = mark_goes(p, accept);
-                if goes {
+                if mark_change(p).is_some() {
                     *count += 1;
                 }
                 if goes && matches!(blocks.get(i + 1), Some(Block::Paragraph(_))) {
@@ -201,7 +208,13 @@ fn resolve_blocks(doc: &mut Document, part: &str, blocks: &mut Vec<Block>, accep
                     strip_mark(p);
                 }
             }
-            Block::Table(t) => resolve_table(doc, part, t, accept, count)?,
+            Block::Table(t) => {
+                resolve_table(doc, part, t, accept, count)?;
+                if t.rows.is_empty() {
+                    blocks.remove(i);
+                    continue;
+                }
+            }
             Block::Raw { .. } => {}
         }
         i += 1;

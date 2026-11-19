@@ -44,6 +44,14 @@ export interface WordState {
   page: { current: number; total: number }
 }
 
+/** A tracked change in the body. */
+export interface Revision {
+  kind: 'insertion' | 'deletion' | 'movedFrom' | 'movedTo' | 'formatting' | 'paragraph' | 'row'
+  author: string
+  date?: string
+  text: string
+}
+
 export interface Overlay {
   caret?: [number, number, number, number]
   rects: [number, number, number, number, number][]
@@ -116,6 +124,7 @@ export class WordEngine {
   /** Colors for each set of marks (find's matches, comments), or a wavy underline (spelling). */
   markStyles: Record<string, { color: string; activeColor?: string; activeId?: string; squiggle?: boolean }> = { search: { color: 'rgba(255, 210, 63, 0.55)' } }
   private listeners = new Set<() => void>()
+  private revisionList: { revision: number; list: Revision[] } | null = null
   private stopFonts: () => void
   private disposed = false
 
@@ -167,6 +176,17 @@ export class WordEngine {
     const out = JSON.parse(this.doc.command(JSON.stringify(cmd))) as T
     this.refresh()
     return out
+  }
+
+  /** The body's tracked changes, in document order. */
+  revisions(): Revision[] {
+    if (this.revisionList?.revision !== this.revision) this.revisionList = { revision: this.revision, list: JSON.parse(this.doc.revisions()) as Revision[] }
+    return this.revisionList.list
+  }
+
+  /** Accepts or rejects every tracked change, as one undoable change; returns how many there were. */
+  resolveRevisions(accept: boolean): number {
+    return this.run<number>({ cmd: 'resolveRevisions', accept })
   }
 
   /** Brings layout, overlay and state up to date and tells subscribers. */

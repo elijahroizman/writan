@@ -72,3 +72,9 @@ ltr_tbl = (
     '<w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>'
     '<w:tr>' + cell('west') + cell('east') + '</w:tr></w:tbl>')
 package('rtl-table.docx', rtl_tbl + ltr_tbl)
+
+ins = lambda i, who, text: f'<w:ins w:id="{i}" w:author="{who}" w:date="2026-11-01T09:00:00Z"><w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:ins>'
+dele = lambda i, who, text: f'<w:del w:id="{i}" w:author="{who}" w:date="2026-11-01T09:00:00Z"><w:r><w:delText xml:space="preserve">{text}</w:delText></w:r></w:del>'
+package('tracked-changes.docx',
+        '<w:p><w:r><w:t xml:space="preserve">The fox is </w:t></w:r>' + ins(1, 'Ann', 'quick') + dele(2, 'Bob', 'slow') + '<w:r><w:t>.</w:t></w:r></w:p>'
+        '<w:p><w:r><w:rPr><w:b/><w:rPrChange w:id="3" w:author="Ann" w:date="2026-11-01T09:00:00Z"><w:rPr/></w:rPrChange></w:rPr><w:t>Made bold.</w:t></w:r></w:p>')
