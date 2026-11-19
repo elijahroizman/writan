@@ -181,3 +181,20 @@ fn excel_wildcard_adversarial() {
     let f = format!("SEARCH(\"{}b\",\"{}\")", "*a".repeat(28), "a".repeat(56));
     assert_eq!(eval::eval(&formula::parse(&f).unwrap(), &mut Values::default()), V::Err("#VALUE!"));
 }
+
+#[test]
+fn excel_text_format_shows_numbers() {
+    // A number under the Text format (`@`) shows its digits, in the file and after a round trip.
+    use office_core::model::{Body, CellRef};
+    let compiler = office_core::Compiler::new().with_layer(office_sheets::Sheets);
+    let mut doc = Document::new(Kind::Sheets);
+    let Body::Workbook { sheets } = &mut doc.body else { unreachable!() };
+    sheets[0].set(CellRef::new(0, 0), Value::Number(42.5));
+    let mut format = office_sheets::format_of(&doc, 0, CellRef::new(0, 0));
+    format.number_format = "@".into();
+    office_sheets::set_format(&mut doc, 0, CellRef::new(0, 0), &format);
+    assert_eq!(office_sheets::display(&doc, 0, CellRef::new(0, 0)), "42.5");
+    let saved = compiler.write(&doc, Kind::Sheets).unwrap();
+    let back = compiler.read(&saved, Some("book.xlsx")).unwrap();
+    assert_eq!(office_sheets::display(&back, 0, CellRef::new(0, 0)), "42.5");
+}
