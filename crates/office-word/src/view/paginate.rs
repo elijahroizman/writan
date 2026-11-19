@@ -62,7 +62,11 @@ fn block_notes(blocks: &[Block], ids: &HashMap<&str, usize>, out: &mut Vec<usize
                     }
                 }
             }
-            Block::Raw { .. } => {}
+            Block::Raw { xml, .. } => {
+                let mut refs = Vec::new();
+                note_refs(xml, &mut refs);
+                out.extend(refs.iter().filter_map(|r| ids.get(r.as_str())));
+            }
         }
     }
 }
@@ -122,7 +126,7 @@ fn flow_units(flow: &FlowLayout, y: f64, body: &[Block], ids: &HashMap<&str, usi
                     });
                 }
             }
-            BlockBox::Preview { y: top, flow, .. } => flow_units(flow, y + top, body, &HashMap::new(), out),
+            BlockBox::Preview { y: top, flow, blocks, .. } => flow_units(flow, y + top, blocks, ids, out),
             BlockBox::Empty { .. } => {}
         }
     }

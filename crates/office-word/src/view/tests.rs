@@ -1012,3 +1012,14 @@ fn footnotes_take_space_from_the_body_and_stay_on_their_page() {
     }
     assert_eq!(seen, (1..=40).collect::<Vec<_>>());
 }
+
+#[test]
+fn footnotes_referenced_in_content_controls_are_painted() {
+    let mut host = FixedMeasurer::default();
+    let body = format!("<w:sdt><w:sdtContent>{}</w:sdtContent></w:sdt>", footnote_para("Foo", "1"));
+    let mut v = WordView::open(&footnoted_doc(&body, &[("1", "bar")])).unwrap();
+    v.layout(&mut host);
+    let texts = page_texts(&v.paint(&mut host, 0).items);
+    assert!(texts.iter().any(|(t, _)| t.trim() == "Foo"), "{texts:?}");
+    assert!(texts.iter().any(|(t, _)| t.trim() == "bar"), "{texts:?}");
+}
