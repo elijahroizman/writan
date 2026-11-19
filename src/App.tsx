@@ -16,6 +16,7 @@ import type { DocKind } from './lib/kinds'
 import { kindFromPath } from './lib/kinds'
 import * as platform from './lib/platform'
 import { flushAutosave, startAutosave } from './lib/autosave'
+import { discardRecovery, resumeRecovery, startRecovery } from './lib/recovery'
 import { installUpdate, openUpdatePanel, startUpdateChecks } from './lib/updater'
 import { startPlugins } from './state/plugins'
 import { dimming, useFocus } from './state/focus'
@@ -384,6 +385,7 @@ export async function runCommand(id: string) {
         await installUpdate({ restart: true })
         // Still here, so the install failed: keep saving the session.
         sessionFrozen = false
+        resumeRecovery()
       }
       break
   }
@@ -403,6 +405,8 @@ async function confirmDiscardAll(): Promise<boolean> {
       return false
     }
   }
+  // Every unsaved tab was saved or discarded on purpose: nothing to bring back next launch.
+  await discardRecovery()
   return true
 }
 
@@ -517,6 +521,7 @@ export default function App() {
     void syncMenu()
     const stopUpdateChecks = startUpdateChecks()
     const stopAutosave = startAutosave()
+    const stopRecovery = startRecovery()
     const stopFolderPalette = startFolderPalette()
     // Recent files and folders expire after the days Settings › General allows.
     pruneRecents()
@@ -527,6 +532,7 @@ export default function App() {
       stopPruneOnChange()
       stopUpdateChecks()
       stopAutosave()
+      stopRecovery()
       stopFolderPalette()
       unlisteners.forEach((u) => void u.then((fn) => fn()))
     }

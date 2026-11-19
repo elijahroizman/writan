@@ -29,7 +29,7 @@ Additional findings recovered after the 0.10.5 release are tracked in [FOLLOWUP-
 
 | Finding | Final status | Reproducible sample or test |
 | --- | --- | --- |
-| CORPUS-004: block content controls, including a university thesis TOC, are invisible. | Open. Their XML survives saving. | Pinned `ucsd-ThesisTemplate_Master_v2.3.docx`; [corpus report](BUGS-corpus.md). |
+| CORPUS-004: block content controls, including a university thesis TOC, are invisible. | Fixed for the saved content of block controls. The preview is read-only and the original XML survives saving. | Pinned `ucsd-ThesisTemplate_Master_v2.3.docx`; [corpus report](BUGS-corpus.md). |
 | CORPUS-005: footnote bodies are absent although reference marks appear. | Open. | Pinned `lo-footnote.docx` and `au-budget-bp1_bs-4.docx`. |
 | CORPUS-006: existing PowerPoint charts show empty rectangles. | Open. | Pinned `lo-chart_pt_color_bg1.pptx`. |
 | CORPUS-007: SmartArt is absent in Word and PowerPoint. | Open. | Pinned `lo-smartart.docx` and `lo-smartart-accent-process.pptx`. |

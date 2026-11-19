@@ -26,7 +26,7 @@ pub fn read(pkg: Package) -> Result<Document> {
     doc.theme = read_theme(&pkg, &main)?;
 
     let body = xml.root.child(ns::W, "body");
-    let blocks = body.map(|b| read_blocks(b, &rels, &mut doc, |e| e.is(ns::W, "sectPr"))).unwrap_or_default();
+    let blocks = body.map(|b| read_blocks(b, &rels, &mut doc, false, |e| e.is(ns::W, "sectPr"))).unwrap_or_default();
     doc.body = Body::Flow { blocks };
     // The document without the body's blocks; the final section properties stay at its end.
     let mut origin = xml.root.clone();
@@ -43,7 +43,8 @@ pub fn read(pkg: Package) -> Result<Document> {
 /// `w:body` does (`w:hdr`, `w:ftr`, a `w:footnote`, a `w:comment`). For the Word layer.
 pub fn read_blocks_in(doc: &mut Document, part: &str, container: &Element) -> Result<Vec<Block>> {
     let pkg = doc.package.take().ok_or_else(|| crate::Error::MissingPart(part.to_string()))?;
-    let result = PartRels::new(&pkg, part).map(|rels| read_blocks(container, &rels, doc, |e| e.is(ns::W, "pPr") || e.is(ns::W, "tcPr")));
+    let result =
+        PartRels::new(&pkg, part).map(|rels| read_blocks(container, &rels, doc, false, |e| e.is(ns::W, "pPr") || e.is(ns::W, "tcPr")));
     doc.package = Some(pkg);
     result
 }
@@ -54,31 +55,41 @@ pub fn read_inlines_in(doc: &mut Document, part: &str, container: &Element) -> R
     let pkg = doc.package.take().ok_or_else(|| crate::Error::MissingPart(part.to_string()))?;
     let mut p = Element::new(ns::W, "p");
     p.children = container.children.clone();
-    let result = PartRels::new(&pkg, part).map(|rels| read_paragraph(&p, &rels, doc).content);
+    let result = PartRels::new(&pkg, part).map(|rels| read_paragraph(&p, &rels, doc, false).content);
     doc.package = Some(pkg);
     result
 }
 
 /// The block-level children of `w:body`, a table cell, or another container. `skip` says which
 /// children belong to the container itself.
-fn read_blocks(parent: &Element, rels: &PartRels, doc: &mut Document, skip: impl Fn(&Element) -> bool) -> Vec<Block> {
-    parent
-        .elements()
-        .filter(|e| !skip(e))
-        .map(|e| {
-            if e.is(ns::W, "p") {
-                Block::Paragraph(read_paragraph(e, rels, doc))
-            } else if e.is(ns::W, "tbl") {
-                Block::Table(read_table(e, rels, doc))
-            } else {
-                // Content controls, custom XML, bookmarks between paragraphs, section breaks.
-                Block::Raw { xml: e.clone() }
-            }
-        })
-        .collect()
+fn read_blocks(parent: &Element, rels: &PartRels, doc: &mut Document, preview: bool, skip: impl Fn(&Element) -> bool) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    for e in parent.elements().filter(|e| !skip(e)) {
+        read_block(e, rels, doc, preview, &mut blocks);
+    }
+    blocks
 }
 
-fn read_paragraph(p: &Element, rels: &PartRels, doc: &mut Document) -> Paragraph {
+fn read_block(e: &Element, rels: &PartRels, doc: &mut Document, preview: bool, out: &mut Vec<Block>) {
+    if e.is(ns::W, "p") {
+        out.push(Block::Paragraph(read_paragraph(e, rels, doc, preview)));
+    } else if e.is(ns::W, "tbl") {
+        out.push(Block::Table(read_table(e, rels, doc, preview)));
+    } else {
+        let content = e.is(ns::W, "sdt").then(|| e.child(ns::W, "sdtContent")).flatten();
+        if !preview {
+            let preview = content.map(|c| read_blocks(c, rels, doc, true, |_| false).into()).unwrap_or_default();
+            out.push(Block::Raw { xml: e.clone(), preview });
+        } else if let Some(content) = content.or_else(|| e.is(ns::W, "customXml").then_some(e)) {
+            // Flatten supported wrappers instead of copying their raw subtrees.
+            for child in content.elements() {
+                read_block(child, rels, doc, true, out);
+            }
+        }
+    }
+}
+
+fn read_paragraph(p: &Element, rels: &PartRels, doc: &mut Document, preview: bool) -> Paragraph {
     let ppr = p.child(ns::W, "pPr");
     let mut content = Vec::new();
     for child in p.elements() {
@@ -105,6 +116,16 @@ fn read_paragraph(p: &Element, rels: &PartRels, doc: &mut Document) -> Paragraph
                         let key = std::sync::Arc::as_ptr(run.origin.0.as_ref().unwrap()) as usize;
                         doc.extensions.get_mut::<Hyperlinks>().unwrap().0.insert(key, (run.origin.clone(), wrapper.clone()));
                     }
+                }
+            }
+        } else if preview && child.is(ns::W, "hyperlink") {
+            // TOC hyperlinks can wrap both plain runs and PAGEREF fields. Keep the runs
+            // separate so their tabs, formatting and cached field results can be laid out.
+            for r in child.elements() {
+                if r.is(ns::W, "r") {
+                    read_run(r, None, rels, doc, &mut content);
+                } else {
+                    content.push(Inline::Raw { xml: r.clone() });
                 }
             }
         } else {
@@ -251,7 +272,7 @@ fn table_shell(el: &Element, slot: &str) -> Origin {
     Origin::new(copy)
 }
 
-fn read_table(tbl: &Element, rels: &PartRels, doc: &mut Document) -> Table {
+fn read_table(tbl: &Element, rels: &PartRels, doc: &mut Document, preview: bool) -> Table {
     let columns: Vec<Emu> = tbl
         .child(ns::W, "tblGrid")
         .map(|g| {
@@ -290,7 +311,7 @@ fn read_table(tbl: &Element, rels: &PartRels, doc: &mut Document) -> Table {
                 .and_then(crate::drawing::Rgb::parse)
                 .map(crate::drawing::Color::rgb);
             cells.push(Cell {
-                blocks: read_blocks(tc, rels, doc, |e| e.is(ns::W, "tcPr")),
+                blocks: read_blocks(tc, rels, doc, preview, |e| e.is(ns::W, "tcPr")),
                 // A covered cell's span is its owner's business.
                 col_span: if continued { 1 } else { span },
                 row_span: 1,

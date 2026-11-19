@@ -4,7 +4,7 @@
 
 A small, fast app for the documents most people actually open: **Word, PowerPoint, Excel, CSV, PDF, Markdown, plain text and images**, each in a tab of one window. Optional plugins add **LaTeX** and extra fonts.
 
-Runs on macOS (Apple silicon), Windows (x64) and Debian/Ubuntu (x64). Everything runs locally: no accounts, nothing uploaded, works offline.
+Runs on macOS (Apple silicon and Intel), Windows (x64), and Debian/Ubuntu, Fedora and Arch Linux (x64 and ARM64). Everything runs locally: no accounts, nothing uploaded, works offline.
 
 ## Why
 
@@ -16,15 +16,15 @@ Download the latest build from [Releases](https://github.com/elijahroizman/writa
 
 | | |
 | --- | --- |
-| **Mac** | Open `Writan_…_aarch64.dmg` and drag Writan to Applications. |
+| **Mac** | Open `Writan_…_universal.dmg` and drag Writan to Applications. It runs natively on Apple silicon and Intel Macs. |
 | **Windows** | Run `Writan_…_x64-setup.exe`. If Windows says it protected your PC, click **More info → Run anyway** (the app isn't code-signed for Windows yet). |
-| **Debian, Ubuntu** | `sudo apt install ./Writan_…_amd64.deb` (Ubuntu 22.04 or Debian 12 and newer). |
-| **Fedora** | `sudo dnf install ./Writan-…x86_64.rpm` |
+| **Debian, Ubuntu** | `sudo apt install ./Writan_…_amd64.deb`, or `Writan_…_arm64.deb` on ARM (Ubuntu 22.04 or Debian 12 and newer). |
+| **Fedora** | `sudo dnf install ./Writan-…x86_64.rpm`, or `Writan-…aarch64.rpm` on ARM (Asahi) |
 | **Arch Linux, Omarchy** | `sudo pacman -U ./writan-…-x86_64.pkg.tar.zst`, or `writan-…-aarch64.pkg.tar.zst` on ARM (Arch Linux ARM, Asahi) |
 
 The package name and the terminal command are `writan`. A machine that already has the `workspace` package picks up `writan` on its next system update. The command `workspace` remains and runs `writan`.
 
-Writan keeps itself up to date. On Mac and Windows, new versions download in the background and install when you quit. On Linux, the .deb adds Writan's APT repository and the .rpm its dnf repository, so updates come with your system's other updates. Arch has no repository yet: download each new `.pkg.tar.zst` and install it the same way. See [Updating](docs/user/updating.md).
+Writan keeps itself up to date. On Mac and Windows, new versions download in the background and install when you quit. On Linux, the .deb adds Writan's APT repository and the .rpm its dnf repository, so updates come with your system's other updates. On Arch, the package adds Writan's pacman repository, so `pacman -Syu` brings new versions. Every Linux package comes for x86_64 and ARM64 (`arm64` in the .deb's name, `aarch64` in the others). See [Updating](docs/user/updating.md).
 
 ## Some notes
 

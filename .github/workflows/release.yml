@@ -1,16 +1,17 @@
 name: Release
 
-# Builds the Windows (x64) installer, the macOS (Apple silicon) disk image, a Debian/Ubuntu
-# (x64) .deb package, a Fedora (x64) .rpm and Arch Linux .pkg.tar.zst packages (x86_64, and aarch64 for Arch Linux ARM
-# and Omarchy on ARM), and attaches them to a GitHub Release. Push a tag like v0.4.0 to publish one. Running it
-# from the Actions tab only builds (and signs and notarizes), unless "publish" is ticked.
+# Builds the Windows (x64) installer, the macOS (universal: Apple silicon and Intel) disk image,
+# and the Linux packages for x86_64 and ARM64: a .deb for Debian and Ubuntu, an .rpm for Fedora
+# and a .pkg.tar.zst for Arch Linux (and Arch Linux ARM and Omarchy). It attaches them to a GitHub
+# Release. Push a tag like v0.4.0 to publish one. Running it from the Actions tab only builds (and
+# signs and notarizes), unless "publish" is ticked.
 # It also signs the update bundles and publishes latest.json, which installed copies check
 # for updates (see plugins.updater in src-tauri/tauri.conf.json). The update bundles are only
-# made here, via tauri.release.conf.json, because signing them needs the private key. The .deb
-# and .rpm have no update bundle (Tauri's updater can't replace a package-managed install), so the Linux
-# job leaves latest.json alone and publishes an APT and a dnf repository instead (see their steps below).
-# The Arch packages are the .deb's files repacked (scripts/arch-package.sh); there's no pacman repository.
-# The aarch64 one comes from its own job on an ARM runner, which builds a .deb only to repack it.
+# made here, via tauri.release.conf.json, because signing them needs the private key. Linux
+# packages have no update bundle (Tauri's updater can't replace a package-managed install), so the
+# Linux jobs leave latest.json alone. Once both have built, the linux-repos job publishes an APT,
+# a dnf and a pacman repository holding both architectures, which the packages add to the system.
+# The Arch packages are the .deb's files repacked (scripts/arch-package.sh).
 # The release notes are the version's section of CHANGELOG.md.
 #
 # The Mac app is signed with the Developer ID certificate in APPLE_CERTIFICATE and notarized
@@ -39,22 +40,20 @@ jobs:
           - name: Windows x64
             os: windows-latest
             args: --bundles nsis --config src-tauri/tauri.release.conf.json
-          - name: macOS Apple silicon
+          - name: macOS universal
+            # One app for Apple silicon and Intel Macs. latest.json lists its update bundle under
+            # both darwin-aarch64 and darwin-x86_64.
             os: macos-latest
-            args: --target aarch64-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
+            args: --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
           - name: Linux x64 (Debian, Ubuntu, Fedora, Arch)
             # The oldest runner with webkit2gtk-4.1, so the .deb installs on Ubuntu 22.04+ and Debian 12+.
             # The .rpm is built from the same binary and is for Fedora, and so is the Arch package.
             os: ubuntu-22.04
             args: --bundles deb,rpm
-            arch_package: true
-          - name: Linux ARM64 (Arch)
-            # Only the Arch package (aarch64) is released from this job. Its .deb isn't uploaded:
-            # the APT and dnf repositories are x64 only.
+          - name: Linux ARM64 (Debian, Ubuntu, Fedora, Arch)
+            # The same packages for arm64 (aarch64), built natively on GitHub's ARM runner.
             os: ubuntu-22.04-arm
-            args: --bundles deb
-            arch_package: true
-            build_only: true
+            args: --bundles deb,rpm
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
     env:
@@ -67,7 +66,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf createrepo-c
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -76,7 +75,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           # wasm32 for the document engine (crates/office-wasm), which npm run build compiles.
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,wasm32-unknown-unknown' || 'wasm32-unknown-unknown' }}
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown' || 'wasm32-unknown-unknown' }}
       # Tag runs can only read caches saved on main, so these two come from the Release cache
       # workflow (release-cache.yml), which builds the same way on main. Saving them here would
       # only store caches no other run can read.
@@ -160,220 +159,55 @@ jobs:
           APPLE_API_KEY: ${{ matrix.os == 'macos-latest' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ matrix.os == 'macos-latest' && secrets.APPLE_API_ISSUER || '' }}
         with:
-          # A build_only job doesn't upload what Tauri bundles; it publishes its own asset later.
-          tagName: ${{ env.PUBLISH == 'true' && !matrix.build_only && 'v__VERSION__' || '' }}
-          releaseName: ${{ env.PUBLISH == 'true' && !matrix.build_only && 'Writan v__VERSION__' || '' }}
+          tagName: ${{ env.PUBLISH == 'true' && 'v__VERSION__' || '' }}
+          releaseName: ${{ env.PUBLISH == 'true' && 'Writan v__VERSION__' || '' }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
           # A .deb or .rpm has no update bundle, so only the Mac and Windows jobs write latest.json.
           uploadUpdaterJson: ${{ runner.os != 'Linux' }}
           args: ${{ matrix.args }}
-      - name: Build and publish the Arch Linux package
-        # The .deb's files repacked as a pacman package (scripts/arch-package.sh), built on every run so
-        # a broken repack shows up before a release, and uploaded to the release when publishing. It
-        # runs before the APT step, which rewrites the .deb for apt's sake. Arch has no repository
-        # for it: people install the asset with `pacman -U`.
-        #
-        # The ARM job (build_only) didn't create the release, so it waits for another job's
-        # tauri-action to make it before uploading.
-        if: matrix.arch_package
+      - name: Finish the Linux packages
+        # Tauri writes Provides and Replaces but no Breaks, so scripts/debian-repack.sh adds
+        # `Breaks: workspace (<< <this version>)` to the .deb (see its header), and the result goes
+        # over the asset tauri-action uploaded. The Arch package is the .deb's files repacked
+        # (scripts/arch-package.sh), built on every run so a broken repack shows up before a
+        # release. All three go to the linux-repos job as an artifact, and the build-only runs
+        # keep them for a week.
+        if: runner.os == 'Linux'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BUILD_ONLY: ${{ matrix.build_only && 'true' || 'false' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
           debs=(src-tauri/target/release/bundle/deb/*.deb)
-          if [ "${#debs[@]}" -ne 1 ]; then
-            echo "expected one .deb, found ${#debs[@]}"
+          rpms=(src-tauri/target/release/bundle/rpm/*.rpm)
+          if [ "${#debs[@]}" -ne 1 ] || [ "${#rpms[@]}" -ne 1 ]; then
+            echo "expected one .deb and one .rpm, found ${#debs[@]} and ${#rpms[@]}"
             exit 1
           fi
-          pkg="$(scripts/arch-package.sh "${debs[0]}" "$RUNNER_TEMP/arch")"
+          scripts/debian-repack.sh "${debs[0]}"
+          out="$RUNNER_TEMP/linux-packages"
+          mkdir -p "$out"
+          pkg="$(scripts/arch-package.sh "${debs[0]}" "$out")"
           tar --zstd -tvf "$pkg"
+          cp "${debs[0]}" "${rpms[0]}" "$out/"
           if [ "$PUBLISH" = "true" ]; then
             tag="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
-            if [ "$BUILD_ONLY" = "true" ]; then
-              for _ in $(seq 1 90); do
-                gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1 && break
-                sleep 60
-              done
-            fi
-            gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$pkg" --clobber
+            gh release upload "$tag" -R "$GITHUB_REPOSITORY" "${debs[0]}" "$pkg" --clobber
           fi
-      - name: Publish the APT repository
-        # A flat APT repository in the assets of the release tagged "apt" (a pre-release, so the
-        # updater and the app's "latest release" never pick it). The .deb's postinst points
-        # /etc/apt/sources.list.d/writan.list there, signed-by the key it installs
-        # (src-tauri/linux/writan-archive-keyring.gpg; the private half is APT_SIGNING_KEY).
-        # The new .deb goes up first, then the index, then the signed Release, so apt never sees
-        # an index pointing at a file that isn't there yet.
-        #
-        # apt upgrade does not install a package that is not already installed, and the Update
-        # button shipped before the rename runs `apt-get install --only-upgrade workspace`.
-        # This step also publishes an empty package named workspace that depends on writan, at
-        # the same version. Upgrading that name pulls writan in.
-        #
-        # Tauri writes Provides and Replaces. It has no Breaks field, so this step adds
-        # `Breaks: workspace (<< <this version>)` to the built .deb and uploads that file over
-        # the release asset. The transitional package is the same version, so the break does
-        # not apply to it. Origin and Label stay Workspace. Changing them makes apt-get update
-        # on already-installed copies stop until someone passes --allow-releaseinfo-change,
-        # and the shipped Update button does not pass it.
-        if: matrix.os == 'ubuntu-22.04' && env.PUBLISH == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          debs=(src-tauri/target/release/bundle/deb/*.deb)
-          if [ "${#debs[@]}" -ne 1 ]; then
-            echo "expected one .deb, found ${#debs[@]}"
-            exit 1
-          fi
-          deb_path="${debs[0]}"
-          version="$(dpkg-deb -f "$deb_path" Version)"
-          maintainer="$(dpkg-deb -f "$deb_path" Maintainer)"
-          work="$(mktemp -d)"
-          dpkg-deb -R "$deb_path" "$work"
-          if ! grep -q '^Replaces:' "$work/DEBIAN/control"; then
-            echo "deb control has no Replaces field. Set bundle.linux.deb.replaces in tauri.linux.conf.json." >&2
-            exit 1
-          fi
-          if grep -q '^Breaks:' "$work/DEBIAN/control"; then
-            echo "deb control already has a Breaks field" >&2
-            exit 1
-          fi
-          sed -i "/^Replaces:/a Breaks: workspace (<< ${version})" "$work/DEBIAN/control"
-          dpkg-deb --root-owner-group -b "$work" "$deb_path"
-          # Extraction runs as the Actions user; installed code and signing keys must be root-owned.
-          dpkg-deb --fsys-tarfile "$deb_path" | tar --numeric-owner -tvf - | \
-            awk '{ seen = 1; if ($2 != "0/0") { print "Non-root package owner: " $0; bad = 1 } } END { exit (!seen || bad) }'
-          rm -rf "$work"
-          tag="v$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$deb_path" --clobber
-
-          repo="$RUNNER_TEMP/apt"
-          rm -rf "$repo"
-          mkdir -p "$repo"
-          cp "$deb_path" "$repo/"
-          deb="$(basename "$deb_path")"
-          empty="$(mktemp -d)"
-          mkdir -p "$empty/DEBIAN"
-          cat > "$empty/DEBIAN/control" <<EOF
-          Package: workspace
-          Version: ${version}
-          Architecture: all
-          Maintainer: ${maintainer}
-          Installed-Size: 0
-          Depends: writan
-          Section: oldlibs
-          Priority: optional
-          Description: Transitional package for Writan
-           The Linux package was renamed from workspace to writan. This empty package
-           depends on writan so apt upgrade installs the new name.
-          EOF
-          dpkg-deb --root-owner-group --build "$empty" "$repo/workspace_${version}_all.deb"
-          rm -rf "$empty"
-          cd "$repo"
-          # Asset names can't hold a path, so the index names the file alone.
-          apt-ftparchive packages . | sed 's|^Filename: \./|Filename: |' > Packages
-          gzip -9kn Packages
-          apt-ftparchive \
-            -o APT::FTPArchive::Release::Origin=Workspace \
-            -o APT::FTPArchive::Release::Label=Workspace \
-            -o APT::FTPArchive::Release::Suite=stable \
-            -o APT::FTPArchive::Release::Codename=stable \
-            -o APT::FTPArchive::Release::Architectures=amd64 \
-            -o APT::FTPArchive::Release::Description="Writan (github.com/${GITHUB_REPOSITORY})" \
-            release . > "$RUNNER_TEMP/Release"
-          mv "$RUNNER_TEMP/Release" Release
-          export GNUPGHOME="$(mktemp -d)"
-          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
-          gpg --batch --yes --clearsign -o InRelease Release
-          gpg --batch --yes --armor --detach-sign -o Release.gpg Release
-          gpgconf --kill gpg-agent || true
-          rm -rf "$GNUPGHOME"
-          if ! gh release view apt -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release create apt -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "APT repository" \
-              --notes "Writan's APT repository for Debian and Ubuntu. The .deb adds it for you; nothing here needs downloading by hand."
-          fi
-          gh release upload apt -R "$GITHUB_REPOSITORY" "$deb" "workspace_${version}_all.deb" --clobber
-          gh release upload apt -R "$GITHUB_REPOSITORY" Packages Packages.gz --clobber
-          gh release upload apt -R "$GITHUB_REPOSITORY" Release Release.gpg InRelease --clobber
-          # Keep the two newest real packages and the two newest transitional packages,
-          # for anyone whose index is a step behind. Sort by the version field, not the whole name,
-          # so Workspace_0.10.4 and Writan_0.10.5 compare as versions.
-          prune_apt() {
-            local pattern="$1"
-            local names old
-            names="$(gh release view apt -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -E "$pattern" || true)"
-            [ -n "$names" ] || return 0
-            old="$(printf '%s\n' "$names" | sort -t_ -k2,2V | head -n -2 || true)"
-            for name in $old; do
-              gh release delete-asset apt "$name" -R "$GITHUB_REPOSITORY" --yes
-            done
-          }
-          prune_apt '^(Writan|Workspace)_.+_amd64\.deb$'
-          prune_apt '^workspace_.+_all\.deb$'
-      - name: Publish the dnf repository
-        # A dnf repository at https://github.com/<repo>/releases/download/rpm/, which src-tauri/linux/rpm-postinst
-        # adds to /etc/yum.repos.d. dnf reads <baseurl>/repodata/… and the index points packages at
-        # packages/…, and GitHub serves tags with a slash, so the metadata is the assets of the
-        # pre-release tagged "rpm/repodata" and the .rpm files those of "rpm/packages". repomd.xml is
-        # signed with the APT key (repo_gpgcheck); it lists the other files' checksums and they list
-        # the packages', so the one signature covers the lot. Same order as APT: the .rpm first, then
-        # the metadata files (named by hash), then repomd.xml and its signature.
-        if: matrix.os == 'ubuntu-22.04' && env.PUBLISH == 'true'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-          rpms=(src-tauri/target/release/bundle/rpm/*.rpm)
-          if [ "${#rpms[@]}" -ne 1 ]; then
-            echo "expected one .rpm, found ${#rpms[@]}"
-            exit 1
-          fi
-          repo="$RUNNER_TEMP/dnf"
-          rm -rf "$repo"
-          mkdir -p "$repo/packages"
-          cp "${rpms[0]}" "$repo/packages/"
-          rpm="$(basename "${rpms[0]}")"
-          cd "$repo"
-          createrepo_c --no-database --general-compress-type=gz .
-          export GNUPGHOME="$(mktemp -d)"
-          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
-          gpg --batch --yes --armor --detach-sign -o repodata/repomd.xml.asc repodata/repomd.xml
-          gpgconf --kill gpg-agent || true
-          rm -rf "$GNUPGHOME"
-          for tag in rpm/packages rpm/repodata; do
-            if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-              gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "dnf repository (${tag#rpm/})" \
-                --notes "Part of Writan's dnf repository for Fedora. The .rpm adds it for you; nothing here needs downloading by hand."
-            fi
-          done
-          gh release upload rpm/packages -R "$GITHUB_REPOSITORY" "packages/$rpm" --clobber
-          meta=(repodata/*.xml.gz)
-          gh release upload rpm/repodata -R "$GITHUB_REPOSITORY" "${meta[@]}" --clobber
-          gh release upload rpm/repodata -R "$GITHUB_REPOSITORY" repodata/repomd.xml repodata/repomd.xml.asc --clobber
-          # Drop metadata the new repomd.xml doesn't name, and keep the new .rpm and the one before it.
-          for name in $(gh release view rpm/repodata -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'); do
-            case "$name" in repomd.xml | repomd.xml.asc) continue ;; esac
-            [ -e "repodata/$name" ] || gh release delete-asset rpm/repodata "$name" -R "$GITHUB_REPOSITORY" --yes
-          done
-          # Sort by the version field so Workspace-0.10.4 and Writan-0.10.5 compare as versions.
-          old="$(gh release view rpm/packages -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
-            | grep -E '^(Writan|Workspace)-.+\.rpm$' | grep -vxF "$rpm" | sort -t- -k2,2V | head -n -1 || true)"
-          for name in $old; do
-            gh release delete-asset rpm/packages "$name" -R "$GITHUB_REPOSITORY" --yes
-          done
+      - name: Keep the Linux packages
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ runner.arch }}
+          path: ${{ runner.temp }}/linux-packages/
+          if-no-files-found: error
+          retention-days: 7
       - name: Check the Mac app is signed and notarized
         if: matrix.os == 'macos-latest'
         run: |
-          app=src-tauri/target/aarch64-apple-darwin/release/bundle/macos/Writan.app
+          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/Writan.app
           set -euo pipefail
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv "$app" 2>&1 | grep -E '^(Authority|TeamIdentifier|Runtime)'
@@ -388,7 +222,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          dmgs=(src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg)
+          dmgs=(src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
           if [ "${#dmgs[@]}" -ne 1 ]; then
             echo "expected one disk image, found ${#dmgs[@]}"
             exit 1
@@ -416,3 +250,200 @@ jobs:
             version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
             gh release upload "v${version}" "$dmg" --clobber
           fi
+
+  linux-repos:
+    # Publishes the APT, dnf and pacman repositories once both Linux jobs have built. It runs when
+    # another job (the Mac or Windows one) failed too, so Linux copies still get the release, and
+    # fails if either Linux artifact is missing. All three repositories are signed with the same key
+    # (APT_SIGNING_KEY; its public half is src-tauri/linux/writan-archive-keyring.gpg, and
+    # RPM-GPG-KEY-writan armored). Each puts the packages up first, then the index, then the
+    # signature over it, so a client never sees an index pointing at a file that isn't there yet.
+    name: Linux repositories
+    needs: build
+    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) }}
+    runs-on: ubuntu-22.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repository tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y apt-utils createrepo-c zstd
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: ${{ runner.temp }}/packages
+          merge-multiple: true
+      - name: Check both architectures built
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packages"
+          ls -l
+          for name in '*_amd64.deb' '*_arm64.deb' '*.x86_64.rpm' '*.aarch64.rpm' '*-x86_64.pkg.tar.zst' '*-aarch64.pkg.tar.zst'; do
+            set -- $name
+            if [ "$#" -ne 1 ] || [ ! -e "$1" ]; then
+              echo "expected one $name"
+              exit 1
+            fi
+          done
+      - name: Signing key
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          home="$RUNNER_TEMP/gnupg"
+          mkdir -m 700 "$home"
+          printf '%s\n' "$APT_SIGNING_KEY" | GNUPGHOME="$home" gpg --batch --import
+          echo "GNUPGHOME=$home" >> "$GITHUB_ENV"
+      - name: Publish the APT repository
+        # A flat APT repository in the assets of the release tagged "apt" (a pre-release, so the
+        # updater and the app's "latest release" never pick it), with the amd64 and arm64 packages
+        # in one index. The .deb's postinst points /etc/apt/sources.list.d/writan.list there,
+        # signed-by the key it installs.
+        #
+        # apt upgrade does not install a package that is not already installed, and the Update
+        # button shipped before the rename runs `apt-get install --only-upgrade workspace`.
+        # This step also publishes an empty package named workspace that depends on writan, at
+        # the same version. Upgrading that name pulls writan in. Origin and Label stay Workspace.
+        # Changing them makes apt-get update on already-installed copies stop until someone passes
+        # --allow-releaseinfo-change, and the shipped Update button does not pass it.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          debs=("$RUNNER_TEMP"/packages/*.deb)
+          version="$(dpkg-deb -f "${debs[0]}" Version)"
+          maintainer="$(dpkg-deb -f "${debs[0]}" Maintainer)"
+          repo="$RUNNER_TEMP/apt"
+          mkdir -p "$repo"
+          cp "${debs[@]}" "$repo/"
+          empty="$(mktemp -d)"
+          mkdir -p "$empty/DEBIAN"
+          cat > "$empty/DEBIAN/control" <<EOF
+          Package: workspace
+          Version: ${version}
+          Architecture: all
+          Maintainer: ${maintainer}
+          Installed-Size: 0
+          Depends: writan
+          Section: oldlibs
+          Priority: optional
+          Description: Transitional package for Writan
+           The Linux package was renamed from workspace to writan. This empty package
+           depends on writan so apt upgrade installs the new name.
+          EOF
+          dpkg-deb --root-owner-group --build "$empty" "$repo/workspace_${version}_all.deb"
+          rm -rf "$empty"
+          cd "$repo"
+          # Asset names can't hold a path, so the index names the file alone.
+          apt-ftparchive packages . | sed 's|^Filename: \./|Filename: |' > Packages
+          gzip -9kn Packages
+          apt-ftparchive \
+            -o APT::FTPArchive::Release::Origin=Workspace \
+            -o APT::FTPArchive::Release::Label=Workspace \
+            -o APT::FTPArchive::Release::Suite=stable \
+            -o APT::FTPArchive::Release::Codename=stable \
+            -o "APT::FTPArchive::Release::Architectures=amd64 arm64" \
+            -o APT::FTPArchive::Release::Description="Writan (github.com/${GITHUB_REPOSITORY})" \
+            release . > "$RUNNER_TEMP/Release"
+          mv "$RUNNER_TEMP/Release" Release
+          gpg --batch --yes --clearsign -o InRelease Release
+          gpg --batch --yes --armor --detach-sign -o Release.gpg Release
+          if ! gh release view apt -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create apt -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "APT repository" \
+              --notes "Writan's APT repository for Debian and Ubuntu. The .deb adds it for you; nothing here needs downloading by hand."
+          fi
+          gh release upload apt -R "$GITHUB_REPOSITORY" *.deb --clobber
+          gh release upload apt -R "$GITHUB_REPOSITORY" Packages Packages.gz --clobber
+          gh release upload apt -R "$GITHUB_REPOSITORY" Release Release.gpg InRelease --clobber
+          # Keep the two newest real packages of each architecture and the two newest transitional
+          # packages, for anyone whose index is a step behind. Sort by the version field, not the
+          # whole name, so Workspace_0.10.4 and Writan_0.10.5 compare as versions.
+          prune_apt() {
+            local pattern="$1"
+            local names old
+            names="$(gh release view apt -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' | grep -E "$pattern" || true)"
+            [ -n "$names" ] || return 0
+            old="$(printf '%s\n' "$names" | sort -t_ -k2,2V | head -n -2 || true)"
+            for name in $old; do
+              gh release delete-asset apt "$name" -R "$GITHUB_REPOSITORY" --yes
+            done
+          }
+          prune_apt '^(Writan|Workspace)_.+_amd64\.deb$'
+          prune_apt '^Writan_.+_arm64\.deb$'
+          prune_apt '^workspace_.+_all\.deb$'
+      - name: Publish the dnf repository
+        # A dnf repository at https://github.com/<repo>/releases/download/rpm/, which src-tauri/linux/rpm-postinst
+        # adds to /etc/yum.repos.d. dnf reads <baseurl>/repodata/… and the index points packages at
+        # packages/…, and GitHub serves tags with a slash, so the metadata is the assets of the
+        # pre-release tagged "rpm/repodata" and the .rpm files those of "rpm/packages". One index
+        # lists the x86_64 and aarch64 packages, and dnf picks its machine's. repomd.xml is signed
+        # (repo_gpgcheck); it lists the other files' checksums and they list the packages', so the
+        # one signature covers the lot.
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          repo="$RUNNER_TEMP/dnf"
+          mkdir -p "$repo/packages"
+          cp "$RUNNER_TEMP"/packages/*.rpm "$repo/packages/"
+          cd "$repo"
+          rpms=(packages/*.rpm)
+          createrepo_c --no-database --general-compress-type=gz .
+          gpg --batch --yes --armor --detach-sign -o repodata/repomd.xml.asc repodata/repomd.xml
+          for tag in rpm/packages rpm/repodata; do
+            if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "dnf repository (${tag#rpm/})" \
+                --notes "Part of Writan's dnf repository for Fedora. The .rpm adds it for you; nothing here needs downloading by hand."
+            fi
+          done
+          gh release upload rpm/packages -R "$GITHUB_REPOSITORY" "${rpms[@]}" --clobber
+          meta=(repodata/*.xml.gz)
+          gh release upload rpm/repodata -R "$GITHUB_REPOSITORY" "${meta[@]}" --clobber
+          gh release upload rpm/repodata -R "$GITHUB_REPOSITORY" repodata/repomd.xml repodata/repomd.xml.asc --clobber
+          # Drop metadata the new repomd.xml doesn't name, and keep the new .rpm of each architecture
+          # and the one before it.
+          for name in $(gh release view rpm/repodata -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name'); do
+            case "$name" in repomd.xml | repomd.xml.asc) continue ;; esac
+            [ -e "repodata/$name" ] || gh release delete-asset rpm/repodata "$name" -R "$GITHUB_REPOSITORY" --yes
+          done
+          for arch in x86_64 aarch64; do
+            new="$(basename packages/*."$arch".rpm)"
+            # Sort by the version field so Workspace-0.10.4 and Writan-0.10.5 compare as versions.
+            old="$(gh release view rpm/packages -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+              | grep -E "^(Writan|Workspace)-.+\.${arch}\.rpm\$" | grep -vxF "$new" | sort -t- -k2,2V | head -n -1 || true)"
+            for name in $old; do
+              gh release delete-asset rpm/packages "$name" -R "$GITHUB_REPOSITORY" --yes
+            done
+          done
+      - name: Publish the pacman repository
+        # One pacman repository per architecture, in the assets of the pre-releases tagged
+        # "arch/x86_64" and "arch/aarch64": pacman.conf's `Server = …/download/arch/$arch` reads
+        # writan.db there. The Arch package's install script adds that section and puts the key in
+        # pacman's keyring, and `SigLevel = Required` makes pacman check the detached signature
+        # (<file>.sig) on the database and on each package. scripts/pacman-repo.sh writes the
+        # database. The app's Update button installs the package file with `pacman -U`.
+        run: |
+          set -euo pipefail
+          for arch in x86_64 aarch64; do
+            repo="$RUNNER_TEMP/pacman/$arch"
+            mkdir -p "$repo"
+            cp "$RUNNER_TEMP"/packages/*-"$arch".pkg.tar.zst "$repo/"
+            pkg="$(basename "$repo"/*.pkg.tar.zst)"
+            gpg --batch --yes --detach-sign -o "$repo/$pkg.sig" "$repo/$pkg"
+            db="$(scripts/pacman-repo.sh "$repo")"
+            gpg --batch --yes --detach-sign -o "$db.sig" "$db"
+            tag="arch/$arch"
+            if ! gh release view "$tag" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --title "pacman repository ($arch)" \
+                --notes "Writan's pacman repository for Arch Linux ($arch). The package adds it for you; nothing here needs downloading by hand."
+            fi
+            gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$repo/$pkg" "$repo/$pkg.sig" --clobber
+            gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$db" "$db.sig" --clobber
+            # Keep the new package and the one before it, for anyone whose database is a step behind.
+            old="$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' \
+              | grep -E "^writan-.+-${arch}\.pkg\.tar\.zst\$" | grep -vxF "$pkg" | sort -t- -k2,2V | head -n -1 || true)"
+            for name in $old; do
+              gh release delete-asset "$tag" "$name" -R "$GITHUB_REPOSITORY" --yes
+              gh release delete-asset "$tag" "$name.sig" -R "$GITHUB_REPOSITORY" --yes || true
+            done
+          done

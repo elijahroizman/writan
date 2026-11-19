@@ -104,7 +104,7 @@ fn list_blocks(blocks: &[Block], out: &mut Vec<Revision>) {
                     }
                 }
             }
-            Block::Raw { xml } => find_marks(xml, out, true),
+            Block::Raw { xml, .. } => find_marks(xml, out, true),
         }
     }
 }
