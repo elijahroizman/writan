@@ -964,3 +964,20 @@ fn rules_and_pictures_follow_deleted_rows() {
     back.shift_rows(0, 0, -10);
     assert!(back.cell_info(0, CellRef::new(0, 0)).validation.is_none());
 }
+
+/// Rules on one sheet that read another follow rows deleted there, and undo puts them back.
+#[test]
+fn rules_follow_rows_deleted_on_the_sheet_they_read() {
+    use crate::conditional::tests::{book, n, row, s};
+    let rules = r#"<dataValidations count="1"><dataValidation type="list" sqref="A1"><formula1>Other!$A$1:$A$3</formula1></dataValidation></dataValidations>"#;
+    let other = row(1, &[s("A1", "North")]) + &row(2, &[s("A2", "South")]) + &row(3, &[n("A3", 3.0)]);
+    let doc = book("", rules, &other, "");
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "lists.xlsx").unwrap();
+    let list = |v: &SheetsView| v.cell_info(0, CellRef::new(0, 0)).validation.and_then(|i| i.list);
+    assert_eq!(list(&v).map(|l| l.len()), Some(3));
+    v.shift_rows(1, 0, -1);
+    assert_eq!(list(&v), Some(vec!["South".to_string(), "3".into()]));
+    assert!(v.undo());
+    assert_eq!(list(&v).map(|l| l.len()), Some(3));
+}

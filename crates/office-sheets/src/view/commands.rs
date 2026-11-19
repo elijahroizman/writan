@@ -132,12 +132,12 @@ impl SheetsView {
     }
 
     /// Inserts or deletes rows or columns through `f`, as one step, then moves the references
-    /// to them in other sheets' formulas and in defined names. The step holds the whole book
-    /// when another sheet has charts whose references may move with it.
+    /// to them in other sheets' formulas, rules and defined names. The step holds the whole book
+    /// when another sheet has charts or rules whose references may move with it.
     fn change_for_shift(&mut self, sheet: usize, axis: Axis, at: u32, n: i64, f: impl FnOnce(&mut SheetsView)) {
         self.cancel_cut_on_sheet(sheet);
         let Some(name) = self.sheets().get(sheet).map(|s| s.name.clone()) else { return };
-        let book = self.sheets().iter().enumerate().any(|(i, s)| i != sheet && !s.charts.is_empty());
+        let book = self.sheets().iter().enumerate().any(|(i, s)| i != sheet && (!s.charts.is_empty() || has_rules(s)));
         let sel = self.sel;
         let before = if book { self.sheets().to_vec() } else { vec![self.sheets()[sheet].clone()] };
         f(self);
@@ -147,6 +147,7 @@ impl SheetsView {
                 continue;
             }
             let old = prepare_shift(s, &name, axis, at, n);
+            shift_rules(s, &name, false, axis, at, n);
             if !book && !old.is_empty() {
                 let cells = old.into_iter().map(|(at, before)| (at, Some(before), s.cell(at).cloned())).collect();
                 steps.push(CStep::Cells { sheet: i, cells });
@@ -480,7 +481,7 @@ impl SheetsView {
             let name = s.name.clone();
             prepare_shift(s, &name, Axis::Row, at, n);
             super::charts::shift_charts(s, true, at, n, |f| adjust_formula(f, &name, Axis::Row, at, n));
-            shift_rules(s, &name, Axis::Row, at, n);
+            shift_rules(s, &name, true, Axis::Row, at, n);
             super::charts::shift_other_chart_refs(v.sheets_mut(), sheet, |f| adjust_formula(f, &name, Axis::Row, at, n));
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
             if n < 0 {
@@ -518,7 +519,7 @@ impl SheetsView {
             let name = s.name.clone();
             prepare_shift(s, &name, Axis::Col, at, n);
             super::charts::shift_charts(s, false, at, n, |f| adjust_formula(f, &name, Axis::Col, at, n));
-            shift_rules(s, &name, Axis::Col, at, n);
+            shift_rules(s, &name, true, Axis::Col, at, n);
             super::charts::shift_other_chart_refs(v.sheets_mut(), sheet, |f| adjust_formula(f, &name, Axis::Col, at, n));
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
             for r in &mut s.rows {
@@ -1014,15 +1015,25 @@ fn clear_attr(o: &office_core::model::Origin, k: &str) -> office_core::model::Or
     }
 }
 
-/// Moves the ranges of a sheet's conditional formatting and data validation, and the references
-/// in their formulas, for rows or columns inserted at `at` (`n > 0`) or deleted (`n < 0`). A rule
-/// whose ranges are all deleted goes with them.
-fn shift_rules(s: &mut Sheet, name: &str, axis: Axis, at: u32, n: i64) {
+/// Whether a sheet's markup holds conditional formatting or data validation.
+fn has_rules(s: &Sheet) -> bool {
+    s.origin.get().is_some_and(|r| r.elements().any(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "extLst")))
+}
+
+/// Moves the references in a sheet's conditional formatting and data validation to `target`, for
+/// rows or columns inserted there at `at` (`n > 0`) or deleted (`n < 0`), and, on `target` itself
+/// (`local`), the ranges the rules cover. A rule whose ranges are all deleted goes with them.
+fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n: i64) {
     use office_core::xml::{Element, Node};
     let Some(root) = s.origin.get() else { return };
     let mut root = root.clone();
-    let adjust = |f: &str| adjust_formula(f, name, axis, at, n);
-    let sqref = |v: &str| v.split_whitespace().map(adjust).filter(|p| !p.contains("#REF!")).collect::<Vec<_>>().join(" ");
+    let adjust = |f: &str| adjust_formula_on(f, target, local, axis, at, n);
+    let sqref = |v: &str| {
+        if !local {
+            return v.to_string();
+        }
+        v.split_whitespace().map(adjust).filter(|p| !p.contains("#REF!")).collect::<Vec<_>>().join(" ")
+    };
     fn set_text(el: &mut Element, text: String) {
         el.children = vec![Node::Text(text)];
     }
