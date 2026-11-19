@@ -1041,9 +1041,11 @@ fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n:
         if let Some(v) = el.attr("sqref").map(str::to_string) {
             el.set_attr("", "sqref", sqref(&v));
         }
+        // `<x14:formula1>` holds its formula in an `<xm:f>`; only a leaf holds text to move.
+        let leaf = el.elements().next().is_none();
         match el.local.as_str() {
-            "sqref" => set_text(el, sqref(&el.text())),
-            "formula" | "formula1" | "formula2" | "f" => set_text(el, adjust(&el.text())),
+            "sqref" if leaf => set_text(el, sqref(&el.text())),
+            "formula" | "formula1" | "formula2" | "f" if leaf => set_text(el, adjust(&el.text())),
             _ => el.elements_mut().for_each(|c| walk(c, sqref, adjust)),
         }
         // A rule left with no cells is dropped.

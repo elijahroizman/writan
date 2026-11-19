@@ -981,3 +981,18 @@ fn rules_follow_rows_deleted_on_the_sheet_they_read() {
     assert!(v.undo());
     assert_eq!(list(&v).map(|l| l.len()), Some(3));
 }
+
+/// Shifting rows keeps the 2010 extension list's `<x14:formula1><xm:f>` shape.
+#[test]
+fn shifting_rows_keeps_extension_list_formulas_whole() {
+    use crate::conditional::tests::{book, n, row, s};
+    let rules = r#"<extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"><x14:dataValidations count="1"><x14:dataValidation type="list"><x14:formula1><xm:f>Other!$A$1:$A$3</xm:f></x14:formula1><xm:sqref>A5</xm:sqref></x14:dataValidation></x14:dataValidations></ext></extLst>"#;
+    let other = row(1, &[s("A1", "North")]) + &row(2, &[s("A2", "South")]) + &row(3, &[n("A3", 3.0)]);
+    let doc = book("", rules, &other, "");
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "lists.xlsx").unwrap();
+    v.shift_rows(0, 0, 1);
+    let back = SheetsView::open(&v.save().unwrap(), "lists.xlsx").unwrap();
+    assert_eq!(back.cell_info(0, CellRef::new(5, 0)).validation.and_then(|i| i.list).map(|l| l.len()), Some(3));
+    assert!(back.cell_info(0, CellRef::new(4, 0)).validation.is_none());
+}
