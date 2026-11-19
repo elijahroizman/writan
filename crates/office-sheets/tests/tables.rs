@@ -63,3 +63,36 @@ fn table_totals_follow_references_to_another_sheet_without_shifting_local_refere
     view.shift_rows(1, 4, 1);
     check(&mut view, "$A$6", "SUM(Summary!$C$3,$B$2,RefTable[Item],[1]Summary!$B$2)");
 }
+
+#[test]
+fn deleting_first_data_row_reanchors_calculated_column_to_the_surviving_formula() {
+    let mut pkg = Package::read(FIXTURE).unwrap();
+    let mut xml = pkg.xml(TABLE).unwrap();
+    let column = xml.root.child_mut(ns::X, "tableColumns").unwrap().elements_mut().nth(1).unwrap();
+    let first = "SUM(G2,$G$1,Summary!B2,RefTable[@Item])";
+    let second = "SUM(G3,$G$1,Summary!B3,RefTable[@Item])";
+    column.child_mut(ns::X, "calculatedColumnFormula").unwrap().children = vec![Node::Text(first.into())];
+    column.push(Element::new(ns::X, "totalsRowFormula").with_text("SUM($G$2:G3)"));
+    pkg.replace(TABLE, xml.to_bytes()).unwrap();
+    let mut view = SheetsView::open(&pkg.to_bytes().unwrap(), "table.xlsx").unwrap();
+    let at = CellRef::parse("H2").unwrap();
+    view.set_input(1, at, &format!("={first}"));
+    view.set_input(1, CellRef::parse("H3").unwrap(), &format!("={second}"));
+    let check = |view: &mut SheetsView, expected: &str, totals: &str, range: &str| {
+        let saved = view.save().unwrap();
+        let reopened = SheetsView::open(&saved, "table.xlsx").unwrap();
+        assert_eq!(reopened.sheets()[1].cell(at).unwrap().formula.as_deref(), Some(expected));
+        let table = Package::read(&saved).unwrap().xml(TABLE).unwrap().root;
+        assert_eq!(table.attr("ref"), Some(range));
+        let column = table_column(&table);
+        assert_eq!(column.child(ns::X, "calculatedColumnFormula").unwrap().text(), expected);
+        assert_eq!(column.child(ns::X, "totalsRowFormula").unwrap().text(), totals);
+    };
+    view.shift_rows(1, 1, -1);
+    let surviving = "SUM(G2,$G$1,Summary!B3,RefTable[@Item])";
+    check(&mut view, surviving, "SUM($G$2:G2)", "G1:H2");
+    assert!(view.undo());
+    check(&mut view, first, "SUM($G$2:G3)", "G1:H3");
+    assert!(view.redo());
+    check(&mut view, surviving, "SUM($G$2:G2)", "G1:H2");
+}

@@ -1237,6 +1237,9 @@ fn shift_table_rows(table: &mut Element, at: u32, n: i64) -> Option<bool> {
     if old == new && (n >= 0 || at > old.end.row) {
         return Some(false);
     }
+    if n < 0 {
+        rebase_calculated_columns(table, old, at, i64::from(at) - n);
+    }
     for (attr, start, default) in [("headerRowCount", true, 1), ("totalsRowCount", false, 0)] {
         let count = table.attr(attr).and_then(|v| v.parse::<u32>().ok()).unwrap_or(default).min(old.rows());
         if count == 0 || n >= 0 {
@@ -1252,6 +1255,18 @@ fn shift_table_rows(table: &mut Element, at: u32, n: i64) -> Option<bool> {
     table.set_attr("", "ref", format!("{}:{}", new.start, new.end));
     shift_table_filters(table, &shifted);
     Some(true)
+}
+
+fn rebase_calculated_columns(table: &mut Element, old: Range, at: u32, end: i64) {
+    let headers = table.attr("headerRowCount").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).min(old.rows());
+    let totals = table.attr("totalsRowCount").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0).min(old.rows() - headers);
+    let first = i64::from(old.start.row + headers);
+    let data_end = i64::from(old.end.row + 1 - totals);
+    if i64::from(at) <= first && first < end && end < data_end {
+        // The first surviving data row was the template's copy before the worksheet references moved.
+        let rebase = |f: &str| crate::formula::shift(f, end - first, 0).ok().filter(|next| next != f);
+        rewrite_formula_nodes(table, &rebase, |e| e.is(ns::X, "calculatedColumnFormula"));
+    }
 }
 
 fn shift_table_filters(el: &mut Element, shifted: &impl Fn(Range) -> Option<Range>) {
