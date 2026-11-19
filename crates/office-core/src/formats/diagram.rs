@@ -44,7 +44,9 @@ fn cached_shapes(tree: &Element) -> Vec<Element> {
             out.extend(split_text(el));
         } else if el.is(ns::DSP, "grpSp") {
             let mut g = el.clone();
-            g.children.retain(|c| !matches!(c, Node::Element(e) if e.is(ns::DSP, "sp") || e.is(ns::DSP, "grpSp")));
+            // Only the group's own properties and its shapes: anything else (a nested graphic
+            // frame naming this diagram again) is dropped, so drawing can't recurse.
+            g.children.retain(|c| matches!(c, Node::Element(e) if e.is(ns::DSP, "nvGrpSpPr") || e.is(ns::DSP, "grpSpPr")));
             for c in cached_shapes(el) {
                 g.push(c);
             }
@@ -271,6 +273,15 @@ mod tests {
             assert!(x.x.0 >= 0 && x.x.0 + x.width.0 <= 6_096_001 && x.y.0 >= 0 && x.y.0 + x.height.0 <= 4_064_001);
         }
         assert_eq!(shapes[0].text(), "PlanScope");
+    }
+
+    #[test]
+    fn cached_groups_keep_only_shapes() {
+        let tree = parse_element(r#"<dsp:spTree xmlns:dsp="http://schemas.microsoft.com/office/drawing/2008/diagram" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><dsp:grpSp><dsp:nvGrpSpPr><dsp:cNvPr id="0" name=""/><dsp:cNvGrpSpPr/></dsp:nvGrpSpPr><dsp:grpSpPr/><dsp:graphicFrame><a:graphic><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/diagram"/></a:graphic></dsp:graphicFrame><dsp:sp><dsp:spPr/></dsp:sp></dsp:grpSp></dsp:spTree>"#).unwrap();
+        let shapes = cached_shapes(&tree);
+        let kids: Vec<&str> = shapes[0].elements().map(|e| e.local.as_str()).collect();
+        assert_eq!(kids, ["nvGrpSpPr", "grpSpPr", "sp"]);
+        assert!(shapes[0].elements().all(|e| e.in_ns(ns::P)));
     }
 
     #[test]
