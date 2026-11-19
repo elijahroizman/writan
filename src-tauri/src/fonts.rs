@@ -119,15 +119,26 @@ const FONTS: &[ExtraFont] = &[
 const MAX_DOWNLOAD: u64 = 20 * 1024 * 1024;
 
 fn font(id: &str) -> Result<&'static ExtraFont, String> {
-    FONTS.iter().find(|f| f.id == id).ok_or_else(|| "Unknown font".to_string())
+    FONTS
+        .iter()
+        .find(|f| f.id == id)
+        .ok_or_else(|| "Unknown font".to_string())
 }
 
 fn font_dir<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("fonts").join(id))
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("fonts")
+        .join(id))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 /// The extra fonts whose files are all on disk.
@@ -135,14 +146,26 @@ fn sha256_hex(bytes: &[u8]) -> String {
 pub fn installed_fonts<R: Runtime>(app: AppHandle<R>) -> Vec<&'static str> {
     FONTS
         .iter()
-        .filter(|f| font_dir(&app, f.id).is_ok_and(|dir| f.files.iter().all(|(name, _)| dir.join(name).is_file())))
+        .filter(|f| {
+            font_dir(&app, f.id)
+                .is_ok_and(|dir| f.files.iter().all(|(name, _)| dir.join(name).is_file()))
+        })
         .map(|f| f.id)
         .collect()
 }
 
 fn download(font: &ExtraFont, url: &str) -> Result<Vec<u8>, String> {
-    let failed = |_| format!("Couldn't download the font from {}. Check your connection and try again.", font.maker);
-    let mut response = crate::files::download_agent().get(url).header("User-Agent", "Writan").call().map_err(failed)?;
+    let failed = |_| {
+        format!(
+            "Couldn't download the font from {}. Check your connection and try again.",
+            font.maker
+        )
+    };
+    let mut response = crate::files::download_agent()
+        .get(url)
+        .header("User-Agent", "Writan")
+        .call()
+        .map_err(failed)?;
     let mut bytes = Vec::new();
     response
         .body_mut()
@@ -158,20 +181,36 @@ fn download(font: &ExtraFont, url: &str) -> Result<Vec<u8>, String> {
 fn fetch(font: &ExtraFont) -> Result<Vec<(&'static str, Vec<u8>)>, String> {
     match font.source {
         Source::Zip(url) => unzip(font, &download(font, url)?),
-        Source::Files(base) => font.files.iter().map(|(name, _)| Ok((*name, download(font, &format!("{base}{name}"))?))).collect(),
+        Source::Files(base) => font
+            .files
+            .iter()
+            .map(|(name, _)| Ok((*name, download(font, &format!("{base}{name}"))?)))
+            .collect(),
     }
 }
 
 fn unzip(font: &ExtraFont, archive: &[u8]) -> Result<Vec<(&'static str, Vec<u8>)>, String> {
-    let mut zip = zip::ZipArchive::new(Cursor::new(archive)).map_err(|_| format!("{}'s download wasn't the font archive Writan expected.", font.maker))?;
+    let mut zip = zip::ZipArchive::new(Cursor::new(archive)).map_err(|_| {
+        format!(
+            "{}'s download wasn't the font archive Writan expected.",
+            font.maker
+        )
+    })?;
     let mut found = Vec::new();
     for (name, _) in font.files {
         // Files can sit in a folder inside the archive; match on the file name alone.
         let index = (0..zip.len())
-            .find(|&i| zip.by_index(i).is_ok_and(|f| f.name().rsplit('/').next() == Some(*name)))
+            .find(|&i| {
+                zip.by_index(i)
+                    .is_ok_and(|f| f.name().rsplit('/').next() == Some(*name))
+            })
             .ok_or_else(|| format!("{name} is missing from {}'s download.", font.maker))?;
         let mut bytes = Vec::new();
-        zip.by_index(index).map_err(|e| e.to_string())?.take(MAX_DOWNLOAD).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+        zip.by_index(index)
+            .map_err(|e| e.to_string())?
+            .take(MAX_DOWNLOAD)
+            .read_to_end(&mut bytes)
+            .map_err(|e| e.to_string())?;
         found.push((*name, bytes));
     }
     Ok(found)
@@ -180,7 +219,11 @@ fn unzip(font: &ExtraFont, archive: &[u8]) -> Result<Vec<(&'static str, Vec<u8>)
 /// Checks every file against its hash, then puts them in `dir` together.
 fn install(dir: &PathBuf, font: &ExtraFont, found: Vec<(&str, Vec<u8>)>) -> Result<(), String> {
     for (name, hash) in font.files {
-        let bytes = found.iter().find(|(n, _)| n == name).map(|(_, b)| b).ok_or_else(|| format!("{name} is missing from {}'s download.", font.maker))?;
+        let bytes = found
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, b)| b)
+            .ok_or_else(|| format!("{name} is missing from {}'s download.", font.maker))?;
         if sha256_hex(bytes) != *hash {
             return Err(format!("{} has changed this font since this version of Writan. Update Writan and try again.", font.maker));
         }
@@ -209,16 +252,26 @@ pub async fn install_font<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(
 pub fn remove_font<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
     let dir = font_dir(&app, font(&id)?.id)?;
     match fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("Couldn't remove the font: {e}")),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("Couldn't remove the font: {e}"))
+        }
         _ => Ok(()),
     }
 }
 
 /// One face's bytes, for the editors to register.
 #[tauri::command]
-pub fn font_file<R: Runtime>(app: AppHandle<R>, id: String, file: String) -> Result<Response, String> {
+pub fn font_file<R: Runtime>(
+    app: AppHandle<R>,
+    id: String,
+    file: String,
+) -> Result<Response, String> {
     let font = font(&id)?;
-    let (name, _) = font.files.iter().find(|(name, _)| *name == file).ok_or("Unknown font file")?;
+    let (name, _) = font
+        .files
+        .iter()
+        .find(|(name, _)| *name == file)
+        .ok_or("Unknown font file")?;
     let bytes = fs::read(font_dir(&app, font.id)?.join(name)).map_err(|e| e.to_string())?;
     Ok(Response::new(bytes))
 }
@@ -236,7 +289,8 @@ mod tests {
             let mut zip = zip::ZipWriter::new(&mut buf);
             let opts = zip::write::SimpleFileOptions::default();
             for (name, _) in FONTS[0].files {
-                zip.start_file(format!("Michelangelus Fonts/{name}"), opts).unwrap();
+                zip.start_file(format!("Michelangelus Fonts/{name}"), opts)
+                    .unwrap();
                 zip.write_all(b"not a font").unwrap();
             }
             zip.finish().unwrap();
@@ -260,7 +314,11 @@ mod tests {
     fn downloads_every_font() {
         let mut failed = Vec::new();
         for font in FONTS {
-            let dir = std::env::temp_dir().join(format!("workspace-fonts-real-{}-{}", std::process::id(), font.id));
+            let dir = std::env::temp_dir().join(format!(
+                "workspace-fonts-real-{}-{}",
+                std::process::id(),
+                font.id
+            ));
             match fetch(font).and_then(|files| install(&dir, font, files)) {
                 Ok(()) => assert!(font.files.iter().all(|(name, _)| dir.join(name).is_file())),
                 Err(e) => failed.push(format!("{}: {e}", font.id)),

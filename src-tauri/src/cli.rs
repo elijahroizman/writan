@@ -28,8 +28,12 @@ const LEGACY_TARGET: &str = "/usr/local/bin/workspace";
 #[cfg(any(target_os = "macos", test))]
 fn is_legacy_command(path: &std::path::Path) -> bool {
     if let Ok(target) = std::fs::read_link(path) {
-        return target.to_string_lossy().contains("/Workspace.app/Contents/MacOS/")
-            || target.to_string_lossy().contains("/Writan.app/Contents/MacOS/");
+        return target
+            .to_string_lossy()
+            .contains("/Workspace.app/Contents/MacOS/")
+            || target
+                .to_string_lossy()
+                .contains("/Writan.app/Contents/MacOS/");
     }
     std::fs::read_to_string(path).is_ok_and(|s| {
         s.contains("# Installed by Workspace") && s.contains("com.eliroizman.workspace")
@@ -54,16 +58,31 @@ pub fn cli_status<R: Runtime>(app: AppHandle<R>) -> CliStatus {
     {
         let existing = std::fs::read_to_string(TARGET).ok();
         let ours = existing.as_deref().is_some_and(|s| s.contains(MARKER));
-        CliStatus { supported: true, installed: ours, taken: std::path::Path::new(TARGET).exists() && !ours, path: TARGET.into() }
+        CliStatus {
+            supported: true,
+            installed: ours,
+            taken: std::path::Path::new(TARGET).exists() && !ours,
+            path: TARGET.into(),
+        }
     }
     #[cfg(target_os = "linux")]
     {
         let path = "/usr/bin/writan";
-        CliStatus { supported: false, installed: std::path::Path::new(path).exists(), taken: false, path: path.into() }
+        CliStatus {
+            supported: false,
+            installed: std::path::Path::new(path).exists(),
+            taken: false,
+            path: path.into(),
+        }
     }
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        CliStatus { supported: false, installed: false, taken: false, path: String::new() }
+        CliStatus {
+            supported: false,
+            installed: false,
+            taken: false,
+            path: String::new(),
+        }
     }
 }
 
@@ -97,12 +116,12 @@ pub async fn cli_uninstall<R: Runtime>(app: AppHandle<R>) -> Result<(), String> 
         if !cli_status(app).installed {
             return Ok(());
         }
-        tauri::async_runtime::spawn_blocking(|| {
-            match std::fs::remove_file(TARGET) {
-                Ok(()) => Ok(()),
-                Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => as_admin(&format!("rm -f {}", shell_quote(TARGET))),
-                Err(e) => Err(e.to_string()),
+        tauri::async_runtime::spawn_blocking(|| match std::fs::remove_file(TARGET) {
+            Ok(()) => Ok(()),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                as_admin(&format!("rm -f {}", shell_quote(TARGET)))
             }
+            Err(e) => Err(e.to_string()),
         })
         .await
         .map_err(|e| e.to_string())?
@@ -137,7 +156,11 @@ fn install_script(script: &str) -> Result<(), String> {
             // Write it somewhere we can, then copy it into place as an administrator.
             let tmp = std::env::temp_dir().join(format!("writan-cli-{}", std::process::id()));
             std::fs::write(&tmp, script).map_err(|e| e.to_string())?;
-            let cleanup = if remove_legacy { format!(" && rm -f {}", shell_quote(LEGACY_TARGET)) } else { String::new() };
+            let cleanup = if remove_legacy {
+                format!(" && rm -f {}", shell_quote(LEGACY_TARGET))
+            } else {
+                String::new()
+            };
             let result = as_admin(&format!(
                 "mkdir -p /usr/local/bin && cp {} {} && chmod 755 {}{}",
                 shell_quote(&tmp.to_string_lossy()),
@@ -213,14 +236,22 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("writan-cli-migration-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let command = dir.join("workspace");
-        std::fs::write(&command, "#!/bin/sh\n# Installed by Workspace\nopen -b com.eliroizman.workspace \"$@\"\n").unwrap();
+        std::fs::write(
+            &command,
+            "#!/bin/sh\n# Installed by Workspace\nopen -b com.eliroizman.workspace \"$@\"\n",
+        )
+        .unwrap();
         assert!(is_legacy_command(&command));
         std::fs::write(&command, "#!/bin/sh\necho another workspace command\n").unwrap();
         assert!(!is_legacy_command(&command));
         std::fs::remove_file(&command).unwrap();
         #[cfg(unix)]
         {
-            std::os::unix::fs::symlink("/Applications/Workspace.app/Contents/MacOS/workspace", &command).unwrap();
+            std::os::unix::fs::symlink(
+                "/Applications/Workspace.app/Contents/MacOS/workspace",
+                &command,
+            )
+            .unwrap();
             assert!(is_legacy_command(&command));
             std::fs::remove_file(&command).unwrap();
             std::os::unix::fs::symlink("/usr/bin/another-program", &command).unwrap();
@@ -237,7 +268,10 @@ mod tests {
     #[test]
     fn drops_the_verbatim_prefix() {
         assert_eq!(plain_path(r"\\?\C:\Users\e\a.docx"), r"C:\Users\e\a.docx");
-        assert_eq!(plain_path(r"\\?\UNC\server\share\a.docx"), r"\\server\share\a.docx");
+        assert_eq!(
+            plain_path(r"\\?\UNC\server\share\a.docx"),
+            r"\\server\share\a.docx"
+        );
         assert_eq!(plain_path("/home/e/a.docx"), "/home/e/a.docx");
     }
 
@@ -246,7 +280,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("writan-cli-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("a.md"), "").unwrap();
-        let args = vec!["writan".to_string(), "a.md".into(), "--flag".into(), "missing.md".into(), ".".into()];
+        let args = vec![
+            "writan".to_string(),
+            "a.md".into(),
+            "--flag".into(),
+            "missing.md".into(),
+            ".".into(),
+        ];
         let paths = paths_from_args(&args, &dir.to_string_lossy());
         assert_eq!(paths.len(), 2);
         assert!(paths[0].ends_with("a.md"));

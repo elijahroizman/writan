@@ -41,7 +41,11 @@ fn plugins_dir<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
 
 /// A plugin id is a folder name: lowercase letters, digits and dashes.
 fn valid_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 fn read_manifest(dir: &Path) -> Option<InstalledPlugin> {
@@ -50,8 +54,12 @@ fn read_manifest(dir: &Path) -> Option<InstalledPlugin> {
 
 #[tauri::command]
 pub fn installed_plugins<R: Runtime>(app: AppHandle<R>) -> Vec<InstalledPlugin> {
-    let Ok(dir) = plugins_dir(&app) else { return Vec::new() };
-    let Ok(entries) = fs::read_dir(dir) else { return Vec::new() };
+    let Ok(dir) = plugins_dir(&app) else {
+        return Vec::new();
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return Vec::new();
+    };
     entries
         .flatten()
         .filter_map(|entry| {
@@ -63,7 +71,12 @@ pub fn installed_plugins<R: Runtime>(app: AppHandle<R>) -> Vec<InstalledPlugin> 
 }
 
 #[tauri::command]
-pub async fn install_plugin<R: Runtime>(app: AppHandle<R>, id: String, version: String, url: String) -> Result<(), String> {
+pub async fn install_plugin<R: Runtime>(
+    app: AppHandle<R>,
+    id: String,
+    version: String,
+    url: String,
+) -> Result<(), String> {
     if !valid_id(&id) {
         return Err("Unknown plugin".into());
     }
@@ -75,7 +88,14 @@ pub async fn install_plugin<R: Runtime>(app: AppHandle<R>, id: String, version: 
     tauri::async_runtime::spawn_blocking(move || {
         let signature = download(&format!("{url}.sig"), 64 * 1024, |_, _| {})?;
         let archive = download(&url, MAX_ARCHIVE, |received, total| {
-            let _ = app.emit("plugin-progress", Progress { id: &id, received, total });
+            let _ = app.emit(
+                "plugin-progress",
+                Progress {
+                    id: &id,
+                    received,
+                    total,
+                },
+            );
         })?;
         let file_name = url.rsplit('/').next().unwrap_or_default();
         verify(&archive, &signature, &pubkey, file_name)?;
@@ -92,7 +112,9 @@ pub fn remove_plugin<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), St
     }
     let dir = plugins_dir(&app)?.join(&id);
     match fs::remove_dir_all(&dir) {
-        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(format!("Couldn't remove the plugin: {e}")),
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => {
+            Err(format!("Couldn't remove the plugin: {e}"))
+        }
         _ => Ok(()),
     }
 }
@@ -110,7 +132,8 @@ fn updater_pubkey<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
 }
 
 fn download(url: &str, limit: u64, mut progress: impl FnMut(u64, u64)) -> Result<Vec<u8>, String> {
-    let failed = |_| "Couldn't download the plugin. Check your connection and try again.".to_string();
+    let failed =
+        |_| "Couldn't download the plugin. Check your connection and try again.".to_string();
     let mut response = crate::files::download_agent()
         .get(url)
         .header("User-Agent", "Writan")
@@ -129,7 +152,9 @@ fn download(url: &str, limit: u64, mut progress: impl FnMut(u64, u64)) -> Result
     let mut bytes = Vec::with_capacity(total as usize);
     let mut chunk = vec![0u8; 256 * 1024];
     loop {
-        let n = reader.read(&mut chunk).map_err(|_| "The plugin download was interrupted.".to_string())?;
+        let n = reader
+            .read(&mut chunk)
+            .map_err(|_| "The plugin download was interrupted.".to_string())?;
         if n == 0 {
             break;
         }
@@ -153,7 +178,8 @@ fn base64_text(value: &str) -> Result<String, String> {
 fn verify(archive: &[u8], signature: &[u8], pubkey: &str, file_name: &str) -> Result<(), String> {
     let bad = |_| "The plugin's signature doesn't match. It wasn't installed.".to_string();
     let key = minisign_verify::PublicKey::decode(&base64_text(pubkey)?).map_err(bad)?;
-    let signature = std::str::from_utf8(signature).map_err(|_| "The plugin signature is damaged.".to_string())?;
+    let signature = std::str::from_utf8(signature)
+        .map_err(|_| "The plugin signature is damaged.".to_string())?;
     let signature = minisign_verify::Signature::decode(&base64_text(signature)?).map_err(bad)?;
     key.verify(archive, &signature, true).map_err(bad)?;
     let signed_for = signature
@@ -222,7 +248,10 @@ fn unpack(archive: &[u8], root: &Path, id: &str, version: &str) -> Result<(), St
 /// `wsplugin://localhost/<id>/<file>` (`http://wsplugin.localhost/…` on Windows): files of an
 /// installed plugin. The page loads them as modules, fonts and styles from another origin, so
 /// every response allows any origin.
-pub fn serve<R: Runtime>(app: &AppHandle<R>, request: &Request<Vec<u8>>) -> Response<Cow<'static, [u8]>> {
+pub fn serve<R: Runtime>(
+    app: &AppHandle<R>,
+    request: &Request<Vec<u8>>,
+) -> Response<Cow<'static, [u8]>> {
     let respond = |status: StatusCode, mime: &str, body: Vec<u8>| {
         Response::builder()
             .status(status)
@@ -232,8 +261,12 @@ pub fn serve<R: Runtime>(app: &AppHandle<R>, request: &Request<Vec<u8>>) -> Resp
             .unwrap()
     };
     let not_found = || respond(StatusCode::NOT_FOUND, "text/plain", b"Not found".to_vec());
-    let Ok(root) = plugins_dir(app) else { return not_found() };
-    let Some(rel) = safe_relative(request.uri().path()) else { return not_found() };
+    let Ok(root) = plugins_dir(app) else {
+        return not_found();
+    };
+    let Some(rel) = safe_relative(request.uri().path()) else {
+        return not_found();
+    };
     match fs::read(root.join(&rel)) {
         Ok(bytes) => respond(StatusCode::OK, mime_type(&rel), bytes),
         Err(_) => not_found(),
@@ -250,7 +283,11 @@ fn safe_relative(path: &str) -> Option<PathBuf> {
 }
 
 fn mime_type(path: &Path) -> &'static str {
-    match path.extension().and_then(|e| e.to_str()).unwrap_or_default() {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+    {
         "js" | "mjs" => "text/javascript",
         "css" => "text/css",
         "json" => "application/json",
@@ -272,8 +309,14 @@ mod tests {
 
     #[test]
     fn serves_only_plain_paths_inside_a_plugin() {
-        assert_eq!(safe_relative("/latex/index.js"), Some(PathBuf::from("latex/index.js")));
-        assert_eq!(safe_relative("/latex/fonts/A%20B.woff2"), Some(PathBuf::from("latex/fonts/A B.woff2")));
+        assert_eq!(
+            safe_relative("/latex/index.js"),
+            Some(PathBuf::from("latex/index.js"))
+        );
+        assert_eq!(
+            safe_relative("/latex/fonts/A%20B.woff2"),
+            Some(PathBuf::from("latex/fonts/A B.woff2"))
+        );
         assert_eq!(safe_relative("/latex/../secret"), None);
         assert_eq!(safe_relative("/%2E%2E/secret"), None);
         assert_eq!(safe_relative("/.latex-installing/index.js"), None);
@@ -286,10 +329,28 @@ mod tests {
 
     #[test]
     fn accepts_only_a_signature_for_this_file() {
-        verify(b"plugin bytes", TEST_SIGNATURE, TEST_PUBKEY, "demo-1.0.0.zip").unwrap();
-        assert!(verify(b"plugin bytes!", TEST_SIGNATURE, TEST_PUBKEY, "demo-1.0.0.zip").is_err());
+        verify(
+            b"plugin bytes",
+            TEST_SIGNATURE,
+            TEST_PUBKEY,
+            "demo-1.0.0.zip",
+        )
+        .unwrap();
+        assert!(verify(
+            b"plugin bytes!",
+            TEST_SIGNATURE,
+            TEST_PUBKEY,
+            "demo-1.0.0.zip"
+        )
+        .is_err());
         // A genuine signature for another archive can't stand in for this one.
-        assert!(verify(b"plugin bytes", TEST_SIGNATURE, TEST_PUBKEY, "demo-2.0.0.zip").is_err());
+        assert!(verify(
+            b"plugin bytes",
+            TEST_SIGNATURE,
+            TEST_PUBKEY,
+            "demo-2.0.0.zip"
+        )
+        .is_err());
     }
 
     #[test]
@@ -316,9 +377,11 @@ mod tests {
         let mut buf = Cursor::new(Vec::new());
         {
             let mut zip = zip::ZipWriter::new(&mut buf);
-            let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Deflated);
             zip.start_file("manifest.json", opts).unwrap();
-            zip.write_all(br#"{"id":"demo","version":"1.0.0","entry":"index.js"}"#).unwrap();
+            zip.write_all(br#"{"id":"demo","version":"1.0.0","entry":"index.js"}"#)
+                .unwrap();
             zip.start_file("fonts/a.woff2", opts).unwrap();
             zip.write_all(b"font").unwrap();
             zip.finish().unwrap();

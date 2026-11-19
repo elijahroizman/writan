@@ -7,12 +7,18 @@ use tauri::{Runtime, WebviewWindow};
 /// The chosen documents and folders, or nothing when cancelled. `extensions` limits the
 /// documents shown (without dots).
 #[tauri::command]
-pub async fn pick_paths<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> Result<Vec<String>, String> {
+pub async fn pick_paths<R: Runtime>(
+    window: WebviewWindow<R>,
+    extensions: Vec<String>,
+) -> Result<Vec<String>, String> {
     pick(window, extensions).await
 }
 
 #[cfg(target_os = "macos")]
-async fn pick<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> Result<Vec<String>, String> {
+async fn pick<R: Runtime>(
+    window: WebviewWindow<R>,
+    extensions: Vec<String>,
+) -> Result<Vec<String>, String> {
     let (tx, answer) = channel();
     window
         .run_on_main_thread(move || {
@@ -47,7 +53,10 @@ async fn pick<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> 
 }
 
 #[cfg(target_os = "linux")]
-async fn pick<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> Result<Vec<String>, String> {
+async fn pick<R: Runtime>(
+    window: WebviewWindow<R>,
+    extensions: Vec<String>,
+) -> Result<Vec<String>, String> {
     let (tx, answer) = channel();
     let owner = window.clone();
     window
@@ -61,7 +70,11 @@ async fn pick<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> 
                 Some("Open"),
                 parent.as_ref(),
                 FileChooserAction::Open,
-                &[("Cancel", ResponseType::Cancel), ("Open Folder", OPEN_FOLDER), ("Open", ResponseType::Accept)],
+                &[
+                    ("Cancel", ResponseType::Cancel),
+                    ("Open Folder", OPEN_FOLDER),
+                    ("Open", ResponseType::Accept),
+                ],
             );
             dialog.set_select_multiple(true);
             dialog.set_default_response(ResponseType::Accept);
@@ -74,11 +87,19 @@ async fn pick<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> 
             dialog.add_filter(filter);
             let response = dialog.run();
             let paths: Vec<String> = if response == ResponseType::Accept {
-                dialog.filenames().into_iter().map(|p| p.to_string_lossy().into_owned()).collect()
+                dialog
+                    .filenames()
+                    .into_iter()
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .collect()
             } else if response == OPEN_FOLDER {
                 // A folder selected in the list, or else the one the dialog is showing.
                 let selected = dialog.filename().filter(|p| p.is_dir());
-                selected.or_else(|| dialog.current_folder()).map(|p| p.to_string_lossy().into_owned()).into_iter().collect()
+                selected
+                    .or_else(|| dialog.current_folder())
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .into_iter()
+                    .collect()
             } else {
                 Vec::new()
             };
@@ -90,7 +111,10 @@ async fn pick<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> 
 }
 
 #[cfg(windows)]
-async fn pick<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> Result<Vec<String>, String> {
+async fn pick<R: Runtime>(
+    window: WebviewWindow<R>,
+    extensions: Vec<String>,
+) -> Result<Vec<String>, String> {
     let owner = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
     // The dialog runs its own message loop on a thread of its own.
     tauri::async_runtime::spawn_blocking(move || windows_dialog::pick(owner, &extensions))
@@ -100,7 +124,10 @@ async fn pick<R: Runtime>(window: WebviewWindow<R>, extensions: Vec<String>) -> 
 
 /// The dialog answers on the main thread; wait for it off the async runtime.
 #[cfg(not(windows))]
-fn channel() -> (std::sync::mpsc::Sender<Vec<String>>, impl std::future::Future<Output = Result<Vec<String>, String>>) {
+fn channel() -> (
+    std::sync::mpsc::Sender<Vec<String>>,
+    impl std::future::Future<Output = Result<Vec<String>, String>>,
+) {
     let (tx, rx) = std::sync::mpsc::channel();
     let answer = async move {
         tauri::async_runtime::spawn_blocking(move || rx.recv().unwrap_or_default())
@@ -117,12 +144,17 @@ mod windows_dialog {
 
     use windows::core::{implement, w, Interface, Ref, Result, BOOL, HSTRING, PCWSTR};
     use windows::Win32::Foundation::{ERROR_CANCELLED, HWND};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE,
+    };
     use windows::Win32::System::SystemServices::SFGAO_FOLDER;
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE};
     use windows::Win32::UI::Shell::Common::COMDLG_FILTERSPEC;
     use windows::Win32::UI::Shell::{
-        FileOpenDialog, IFileDialog, IFileDialogControlEvents, IFileDialogControlEvents_Impl, IFileDialogCustomize, IFileDialogEvents, IFileDialogEvents_Impl,
-        IFileOpenDialog, IShellItem, FDE_OVERWRITE_RESPONSE, FDE_SHAREVIOLATION_RESPONSE, FOS_ALLOWMULTISELECT, FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH,
+        FileOpenDialog, IFileDialog, IFileDialogControlEvents, IFileDialogControlEvents_Impl,
+        IFileDialogCustomize, IFileDialogEvents, IFileDialogEvents_Impl, IFileOpenDialog,
+        IShellItem, FDE_OVERWRITE_RESPONSE, FDE_SHAREVIOLATION_RESPONSE, FOS_ALLOWMULTISELECT,
+        FOS_FILEMUSTEXIST, FOS_FORCEFILESYSTEM, SIGDN_FILESYSPATH,
     };
 
     const OPEN_FOLDER: u32 = 1;
@@ -146,13 +178,21 @@ mod windows_dialog {
         fn OnSelectionChange(&self, _: Ref<IFileDialog>) -> Result<()> {
             Ok(())
         }
-        fn OnShareViolation(&self, _: Ref<IFileDialog>, _: Ref<IShellItem>) -> Result<FDE_SHAREVIOLATION_RESPONSE> {
+        fn OnShareViolation(
+            &self,
+            _: Ref<IFileDialog>,
+            _: Ref<IShellItem>,
+        ) -> Result<FDE_SHAREVIOLATION_RESPONSE> {
             Ok(FDE_SHAREVIOLATION_RESPONSE(0))
         }
         fn OnTypeChange(&self, _: Ref<IFileDialog>) -> Result<()> {
             Ok(())
         }
-        fn OnOverwrite(&self, _: Ref<IFileDialog>, _: Ref<IShellItem>) -> Result<FDE_OVERWRITE_RESPONSE> {
+        fn OnOverwrite(
+            &self,
+            _: Ref<IFileDialog>,
+            _: Ref<IShellItem>,
+        ) -> Result<FDE_OVERWRITE_RESPONSE> {
             Ok(FDE_OVERWRITE_RESPONSE(0))
         }
     }
@@ -168,7 +208,11 @@ mod windows_dialog {
             let dialog: IFileDialog = customize.ok()?.cast()?;
             unsafe {
                 // A folder selected in the list, or else the one the dialog is showing.
-                let selected = dialog.GetCurrentSelection().ok().filter(|item| item.GetAttributes(SFGAO_FOLDER).map(|a| a == SFGAO_FOLDER).unwrap_or(false));
+                let selected = dialog.GetCurrentSelection().ok().filter(|item| {
+                    item.GetAttributes(SFGAO_FOLDER)
+                        .map(|a| a == SFGAO_FOLDER)
+                        .unwrap_or(false)
+                });
                 let item = match selected {
                     Some(item) => item,
                     None => dialog.GetFolder()?,
@@ -180,7 +224,12 @@ mod windows_dialog {
             }
             Ok(())
         }
-        fn OnCheckButtonToggled(&self, _: Ref<IFileDialogCustomize>, _: u32, _: BOOL) -> Result<()> {
+        fn OnCheckButtonToggled(
+            &self,
+            _: Ref<IFileDialogCustomize>,
+            _: u32,
+            _: BOOL,
+        ) -> Result<()> {
             Ok(())
         }
         fn OnControlActivating(&self, _: Ref<IFileDialogCustomize>, _: u32) -> Result<()> {
@@ -209,19 +258,40 @@ mod windows_dialog {
     }
 
     unsafe fn show(owner: HWND, extensions: &[String]) -> Result<Vec<String>> {
-        let dialog: IFileOpenDialog = CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
-        dialog.SetOptions(dialog.GetOptions()? | FOS_ALLOWMULTISELECT | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM)?;
+        let dialog: IFileOpenDialog =
+            CoCreateInstance(&FileOpenDialog, None, CLSCTX_INPROC_SERVER)?;
+        dialog.SetOptions(
+            dialog.GetOptions()? | FOS_ALLOWMULTISELECT | FOS_FILEMUSTEXIST | FOS_FORCEFILESYSTEM,
+        )?;
         dialog.SetTitle(w!("Open"))?;
 
-        let spec = HSTRING::from(extensions.iter().map(|e| format!("*.{e}")).collect::<Vec<_>>().join(";"));
-        let filters = [COMDLG_FILTERSPEC { pszName: w!("Documents"), pszSpec: PCWSTR(spec.as_ptr()) }, COMDLG_FILTERSPEC { pszName: w!("All files"), pszSpec: w!("*.*") }];
+        let spec = HSTRING::from(
+            extensions
+                .iter()
+                .map(|e| format!("*.{e}"))
+                .collect::<Vec<_>>()
+                .join(";"),
+        );
+        let filters = [
+            COMDLG_FILTERSPEC {
+                pszName: w!("Documents"),
+                pszSpec: PCWSTR(spec.as_ptr()),
+            },
+            COMDLG_FILTERSPEC {
+                pszName: w!("All files"),
+                pszSpec: w!("*.*"),
+            },
+        ];
         dialog.SetFileTypes(&filters)?;
 
         let customize: IFileDialogCustomize = dialog.cast()?;
         customize.AddPushButton(OPEN_FOLDER, w!("Open Folder"))?;
 
         let folder = Rc::new(RefCell::new(None));
-        let events: IFileDialogEvents = Events { folder: folder.clone() }.into();
+        let events: IFileDialogEvents = Events {
+            folder: folder.clone(),
+        }
+        .into();
         let cookie = dialog.Advise(&events)?;
         let shown = dialog.Show(Some(owner));
         let _ = dialog.Unadvise(cookie);
