@@ -370,7 +370,24 @@ pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
 
 /// [`recalculate`], also saying which formulas are in a circular reference.
 pub fn recalculate_with_report(doc: &mut Document, now: Option<f64>) -> Recalculation {
-    let (results, circular) = evaluate(doc, now);
+    calculate(doc, now, |_| true)
+}
+
+/// Works out only the formulas that have no result yet, as a file written by a library
+/// without a calculation engine (openpyxl) has them; every other formula keeps the result
+/// Excel stored for it. Returns how many formulas were worked out.
+pub fn calculate_uncached(doc: &mut Document, now: Option<f64>) -> usize {
+    calculate(doc, now, uncached).formulas
+}
+
+/// Whether a formula cell has no stored result. An empty text result is stored as `t="str"`
+/// with an empty `v`, and is a result.
+fn uncached(cell: &SheetCell) -> bool {
+    cell.value.is_empty() && !cell.origin.get().is_some_and(|c| c.attr("t") == Some("str") && c.child(ns::X, "v").is_some())
+}
+
+fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Recalculation {
+    let (results, circular) = evaluate(doc, now, include);
     let formulas = results.len();
     if let Body::Workbook { sheets } = &mut doc.body {
         for ((s, r, c), value) in results {
@@ -386,7 +403,7 @@ pub fn recalculate_with_report(doc: &mut Document, now: Option<f64>) -> Recalcul
 /// The formulas in a circular reference (sheet index and cell), in sheet order, found by
 /// working the workbook out without changing it.
 pub fn circular_references(doc: &Document, now: Option<f64>) -> Vec<(usize, CellRef)> {
-    evaluate(doc, now).1
+    evaluate(doc, now, |_| true).1
 }
 
 type CellKey = (usize, u32, u32);
@@ -394,13 +411,14 @@ type CellKey = (usize, u32, u32);
 /// Every formula's result, and the formulas in a circular reference (see [`evaluate`]).
 type Evaluated = (Vec<(CellKey, Value)>, Vec<(usize, CellRef)>);
 
-fn evaluate(doc: &Document, now: Option<f64>) -> Evaluated {
+/// Works out the formulas of the cells `include` picks; the rest keep their stored results.
+fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Evaluated {
     let Body::Workbook { sheets } = &doc.body else { return (Vec::new(), Vec::new()) };
     let mut formulas = HashMap::new();
     for (si, s) in sheets.iter().enumerate() {
         let mut reader = SheetFormulas::new(s);
         for row in &s.rows {
-            for c in &row.cells {
+            for c in row.cells.iter().filter(|c| include(c)) {
                 if let Some(text) = reader.read(CellRef::new(row.index, c.col), c) {
                     let expr = formula::parse(&text).unwrap_or(Expr::Error("#NAME?".into()));
                     formulas.insert((si, row.index, c.col), std::rc::Rc::new(expr));

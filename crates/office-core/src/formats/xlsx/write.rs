@@ -614,6 +614,8 @@ fn write_cell(cell: &SheetCell, at: CellRef, strings: &mut Strings) -> Element {
         .and_then(|v| v.text().trim().parse::<usize>().ok())
         .filter(|&i| strings.items.get(i).is_some_and(|si| super::props::read_string(si) == cell.value));
     let empty_v = origin.as_ref().and_then(|o| o.child(ns::X, "v")).is_some_and(|v| v.text().is_empty());
+    // A formula's empty text result, which an empty `v` without the type would not say.
+    let empty_text = empty_v && origin.as_ref().and_then(|o| o.attr("t")) == Some("str");
     let mut c = origin.unwrap_or_else(|| Element::new(ns::X, "c"));
     c.children.retain(|n| !matches!(n, Node::Element(e) if e.is(ns::X, "f") || e.is(ns::X, "v") || e.is(ns::X, "is")));
     c.set_attr("", "r", at.to_string());
@@ -637,7 +639,7 @@ fn write_cell(cell: &SheetCell, at: CellRef, strings: &mut Strings) -> Element {
     }
     let v = |text: String| Element::new(ns::X, "v").with_text(text);
     let (t, value) = match &cell.value {
-        Value::Empty => (None, empty_v.then(|| Element::new(ns::X, "v"))),
+        Value::Empty => ((empty_text && has_formula).then_some("str"), empty_v.then(|| Element::new(ns::X, "v"))),
         Value::Number(n) => (None, Some(v(xlsx_number(*n)))),
         Value::Bool(b) => (Some("b"), Some(v(if *b { "1" } else { "0" }.into()))),
         Value::Error(e) => (Some("e"), Some(v(e.clone()))),

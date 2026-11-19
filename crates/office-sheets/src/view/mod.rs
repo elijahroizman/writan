@@ -183,8 +183,15 @@ impl SheetsView {
         v
     }
 
-    pub fn from_document(doc: Document, kind: Kind) -> SheetsView {
+    pub fn from_document(mut doc: Document, kind: Kind) -> SheetsView {
+        // A file keeps its cached results, except a circular reference's: that one is 0, not
+        // whatever the app that saved it got to.
         let circular = crate::circular_references(&doc, None);
+        if let Body::Workbook { sheets } = &mut doc.body {
+            for &(s, c) in &circular {
+                sheets[s].cell_mut(c).value = Value::Number(0.0);
+            }
+        }
         SheetsView {
             doc,
             kind,
@@ -219,10 +226,14 @@ impl SheetsView {
         self.revision
     }
 
-    /// Sets what NOW() and TODAY() give on the next edit. Opening a file must keep its cached
-    /// results: our evaluator cannot reproduce every formula Excel supports.
+    /// Sets what NOW() and TODAY() give, and works out the formulas that have no result yet.
+    /// Opening a file must keep its cached results: our evaluator cannot reproduce every
+    /// formula Excel supports.
     pub fn set_now(&mut self, serial: f64) {
         self.now = Some(serial);
+        if crate::calculate_uncached(&mut self.doc, self.now) > 0 {
+            self.changed(None);
+        }
     }
 
     /// The formulas in a circular reference (sheet index and cell), in sheet order.
