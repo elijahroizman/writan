@@ -480,7 +480,7 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
                     let on_page =
                         slices.iter().enumerate().filter(|(k, s)| *k < carried || keep.contains(&s.note)).map(|(_, s)| *s).collect();
                     let moved = notes_in(&units[cut..i]);
-                    carry.retain(|(n, from)| *from > 0.0 || !moved.contains(n));
+                    carry.retain(|(n, from)| *from > 0.0 || !moved.contains(n) || keep.contains(n));
                     make_page(view, host, page_top, units[cut].top, index_in_section, &units[first_unit..cut], on_page, &mut pages);
                     slices.clear();
                     index_in_section += 1;
