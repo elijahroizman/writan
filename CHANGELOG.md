@@ -2,6 +2,22 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.11.2 — 2026-11-20
+
+### Word
+- Selecting all the text in a footnote or endnote and typing over it keeps the note's number mark instead of deleting it.
+
+### PowerPoint
+- Insert › Shape › Arrow draws an arrow instead of a rectangle.
+
+### Spreadsheets
+- Formulas understand Excel table references such as `Table1[Column]` and `Table1[#Totals]`.
+- Inserting or deleting rows and columns in an Excel table keeps its calculated-column and totals formulas pointing at the right cells.
+- Numbers in cells formatted as Text show instead of rendering blank.
+
+### PDF
+- Text notes on rotated pages wrap across the whole note instead of clipping into narrow columns.
+
 ## 0.11.1 — 2026-11-19
 
 ### Word
