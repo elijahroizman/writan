@@ -3,6 +3,7 @@
 //! paragraph's first or last line alone on a page (widow and orphan control).
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use office_core::model::{Block, Body, Document, Inline};
 use office_core::xml::{ns, Element};
@@ -11,7 +12,7 @@ use office_engine::measure::Measurer;
 use office_engine::para::LineEnd;
 
 use super::resolve::emu_px;
-use super::{Page, WordView, NOTE_SEPARATOR};
+use super::{NoteSlice, Page, WordView, NOTE_SEPARATOR};
 use crate::sections::Section;
 use crate::{word, NoteKind, StoryKind};
 
@@ -135,6 +136,90 @@ fn flow_units(flow: &FlowLayout, y: f64, body: &[Block], ids: &HashMap<&str, usi
     }
 }
 
+/// A note's height at a width, and the top and bottom of each of its lines and rows, for
+/// splitting it across pages.
+struct NoteSize {
+    height: f64,
+    lines: Vec<(f64, f64)>,
+}
+
+impl NoteSize {
+    /// Where a stretch of the note from `from` that fits in `room` ends: after its last whole
+    /// line that fits, or `None` when not even its first line does.
+    fn cut(&self, from: f64, room: f64) -> Option<f64> {
+        if self.height - from <= room + 0.01 {
+            return Some(self.height);
+        }
+        let mut cut = None;
+        for (k, &(top, bottom)) in self.lines.iter().enumerate() {
+            if top < from - 0.01 {
+                continue;
+            }
+            if bottom - from > room + 0.01 {
+                break;
+            }
+            cut = Some(self.lines.get(k + 1).map_or(self.height, |l| l.0));
+        }
+        cut
+    }
+}
+
+#[derive(Default)]
+struct NoteSizes(HashMap<(usize, u64), Rc<NoteSize>>);
+
+impl NoteSizes {
+    fn get(&mut self, view: &mut WordView, host: &mut dyn Measurer, note: usize, w: f64) -> Rc<NoteSize> {
+        self.0
+            .entry((note, w.to_bits()))
+            .or_insert_with(|| {
+                let Some(flow) = view.note_flow(host, note, w) else { return Rc::new(NoteSize { height: 0.0, lines: Vec::new() }) };
+                let mut units = Vec::new();
+                flow_units(&flow, 0.0, &[], &HashMap::new(), &mut units);
+                Rc::new(NoteSize { height: flow.height, lines: units.iter().map(|u| (u.top, u.bottom)).collect() })
+            })
+            .clone()
+    }
+
+    /// The stretches of `pending` (notes, each from where it continues) that fit in `room`, in
+    /// order; the rest stays in `pending`. With `force`, the first is placed whole
+    /// even when not even its first line fits, so a page always takes something.
+    fn place(
+        &mut self,
+        view: &mut WordView,
+        host: &mut dyn Measurer,
+        w: f64,
+        pending: &mut Vec<(usize, f64)>,
+        mut room: f64,
+        force: bool,
+    ) -> Vec<NoteSlice> {
+        let mut out = Vec::new();
+        let queue = std::mem::take(pending);
+        for (k, &(note, from)) in queue.iter().enumerate() {
+            let size = self.get(view, host, note, w);
+            let cut = match size.cut(from, room.max(0.0)) {
+                Some(cut) => cut,
+                None if force && k == 0 => size.height,
+                None => {
+                    pending.extend_from_slice(&queue[k..]);
+                    return out;
+                }
+            };
+            out.push(NoteSlice { note, top: from, bottom: cut });
+            room -= cut - from;
+            if cut < size.height - 0.01 {
+                pending.push((note, cut));
+                pending.extend_from_slice(&queue[k + 1..]);
+                return out;
+            }
+        }
+        out
+    }
+}
+
+fn slices_height(slices: &[NoteSlice]) -> f64 {
+    slices.iter().map(|s| s.bottom - s.top).sum()
+}
+
 /// Where to start a new page, wanting to start it at unit `i` with the page starting at unit
 /// `first`: moved back to keep lines and headings together, never back to `first` itself.
 fn adjust(units: &[Unit], i: usize, first: usize) -> usize {
@@ -209,10 +294,7 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
     let mut story_height = |view: &mut WordView, host: &mut dyn Measurer, story: Option<usize>, w: f64| -> f64 {
         *heights.entry((story, w.to_bits())).or_insert_with(|| story_height(view, host, story, w))
     };
-    let mut note_heights: HashMap<(usize, u64), f64> = HashMap::new();
-    let mut note_height = |view: &mut WordView, host: &mut dyn Measurer, note: usize, w: f64| -> f64 {
-        *note_heights.entry((note, w.to_bits())).or_insert_with(|| view.note_flow(host, note, w).map_or(0.0, |f| f.height))
-    };
+    let mut sizes = NoteSizes::default();
     // Each section's lines and rows, and the endnotes in the order the body references them.
     let (section_units, endnotes): (Vec<Vec<Unit>>, Vec<usize>) = {
         let ids = |kind: NoteKind| -> HashMap<&str, usize> {
@@ -294,99 +376,185 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
             }
             out
         };
-        let mut make_page =
-            |view: &mut WordView, host: &mut dyn Measurer, top: f64, bottom: f64, n: usize, on_page: &[Unit], pages: &mut Vec<Page>| {
-                let number = pages.len() as u32 + 1;
-                let header = pick(&stories[0], n == 0, number.is_multiple_of(2));
-                let footer = pick(&stories[1], n == 0, number.is_multiple_of(2));
-                let hh = story_height(view, host, header, text_w);
-                let body_y = emu_px(section.margin_top).max(if hh > 0.0 { emu_px(section.header) + hh } else { 0.0 });
-                pages.push(Page {
-                    section: si,
-                    number,
-                    width: w,
-                    height: h,
-                    top,
-                    bottom,
-                    body_x: emu_px(section.margin_left),
-                    body_y,
-                    header,
-                    footer,
-                    footnotes: notes_in(on_page),
-                    notes_bottom: h - bottom_margin,
-                    content_bottom: on_page.last().map_or(top, |u| u.bottom),
-                    endnotes: Vec::new(),
-                    endnotes_y: 0.0,
-                });
-            };
-        // The height taken by the footnotes on the page so far, separator included.
+        let mut make_page = |view: &mut WordView,
+                             host: &mut dyn Measurer,
+                             top: f64,
+                             bottom: f64,
+                             n: usize,
+                             on_page: &[Unit],
+                             footnotes: Vec<NoteSlice>,
+                             pages: &mut Vec<Page>| {
+            let number = pages.len() as u32 + 1;
+            let header = pick(&stories[0], n == 0, number.is_multiple_of(2));
+            let footer = pick(&stories[1], n == 0, number.is_multiple_of(2));
+            let hh = story_height(view, host, header, text_w);
+            let body_y = emu_px(section.margin_top).max(if hh > 0.0 { emu_px(section.header) + hh } else { 0.0 });
+            pages.push(Page {
+                section: si,
+                number,
+                width: w,
+                height: h,
+                top,
+                bottom,
+                body_x: emu_px(section.margin_left),
+                body_y,
+                header,
+                footer,
+                footnotes,
+                notes_bottom: h - bottom_margin,
+                content_bottom: on_page.last().map_or(top, |u| u.bottom),
+                endnotes: Vec::new(),
+                endnotes_y: 0.0,
+            });
+        };
+        // The page's footnotes so far: the height they take (separator included), their stretches
+        // (the first `carried` continuing from the page before), and the notes started here.
         let mut notes_h = 0.0;
+        let mut slices: Vec<NoteSlice> = Vec::new();
+        let mut carried = 0;
         let mut page_notes: Vec<usize> = Vec::new();
+        // Footnotes continuing on the next page, each from where it stopped.
+        let mut carry: Vec<(usize, f64)> = Vec::new();
+        let mut fresh = true;
         while i < units.len() {
             let u = &units[i];
+            if fresh {
+                // A new page's footnote area starts with what the page before couldn't fit.
+                fresh = false;
+                let room = avail - (u.bottom - u.top) - NOTE_SEPARATOR;
+                slices.extend(sizes.place(view, host, text_w, &mut carry, room, false));
+                carried = slices.len();
+                if carried > 0 {
+                    notes_h = NOTE_SEPARATOR + slices_height(&slices);
+                }
+            }
             let starts_page = i == first_unit;
             if !starts_page && u.line == 0 && u.keep.page_break_before {
-                make_page(view, host, page_top, u.top, index_in_section, &units[first_unit..i], &mut pages);
+                make_page(view, host, page_top, u.top, index_in_section, &units[first_unit..i], std::mem::take(&mut slices), &mut pages);
                 index_in_section += 1;
                 page_top = u.top;
                 first_unit = i;
-                (notes_h, page_notes) = (0.0, Vec::new());
+                (notes_h, carried, page_notes, fresh) = (0.0, 0, Vec::new(), true);
                 continue;
             }
             let new_notes: Vec<usize> = notes_in(std::slice::from_ref(u)).into_iter().filter(|n| !page_notes.contains(n)).collect();
-            let mut add: f64 = new_notes.iter().map(|&n| note_height(view, host, n, text_w)).sum();
-            if !new_notes.is_empty() && page_notes.is_empty() {
-                add += NOTE_SEPARATOR;
+            let sep = if slices.is_empty() && !new_notes.is_empty() { NOTE_SEPARATOR } else { 0.0 };
+            let mut add = sep;
+            for &n in &new_notes {
+                add += sizes.get(view, host, n, text_w).height;
             }
-            if !starts_page && u.bottom - page_top + notes_h + add > avail + 0.01 {
-                let cut = adjust(units, i, first_unit);
-                make_page(view, host, page_top, units[cut].top, index_in_section, &units[first_unit..cut], &mut pages);
-                index_in_section += 1;
-                page_top = units[cut].top;
-                first_unit = cut;
-                i = cut;
-                (notes_h, page_notes) = (0.0, Vec::new());
-                continue;
+            if u.bottom - page_top + notes_h + add > avail + 0.01 {
+                // Word keeps a reference on the page with at least its note's first line, and
+                // continues the rest of the note on the next page.
+                let room = avail - (u.bottom - page_top) - notes_h - sep;
+                let first_fits =
+                    new_notes.first().is_some_and(|&n| sizes.get(view, host, n, text_w).cut(0.0, room).is_some_and(|c| c > 0.0));
+                if carry.is_empty() && first_fits {
+                    carry = new_notes.iter().map(|&n| (n, 0.0)).collect();
+                    slices.extend(sizes.place(view, host, text_w, &mut carry, room, false));
+                    page_notes.extend(new_notes);
+                    let next_top = units.get(i + 1).map_or(u.bottom, |n| n.top);
+                    make_page(
+                        view,
+                        host,
+                        page_top,
+                        next_top,
+                        index_in_section,
+                        &units[first_unit..=i],
+                        std::mem::take(&mut slices),
+                        &mut pages,
+                    );
+                    index_in_section += 1;
+                    page_top = next_top;
+                    first_unit = i + 1;
+                    (notes_h, carried, page_notes, fresh) = (0.0, 0, Vec::new(), true);
+                    i += 1;
+                    continue;
+                }
+                if !starts_page {
+                    let cut = adjust(units, i, first_unit);
+                    // The notes of lines moved to the next page go with them.
+                    let keep = notes_in(&units[first_unit..cut]);
+                    let on_page =
+                        slices.iter().enumerate().filter(|(k, s)| *k < carried || keep.contains(&s.note)).map(|(_, s)| *s).collect();
+                    make_page(view, host, page_top, units[cut].top, index_in_section, &units[first_unit..cut], on_page, &mut pages);
+                    slices.clear();
+                    index_in_section += 1;
+                    page_top = units[cut].top;
+                    first_unit = cut;
+                    i = cut;
+                    (notes_h, carried, page_notes, fresh) = (0.0, 0, Vec::new(), true);
+                    continue;
+                }
             }
             notes_h += add;
+            for &n in &new_notes {
+                slices.push(NoteSlice { note: n, top: 0.0, bottom: sizes.get(view, host, n, text_w).height });
+            }
             page_notes.extend(new_notes);
             if u.break_after {
                 let next_top = units.get(i + 1).map(|n| n.top).unwrap_or(u.bottom);
-                make_page(view, host, page_top, next_top, index_in_section, &units[first_unit..=i], &mut pages);
+                make_page(
+                    view,
+                    host,
+                    page_top,
+                    next_top,
+                    index_in_section,
+                    &units[first_unit..=i],
+                    std::mem::take(&mut slices),
+                    &mut pages,
+                );
                 index_in_section += 1;
                 page_top = next_top;
                 first_unit = i + 1;
-                (notes_h, page_notes) = (0.0, Vec::new());
+                (notes_h, carried, page_notes, fresh) = (0.0, 0, Vec::new(), true);
             }
             i += 1;
         }
         if index_in_section == 0 || page_top < flow_height - 0.01 || units.last().is_some_and(|u| u.break_after) {
-            make_page(view, host, page_top, flow_height.max(page_top), index_in_section, &units[first_unit..], &mut pages);
+            make_page(
+                view,
+                host,
+                page_top,
+                flow_height.max(page_top),
+                index_in_section,
+                &units[first_unit..],
+                std::mem::take(&mut slices),
+                &mut pages,
+            );
             index_in_section += 1;
         }
-        // Endnotes follow the document's last line, each whole, on new pages when they run out of
-        // room above that page's footnotes.
+        // Footnotes still continuing after the section's last line get pages of their own.
+        while !carry.is_empty() {
+            let on_page = sizes.place(view, host, text_w, &mut carry, avail - NOTE_SEPARATOR, true);
+            make_page(view, host, flow_height, flow_height, index_in_section, &[], on_page, &mut pages);
+            index_in_section += 1;
+        }
+        // Endnotes follow the document's last line, above that page's footnotes, continuing on
+        // new pages when they run out of room.
         if si + 1 == view.sections.len() && !endnotes.is_empty() {
             let mut y = pages.last().map_or(0.0, |p| p.body_y + p.content_bottom - p.top + NOTE_SEPARATOR);
-            for &n in &endnotes {
-                let nh = note_height(view, host, n, text_w);
-                let footnotes = pages.last().map(|p| p.footnotes.clone()).unwrap_or_default();
-                let mut below: f64 = footnotes.iter().map(|&f| note_height(view, host, f, text_w)).sum();
-                if !footnotes.is_empty() {
-                    below += NOTE_SEPARATOR;
+            let mut pending: Vec<(usize, f64)> = endnotes.iter().map(|&n| (n, 0.0)).collect();
+            let mut fresh = false;
+            while !pending.is_empty() {
+                let Some(p) = pages.last() else { break };
+                let below = if p.footnotes.is_empty() { 0.0 } else { slices_height(&p.footnotes) + NOTE_SEPARATOR };
+                let room = p.notes_bottom - below - y;
+                let placed = sizes.place(view, host, text_w, &mut pending, room, fresh);
+                if let Some(p) = pages.last_mut() {
+                    if p.endnotes.is_empty() {
+                        p.endnotes_y = y;
+                    }
+                    y += slices_height(&placed);
+                    p.endnotes.extend(placed);
                 }
-                let bottom = pages.last().map_or(h, |p| p.notes_bottom) - below;
-                if y + nh > bottom + 0.01 {
-                    make_page(view, host, flow_height, flow_height, index_in_section, &[], &mut pages);
-                    index_in_section += 1;
-                    y = pages.last().map_or(0.0, |p| p.body_y + NOTE_SEPARATOR);
+                if pending.is_empty() {
+                    break;
                 }
-                let Some(p) = pages.last_mut() else { break };
-                if p.endnotes.is_empty() {
-                    p.endnotes_y = y;
-                }
-                p.endnotes.push(n);
-                y += nh;
+                make_page(view, host, flow_height, flow_height, index_in_section, &[], Vec::new(), &mut pages);
+                index_in_section += 1;
+                fresh = true;
+                y = pages.last().map_or(0.0, |p| p.body_y + NOTE_SEPARATOR);
             }
         }
     }
