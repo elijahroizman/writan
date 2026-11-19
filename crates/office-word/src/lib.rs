@@ -235,6 +235,7 @@ pub fn add_list(doc: &mut Document, kind: ListKind) -> String {
 /// Puts body block `index` (a paragraph) in list `num_id` at `level`, or takes it out of any
 /// list for `None`.
 pub fn set_list(doc: &mut Document, index: usize, list: Option<(&str, u8)>) {
+    let base_style = word(doc).and_then(|w| w.styles.get("ListParagraph")).and_then(|s| s.based_on.clone());
     let Body::Flow { blocks } = &mut doc.body else { return };
     let Some(Block::Paragraph(p)) = blocks.get_mut(index) else { return };
     let mut o = p.origin.get().cloned().unwrap_or_else(|| Element::new(ns::W, "p"));
@@ -255,6 +256,16 @@ pub fn set_list(doc: &mut Document, index: usize, list: Option<(&str, u8)>) {
             office_core::formats::docx::PPR,
         );
         p.props.level = None;
+        p.props.indent_start = None;
+        p.props.indent_first_line = None;
+        if p.props.style.as_deref() == Some("ListParagraph") {
+            p.props.style = base_style;
+        }
+        if let Some(ind) = ppr.child_mut(ns::W, "ind") {
+            for name in ["left", "start", "hanging", "firstLine", "leftChars", "startChars", "hangingChars", "firstLineChars"] {
+                ind.remove_attr(ns::W, name);
+            }
+        }
     }
     // The core writes pPr from the origin, patching only what the model changes.
     p.origin = Origin::new(o);

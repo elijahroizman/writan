@@ -568,12 +568,13 @@ impl WordView {
                 return;
             }
         }
+        let in_list = pos::para(blocks, &self.sel.focus.path).is_some_and(|p| crate::list_of(&self.doc, p).is_some_and(|(n, _)| n != "0"));
         self.history.seal();
         let next_style = {
             let styles = word(&self.doc).map(|w| w.styles.clone());
             move |props: &office_core::model::ParaProps, at_end: bool| {
                 let mut next = props.clone();
-                if at_end {
+                if at_end && !in_list {
                     if let (Some(styles), Some(id)) = (&styles, &props.style) {
                         if let Some(n) = styles.get(id).and_then(|s| s.next.clone()) {
                             if n != *id {
@@ -590,9 +591,17 @@ impl WordView {
         let root = self.blocks_mut(self.story);
         let mut e = edit::delete(root, &sel);
         let at = e.selection.clone().map(|s| s.focus).unwrap_or(sel.focus);
+        let num_pr = pos::para(root, &at.path).and_then(|p| p.origin.get()).and_then(|o| o.path(ns::W, &["pPr", "numPr"])).cloned();
         let s = edit::split_para(root, &at, Some(&next_style));
         e.splices.extend(s.splices);
         e.selection = s.selection;
+        if let (Some(num_pr), Some(sel)) = (num_pr, &e.selection) {
+            if let Some(s) = edit::change_para(root, &sel.focus.path, |p| {
+                p.origin = Origin::new(Element::new(ns::W, "p").with_child(Element::new(ns::W, "pPr").with_child(num_pr)));
+            }) {
+                e.splices.push(s);
+            }
+        }
         // A paragraph that takes its section's end keeps it: the section break stays at the end.
         self.apply_edit(e, None);
     }
