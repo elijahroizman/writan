@@ -1,6 +1,7 @@
 // "Save flattened copy" on a two-page PDF with a faked Tauri backend: a page with nothing to
-// flatten doesn't fail the export, highlights end up in the copy's page content, and cancelling
-// the export leaves the original alone. Runs against a VITE_TEST_HOOKS build.
+// flatten doesn't fail the export, highlights end up in the copy's page content (also ones saved
+// by other apps without the Print flag or a drawing of their own), and cancelling the export
+// leaves the original alone. Runs against a VITE_TEST_HOOKS build.
 //   node tests/stress/native/pdf-flatten.mjs http://localhost:4173/ [chromium|webkit]
 import assert from 'node:assert/strict'
 import { inflateSync } from 'node:zlib'
@@ -9,8 +10,9 @@ import * as pw from 'playwright'
 const url = process.argv[2] ?? 'http://localhost:4173/'
 const kind = process.argv[3] ?? 'chromium'
 
-function twoPagePdf() {
-  const page = (contents) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents ${contents} 0 R >>`
+/** Two pages of text; `annots` are dictionaries put on page 1, with `extra` objects numbered from 8. */
+function twoPagePdf({ annots = [], extra = [] } = {}) {
+  const page = (contents, list = []) => `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 7 0 R >> >> /Contents ${contents} 0 R${list.length ? ` /Annots [${list.join(' ')}]` : ''} >>`
   const text = (t) => {
     const s = `BT /F1 24 Tf 72 700 Td (${t}) Tj ET`
     return `<< /Length ${s.length} >>\nstream\n${s}\nendstream`
@@ -18,11 +20,13 @@ function twoPagePdf() {
   const objects = [
     '<< /Type /Catalog /Pages 2 0 R >>',
     '<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>',
-    page(4),
+    page(4, annots.map((_, i) => `${8 + extra.length + i} 0 R`)),
     text('Page one has some words'),
     page(6),
     text('Page two has other words'),
     '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+    ...extra,
+    ...annots,
   ]
   let out = '%PDF-1.7\n'
   const offsets = objects.map((o, i) => {
@@ -36,7 +40,7 @@ function twoPagePdf() {
   return Buffer.from(out, 'latin1')
 }
 
-/** How many XObjects the pages draw: flattening draws each annotation's appearance as one. */
+/** How many XObjects the pages draw: flattening draws a page's annotations through one, which draws each one. */
 function drawnXObjects(pdf) {
   const text = pdf.toString('latin1')
   let count = 0
@@ -54,9 +58,25 @@ function drawnXObjects(pdf) {
 }
 
 const original = twoPagePdf()
+
+/** Highlights over page 1's line as other apps save them: F is the flags (4 is Print, 2 Hidden, 32 NoView). */
+function savedHighlights() {
+  const drawing = '0 0 1 RG 1 1 1 rg 0 0 300 30 re f'
+  const highlight = (flags, ap) => `<< /Type /Annot /Subtype /Highlight /Rect [70 690 370 720] /QuadPoints [70 720 370 720 70 690 370 690] /C [1 1 0] /F ${flags}${ap ? ' /AP << /N 8 0 R >>' : ''} >>`
+  return twoPagePdf({
+    extra: [`<< /Type /XObject /Subtype /Form /BBox [70 690 370 720] /Length ${drawing.length} >>\nstream\n${drawing}\nendstream`],
+    annots: [
+      highlight(0, true), // no Print flag: shown, so it belongs in the copy
+      highlight(0, false), // no Print flag and no drawing: the editor draws one
+      highlight(4, false), // prints, but has no drawing to bake in
+      highlight(2, true), // hidden
+      highlight(32, true), // not shown on screen and not printed
+    ],
+  })
+}
 const browser = await pw[kind].launch()
 
-async function run({ highlight, answer, undoRedo = false }) {
+async function run({ highlight, answer, undoRedo = false, pdf = original }) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   page.setDefaultTimeout(20000)
   const errors = []
@@ -108,7 +128,7 @@ async function run({ highlight, answer, undoRedo = false }) {
         }
       },
     }
-  }, original.toString('base64'))
+  }, pdf.toString('base64'))
   await page.goto(url)
   await page.waitForFunction(() => {
     const s = window.__workspace?.useWorkspace.getState()
@@ -169,12 +189,20 @@ try {
     assert.equal(drawnXObjects(flat), drawnXObjects(original) + 4, 'highlights, one undone and redone, are missing from the flattened copy')
   }
   {
+    const r = await run({ highlight: [], answer: '/docs/flat.pdf', pdf: savedHighlights() })
+    assert.equal(r.dialog, null, `flattening failed: ${r.dialog}`)
+    const flat = r.file('/docs/flat.pdf')
+    assert.ok(flat, 'flattened copy was not written')
+    assert.doesNotMatch(flat.toString('latin1'), /\/Annots/, 'flattened copy still has annotations')
+    assert.equal(drawnXObjects(flat), drawnXObjects(original) + 1 + 3, 'shown highlights without the Print flag or a drawing are missing from the flattened copy, or hidden ones are in it')
+  }
+  {
     const r = await run({ highlight: [0, 1], answer: null })
     assert.equal(r.dialog, null, `flattening failed: ${r.dialog}`)
     assert.deepEqual(r.writes, [], 'cancelled export wrote a file')
     assert.ok(r.file('/docs/two.pdf').equals(original), 'cancelled export changed the original')
   }
-  console.log(`pdf-flatten: ${kind} passed untouched page, highlights, and cancel`)
+  console.log(`pdf-flatten: ${kind} passed untouched page, highlights, saved highlights, and cancel`)
 } finally {
   await browser.close()
 }
