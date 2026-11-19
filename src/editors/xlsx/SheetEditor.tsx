@@ -144,13 +144,13 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
   useEffect(() => {
     const check = () => {
       const now = new Set(engine.state.circular.map((c) => `${c.sheet}:${c.row}:${c.col}`))
-      const fresh = [...now].some((k) => !circularSeen.current?.has(k))
+      const fresh = engine.state.circular.find((c) => !circularSeen.current?.has(`${c.sheet}:${c.row}:${c.col}`))
       circularSeen.current = now
       if (fresh) {
         void showDialog({
           kind: 'warning',
           title: 'Circular reference',
-          message: `A formula refers to its own cell, directly or through other formulas (${circularName(engine, engine.state.circular[0])}), so it can’t be worked out. It shows 0 until you change or remove it.`,
+          message: `A formula refers to its own cell, directly or through other formulas (${circularName(engine, fresh)}), so it can’t be worked out. It shows 0 until you change or remove it.`,
           buttons: [{ label: 'OK', value: 'ok', primary: true }],
           cancelValue: 'ok',
         })

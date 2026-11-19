@@ -26,7 +26,7 @@ try {
   await input(2, 0, '=B3')
   await input(2, 1, '=A3+1')
   await page.waitForFunction(() => document.querySelector('.dialog, [role=dialog], [role=alertdialog]'))
-  check('a new loop through two cells warns again', /Circular reference/.test(await dialogText(page)))
+  check('a new loop through two cells warns again, naming it', /Circular reference.*\(A3\)/.test(await dialogText(page)), await dialogText(page))
   await dismiss()
 
   await input(0, 0, '5')
