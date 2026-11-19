@@ -16,7 +16,7 @@ Every release's notes. The release workflow copies a version's section into its 
 ### Word
 - Footnotes show at the bottom of the page their reference is on, and endnotes show after the document's last line.
 - Office Math equations are drawn instead of leaving a blank space.
-- Tracked changes can be accepted or rejected one at a time from the inspector.
+- Tracked changes can be accepted or rejected all at once from the inspector.
 - Block content controls saved in a document show their contents.
 - SmartArt shows as a diagram instead of a blank page or an empty box.
 
