@@ -21,18 +21,20 @@ cargo test --manifest-path src-tauri/Cargo.toml -- --test-threads=1
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 ```
 
-Office engine and browser workloads run on bbb. Its Node is at `~/.local/node24/bin`; add that and `~/.cargo/bin` to PATH. Playwright and its browsers are already installed under `~/shots/node_modules`. Use an isolated rsynced checkout, with `playwright` and `playwright-core` linked into its `node_modules`. Follow the component reports for exact commands and fixtures.
+The curated browser regressions run locally and in CI with pinned Playwright and headless Chromium. Install Node 22, Rust's `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.129 first:
 
 ```sh
-cd crates && cargo test --workspace
-cd ..
-node scripts/engine.mjs --force
+npm ci
+npx playwright install --with-deps chromium
 VITE_TEST_HOOKS=1 npm run build
-npm run typecheck
-npx vite preview --port 4173 --strictPort
+npm run test:browser
 ```
 
-Run the browser scripts against that server from another shell. The native scripts fake IPC for save behavior; the PDF script uses the real PDF worker. The corpus scripts compare ZIP parts, formula caches, signature validation, text, page counts, and reference renders. Opening without an exception is not a fidelity pass.
+The runner owns a preview server on `127.0.0.1:4173`; leave that port free. It runs CSS-font safety, data safety, hidden sheets, malformed files, security, slide clipboard and save conflicts sequentially, with a 180-second timeout per script and a nonzero exit on failure. The curated list and exclusion reasons live in `scripts/test-browser.mjs`. Session recovery observations and the external signed-PDF test remain manual; follow the component reports for those commands and fixtures.
+
+CI checks changed components on pull requests, and everything on `main` or manual runs: Office formatting/Clippy/tests/WASM builds and LibreOffice samples, native Linux Clippy/tests, and the frontend build/typecheck/browser suite. Engine changes also trigger the frontend. Run `cargo test --workspace --all-features` in `crates/` for the Office tests locally.
+
+The native browser scripts fake IPC for save behavior; the PDF script uses the real PDF worker. The corpus scripts compare ZIP parts, formula caches, signature validation, text, page counts, and reference renders. Opening without an exception is not a fidelity pass.
 
 ## Coverage limits
 

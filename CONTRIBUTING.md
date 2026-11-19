@@ -19,10 +19,25 @@ A reviewer should also name their model and harness in the review.
 
 ## Before you open a pull request
 
-- `npm run typecheck` passes. It runs [tsc-rs](https://github.com/pingdotgg/ts-rust), not Microsoft's `tsc`.
+- `npm run typecheck` passes after building the engine (`npm run engine` or `npm run build`). It runs [tsc-rs](https://github.com/pingdotgg/ts-rust), not Microsoft's `tsc`.
 - `npm run build` passes.
 - If you changed Rust code, `cargo check` passes in `src-tauri`.
 - Keyboard shortcuts and labels work on both macOS and Windows. Use `shortcut()` from `src/lib/platform.ts` for any shortcut you show in the UI, and don't hard-code ⌘ or ⌥.
+
+## CI and browser tests
+
+CI checks changed components on pull requests: the Office engine (format, Clippy, tests, WASM builds and LibreOffice samples), the native app (Linux Clippy and tests), and the frontend (build, typecheck and headless Chromium regressions). Engine changes also check the frontend. Pushes to `main` and manual runs check everything. The `ci` check aggregates failures and cancellations while allowing unchanged components to skip.
+
+With Node 22, Rust's `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.129 installed:
+
+```sh
+npm ci
+npx playwright install --with-deps chromium
+VITE_TEST_HOOKS=1 npm run build
+npm run test:browser
+```
+
+The browser runner starts and stops its own preview on `127.0.0.1:4173` (leave that port free), runs curated local-fixture tests sequentially, and fails on assertions or a per-script timeout. It tests a fake native bridge, not the installed desktop app. See [the stress suite](tests/stress/README.md) for broader coverage and limits.
 
 ## Releases
 
