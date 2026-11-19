@@ -99,6 +99,19 @@ fn circular_references_are_reported_and_come_to_zero() {
 }
 
 #[test]
+fn circular_references_found_however_they_are_entered() {
+    // A1 reads B1 and C1, and both lead back to A1; C1 is reached only after B1 is done.
+    let rows = r#"<row r="1"><c r="A1"><f>B1+C1</f></c><c r="B1"><f>A1+1</f></c><c r="C1"><f>B1+1</f></c><c r="D1"><f>C1+1</f></c></row>"#;
+    let mut doc = workbook_with(cell_xml(rows));
+    let report = recalculate_with_report(&mut doc, None);
+    assert_eq!(report.circular, vec![(0, at("A1")), (0, at("B1")), (0, at("C1"))]);
+    for cell in ["A1", "B1", "C1"] {
+        assert_eq!(value(&doc, 0, cell), Value::Number(0.0), "{cell}");
+    }
+    assert_eq!(value(&doc, 0, "D1"), Value::Number(1.0));
+}
+
+#[test]
 fn recalculating_long_formulas_does_not_clone_their_recursive_trees() {
     std::thread::Builder::new()
         .stack_size(1024 * 1024)
@@ -196,5 +209,10 @@ fn long_chains_of_formulas() {
     assert_eq!(value(&doc, 0, &format!("A{n}")), Value::Number(n as f64));
     assert_eq!(value(&doc, 0, "B1"), Value::Number(n as f64));
     assert_eq!(value(&doc, 0, "C1"), Value::Number(0.0), "a long circular reference still finishes");
-    assert!(circular_references(&doc, None).iter().any(|(_, c)| c.col == 2), "and is reported");
+    let circular = circular_references(&doc, None);
+    assert_eq!(circular.len(), n as usize, "every cell of it is reported");
+    assert!(circular.iter().all(|(_, c)| c.col == 2));
+    for r in 1..=n {
+        assert_eq!(value(&doc, 0, &format!("C{r}")), Value::Number(0.0), "C{r}");
+    }
 }
