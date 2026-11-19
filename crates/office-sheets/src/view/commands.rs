@@ -1020,6 +1020,21 @@ fn has_rules(s: &Sheet) -> bool {
     s.origin.get().is_some_and(|r| r.elements().any(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "extLst")))
 }
 
+/// One span of rows or columns, `start..=end`, after inserting (`n > 0`) or deleting (`n < 0`) at
+/// `at`: it grows when the insert falls inside it, never runs past `max`, and shrinks when some
+/// of it is deleted. None when all of it is.
+pub(super) fn shift_span(start: u32, end: u32, at: u32, n: i64, max: u32) -> Option<(u32, u32)> {
+    let (at, last) = (at as i64, max as i64 - 1);
+    let moved = |i: u32| if (i as i64) < at { i as i64 } else { i as i64 + n };
+    if n >= 0 {
+        return Some((moved(start).min(last) as u32, moved(end).min(last) as u32));
+    }
+    let gone = |i: u32| (i as i64) >= at && (i as i64) < at - n;
+    let a = if gone(start) { at } else { moved(start) };
+    let b = if gone(end) { at - 1 } else { moved(end) };
+    (a <= b).then_some((a as u32, b as u32))
+}
+
 /// Moves the references in a sheet's conditional formatting and data validation to `target`, for
 /// rows or columns inserted there at `at` (`n > 0`) or deleted (`n < 0`), and, on `target` itself
 /// (`local`), the ranges the rules cover. A rule whose ranges are all deleted goes with them.
@@ -1027,17 +1042,50 @@ fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n:
     use office_core::xml::{Element, Node};
     let Some(root) = s.origin.get() else { return };
     let mut root = root.clone();
-    let adjust = |f: &str| adjust_formula_on(f, target, local, axis, at, n);
-    let sqref = |v: &str| {
+    let rows = matches!(axis, Axis::Row);
+    let max = if rows { crate::MAX_ROWS } else { crate::MAX_COLS };
+    let pos = |r: &Range| if rows { r.start.row } else { r.start.col };
+    let move_range = |mut r: Range| -> Option<Range> {
+        if rows {
+            (r.start.row, r.end.row) = shift_span(r.start.row, r.end.row, at, n, max)?;
+        } else {
+            (r.start.col, r.end.col) = shift_span(r.start.col, r.end.col, at, n, max)?;
+        }
+        Some(r)
+    };
+    let ranges = |v: &str| v.split_whitespace().filter_map(Range::parse).collect::<Vec<_>>();
+    let sqref = |v: &str| -> String {
         if !local {
             return v.to_string();
         }
-        v.split_whitespace().map(adjust).filter(|p| !p.contains("#REF!")).collect::<Vec<_>>().join(" ")
+        ranges(v).into_iter().filter_map(move_range).map(|r| r.to_string()).collect::<Vec<_>>().join(" ")
+    };
+    // A rule's formulas are written for the first cell it covers. When that cell is deleted, the
+    // first one left takes over, so the formulas are first rewritten for it.
+    let rebase = |v: &str| -> i64 {
+        let all = ranges(v);
+        let (Some(first), Some(kept)) = (all.first(), all.iter().find(|r| local && move_range(**r).is_some())) else { return 0 };
+        let p = pos(kept) as i64;
+        let from = if n < 0 && p >= at as i64 && p < at as i64 - n { at as i64 - n } else { p };
+        from - pos(first) as i64
+    };
+    let formula = |f: &str, delta: i64| -> String {
+        let (dr, dc) = if rows { (delta, 0) } else { (0, delta) };
+        let f = if delta == 0 { f.to_string() } else { crate::formula::shift(f, dr, dc).unwrap_or_else(|_| f.to_string()) };
+        adjust_formula_on(&f, target, local, axis, at, n)
     };
     fn set_text(el: &mut Element, text: String) {
         el.children = vec![Node::Text(text)];
     }
-    fn walk(el: &mut Element, sqref: &dyn Fn(&str) -> String, adjust: &dyn Fn(&str) -> String) {
+    fn walk(
+        el: &mut Element,
+        sqref: &dyn Fn(&str) -> String,
+        rebase: &dyn Fn(&str) -> i64,
+        formula: &dyn Fn(&str, i64) -> String,
+        delta: i64,
+    ) {
+        let own = el.attr("sqref").map(str::to_string).or_else(|| el.elements().find(|c| c.local == "sqref").map(Element::text));
+        let delta = own.as_deref().map_or(delta, rebase);
         if let Some(v) = el.attr("sqref").map(str::to_string) {
             el.set_attr("", "sqref", sqref(&v));
         }
@@ -1045,8 +1093,8 @@ fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n:
         let leaf = el.elements().next().is_none();
         match el.local.as_str() {
             "sqref" if leaf => set_text(el, sqref(&el.text())),
-            "formula" | "formula1" | "formula2" | "f" if leaf => set_text(el, adjust(&el.text())),
-            _ => el.elements_mut().for_each(|c| walk(c, sqref, adjust)),
+            "formula" | "formula1" | "formula2" | "f" if leaf => set_text(el, formula(&el.text(), delta)),
+            _ => el.elements_mut().for_each(|c| walk(c, sqref, rebase, formula, delta)),
         }
         // A rule left with no cells is dropped.
         el.children.retain(|c| match c {
@@ -1059,7 +1107,7 @@ fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n:
     }
     let mut changed = false;
     for el in root.elements_mut().filter(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "extLst")) {
-        walk(el, &sqref, &adjust);
+        walk(el, &sqref, &rebase, &formula, 0);
         changed = true;
     }
     root.children.retain(

@@ -996,3 +996,37 @@ fn shifting_rows_keeps_extension_list_formulas_whole() {
     assert_eq!(back.cell_info(0, CellRef::new(5, 0)).validation.and_then(|i| i.list).map(|l| l.len()), Some(3));
     assert!(back.cell_info(0, CellRef::new(4, 0)).validation.is_none());
 }
+
+/// A rule over a whole column survives a row insert, and deleting the first row a relative rule
+/// covers leaves its formula written for the new first row.
+#[test]
+fn rule_ranges_clamp_and_rebase() {
+    let bytes = include_bytes!("../../../../tests/stress/samples/S2-xlsx-cf-validation-picture.xlsx");
+    let mut v = SheetsView::open(bytes, "visuals.xlsx").unwrap();
+    // A2:A5 is green where `$A2="Done"`: rows 2 and 4. Deleting row 2 leaves A2:A4 with Done in A3.
+    v.shift_rows(0, 1, -1);
+    let green = |v: &SheetsView, row: u32| crate::conditional::format_at(&v.doc, 0, CellRef::new(row, 0), None).fill.fg.is_some();
+    assert!(!green(&v, 1));
+    assert!(green(&v, 2));
+    assert!(!green(&v, 3));
+
+    use crate::conditional::tests::{book, row, s};
+    let rules = r#"<dataValidations count="1"><dataValidation type="list" sqref="A1:A1048576"><formula1>"x,y"</formula1></dataValidation></dataValidations>"#;
+    let doc = book(&row(1, &[s("A1", "x")]), rules, "", "");
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "column.xlsx").unwrap();
+    v.shift_rows(0, 3, 2);
+    let back = SheetsView::open(&v.save().unwrap(), "column.xlsx").unwrap();
+    assert!(back.cell_info(0, CellRef::new(0, 0)).validation.is_some());
+    assert!(back.cell_info(0, CellRef::new(1_048_575, 0)).validation.is_some());
+}
+
+#[test]
+fn spans_grow_shrink_and_go() {
+    use super::commands::shift_span;
+    assert_eq!(shift_span(1, 4, 3, 2, 100), Some((1, 6)));
+    assert_eq!(shift_span(1, 99, 3, 2, 100), Some((1, 99)));
+    assert_eq!(shift_span(1, 4, 1, -1, 100), Some((1, 3)));
+    assert_eq!(shift_span(1, 4, 0, -2, 100), Some((0, 2)));
+    assert_eq!(shift_span(2, 3, 1, -5, 100), None);
+}
