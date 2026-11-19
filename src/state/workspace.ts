@@ -123,6 +123,8 @@ async function withSaveLock<T>(path: string, save: () => Promise<T>): Promise<T>
 export const autosaveHooks = {
   /** A tab's document just changed. */
   edited: (_tabId: string) => {},
+  /** A recovered tab's document is back to the bytes it was recovered with. */
+  unchanged: (_tabId: string) => {},
   /** Save a tab now if autosave covers it. Resolves true once its changes are on disk. */
   flush: async (_tabId: string) => false,
 }
@@ -146,6 +148,8 @@ export interface RecoveredDoc {
 export const recoveryHooks = {
   /** A tab's document just changed. */
   edited: (_tabId: string) => {},
+  /** A recovered tab's document is back to the bytes it was recovered with. */
+  unchanged: (_tabId: string) => {},
   /** Unsaved documents the last run left behind. */
   load: async (): Promise<RecoveredDoc[]> => [],
   /** Those documents are open again: [their old tab id, the tab now showing them]. */
@@ -497,7 +501,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       if (!tab) return
       if (tab.recovered && !dirty) {
         // Undone back to what was recovered: the kept copy must lose the undone edits too.
-        recoveryHooks.edited(id)
+        recoveryHooks.unchanged(id)
         return
       }
       if (tab.dirty !== dirty) set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, dirty } : t)) })
