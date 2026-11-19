@@ -427,11 +427,13 @@ fn reference(src: &str, at: usize, sheet: Option<String>) -> Option<(Reference, 
     }
     let s = src.as_bytes();
     let (first, n1) = part(s, at)?;
+    // Not a function (LOG10()), a sheet name (Q1!), or a prefix of a longer name.
+    let ends_ref = |end| !src[end..].chars().next().is_some_and(|c| c.is_alphanumeric() || matches!(c, '(' | '!' | '_' | '.' | '\\' | '$'));
     let mut len = n1;
     let mut end = None;
     if let Some(tail) = src[at + len..].trim_start().strip_prefix(':') {
         let second_at = src.len() - tail.trim_start().len();
-        if let Some((second, n2)) = part(s, second_at) {
+        if let Some((second, n2)) = part(s, second_at).filter(|(_, n)| ends_ref(second_at + n)) {
             // Both ends must be the same kind: cells, whole columns or whole rows.
             let kind = |p: &RefPart| (p.row.is_some(), p.col.is_some());
             if kind(&first) == kind(&second) {
@@ -444,9 +446,7 @@ fn reference(src: &str, at: usize, sheet: Option<String>) -> Option<(Reference, 
     if end.is_none() && (first.row.is_none() || first.col.is_none()) {
         return None;
     }
-    // Not a function (LOG10() or a longer name (A1B).
-    let next = src[at + len..].chars().next();
-    if next.is_some_and(|c| c == '(' || c.is_alphanumeric() || c == '_' || c == '.') {
+    if !ends_ref(at + len) {
         return None;
     }
     Some((Reference { sheet, start: first, end }, len))
@@ -907,6 +907,17 @@ mod tests {
         assert!(matches!(parse("(A1,A2)").unwrap(), Expr::Binary(Op::Union, _, _)));
         assert!(matches!(parse("A1:A2 A1:B1").unwrap(), Expr::Binary(Op::Intersect, _, _)));
         assert!(matches!(parse("(A1):(B1)").unwrap(), Expr::Binary(Op::Range, _, _)));
+        for formula in ["A1 : B1_Total", "A1:B1_Total"] {
+            assert_eq!(
+                parse(formula).unwrap(),
+                Expr::Binary(
+                    Op::Range,
+                    Box::new(Expr::Ref(Reference { sheet: None, start: cell(0, 0), end: None })),
+                    Box::new(Expr::Name("B1_Total".into())),
+                )
+            );
+        }
+        assert!(matches!(parse("A1 : B1!C1").unwrap(), Expr::Binary(Op::Range, _, _)));
         assert_eq!(parse("#N/A").unwrap(), Expr::Error("#N/A".into()));
         assert_eq!(parse("1.5E+3").unwrap(), Expr::Number(1500.0));
         assert!(parse("SUM(1").is_err());
