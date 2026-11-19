@@ -76,7 +76,7 @@ const SHAPES: { kind: ShapeKind; label: string; icon: ReactNode }[] = [
   { kind: 'triangle', label: 'Triangle', icon: <Triangle size={14} /> },
   { kind: 'diamond', label: 'Diamond', icon: <Diamond size={14} /> },
   { kind: 'star5', label: 'Star', icon: <Star size={14} /> },
-  { kind: 'rtArrow', label: 'Arrow', icon: <MoveRight size={14} /> },
+  { kind: 'rightArrow', label: 'Arrow', icon: <MoveRight size={14} /> },
   { kind: 'line', label: 'Line', icon: <Minus size={14} /> },
 ]
 
