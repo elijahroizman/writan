@@ -2,7 +2,7 @@
 //! sheets, the clipboard, find and replace, and undo. Formulas are worked out again after each
 //! change.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use office_core::drawing::{Color, Rgb};
 use office_core::model::{CellRef, Origin, Range, Sheet, SheetCell, SheetRow, Value};
@@ -10,8 +10,8 @@ use office_core::xml::ns;
 use serde::{Deserialize, Serialize};
 
 use super::{CStep, SheetSel, SheetsView};
-use crate::formula::{RefPart, Reference};
-use crate::{format_of, set_format};
+use crate::formula::{MovedRange, RefPart, Reference};
+use crate::{format_of, set_format, DateSystem};
 
 /// A change to cells' formatting, from the inspector.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -43,14 +43,31 @@ pub struct FormatPatch {
 pub struct ClipboardRange {
     source: Range,
     cut: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    move_id: Option<String>,
+    #[serde(default)]
+    date_1904: bool,
     cells: Vec<(CellRef, ClipboardCell)>,
+}
+
+pub(super) struct PendingCut {
+    id: String,
+    sheet: String,
+    source: Range,
 }
 
 #[derive(Deserialize, Serialize)]
 #[serde(untagged)]
 enum ClipboardCell {
     Text(String),
-    Formula { formula: String },
+    Formula {
+        formula: String,
+    },
+    Value {
+        value: Value,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        number_format: Option<String>,
+    },
 }
 
 impl SheetsView {
@@ -78,20 +95,30 @@ impl SheetsView {
     /// Changes cells through `f`, recording each cell's before and after.
     fn change_cells(&mut self, sheet: usize, cells: &[CellRef], f: impl Fn(&mut SheetsView, CellRef)) {
         let before = self.sel;
+        if let Some(step) = self.cell_changes(sheet, cells, f) {
+            self.changed(Some(sheet));
+            self.record(vec![step], before);
+        }
+    }
+
+    fn cell_changes(&mut self, sheet: usize, cells: &[CellRef], f: impl Fn(&mut SheetsView, CellRef)) -> Option<CStep> {
         let mut steps = Vec::with_capacity(cells.len());
         for &at in cells {
             let old = self.sheets().get(sheet).and_then(|s| s.cell(at)).cloned();
             f(self, at);
             let new = self.sheets().get(sheet).and_then(|s| s.cell(at)).cloned();
-            if old != new || old.as_ref().map(|c| c.style) != new.as_ref().map(|c| c.style) {
+            if old != new || old.as_ref().map(|c| c.origin.id()) != new.as_ref().map(|c| c.origin.id()) {
                 steps.push((at, old, new));
             }
         }
-        if steps.is_empty() {
-            return;
+        if self.cut_on_sheet(sheet).is_some_and(|cut| {
+            steps
+                .iter()
+                .any(|(at, _, new)| cut.source.contains(*at) && new.as_ref().is_some_and(|c| c.formula.is_some() || !c.value.is_empty()))
+        }) {
+            self.pending_cut = None;
         }
-        self.changed(Some(sheet));
-        self.record(vec![CStep::Cells { sheet, cells: steps }], before);
+        (!steps.is_empty()).then_some(CStep::Cells { sheet, cells: steps })
     }
 
     /// Changes a whole sheet through `f` (rows and columns, widths, merges), as one step.
@@ -107,6 +134,7 @@ impl SheetsView {
     /// `change_sheet` for inserting or deleting rows or columns, or `change_book` when another
     /// sheet has charts whose references may move with it.
     fn change_for_shift(&mut self, sheet: usize, f: impl FnOnce(&mut SheetsView)) {
+        self.cancel_cut_on_sheet(sheet);
         if self.sheets().iter().enumerate().any(|(i, s)| i != sheet && !s.charts.is_empty()) {
             self.change_book(f);
         } else {
@@ -126,6 +154,7 @@ impl SheetsView {
 
     pub fn undo(&mut self) -> bool {
         let Some(e) = self.history.undo() else { return false };
+        self.pending_cut = None;
         for s in e.steps.iter().rev() {
             self.apply(s, true);
         }
@@ -137,6 +166,7 @@ impl SheetsView {
 
     pub fn redo(&mut self) -> bool {
         let Some(e) = self.history.redo() else { return false };
+        self.pending_cut = None;
         for s in &e.steps {
             self.apply(s, false);
         }
@@ -220,6 +250,10 @@ impl SheetsView {
         cell.formula = formula;
         // The cell's markup said what its value was; that no longer holds.
         cell.origin = Default::default();
+        self.set_general_format(sheet, at, format);
+    }
+
+    fn set_general_format(&mut self, sheet: usize, at: CellRef, format: Option<&str>) {
         if let Some(code) = format {
             let mut f = format_of(&self.doc, sheet, at);
             if f.number_format == "General" {
@@ -232,14 +266,16 @@ impl SheetsView {
     /// Clears the values (and formulas) in a range, keeping formatting.
     pub fn clear(&mut self, sheet: usize, range: Range) {
         let cells = existing_cells(self.sheets().get(sheet), range);
-        self.change_cells(sheet, &cells, |v, at| {
-            if let Some(s) = v.sheets_mut().get_mut(sheet) {
-                let c = s.cell_mut(at);
-                c.value = Value::Empty;
-                c.formula = None;
-                c.origin = Default::default();
-            }
-        });
+        self.change_cells(sheet, &cells, |v, at| v.clear_cell(sheet, at));
+    }
+
+    fn clear_cell(&mut self, sheet: usize, at: CellRef) {
+        if let Some(s) = self.sheets_mut().get_mut(sheet) {
+            let c = s.cell_mut(at);
+            c.value = Value::Empty;
+            c.formula = None;
+            c.origin = Default::default();
+        }
     }
 
     // ---- formatting ----
@@ -485,6 +521,9 @@ impl SheetsView {
             return;
         }
         let Some(old) = self.sheets().get(sheet).map(|s| s.name.clone()) else { return };
+        if old != name {
+            self.cancel_cut_on_sheet(sheet);
+        }
         self.change_book(|v| {
             super::charts::rename_charts(v.sheets_mut(), &old, &name);
             if let Some(s) = v.sheets_mut().get_mut(sheet) {
@@ -498,6 +537,7 @@ impl SheetsView {
         if self.sheets().len() <= 1 {
             return;
         }
+        self.cancel_cut_on_sheet(sheet);
         self.change_book(|v| {
             v.sheets_mut().remove(sheet);
         });
@@ -518,22 +558,46 @@ impl SheetsView {
 
     // ---- clipboard ----
 
-    /// A range as tab-separated displayed values, plus spreadsheet data when it contains formulas.
-    pub fn copy(&self, sheet: usize, mut range: Range, cut: bool) -> (String, Option<ClipboardRange>) {
-        range.end.row = range.end.row.min(range.start.row.saturating_add(100_000));
-        let mut formulas = HashMap::new();
+    fn cut_on_sheet(&self, sheet: usize) -> Option<&PendingCut> {
+        self.pending_cut.as_ref().filter(|cut| self.sheets().get(sheet).is_some_and(|s| s.name == cut.sheet))
+    }
+
+    fn cancel_cut_on_sheet(&mut self, sheet: usize) {
+        if self.cut_on_sheet(sheet).is_some() {
+            self.pending_cut = None;
+        }
+    }
+
+    /// A range as displayed TSV, plus spreadsheet data for formulas and cuts.
+    pub fn copy(&self, sheet: usize, range: Range, move_id: Option<&str>) -> (String, Option<ClipboardRange>) {
+        let range = clipboard_bounds(range);
+        let mut cells = Vec::new();
+        let mut has_formula = false;
         if let Some(s) = self.sheets().get(sheet) {
             let mut reader = crate::SheetFormulas::new(s);
             for row in s.rows.iter().filter(|r| (range.start.row..=range.end.row).contains(&r.index)) {
                 for cell in row.cells.iter().filter(|c| (range.start.col..=range.end.col).contains(&c.col)) {
                     let at = CellRef::new(row.index, cell.col);
                     if let Some(formula) = reader.read(at, cell) {
-                        formulas.insert(at, formula);
+                        has_formula = true;
+                        cells.push((at, ClipboardCell::Formula { formula }));
+                    } else if move_id.is_some() && !cell.value.is_empty() {
+                        let code = format_of(&self.doc, sheet, at).number_format;
+                        let number_format = (code != "General").then_some(code);
+                        cells.push((at, ClipboardCell::Value { value: cell.value.clone(), number_format }));
                     }
                 }
             }
         }
-        let mut clipboard = (!formulas.is_empty()).then(|| ClipboardRange { source: range, cut, cells: Vec::new() });
+        let mut clipboard = (has_formula || move_id.is_some()).then(|| ClipboardRange {
+            source: range,
+            cut: move_id.is_some(),
+            move_id: move_id.map(str::to_string),
+            date_1904: move_id.is_some() && crate::excel(&self.doc).is_some_and(|x| x.date_system == DateSystem::From1904),
+            cells,
+        });
+        let mut formulas =
+            clipboard.as_mut().filter(|c| !c.cut).map(|c| std::mem::take(&mut c.cells).into_iter().collect::<HashMap<_, _>>());
         let mut text = String::new();
         for r in range.start.row..=range.end.row {
             for c in range.start.col..=range.end.col {
@@ -543,9 +607,9 @@ impl SheetsView {
                     text.push('\t');
                 }
                 text.push_str(&display);
-                if let Some(clipboard) = &mut clipboard {
-                    if let Some(formula) = formulas.remove(&at) {
-                        clipboard.cells.push((at, ClipboardCell::Formula { formula }));
+                if let (Some(clipboard), Some(formulas)) = (&mut clipboard, &mut formulas) {
+                    if let Some(cell) = formulas.remove(&at) {
+                        clipboard.cells.push((at, cell));
                     } else if !display.is_empty() {
                         clipboard.cells.push((at, ClipboardCell::Text(display)));
                     }
@@ -554,6 +618,26 @@ impl SheetsView {
             text.push('\n');
         }
         (text, clipboard)
+    }
+
+    /// Clear the cut cells and remember which clipboard item can retarget this workbook.
+    pub fn cut(&mut self, sheet: usize, range: Range, move_id: String) {
+        let source = clipboard_bounds(range);
+        let Some(s) = self.sheets().get(sheet) else { return };
+        let sheet_name = s.name.clone();
+        let mut cells = existing_cells(Some(s), source);
+        let formulas = move_formula_edits(s, Some(source), None);
+        cells.extend(formulas.keys().copied());
+        self.change_cells(sheet, &cells, |v, at| {
+            if let Some(formula) = formulas.get(&at) {
+                let cell = v.sheets_mut()[sheet].cell_mut(at);
+                cell.formula = Some(formula.clone());
+                drop_formula_markup(&mut cell.origin);
+            } else {
+                v.clear_cell(sheet, at);
+            }
+        });
+        self.pending_cut = Some(PendingCut { id: move_id, sheet: sheet_name, source });
     }
 
     /// Pastes a range at `at`; a single cell fills the selection.
@@ -581,7 +665,21 @@ impl SheetsView {
 
     fn paste_clipboard(&mut self, sheet: usize, at: Range, clipboard: ClipboardRange) {
         let source = clipboard.source;
-        let single = source.start == source.end;
+        let end = CellRef::new(
+            at.start.row.saturating_add(source.end.row - source.start.row),
+            at.start.col.saturating_add(source.end.col - source.start.col),
+        );
+        let destination = Range { start: at.start, end };
+        let local_cut = self
+            .pending_cut
+            .as_ref()
+            .filter(|cut| clipboard.cut && clipboard.move_id.as_deref() == Some(cut.id.as_str()) && source == cut.source);
+        if local_cut.is_some() && (end.row > 1_048_575 || end.col > 16_383 || sheet >= self.sheets().len()) {
+            return;
+        }
+        let moved = local_cut
+            .and_then(|cut| Some(MovedRange { source, from_sheet: &cut.sheet, to: at.start, to_sheet: &self.sheets().get(sheet)?.name }));
+        let single = source.start == source.end && moved.is_none();
         let inputs: HashMap<_, _> = clipboard
             .cells
             .into_iter()
@@ -589,29 +687,59 @@ impl SheetsView {
             .filter_map(|(src, cell)| {
                 let row = at.start.row.checked_add(src.row - source.start.row)?;
                 let col = at.start.col.checked_add(src.col - source.start.col)?;
+                let cell = match (&moved, cell) {
+                    (Some(m), ClipboardCell::Formula { formula }) => {
+                        ClipboardCell::Formula { formula: m.rewrite(&formula, m.from_sheet, m.to_sheet).unwrap_or(formula) }
+                    }
+                    (_, cell) => cell,
+                };
                 Some((CellRef::new(row, col), (src, cell)))
             })
             .collect();
         let cells = if single {
             all_cells(at, 20_000)
         } else {
-            let end = CellRef::new(
-                at.start.row.saturating_add(source.end.row - source.start.row),
-                at.start.col.saturating_add(source.end.col - source.start.col),
-            );
-            let mut cells = existing_cells(self.sheets().get(sheet), Range { start: at.start, end });
+            let mut cells = existing_cells(self.sheets().get(sheet), destination);
             cells.extend(inputs.keys().copied());
             cells.sort_unstable();
             cells.dedup();
             cells
         };
-        self.change_cells(sheet, &cells, |v, dest| match inputs.get(&if single { at.start } else { dest }) {
+        let dependents = moved.as_ref().map(|m| {
+            self.sheets()
+                .iter()
+                .enumerate()
+                .map(|(i, s)| move_formula_edits(s, (i == sheet).then_some(destination), Some(m)))
+                .collect::<Vec<_>>()
+        });
+        let keep_cut_formula_text = moved.is_some() || (clipboard.cut && clipboard.move_id.is_none());
+        let from_dates = if clipboard.date_1904 { DateSystem::From1904 } else { DateSystem::From1900 };
+        let to_dates = crate::excel(&self.doc).map(|x| x.date_system).unwrap_or_default();
+        let paste = |v: &mut SheetsView, dest| match inputs.get(&if single { at.start } else { dest }) {
             Some((_, ClipboardCell::Text(input))) => v.put_input(sheet, dest, input),
+            Some((_, ClipboardCell::Value { value, number_format })) => {
+                let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
+                let cell = s.cell_mut(dest);
+                cell.value = match value {
+                    Value::Number(n)
+                        if from_dates != to_dates && number_format.as_deref().is_some_and(|f| crate::numfmt::has_calendar_date(f, *n)) =>
+                    {
+                        let n = crate::dates::from_serial(n.trunc(), from_dates)
+                            .map(|day| crate::dates::to_serial(day, to_dates) + n.fract())
+                            .unwrap_or(*n);
+                        Value::Number(n)
+                    }
+                    _ => value.clone(),
+                };
+                cell.formula = None;
+                cell.origin = Default::default();
+                v.set_general_format(sheet, dest, number_format.as_deref());
+            }
             Some((src, ClipboardCell::Formula { formula })) => {
                 let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
                 let cell = s.cell_mut(dest);
                 cell.value = Value::Empty;
-                cell.formula = Some(if clipboard.cut {
+                cell.formula = Some(if keep_cut_formula_text {
                     formula.clone()
                 } else {
                     crate::formula::shift(formula, i64::from(dest.row) - i64::from(src.row), i64::from(dest.col) - i64::from(src.col))
@@ -620,7 +748,27 @@ impl SheetsView {
                 cell.origin = Default::default();
             }
             None => v.put_input(sheet, dest, ""),
-        });
+        };
+        let Some(dependents) = dependents else {
+            self.change_cells(sheet, &cells, paste);
+            return;
+        };
+        self.pending_cut = None;
+        let before = self.sel;
+        let mut steps = self.cell_changes(sheet, &cells, paste).into_iter().collect::<Vec<_>>();
+        for (sheet, edits) in dependents.into_iter().enumerate() {
+            let mut cells: Vec<_> = edits.keys().copied().collect();
+            cells.sort_unstable();
+            steps.extend(self.cell_changes(sheet, &cells, |v, at| {
+                let cell = v.sheets_mut()[sheet].cell_mut(at);
+                cell.formula = Some(edits[&at].clone());
+                drop_formula_markup(&mut cell.origin);
+            }));
+        }
+        if !steps.is_empty() {
+            self.changed(None);
+            self.record(steps, before);
+        }
     }
 
     /// Copies the top row of a range down through it (⌘D), formulas shifted as Excel does.
@@ -698,6 +846,45 @@ fn put_cell(s: &mut Sheet, at: CellRef, cell: Option<SheetCell>) {
             }
         }
     }
+}
+
+fn clipboard_bounds(mut range: Range) -> Range {
+    range.end.row = range.end.row.min(range.start.row.saturating_add(100_000));
+    range
+}
+
+/// Keep shared followers independent if their group is split or any member is rewritten.
+fn move_formula_edits(sheet: &Sheet, replaced: Option<Range>, moved: Option<&MovedRange>) -> HashMap<CellRef, String> {
+    let mut group_edits = HashSet::new();
+    let mut formulas = crate::SheetFormulas::new(sheet);
+    let mut edits = HashMap::new();
+    let cells = || sheet.rows.iter().flat_map(|r| r.cells.iter().map(|c| (CellRef::new(r.index, c.col), c)));
+    for (at, cell) in cells() {
+        if replaced.is_some_and(|r| r.contains(at)) {
+            if let Some((group, _)) = crate::shared(&cell.origin) {
+                group_edits.insert(group);
+            }
+        } else if let Some(m) = moved {
+            if let Some(next) = formulas.read(at, cell).and_then(|f| m.rewrite(&f, &sheet.name, &sheet.name)) {
+                edits.insert(at, next);
+                if let Some((group, _)) = crate::shared(&cell.origin) {
+                    group_edits.insert(group);
+                }
+            }
+        }
+    }
+    if !group_edits.is_empty() {
+        for (at, cell) in cells() {
+            if !replaced.is_some_and(|r| r.contains(at)) && crate::shared(&cell.origin).is_some_and(|(g, _)| group_edits.contains(g)) {
+                if let std::collections::hash_map::Entry::Vacant(e) = edits.entry(at) {
+                    if let Some(f) = formulas.read(at, cell) {
+                        e.insert(f);
+                    }
+                }
+            }
+        }
+    }
+    edits
 }
 
 fn existing_cells(s: Option<&Sheet>, range: Range) -> Vec<CellRef> {

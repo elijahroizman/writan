@@ -1,7 +1,7 @@
 //! Formulas: reading Excel's formula text into a tree, and moving a formula's relative
 //! references the way copying it to another cell does (which is how shared formulas work).
 
-use office_core::model::CellRef;
+use office_core::model::{CellRef, Range};
 
 /// One end of a reference. A whole column (`A:A`) has no row; a whole row (`1:1`) no column.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -427,15 +427,18 @@ fn reference(src: &str, at: usize, sheet: Option<String>) -> Option<(Reference, 
     }
     let s = src.as_bytes();
     let (first, n1) = part(s, at)?;
+    // Not a function (LOG10()), a sheet name (Q1!), or a prefix of a longer name.
+    let ends_ref = |end| !src[end..].chars().next().is_some_and(|c| c.is_alphanumeric() || matches!(c, '(' | '!' | '_' | '.' | '\\' | '$'));
     let mut len = n1;
     let mut end = None;
-    if s.get(at + len) == Some(&b':') {
-        if let Some((second, n2)) = part(s, at + len + 1) {
+    if let Some(tail) = src[at + len..].trim_start().strip_prefix(':') {
+        let second_at = src.len() - tail.trim_start().len();
+        if let Some((second, n2)) = part(s, second_at).filter(|(_, n)| ends_ref(second_at + n)) {
             // Both ends must be the same kind: cells, whole columns or whole rows.
             let kind = |p: &RefPart| (p.row.is_some(), p.col.is_some());
             if kind(&first) == kind(&second) {
                 end = Some(second);
-                len += 1 + n2;
+                len = second_at - at + n2;
             }
         }
     }
@@ -443,9 +446,7 @@ fn reference(src: &str, at: usize, sheet: Option<String>) -> Option<(Reference, 
     if end.is_none() && (first.row.is_none() || first.col.is_none()) {
         return None;
     }
-    // Not a function (LOG10() or a longer name (A1B).
-    let next = src[at + len..].chars().next();
-    if next.is_some_and(|c| c == '(' || c.is_alphanumeric() || c == '_' || c == '.') {
+    if !ends_ref(at + len) {
         return None;
     }
     Some((Reference { sheet, start: first, end }, len))
@@ -454,12 +455,7 @@ fn reference(src: &str, at: usize, sheet: Option<String>) -> Option<(Reference, 
 /// Parses formula text (without its `=`).
 pub fn parse(src: &str) -> Result<Expr, String> {
     let toks = lex(src)?;
-    let mut p = Parser { toks: toks.into_iter().map(|(t, _)| t).collect(), at: 0, union_allowed: true, depth: 0 };
-    let e = p.compare()?;
-    if p.at != p.toks.len() {
-        return Err(format!("unexpected {:?}", p.toks[p.at]));
-    }
-    Ok(e)
+    Parser::new(&toks, None).parse()
 }
 
 /// How deep parentheses and unary prefixes may nest. A flat sum does not count:
@@ -469,16 +465,29 @@ pub fn parse(src: &str) -> Result<Expr, String> {
 /// and would overflow that stack.
 const MAX_PARSE_DEPTH: usize = 160;
 
-struct Parser {
-    toks: Vec<Tok>,
+struct Parser<'a> {
+    toks: &'a [(Tok, std::ops::Range<usize>)],
+    range_spans: Option<&'a mut Vec<std::ops::Range<usize>>>,
     at: usize,
     union_allowed: bool,
     depth: usize,
 }
 
-impl Parser {
+impl<'a> Parser<'a> {
+    fn new(toks: &'a [(Tok, std::ops::Range<usize>)], range_spans: Option<&'a mut Vec<std::ops::Range<usize>>>) -> Self {
+        Self { toks, range_spans, at: 0, union_allowed: true, depth: 0 }
+    }
+
+    fn parse(mut self) -> Result<Expr, String> {
+        let e = self.compare()?;
+        if let Some(tok) = self.peek() {
+            return Err(format!("unexpected {tok:?}"));
+        }
+        Ok(e)
+    }
+
     fn peek(&self) -> Option<&Tok> {
-        self.toks.get(self.at)
+        self.toks.get(self.at).map(|(t, _)| t)
     }
 
     fn op(&self, ops: &[&str]) -> Option<String> {
@@ -573,20 +582,30 @@ impl Parser {
         }
         macro_rules! ranges {
             ($parser:ident) => {{
+                let start = $parser.at;
                 let mut e = $parser.primary()?;
+                let end = $parser.at;
                 while $parser.peek() == Some(&Tok::Colon) {
                     $parser.at += 1;
                     e = Expr::Binary(Op::Range, Box::new(e), Box::new($parser.primary()?));
+                }
+                if $parser.at != end {
+                    $parser.record_range(start);
                 }
                 e
             }};
         }
         macro_rules! intersections {
             ($parser:ident) => {{
+                let start = $parser.at;
                 let mut e = ranges!($parser);
+                let end = $parser.at;
                 while $parser.peek() == Some(&Tok::Space) {
                     $parser.at += 1;
                     e = Expr::Binary(Op::Intersect, Box::new(e), Box::new(ranges!($parser)));
+                }
+                if $parser.at != end {
+                    $parser.record_range(start);
                 }
                 e
             }};
@@ -597,6 +616,12 @@ impl Parser {
             e = Expr::Binary(Op::Union, Box::new(e), Box::new(intersections!(self)));
         }
         Ok(e)
+    }
+
+    fn record_range(&mut self, start: usize) {
+        if let Some(spans) = &mut self.range_spans {
+            spans.push(start..self.at);
+        }
     }
 
     fn primary(&mut self) -> Result<Expr, String> {
@@ -703,12 +728,95 @@ fn write_part(p: &RefPart) -> String {
 }
 
 fn write_sheet(name: &str) -> String {
-    let plain =
-        name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') && !name.chars().next().is_some_and(|c| c.is_ascii_digit());
+    let plain = name.chars().next().is_some_and(|c| c == '_' || c.is_alphabetic())
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
     if plain {
         format!("{name}!")
     } else {
         format!("'{}'!", name.replace('\'', "''"))
+    }
+}
+
+/// The source and destination of a cut within one workbook.
+pub(crate) struct MovedRange<'a> {
+    pub source: Range,
+    pub from_sheet: &'a str,
+    pub to: CellRef,
+    pub to_sheet: &'a str,
+}
+
+impl MovedRange<'_> {
+    /// Retarget references entirely inside the moved rectangle. References left behind still use
+    /// their original sheet, even when the formula itself has moved to another sheet.
+    pub fn rewrite(&self, src: &str, old_home: &str, new_home: &str) -> Option<String> {
+        let tokens = lex(src).ok()?;
+        // A moving reference stores whether to keep an explicit sheet qualifier.
+        let mut moves: Vec<_> = tokens
+            .iter()
+            .map(|(t, _)| match t {
+                Tok::Ref(r) if self.contains(r, old_home) => Some(r.sheet.is_some()),
+                _ => None,
+            })
+            .collect();
+        if tokens.iter().any(|(t, _)| matches!(t, Tok::Colon | Tok::Space)) {
+            let mut groups = Vec::new();
+            if Parser::new(&tokens, Some(&mut groups)).parse().is_ok() {
+                // The parser records inner spans before outer ones. Decide each outer range once.
+                let mut before = tokens.len();
+                for group in groups.into_iter().rev() {
+                    if group.end > before {
+                        continue;
+                    }
+                    before = group.start;
+                    let can_move = tokens[group.clone()].iter().zip(&moves[group.clone()]).all(|((t, _), m)| match t {
+                        Tok::Ref(_) => m.is_some(),
+                        Tok::Open | Tok::Close | Tok::Colon | Tok::Comma | Tok::Space => true,
+                        _ => false,
+                    });
+                    let qualify = moves[group.clone()].contains(&Some(true));
+                    moves[group].fill(can_move.then_some(qualify));
+                }
+            } else {
+                moves.fill(None);
+            }
+        }
+        let mut result = None;
+        for ((t, span), movement) in tokens.into_iter().zip(moves).rev() {
+            let Tok::Ref(r) = t else { continue };
+            let name = r.sheet.as_deref().unwrap_or(old_home);
+            let target = if movement.is_some() { self.to_sheet } else { name };
+            if movement.is_none() && (r.sheet.is_some() || target.eq_ignore_ascii_case(new_home)) {
+                continue;
+            }
+            let qualify = movement.unwrap_or(false) || !target.eq_ignore_ascii_case(new_home);
+            let mut replacement = if qualify { write_sheet(target) } else { String::new() };
+            if movement.is_some() {
+                let translate = |p: RefPart| RefPart {
+                    row: p.row.map(|row| self.to.row + (row - self.source.start.row)),
+                    col: p.col.map(|col| self.to.col + (col - self.source.start.col)),
+                    ..p
+                };
+                replacement.push_str(&write_part(&translate(r.start)));
+                if let Some(end) = r.end {
+                    replacement.push(':');
+                    replacement.push_str(&write_part(&translate(end)));
+                }
+            } else {
+                replacement.push_str(&src[span.clone()]);
+            }
+            if src[span.clone()] != replacement {
+                result.get_or_insert_with(|| src.to_string()).replace_range(span, &replacement);
+            }
+        }
+        result
+    }
+
+    fn contains(&self, r: &Reference, home: &str) -> bool {
+        let name = r.sheet.as_deref().unwrap_or(home);
+        let end = r.end.unwrap_or(r.start);
+        name.eq_ignore_ascii_case(self.from_sheet)
+            && self.source.contains(CellRef::new(r.start.row.unwrap_or(0), r.start.col.unwrap_or(0)))
+            && self.source.contains(CellRef::new(end.row.unwrap_or(1_048_575), end.col.unwrap_or(16_383)))
     }
 }
 
@@ -758,6 +866,46 @@ mod tests {
 
     fn cell(row: u32, col: u32) -> RefPart {
         RefPart { row: Some(row), col: Some(col), row_abs: false, col_abs: false }
+    }
+
+    #[test]
+    fn spaced_ranges_move_only_when_both_endpoints_are_cut() {
+        let mut moved =
+            MovedRange { source: Range::parse("A1").unwrap(), from_sheet: "Sheet1", to: CellRef::parse("D1").unwrap(), to_sheet: "Sheet1" };
+        assert_eq!(moved.rewrite("SUM(A1 : B1)", "Sheet1", "Sheet1"), None);
+        assert_eq!(moved.rewrite("SUM(A1 : B1)", "Sheet1", "Sheet2").as_deref(), Some("SUM(Sheet1!A1 : B1)"));
+        moved.source = Range::parse("A1:B1").unwrap();
+        assert_eq!(moved.rewrite("SUM(A1 : B1)", "Sheet1", "Sheet1").as_deref(), Some("SUM(D1:E1)"));
+    }
+
+    #[test]
+    fn repeated_sheet_qualifiers_do_not_split_a_cut_range() {
+        let mut moved =
+            MovedRange { source: Range::parse("A1").unwrap(), from_sheet: "Q1", to: CellRef::parse("D1").unwrap(), to_sheet: "New totals" };
+        let formula = "SUM(Q1!A1:Q1!B1)";
+        assert_eq!(moved.rewrite(formula, "Q1", "Q1"), None);
+        assert_eq!(moved.rewrite("SUM(A1:B1)+SUM(Q1!A1 : 'Q1'!B1)", "Q1", "Other").as_deref(), Some("SUM(Q1!A1:B1)+SUM(Q1!A1 : 'Q1'!B1)"));
+        assert_eq!(moved.rewrite("SUM(Q1!A1:B1_Total)", "Q1", "Q1"), None);
+        assert_eq!(moved.rewrite("SUM((A1):(B1))", "Q1", "Q1"), None);
+        moved.source = Range::parse("A1:B1").unwrap();
+        assert_eq!(moved.rewrite(formula, "Q1", "Q1").as_deref(), Some("SUM('New totals'!D1:'New totals'!E1)"));
+        assert_eq!(moved.rewrite("SUM((A1):(B1))", "Q1", "Q1").as_deref(), Some("SUM(('New totals'!D1):('New totals'!E1))"));
+    }
+
+    #[test]
+    fn nested_cut_range_moves_as_one_reference() {
+        let mut moved = MovedRange {
+            source: Range::parse("A1:B1").unwrap(),
+            from_sheet: "Q1",
+            to: CellRef::parse("D1").unwrap(),
+            to_sheet: "New totals",
+        };
+        let formula = "SUM((A1:B1):(C1))";
+        assert_eq!(moved.rewrite(formula, "Q1", "Q1"), None);
+        assert_eq!(moved.rewrite("SUM((Q1!A1:Q1!B1):Q1!C1)+A1", "Q1", "Q1").as_deref(), Some("SUM((Q1!A1:Q1!B1):Q1!C1)+'New totals'!D1"));
+        moved.source = Range::parse("A1:C1").unwrap();
+        assert_eq!(moved.rewrite(formula, "Q1", "Q1").as_deref(), Some("SUM(('New totals'!D1:E1):('New totals'!F1))"));
+        assert_eq!(moved.rewrite("SUM((A1:B1) (B1:C1))", "Q1", "Q1").as_deref(), Some("SUM(('New totals'!D1:E1) ('New totals'!E1:F1))"));
     }
 
     #[test]
@@ -846,6 +994,17 @@ mod tests {
         assert!(matches!(parse("(A1,A2)").unwrap(), Expr::Binary(Op::Union, _, _)));
         assert!(matches!(parse("A1:A2 A1:B1").unwrap(), Expr::Binary(Op::Intersect, _, _)));
         assert!(matches!(parse("(A1):(B1)").unwrap(), Expr::Binary(Op::Range, _, _)));
+        for formula in ["A1 : B1_Total", "A1:B1_Total"] {
+            assert_eq!(
+                parse(formula).unwrap(),
+                Expr::Binary(
+                    Op::Range,
+                    Box::new(Expr::Ref(Reference { sheet: None, start: cell(0, 0), end: None })),
+                    Box::new(Expr::Name("B1_Total".into())),
+                )
+            );
+        }
+        assert!(matches!(parse("A1 : B1!C1").unwrap(), Expr::Binary(Op::Range, _, _)));
         assert_eq!(parse("#N/A").unwrap(), Expr::Error("#N/A".into()));
         assert_eq!(parse("1.5E+3").unwrap(), Expr::Number(1500.0));
         assert!(parse("SUM(1").is_err());

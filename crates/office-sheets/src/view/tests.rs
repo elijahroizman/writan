@@ -88,7 +88,7 @@ fn workbook_formats_columns_and_sheets() {
     v.rename_sheet(1, "Data");
     assert_eq!(v.sheets()[1].name, "Data");
     v.paste(1, Range { start: CellRef::new(0, 0), end: CellRef::new(0, 0) }, "a\tb\n1\t2\n", None);
-    let (text, clipboard) = v.copy(1, Range { start: CellRef::new(0, 0), end: CellRef::new(1, 1) }, false);
+    let (text, clipboard) = v.copy(1, Range { start: CellRef::new(0, 0), end: CellRef::new(1, 1) }, None);
     assert_eq!(text, "a\tb\n1\t2\n");
     assert!(clipboard.is_none());
     let found = v.find("b");
@@ -112,7 +112,7 @@ fn clipboard_copies_formula_blocks_and_keeps_tab_separated_values() {
     v.set_input(0, CellRef::new(2, 1), "line one\nline two");
     v.set_input(0, CellRef::new(4, 4), "old");
 
-    let (text, clipboard) = v.copy(0, Range { start: source, end: CellRef::new(2, 2) }, false);
+    let (text, clipboard) = v.copy(0, Range { start: source, end: CellRef::new(2, 2) }, None);
     assert_eq!(text, "12\t4\nline one\nline two\t\n");
     v.paste(0, Range { start: dest, end: dest }, &text, clipboard);
     assert_eq!(crate::formula(&v.doc, 0, dest).as_deref(), Some("C3+$A3+C$1+$A$1"));
@@ -130,7 +130,7 @@ fn pasting_one_copied_formula_shifts_it_for_every_selected_cell() {
     let mut v = SheetsView::blank(Kind::Sheets);
     let source = CellRef::new(1, 1);
     v.set_input(0, source, "=B1");
-    let (text, clipboard) = v.copy(0, Range { start: source, end: source }, false);
+    let (text, clipboard) = v.copy(0, Range { start: source, end: source }, None);
     v.paste(0, Range { start: CellRef::new(2, 2), end: CellRef::new(3, 2) }, &text, clipboard);
     assert_eq!(crate::formula(&v.doc, 0, CellRef::new(2, 2)).as_deref(), Some("C2"));
     assert_eq!(crate::formula(&v.doc, 0, CellRef::new(3, 2)).as_deref(), Some("C3"));
@@ -145,13 +145,173 @@ fn cutting_a_formula_keeps_its_original_references() {
     v.set_input(0, CellRef::new(0, 0), "5");
     v.set_input(0, source, "=A1");
 
-    let (text, clipboard) = v.copy(0, source_range, true);
-    v.clear(0, source_range);
+    let (text, clipboard) = v.copy(0, source_range, Some("cut"));
+    v.cut(0, source_range, "cut".into());
     v.paste(0, Range { start: dest, end: dest }, &text, clipboard);
     assert_eq!(crate::formula(&v.doc, 0, source), None);
     assert_eq!(crate::formula(&v.doc, 0, dest).as_deref(), Some("A1"));
     v.set_input(0, CellRef::new(0, 0), "9");
     assert_eq!(v.cell_info(0, dest).display, "9");
+}
+
+#[test]
+fn cutting_a_formula_across_sheets_keeps_unmoved_dependencies_on_the_source_sheet() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.rename_sheet(0, "Owner's Data");
+    let a1 = CellRef::new(0, 0);
+    let b1 = CellRef::new(0, 1);
+    let c1 = CellRef::new(0, 2);
+    let d1 = CellRef::new(0, 3);
+    let source = Range { start: b1, end: b1 };
+    v.set_input(0, a1, "5");
+    v.set_input(0, b1, "=$A$1");
+    v.set_input(0, d1, "=B1");
+    let (text, clipboard) = v.copy(0, source, Some("cut"));
+    v.cut(0, source, "cut".into());
+    v.add_sheet();
+    v.rename_sheet(1, "New totals");
+    v.set_input(0, a1, "7");
+    v.set_input(1, a1, "99");
+    v.paste(1, Range { start: c1, end: c1 }, &text, clipboard);
+
+    assert_eq!(v.cell_info(1, c1).input, "='Owner''s Data'!$A$1");
+    assert_eq!(v.cell_info(1, c1).display, "7");
+    assert_eq!(v.cell_info(0, d1).input, "='New totals'!C1");
+    assert_eq!(v.cell_info(0, d1).display, "7");
+}
+
+#[test]
+fn replacing_cut_source_leaves_its_dependents_at_that_address() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    let a1 = CellRef::new(0, 0);
+    let b1 = CellRef::new(0, 1);
+    let source = Range::parse("A1").unwrap();
+    v.set_input(0, a1, "5");
+    v.set_input(0, b1, "=A1");
+    let (text, clipboard) = v.copy(0, source, Some("cut"));
+    v.cut(0, source, "cut".into());
+    v.set_input(0, a1, "7");
+    v.clear(0, source);
+    v.paste(0, Range::parse("C1").unwrap(), &text, clipboard);
+    assert_eq!(v.cell_info(0, b1).input, "=A1");
+}
+
+#[test]
+fn cutting_a_block_remaps_absolute_and_range_dependencies_and_updates_other_formulas() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.add_sheet();
+    let source = Range { start: CellRef::new(0, 0), end: CellRef::new(1, 1) };
+    let dest = CellRef::new(1, 0);
+    let stationary = CellRef::new(0, 5);
+    v.set_input(0, CellRef::new(0, 0), "5");
+    v.set_input(0, CellRef::new(1, 0), "7");
+    v.set_input(0, CellRef::new(0, 1), "=sum($A$1:A2)");
+    v.set_input(0, stationary, "=B1");
+    v.set_input(1, stationary, "=Sheet1!$B$1");
+
+    let (text, clipboard) = v.copy(0, source, Some("cut"));
+    v.cut(0, source, "cut".into());
+    v.paste(0, Range { start: dest, end: dest }, &text, clipboard);
+
+    assert_eq!(v.cell_info(0, CellRef::new(1, 1)).input, "=sum($A$2:A3)");
+    assert_eq!(v.cell_info(0, stationary).input, "=B2");
+    assert_eq!(v.cell_info(1, stationary).input, "=Sheet1!$B$2");
+    assert_eq!(v.cell_info(1, stationary).display, "12");
+    assert!(v.undo());
+    assert_eq!(v.cell_info(1, stationary).input, "=Sheet1!$B$1");
+    assert_eq!(v.cell_info(0, CellRef::new(1, 1)).input, "");
+    assert!(v.redo());
+    assert_eq!(v.cell_info(1, stationary).display, "12");
+}
+
+#[test]
+fn cutting_values_retargets_formula_dependents_across_sheets_once() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.add_sheet();
+    let a1 = CellRef::new(0, 0);
+    let b1 = CellRef::new(0, 1);
+    let c3 = CellRef::new(2, 2);
+    let d4 = CellRef::new(3, 3);
+    let source = Range { start: a1, end: a1 };
+    let selection = Range { start: c3, end: d4 };
+    v.set_input(0, a1, "0.125");
+    v.format(0, source, &FormatPatch { number_format: Some("0%".into()), ..Default::default() });
+    v.set_input(0, b1, "=A1");
+    v.set_input(1, b1, "=Sheet1!A1");
+    let (text, clipboard) = v.copy(0, source, Some("cut"));
+    let (_, repeated) = v.copy(0, source, Some("cut"));
+    v.cut(0, source, "cut".into());
+    v.paste(1, selection, &text, clipboard);
+    assert_eq!(v.cell_info(0, b1).input, "=Sheet2!C3");
+    assert_eq!(v.cell_info(1, b1).input, "=Sheet2!C3");
+    assert_eq!(v.cell_info(0, b1).display, "0.125");
+    assert_eq!(v.cell_info(1, c3).number_format, "0%");
+    assert_eq!(v.cell_info(1, d4).input, "");
+    v.paste(1, Range { start: d4, end: d4 }, &text, repeated);
+    assert_eq!(v.cell_info(0, b1).input, "=Sheet2!C3");
+    v.set_input(1, c3, "2");
+    assert_eq!(v.cell_info(0, b1).display, "2");
+    assert_eq!(v.sheets()[1].value(d4), &Value::Number(0.125));
+}
+
+#[test]
+fn cutting_all_bounds_of_a_nested_range_preserves_its_value() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.add_sheet();
+    let source = Range::parse("A1:C1").unwrap();
+    let dest = Range::parse("D1").unwrap();
+    let dependent = CellRef::new(0, 3);
+    for col in 0..3 {
+        v.set_input(0, CellRef::new(0, col), "2");
+    }
+    v.set_input(0, dependent, "=SUM((A1:B1):C1)");
+    assert_eq!(v.cell_info(0, dependent).display, "6");
+    let (text, clipboard) = v.copy(0, source, Some("cut"));
+    v.cut(0, source, "cut".into());
+    v.paste(1, dest, &text, clipboard);
+    assert_eq!(v.cell_info(0, dependent).input, "=SUM((Sheet2!D1:E1):Sheet2!F1)");
+    assert_eq!(v.cell_info(0, dependent).display, "6");
+}
+
+#[test]
+fn cutting_dates_between_workbooks_preserves_the_calendar_date() {
+    use crate::DateSystem::{From1900, From1904};
+    for (from, to, serial, expected) in [(From1900, From1904, 45_000.5, 43_538.5), (From1904, From1900, 43_538.5, 45_000.5)] {
+        let mut source = SheetsView::blank(Kind::Sheets);
+        let mut target = SheetsView::blank(Kind::Sheets);
+        crate::excel_mut(&mut source.doc).date_system = from;
+        crate::excel_mut(&mut target.doc).date_system = to;
+        let a1 = CellRef::new(0, 0);
+        let a2 = CellRef::new(1, 0);
+        let a3 = CellRef::new(2, 0);
+        for (at, value, format) in [(a1, serial, "yyyy-mm-dd hh:mm"), (a2, 1.5, "[h]:mm"), (a3, 0.5, "hh:mm")] {
+            source.set_input(0, at, &value.to_string());
+            source.format(0, Range { start: at, end: at }, &FormatPatch { number_format: Some(format.into()), ..Default::default() });
+        }
+        let range = Range { start: a1, end: a3 };
+        let (text, clipboard) = source.copy(0, range, Some("cut"));
+        source.cut(0, range, "cut".into());
+        target.paste(0, Range { start: a1, end: a1 }, &text, clipboard);
+        assert_eq!(target.cell_info(0, a1).display, "2023-03-15 12:00");
+        assert_eq!(target.sheets()[0].value(a1), &Value::Number(expected));
+        assert_eq!(target.sheets()[0].value(a2), &Value::Number(1.5));
+        assert_eq!(target.sheets()[0].value(a3), &Value::Number(0.5));
+    }
+}
+
+#[test]
+fn cutting_a_shared_formula_leaves_its_followers_working() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    put_shared(&mut v, CellRef::new(0, 1), Value::Number(0.0), Some("A1+1"), "0", Some("B1:B2"));
+    put_shared(&mut v, CellRef::new(1, 1), Value::Number(0.0), None, "0", None);
+    let leader = Range::parse("B1").unwrap();
+    let (text, clipboard) = v.copy(0, leader, Some("cut"));
+    v.cut(0, leader, "cut".into());
+    v.paste(0, Range::parse("D1").unwrap(), &text, clipboard);
+    let follower = CellRef::parse("B2").unwrap();
+    assert_eq!(formula_text(&v, follower).as_deref(), Some("A2+1"));
+    v.set_input(0, CellRef::parse("A2").unwrap(), "3");
+    assert_eq!(v.cell_info(0, follower).display, "4");
 }
 
 #[test]
@@ -161,7 +321,7 @@ fn clipboard_copies_shared_formula_followers_without_the_leader() {
     put_shared(&mut v, CellRef::new(1, 1), Value::Number(0.0), None, "0", None);
     put_shared(&mut v, CellRef::new(2, 1), Value::Number(0.0), None, "0", None);
     let dest = CellRef::new(1, 3);
-    let (text, clipboard) = v.copy(0, Range { start: CellRef::new(1, 1), end: CellRef::new(2, 1) }, false);
+    let (text, clipboard) = v.copy(0, Range { start: CellRef::new(1, 1), end: CellRef::new(2, 1) }, None);
     v.paste(0, Range { start: dest, end: dest }, &text, clipboard);
     assert_eq!(formula_text(&v, dest).as_deref(), Some("C2+1"));
     assert_eq!(formula_text(&v, CellRef::new(2, 3)).as_deref(), Some("C3+1"));

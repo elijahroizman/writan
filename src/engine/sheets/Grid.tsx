@@ -408,18 +408,19 @@ export function Grid({
     const rr = engine.range
     const gesture = cut ? keyboardCut.current : null
     const previous = gesture?.data
+    const moveId = cut && !previous ? Array.from(crypto.getRandomValues(new Uint32Array(4))).join('-') : undefined
     let data = previous
     if (!data) {
-      const { text, clipboard } = JSON.parse(engine.doc.copy(sheet, rr.r0, rr.c0, rr.r1, rr.c1, cut)) as { text: string; clipboard: unknown }
+      const { text, clipboard } = JSON.parse(engine.doc.copy(sheet, rr.r0, rr.c0, rr.r1, rr.c1, moveId)) as { text: string; clipboard: unknown }
       data = { text, spreadsheet: clipboard ? JSON.stringify(clipboard) : null }
     }
     e.preventDefault()
     e.clipboardData.setData('text/plain', data.text)
     if (data.spreadsheet) e.clipboardData.setData(SHEETS_CLIPBOARD, data.spreadsheet)
-    if (cut && !previous) {
+    if (moveId) {
       // WebKit can send two cut events for one keypress. Both must write the pre-cut data.
       if (gesture) gesture.data = data
-      engine.run({ cmd: 'clear', sheet, range: rr })
+      engine.run({ cmd: 'cut', sheet, range: rr, moveId })
     }
   }
   const onPaste = (e: React.ClipboardEvent) => {

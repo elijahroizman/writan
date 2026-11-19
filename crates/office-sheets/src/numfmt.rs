@@ -84,6 +84,20 @@ pub fn is_date_format(code: &str) -> bool {
     split_sections(code).first().is_some_and(|s| tokenize(s).iter().any(|t| matches!(t, Token::Date(_) | Token::Elapsed(..))))
 }
 
+pub(crate) fn has_calendar_date(code: &str, n: f64) -> bool {
+    let sections: Vec<_> = split_sections(code).iter().map(|s| tokenize(s)).collect();
+    if sections.is_empty() {
+        return false;
+    }
+    let (tokens, _) = number_section(&sections, n);
+    !tokens.iter().any(|t| matches!(t, Token::General))
+        && tokens.iter().enumerate().any(|(i, t)| match date_field(t) {
+            Some('d' | 'y') => true,
+            Some('m') => !is_minute(tokens, i),
+            _ => false,
+        })
+}
+
 fn format_number_with(n: f64, sections: &[String], system: DateSystem) -> Formatted {
     if !n.is_finite() {
         return Formatted { text: "#NUM!".into(), color: None };
@@ -92,6 +106,21 @@ fn format_number_with(n: f64, sections: &[String], system: DateSystem) -> Format
         return Formatted { text: general(n), color: None };
     }
     let parsed: Vec<Vec<Token>> = sections.iter().map(|s| tokenize(s)).collect();
+    let (tokens, value) = number_section(&parsed, n);
+    let mut out = if tokens.iter().any(|t| matches!(t, Token::General)) {
+        Formatted { text: general(value), color: None }
+    } else if tokens.iter().any(|t| matches!(t, Token::Date(_) | Token::Elapsed(..))) {
+        render_date(tokens, value, system)
+    } else {
+        render_number(tokens, value)
+    };
+    if let Some(Token::Color(c)) = tokens.iter().find(|t| matches!(t, Token::Color(_))) {
+        out.color = Some(c.clone());
+    }
+    out
+}
+
+fn number_section(parsed: &[Vec<Token>], n: f64) -> (&[Token], f64) {
     let conditions: Vec<Option<Condition>> =
         parsed.iter().map(|t| t.iter().find_map(|t| if let Token::Condition(c) = t { Some(*c) } else { None })).collect();
     // Which section, and whether it shows the sign itself.
@@ -110,19 +139,7 @@ fn format_number_with(n: f64, sections: &[String], system: DateSystem) -> Format
             _ => (2, false),
         }
     };
-    let tokens = &parsed[index.min(parsed.len() - 1)];
-    let value = if abs { -n } else { n };
-    let mut out = if tokens.iter().any(|t| matches!(t, Token::General)) {
-        Formatted { text: general(value), color: None }
-    } else if tokens.iter().any(|t| matches!(t, Token::Date(_) | Token::Elapsed(..))) {
-        render_date(tokens, value, system)
-    } else {
-        render_number(tokens, value)
-    };
-    if let Some(Token::Color(c)) = tokens.iter().find(|t| matches!(t, Token::Color(_))) {
-        out.color = Some(c.clone());
-    }
-    out
+    (&parsed[index.min(parsed.len() - 1)], if abs { -n } else { n })
 }
 
 /// General: whole numbers as they are, others to ten significant digits, and an exponent
@@ -647,6 +664,21 @@ const MONTHS: [&str; 12] =
     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 const DAYS: [&str; 7] = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
 
+fn date_field(token: &Token) -> Option<char> {
+    if let Token::Date(field) = token {
+        field.chars().next()
+    } else {
+        None
+    }
+}
+
+// An `m` means minutes right after hours or right before seconds.
+fn is_minute(tokens: &[Token], i: usize) -> bool {
+    let prev = tokens[..i].iter().rev().find_map(date_field);
+    let next = tokens[i + 1..].iter().find_map(date_field);
+    prev == Some('h') || next == Some('s') || prev.is_none() && tokens[..i].iter().any(|t| matches!(t, Token::Elapsed('h', _)))
+}
+
 fn render_date(tokens: &[Token], n: f64, system: DateSystem) -> Formatted {
     let Some(dt) = from_serial(n, system) else {
         // Excel fills the cell with #### for a date it can't show.
@@ -661,13 +693,6 @@ fn render_date(tokens: &[Token], n: f64, system: DateSystem) -> Formatted {
             dt = next;
         }
     }
-    // An `m` means minutes right after hours or right before seconds.
-    let kinds: Vec<Option<char>> = tokens.iter().map(|t| if let Token::Date(d) = t { d.chars().next() } else { None }).collect();
-    let is_minute = |i: usize| {
-        let prev = kinds[..i].iter().rev().flatten().next();
-        let next = kinds[i + 1..].iter().flatten().next();
-        prev == Some(&'h') || next == Some(&'s') || tokens[..i].iter().any(|t| matches!(t, Token::Elapsed('h', _))) && prev.is_none()
-    };
     let mut out = String::new();
     for (i, t) in tokens.iter().enumerate() {
         match t {
@@ -683,7 +708,7 @@ fn render_date(tokens: &[Token], n: f64, system: DateSystem) -> Formatted {
                         out.push_str(&format!("{:04}", dt.year));
                     }
                 }
-                d if d.starts_with('m') && is_minute(i) => out.push_str(&pad(dt.minute, d.len())),
+                d if d.starts_with('m') && is_minute(tokens, i) => out.push_str(&pad(dt.minute, d.len())),
                 d if d.starts_with('m') => match d.len() {
                     1 | 2 => out.push_str(&pad(dt.month, d.len())),
                     3 => out.push_str(&MONTHS[dt.month as usize - 1][..3]),
