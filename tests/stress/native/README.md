@@ -37,7 +37,7 @@ node tests/stress/native/pdf-unchanged.mjs http://localhost:4173/ webkit
 pdfsig /tmp/writan-pdf-chromium-unchanged.pdf
 ```
 
-- `pdf-flatten.mjs`: Save flattened copy on a two-page PDF succeeds when a page has nothing to flatten, bakes highlights into the copy's pages, and a cancelled export writes nothing:
+- `pdf-flatten.mjs`: Save flattened copy on a two-page PDF succeeds when a page has nothing to flatten, bakes highlights into the copy's pages (also shown ones saved without the Print flag or a drawing, but not hidden ones), and a cancelled export writes nothing:
 
 ```sh
 node tests/stress/native/pdf-flatten.mjs http://localhost:4173/ chromium
