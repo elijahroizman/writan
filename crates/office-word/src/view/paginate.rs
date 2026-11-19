@@ -437,7 +437,10 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
                 (notes_h, carried, page_notes, fresh) = (0.0, 0, Vec::new(), true);
                 continue;
             }
-            let new_notes: Vec<usize> = notes_in(std::slice::from_ref(u)).into_iter().filter(|n| !page_notes.contains(n)).collect();
+            let new_notes: Vec<usize> = notes_in(std::slice::from_ref(u))
+                .into_iter()
+                .filter(|n| !page_notes.contains(n) && !carry.iter().any(|(c, _)| c == n))
+                .collect();
             // While an earlier note still continues past this page, new ones queue behind it.
             let defer = !carry.is_empty();
             let sep = if slices.is_empty() && !new_notes.is_empty() && !defer { NOTE_SEPARATOR } else { 0.0 };
