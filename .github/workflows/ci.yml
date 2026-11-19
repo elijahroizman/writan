@@ -21,6 +21,7 @@ jobs:
       engine: ${{ steps.filter.outputs.engine }}
       app: ${{ steps.filter.outputs.app }}
       frontend: ${{ steps.filter.outputs.frontend }}
+      packaging: ${{ steps.filter.outputs.packaging }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -39,6 +40,14 @@ jobs:
               - '.github/workflows/ci.yml'
             app:
               - 'src-tauri/**'
+              - '.github/workflows/ci.yml'
+            packaging:
+              - 'scripts/arch-package.sh'
+              - 'scripts/pacman-repo.sh'
+              - 'scripts/debian-repack.sh'
+              - 'scripts/check-linux-packages.sh'
+              - 'scripts/check-debian-repack.py'
+              - 'src-tauri/linux/**'
               - '.github/workflows/ci.yml'
             frontend:
               - 'src/**'
@@ -187,9 +196,20 @@ jobs:
       - run: npx playwright install --with-deps chromium
       - run: npm run test:browser
 
+  packaging:
+    name: Linux packages
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.packaging == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: scripts/check-linux-packages.sh
+
   ci:
     name: ci
-    needs: [changes, engine, engine-samples, app, frontend]
+    needs: [changes, engine, engine-samples, app, frontend, packaging]
     if: always()
     runs-on: ubuntu-24.04
     steps:

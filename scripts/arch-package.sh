@@ -3,11 +3,15 @@
 #
 # Tauri has no pacman bundle, and the binary is the same one the .deb and .rpm carry, so this
 # lifts the payload out of the .deb and writes the metadata pacman reads (.PKGINFO and .INSTALL)
-# around it, the way makepkg would. It needs dpkg-deb, GNU tar and zstd, and runs on the Ubuntu
+# around it, the way makepkg would. It needs dpkg-deb, GNU tar, zstd and gpg, and runs on the Ubuntu
 # release runner; nothing here runs pacman.
 #
 # Left out of the payload: the APT keyring (the Debian package manager's, and pacman wouldn't use
 # it) and /usr/bin/workspace (the wrapper for the pre-rename updater, which never ran on Arch).
+# Added: the repository signing key as a pacman keyring (/usr/share/pacman/keyrings/writan*), which
+# .INSTALL hands to `pacman-key --populate`, and which signs the packages and the database of
+# Writan's pacman repository. .INSTALL also adds the [writan] repository to /etc/pacman.conf, the
+# way the .deb's postinst adds the APT one, and removing the package takes it out again.
 #
 # The package's architecture follows the .deb's: amd64 becomes x86_64 (Arch Linux) and arm64
 # becomes aarch64 (Arch Linux ARM, and Omarchy on ARM machines).
@@ -22,6 +26,12 @@ if [ "$#" -ne 2 ]; then
 fi
 deb="$1"
 out="$2"
+key="$(cd "$(dirname "$0")/.." && pwd)/src-tauri/linux/RPM-GPG-KEY-writan"
+fingerprint="$(gpg --batch --show-keys --with-colons "$key" | awk -F: '$1 == "fpr" { print $10; exit }')"
+if [ -z "$fingerprint" ]; then
+  echo "couldn't read the fingerprint of $key" >&2
+  exit 1
+fi
 
 version="$(dpkg-deb -f "$deb" Version)"
 # pacman versions can't hold a hyphen. SemVer's pre-release separator becomes a tilde, which
@@ -46,7 +56,12 @@ mkdir -p "$root" "$out"
 dpkg-deb --extract "$deb" "$root"
 rm -f "$root/usr/bin/workspace"
 rm -rf "$root/usr/share/keyrings"
-rmdir "$root/usr/share" 2>/dev/null || true
+keyrings="$root/usr/share/pacman/keyrings"
+mkdir -p "$keyrings"
+cp "$key" "$keyrings/writan.gpg"
+printf '%s:4:\n' "$fingerprint" > "$keyrings/writan-trusted"
+: > "$keyrings/writan-revoked"
+chmod 644 "$keyrings"/writan*
 
 if [ ! -x "$root/usr/bin/writan" ]; then
   echo "the .deb has no /usr/bin/writan" >&2
@@ -73,15 +88,51 @@ depend = xdotool
 optdepend = hunspell-en_us: spell checking for English (any hunspell-* dictionary works)
 PKGINFO
 
-# Refresh the caches the desktop reads. The commands may be missing on a minimal install.
+# Refresh the caches the desktop reads (the commands may be missing on a minimal install), and add
+# or remove Writan's repository. pacman runs this with / as the root.
+#
+# The repository goes in /etc/pacman.conf, since pacman has no drop-in directory. It is added once:
+# when a [writan] line is there already, even commented out, the file is left alone, so commenting
+# the section out turns updates off until Writan is removed. Removing Writan deletes the lines it
+# added (the marker comment, the blank line before it and the section after it), commented out
+# or not, and nothing else.
 cat > "$root/.INSTALL" <<'INSTALL'
 refresh() {
   command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t -f usr/share/icons/hicolor || true
   command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database -q usr/share/applications || true
 }
-post_install() { refresh; }
-post_upgrade() { refresh; }
-post_remove() { refresh; }
+add_repo() {
+  if ! pacman-key --populate writan >/dev/null 2>&1; then
+    echo "Writan: couldn't add its signing key to pacman's keyring. Run: sudo pacman-key --populate writan"
+  fi
+  [ -f /etc/pacman.conf ] || return 0
+  grep -Eq '^[[:space:]]*#*[[:space:]]*\[writan\]' /etc/pacman.conf && return 0
+  cat >> /etc/pacman.conf <<'CONF'
+
+# Writan updates (https://github.com/elijahroizman/writan). Put a # before the next three lines to stop them.
+[writan]
+SigLevel = Required
+Server = https://github.com/elijahroizman/writan/releases/download/arch/$arch
+CONF
+}
+remove_repo() {
+  [ -f /etc/pacman.conf ] || return 0
+  grep -q '^# Writan updates (https://github.com/elijahroizman/writan)' /etc/pacman.conf || return 0
+  tmp="$(mktemp)"
+  awk '
+    skip && /^[[:space:]]*#*[[:space:]]*(\[writan\]|SigLevel = Required|Server = https:\/\/github\.com\/elijahroizman\/writan\/)/ { next }
+    { skip = 0 }
+    /^# Writan updates \(https:\/\/github\.com\/elijahroizman\/writan\)/ { skip = 1; hold = 0; next }
+    hold { print held; hold = 0 }
+    /^[[:space:]]*$/ { held = $0; hold = 1; next }
+    { print }
+    END { if (hold) print held }
+  ' /etc/pacman.conf > "$tmp" && cat "$tmp" > /etc/pacman.conf
+  rm -f "$tmp"
+}
+post_install() { refresh; add_repo; }
+post_upgrade() { refresh; add_repo; }
+post_remove() { refresh; remove_repo; }
 INSTALL
 
 file="$out/writan-${pkgver}-${pkgrel}-${arch}.pkg.tar.zst"

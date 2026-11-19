@@ -32,7 +32,7 @@ if [ "$1" = configure ]; then
   elif [ ! -e "$SOURCES" ] && [ -d /etc/apt/sources.list.d ] && [ -r "$KEYRING" ]; then
     cat > "$SOURCES" <<LIST
 # Writan updates (https://github.com/elijahroizman/writan). Put a # before the deb line to stop them.
-deb [arch=amd64 signed-by=$KEYRING] https://github.com/elijahroizman/writan/releases/download/apt/ ./
+deb [arch=amd64,arm64 signed-by=$KEYRING] https://github.com/elijahroizman/writan/releases/download/apt/ ./
 LIST
   fi
 fi

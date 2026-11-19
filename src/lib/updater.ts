@@ -13,14 +13,14 @@ const RELEASE_URL = 'https://api.github.com/repos/elijahroizman/writan/releases/
 
 export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'current' | 'error'
 
-/** How a Linux copy was installed, and whether Writan's APT or dnf repository can update it. */
+/** How a Linux copy was installed, and whether Writan's APT, dnf or pacman repository can update it. */
 export interface LinuxPackage {
-  format: 'deb' | 'rpm' | null
+  format: 'deb' | 'rpm' | 'pacman' | null
   repo: boolean
 }
 
 /** The package manager that installs updates for a Linux package format. */
-export const packageManager = (format: LinuxPackage['format']) => (format === 'rpm' ? 'dnf' : 'apt')
+export const packageManager = (format: LinuxPackage['format']) => (format === 'rpm' ? 'dnf' : format === 'pacman' ? 'pacman' : 'apt')
 
 export interface ReleaseNotes {
   version: string
@@ -245,7 +245,7 @@ async function installPackage(): Promise<void> {
   useUpdate.setState({ phase: 'installing', error: null })
   const { invoke } = await import('@tauri-apps/api/core')
   try {
-    await invoke('package_upgrade')
+    await invoke('package_upgrade', { version: useUpdate.getState().version })
   } catch (err) {
     console.warn('Package upgrade failed', err)
     useUpdate.setState({ phase: 'ready', error: String(err) })
