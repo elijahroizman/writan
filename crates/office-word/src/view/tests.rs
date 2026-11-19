@@ -1250,3 +1250,36 @@ fn footnote_text_can_be_edited_undone_and_saved() {
     let text = shown(&mut back, &mut host);
     assert!(text.contains("Foo") && text.contains("bar baz"), "{text}");
 }
+
+fn smartart_paint(bytes: &[u8]) -> (Vec<String>, Vec<String>) {
+    fn walk(items: &[Item], texts: &mut Vec<String>, fills: &mut Vec<String>) {
+        for i in items {
+            match i {
+                Item::Text { text, .. } => texts.push(text.clone()),
+                Item::Path { fill: Some(fill), .. } => fills.push(fill.clone()),
+                Item::Group { items, .. } => walk(items, texts, fills),
+                _ => {}
+            }
+        }
+    }
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(bytes).unwrap();
+    let (mut texts, mut fills) = (Vec::new(), Vec::new());
+    walk(&v.paint(&mut host, 0).items, &mut texts, &mut fills);
+    (texts, fills)
+}
+
+#[test]
+fn office_smartart_in_documents_draws_its_cached_shapes() {
+    // Aspose's SmartArt.docx: a grid of six boxes and a three-column list.
+    let (texts, fills) = smartart_paint(include_bytes!("../../../office-core/src/formats/test_data/aspose-SmartArt.docx"));
+    assert!(texts.iter().any(|t| t == "Lorem"), "{texts:?}");
+    assert!(fills.iter().filter(|f| *f == "#a3c1e5").count() >= 6, "{fills:?}");
+    assert!(fills.len() >= 12, "{fills:?}");
+    // docx4j's smartart.docx: three labels on one arrow.
+    let (texts, fills) = smartart_paint(include_bytes!("../../../office-core/src/formats/test_data/docx4j-smartart.docx"));
+    for label in ["build", "test", "deploy"] {
+        assert!(texts.iter().any(|t| t == label), "{texts:?}");
+    }
+    assert!(!fills.is_empty(), "{fills:?}");
+}
