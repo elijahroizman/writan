@@ -76,14 +76,16 @@ try {
   check('file edits are recovered', text.includes('UNSAVED FILE MARKER'))
   check('recovered UTF-16 text still decodes correctly', text.includes('Grüße') && text.includes('日本語') && !text.includes('�'))
   check('recovery wrote nothing to disk', await page.evaluate(() => window.__fake.writes.length === 0))
-  await waitStored((d) => d.length === 2 && d.every((x) => restored.some((t) => t.id === x.id)), 'kept copies move to the new tab ids')
+  await waitStored((d) => d.length === 2 && d.every((x) => restored.some((t) => t.id === x.id)) && d.some((x) => x.id === file.id && x.text.includes('UNSAVED FILE MARKER')), 'kept copies move to the new tab ids with their recovered text')
 
   // Back to what the editor loaded is still not what's on disk.
   await editor.click()
   await page.keyboard.press('Control+End')
-  await page.keyboard.insertText('x')
-  await page.keyboard.press('Backspace')
+  await page.keyboard.insertText('UNDONE')
+  await waitStored((d) => d.some((x) => x.id === file.id && x.text.includes('UNDONE')), 'an edit after recovery is kept')
+  await page.keyboard.press('Control+z')
   check('undoing past recovery keeps the tab unsaved', (await tabs(page)).find((t) => t.id === file.id)?.dirty === true)
+  await waitStored((d) => d.some((x) => x.id === file.id && x.text.includes('UNSAVED FILE MARKER') && !x.text.includes('UNDONE')), 'the kept copy drops the undone edit')
 
   // Changed on disk since the edits started: saving asks instead of writing over it.
   await page.evaluate((p) => {

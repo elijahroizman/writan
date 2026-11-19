@@ -95,21 +95,46 @@ async function store(tabId: string) {
   await enqueue(() => withStore('readwrite', (s) => s.put(doc)))
 }
 
+/** What load() returned, by tab id, for adopt() to re-key. */
+const loaded = new Map<string, RecoveredDoc>()
+
 /** Documents a previous run left unsaved, oldest tab position first. */
 async function load(): Promise<RecoveredDoc[]> {
   try {
     const docs = (await withStore<RecoveredDoc[]>('readonly', (s) => s.getAll() as IDBRequest<RecoveredDoc[]>)) ?? []
-    return docs.filter((d) => d && typeof d.id === 'string' && d.bytes instanceof Uint8Array).sort((a, b) => a.index - b.index)
+    const valid = docs.filter((d) => d && typeof d.id === 'string' && d.bytes instanceof Uint8Array).sort((a, b) => a.index - b.index)
+    for (const doc of valid) loaded.set(doc.id, doc)
+    return valid
   } catch (err) {
     console.warn('Crash recovery:', err)
     return []
   }
 }
 
-/** recover() reopened these documents in new tabs: copy them under the new tab ids. */
+/**
+ * recover() reopened these documents in new tabs: move each copy to its new tab id as stored, not
+ * from the editor, which may still show the file as it was on disk. One transaction, so a crash
+ * mid-way leaves either the old copies or the new ones.
+ */
 function adopt(pairs: [string, string][]) {
-  for (const [oldId] of pairs) void enqueue(() => withStore('readwrite', (s) => s.delete(oldId)))
-  for (const [, tabId] of pairs) void store(tabId)
+  const { tabs } = useWorkspace.getState()
+  const moves = pairs.flatMap(([oldId, tabId]) => {
+    const doc = loaded.get(oldId)
+    loaded.delete(oldId)
+    if (!doc) return []
+    stored.add(tabId)
+    const index = tabs.findIndex((t) => t.id === tabId)
+    return [{ oldId, doc: { ...doc, id: tabId, index: index < 0 ? doc.index : index } }]
+  })
+  if (!moves.length) return
+  void enqueue(() =>
+    withStore('readwrite', (s) => {
+      for (const { oldId, doc } of moves) {
+        if (oldId !== doc.id) s.delete(oldId)
+        s.put(doc)
+      }
+    }),
+  )
 }
 
 /** Wire crash recovery into the workspace. Returns a function that stops it. */
