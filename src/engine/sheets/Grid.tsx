@@ -542,7 +542,10 @@ export function Grid({
               items={engine.cell.validation.list}
               style={{ left: curX + curW + 1, top: curY }}
               height={curH}
-              onPick={(v) => onCommit(v, 'none')}
+              onPick={(v) => {
+                onCommit(v, 'none')
+                inputRef.current?.focus({ preventScroll: true })
+              }}
             />
           )}
           {charts.map((c, i) => {
