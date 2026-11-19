@@ -39,6 +39,8 @@ pub enum StoryId {
     Body,
     /// A header or footer: its index in the layer's `headers`.
     Story(usize),
+    /// A footnote or endnote: its index in the layer's `notes`.
+    Note(usize),
 }
 
 /// One change, for undo.
@@ -321,6 +323,7 @@ impl WordView {
                 _ => &[],
             },
             StoryId::Story(i) => word(&self.doc).and_then(|w| w.headers.get(i)).map(|s| s.blocks.as_slice()).unwrap_or(&[]),
+            StoryId::Note(i) => word(&self.doc).and_then(|w| w.notes.get(i)).map(|n| n.blocks.as_slice()).unwrap_or(&[]),
         }
     }
 
@@ -336,6 +339,7 @@ impl WordView {
                 _ => panic!("a Word view holds a flow"),
             },
             StoryId::Story(i) => &mut crate::word_mut(&mut self.doc).headers[i].blocks,
+            StoryId::Note(i) => &mut crate::word_mut(&mut self.doc).notes[i].blocks,
         }
     }
 
@@ -509,10 +513,12 @@ impl WordView {
         if p.footnotes.is_empty() {
             return;
         }
-        let total: f64 = p.footnotes.iter().map(|s| s.bottom - s.top).sum();
-        // Below the body even when a page's first line and its notes don't fit together.
-        let y = (p.notes_bottom - total).max(p.body_y + p.content_bottom - p.top + NOTE_SEPARATOR);
-        self.paint_notes(host, p, &p.footnotes, y, out);
+        self.paint_notes(host, p, &p.footnotes, footnotes_y(p), out);
+    }
+
+    /// The width a page's notes are laid out to.
+    pub(crate) fn note_width(&self, p: &Page) -> f64 {
+        emu_px(self.sections[p.section].section.text_width()).max(24.0)
     }
 
     /// Draws `notes` one after another from `y` down, under a separator line: a short one, or
@@ -521,7 +527,7 @@ impl WordView {
         if notes.is_empty() {
             return;
         }
-        let width = emu_px(self.sections[p.section].section.text_width()).max(24.0);
+        let width = self.note_width(p);
         let flows: Vec<(NoteSlice, FlowLayout)> = notes.iter().filter_map(|&s| Some((s, self.note_flow(host, s.note, width)?))).collect();
         let line_y = display::r(y - NOTE_SEPARATOR / 2.0);
         let line_w = if notes[0].top > 0.01 { width } else { (width / 3.0).min(192.0) };
@@ -653,6 +659,9 @@ impl WordView {
         if let StoryId::Story(story) = self.story {
             return self.story_overlay(host, story);
         }
+        if let StoryId::Note(note) = self.story {
+            return self.note_overlay(host, note);
+        }
         if let Some(img) = self.selected_image_box(host) {
             out.image = Some(img);
         }
@@ -720,6 +729,52 @@ impl WordView {
     }
 
     /// The caret and selection in the header or footer being edited.
+    /// The note at a point on a page, if one is painted there.
+    pub fn note_at(&self, page: usize, y: f64) -> Option<usize> {
+        let p = self.pages.get(page)?;
+        note_places(p).into_iter().find(|(s, oy)| y >= oy + s.top && y < oy + s.bottom).map(|(s, _)| s.note)
+    }
+
+    /// The caret and selection in the note being edited, on every page showing part of it.
+    fn note_overlay(&mut self, host: &mut dyn Measurer, note: usize) -> Overlay {
+        let mut out = Overlay::default();
+        let places: Vec<(usize, NoteSlice, f64, f64)> = self
+            .pages
+            .iter()
+            .enumerate()
+            .flat_map(|(i, p)| note_places(p).into_iter().filter(|(s, _)| s.note == note).map(move |(s, oy)| (i, s, p.body_x, oy)))
+            .collect();
+        let Some(width) = self.pages.get(places.first().map_or(0, |p| p.0)).map(|p| self.note_width(p)) else { return out };
+        let Some(flow) = self.note_flow(host, note, width) else { return out };
+        let WordView { doc, measure, styles, sel, .. } = self;
+        let blocks: &[Block] = word(doc).and_then(|w| w.notes.get(note)).map(|n| n.blocks.as_slice()).unwrap_or(&[]);
+        let mut ctx = Ctx { host, measure, styles };
+        let (from, to) = sel.ordered();
+        for &(page, slice, ox, oy) in &places {
+            let shown = |y: f64, h: f64| y + h > oy + slice.top + 0.01 && y < oy + slice.bottom - 0.01;
+            if !sel.is_collapsed() {
+                for path in pos::paras_between(blocks, &from.path, &to.path) {
+                    let Some((pb, dx, dy)) = flow.find(&path) else { continue };
+                    let len = pos::para(blocks, &path).map(text::len).unwrap_or(0);
+                    let a = if path == from.path { from.offset } else { 0 };
+                    let b = if path == to.path { to.offset } else { len };
+                    for (x, y, w, h) in display::selection_rects(&mut ctx, pb, ox + dx, oy + dy, a, b, path != to.path) {
+                        if shown(y, h) {
+                            out.rects.push((page, x, y, w, h));
+                        }
+                    }
+                }
+            }
+            if let Some((pb, dx, dy)) = flow.find(&sel.focus.path) {
+                let (x, y, h) = display::caret_rect(&mut ctx, pb, ox + dx, oy + dy, sel.focus.offset, false);
+                if out.caret.is_none() && shown(y, h) {
+                    out.caret = Some((page, x, y, h));
+                }
+            }
+        }
+        out
+    }
+
     fn story_overlay(&mut self, host: &mut dyn Measurer, story: usize) -> Overlay {
         let mut out = Overlay::default();
         let page = self.story_page;
@@ -789,6 +844,12 @@ impl WordView {
                 let WordView { sections, measure, styles, .. } = self;
                 let mut ctx = Ctx { host, measure, styles };
                 hit_flow(&mut ctx, &sections[p.section].flow, fx, fy)
+            }
+            StoryId::Note(note) => {
+                let (slice, oy) = note_places(&p).into_iter().find(|(s, _)| s.note == note)?;
+                let flow = self.note_flow(host, note, self.note_width(&p))?;
+                let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
+                hit_flow(&mut ctx, &flow, x - p.body_x, (y - oy).clamp(slice.top, (slice.bottom - 0.01).max(slice.top)))
             }
             StoryId::Story(story) => {
                 let flow = self.story_flow(host, story, page)?;
@@ -939,6 +1000,7 @@ impl Objects for PageObjects<'_> {
                 Some(s) => &s.blocks,
                 None => return,
             },
+            StoryId::Note(_) => return,
         };
         let Some(p) = pos::para(blocks, para) else { return };
         if let Some(Inline::Raw { xml }) = p.content.get(inline as usize) {
@@ -965,6 +1027,7 @@ impl PageObjects<'_> {
         let part = match self.story {
             StoryId::Body => self.doc.package.as_ref().and_then(|p| p.main_part().ok()),
             StoryId::Story(i) => word(self.doc).and_then(|w| w.headers.get(i)).map(|s| s.part.clone()),
+            StoryId::Note(_) => None,
         };
         if let (Some((data, cx, cy)), Some(part)) = (resolve::inline_diagram(xml), part) {
             out.push(diagram_item(office_slides::view::paint_diagram(self.doc, ctx, &part, data, (cx, cy), w, h), x, y, w, h));
@@ -1216,3 +1279,22 @@ mod timing {
 
 #[cfg(test)]
 mod tests;
+
+/// Where a page's footnotes start: under the body, at the bottom of the text area.
+fn footnotes_y(p: &Page) -> f64 {
+    let total: f64 = p.footnotes.iter().map(|s| s.bottom - s.top).sum();
+    // Below the body even when a page's first line and its notes don't fit together.
+    (p.notes_bottom - total).max(p.body_y + p.content_bottom - p.top + NOTE_SEPARATOR)
+}
+
+/// The notes painted on a page, each with the page y of its flow's top.
+pub(crate) fn note_places(p: &Page) -> Vec<(NoteSlice, f64)> {
+    let mut out = Vec::new();
+    for (notes, mut y) in [(&p.footnotes, footnotes_y(p)), (&p.endnotes, p.endnotes_y)] {
+        for s in notes {
+            out.push((*s, y - s.top));
+            y += s.bottom - s.top;
+        }
+    }
+    out
+}

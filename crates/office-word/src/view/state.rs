@@ -44,6 +44,8 @@ pub struct WordState {
     pub image: Option<ImageState>,
     /// `header` or `footer` while one is being edited.
     pub header_footer: Option<&'static str>,
+    /// The footnote or endnote being edited, by index.
+    pub note: Option<usize>,
     pub link: Option<String>,
 }
 
@@ -114,6 +116,7 @@ impl WordView {
             dirty: self.is_dirty(),
             has_selection: !self.sel.is_collapsed() && self.selected_image().is_none(),
             header_footer: self.editing_header_footer().map(|k| if k == StoryKind::Header { "header" } else { "footer" }),
+            note: self.editing_note(),
             link: self.link(),
             ..Default::default()
         };

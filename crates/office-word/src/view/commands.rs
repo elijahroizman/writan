@@ -152,7 +152,7 @@ impl WordView {
     fn page_body_x(&self, page: usize) -> f64 {
         match self.story {
             StoryId::Body => self.pages.get(page).map(|p| p.body_x).unwrap_or(0.0),
-            StoryId::Story(_) => self.pages.get(page).map(|p| p.body_x).unwrap_or(0.0),
+            StoryId::Story(_) | StoryId::Note(_) => self.pages.get(page).map(|p| p.body_x).unwrap_or(0.0),
         }
     }
 
@@ -167,6 +167,20 @@ impl WordView {
                 (page, p.body_y - p.top)
             }
             StoryId::Story(_) => (self.story_page, 0.0),
+            StoryId::Note(note) => {
+                let places =
+                    self.pages.iter().enumerate().flat_map(|(i, p)| {
+                        super::note_places(p).into_iter().filter(|(s, _)| s.note == note).map(move |(s, oy)| (i, s, oy))
+                    });
+                let mut best = (self.story_page, 0.0);
+                for (i, s, oy) in places {
+                    best = (i, oy);
+                    if y < s.bottom - 0.01 {
+                        break;
+                    }
+                }
+                best
+            }
         }
     }
 
@@ -197,6 +211,11 @@ impl WordView {
             }
             StoryId::Story(i) => {
                 let flow = self.story_flow(host, i, self.story_page)?;
+                flow.find(path).map(|(p, x, y)| (p.clone(), x, y))
+            }
+            StoryId::Note(i) => {
+                let width = self.pages.get(self.story_page).map(|p| self.note_width(p))?;
+                let flow = self.note_flow(host, i, width)?;
                 flow.find(path).map(|(p, x, y)| (p.clone(), x, y))
             }
         }
@@ -1623,7 +1642,30 @@ impl WordView {
     pub fn editing_header_footer(&self) -> Option<StoryKind> {
         match self.story {
             StoryId::Story(i) => word(&self.doc).and_then(|w| w.headers.get(i)).map(|s| s.kind),
-            StoryId::Body => None,
+            StoryId::Body | StoryId::Note(_) => None,
+        }
+    }
+
+    /// Starts editing the footnote or endnote at a point on a page, with the caret there.
+    pub fn edit_note(&mut self, host: &mut dyn Measurer, page: usize, x: f64, y: f64) -> bool {
+        self.layout(host);
+        let Some(note) = self.note_at(page, y) else { return false };
+        self.story = StoryId::Note(note);
+        self.story_page = page;
+        let at = self.hit(host, page, x, y).or_else(|| pos::story_start(self.blocks(self.story))).unwrap_or(Pos::start());
+        self.sel = Selection::caret(at);
+        self.caret_near = None;
+        self.pending = None;
+        self.history.seal();
+        self.stale = true;
+        true
+    }
+
+    /// The footnote or endnote being edited, by its index in the layer's notes.
+    pub fn editing_note(&self) -> Option<usize> {
+        match self.story {
+            StoryId::Note(i) => Some(i),
+            _ => None,
         }
     }
 

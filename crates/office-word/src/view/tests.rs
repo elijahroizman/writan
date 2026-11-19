@@ -1220,3 +1220,33 @@ fn notes_queued_behind_a_long_one_show_once_when_their_line_moves() {
     let all: Vec<u32> = note_words(&mut v, &mut host).iter().flat_map(|p| p.0.clone()).collect();
     assert_eq!(all, (1..=4059).collect::<Vec<_>>());
 }
+
+#[test]
+fn footnote_text_can_be_edited_undone_and_saved() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&footnoted_doc(&footnote_para("Foo", "1"), &[("1", "bar")])).unwrap();
+    v.layout(&mut host);
+    let p = v.pages[0].clone();
+    let (s, oy) = super::note_places(&p)[0];
+    let y = oy + (s.top + s.bottom) / 2.0;
+    assert_eq!(v.note_at(0, y), Some(0));
+    assert_eq!(v.note_at(0, p.body_y + 1.0), None);
+    assert!(v.edit_note(&mut host, 0, p.width - 1.0, y));
+    assert_eq!(v.state().note, Some(0));
+    assert!(v.overlay(&mut host).caret.is_some_and(|c| c.0 == 0 && c.2 > oy));
+    v.insert_text(" baz");
+    let shown = |v: &mut WordView, host: &mut FixedMeasurer| {
+        v.layout(host);
+        page_texts(&v.paint(host, 0).items).iter().map(|(t, _)| t.clone()).collect::<String>()
+    };
+    assert!(shown(&mut v, &mut host).contains("baz"));
+    v.undo();
+    assert!(!shown(&mut v, &mut host).contains("baz"));
+    v.redo();
+    v.exit_header_footer();
+    assert_eq!(v.state().note, None);
+    let bytes = v.save().unwrap();
+    let mut back = WordView::open(&bytes).unwrap();
+    let text = shown(&mut back, &mut host);
+    assert!(text.contains("Foo") && text.contains("bar baz"), "{text}");
+}
