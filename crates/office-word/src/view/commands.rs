@@ -1138,6 +1138,10 @@ impl WordView {
 
     /// Replaces each `(path, start, end)` with `by`, last first so earlier offsets hold.
     pub fn replace(&mut self, matches: &[(Path, u32, u32)], by: &str) {
+        // Matches are found in the body.
+        if self.story != StoryId::Body {
+            self.exit_header_footer();
+        }
         self.begin_group();
         for (path, a, b) in matches.iter().rev() {
             let sel = Selection { anchor: Pos::new(path.clone(), *a), focus: Pos::new(path.clone(), *b) };
