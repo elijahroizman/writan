@@ -182,7 +182,8 @@ fn free_part(doc: &Document, also: &[String]) -> String {
 #[serde(rename_all = "camelCase")]
 pub struct Resolved {
     pub xfrm: Option<Xfrm>,
-    /// Each paragraph's formatting and its runs' (in [`Paragraph::content`] order, runs only).
+    /// Each paragraph's formatting and its runs' (in [`Paragraph::content`] order, runs only). An
+    /// empty paragraph has one: its mark's, which is how its caret and bullet look.
     pub paragraphs: Vec<(ParaProps, Vec<RunProps>)>,
 }
 
@@ -232,21 +233,22 @@ pub fn resolve(doc: &Document, slide: &Slide, frame: &Frame) -> Resolved {
             if let Some(default) = p.origin.get().and_then(|o| o.path(ns::A, &["pPr", "defRPr"])) {
                 run.overlay(&office_core::formats::dml::read_run_props(default));
             }
-            let runs = p
-                .runs()
-                .map(|r| {
-                    let mut props = run.clone();
-                    props.overlay(&r.props);
-                    if let Some(theme) = theme {
-                        for f in [&mut props.font, &mut props.font_east_asian, &mut props.font_complex] {
-                            if let Some(name) = f.as_deref().and_then(|t| theme.font(t)) {
-                                *f = Some(name.to_string());
-                            }
+            let resolve_run = |own: &RunProps| {
+                let mut props = run.clone();
+                props.overlay(own);
+                if let Some(theme) = theme {
+                    for f in [&mut props.font, &mut props.font_east_asian, &mut props.font_complex] {
+                        if let Some(name) = f.as_deref().and_then(|t| theme.font(t)) {
+                            *f = Some(name.to_string());
                         }
                     }
-                    props
-                })
-                .collect();
+                }
+                props
+            };
+            let mut runs: Vec<RunProps> = p.runs().map(|r| resolve_run(&r.props)).collect();
+            if p.content.is_empty() {
+                runs.push(resolve_run(&p.mark.clone().unwrap_or_default()));
+            }
             (para, runs)
         })
         .collect();

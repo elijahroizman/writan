@@ -4,7 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use office_core::drawing::{Color, Fill, Line, Rgb, Xfrm};
-use office_core::formats::{common::names_parts, pptx, xlsx::chart::CHART_TYPE};
+use office_core::formats::{common::names_parts, dml::PPR, pptx, xlsx::chart::CHART_TYPE};
 use office_core::model::{Block, Cell, Frame, FrameContent, Image, Origin, Paragraph, Row, RunProps, Slide, Strike, Table, TextBody};
 use office_core::units::{Angle, Emu, FontSize};
 use office_core::xml::{ns, Element};
@@ -379,8 +379,9 @@ impl SlidesView {
 
     fn drawer_boxes(&mut self, host: &mut dyn Measurer, index: usize) -> Vec<(u32, Boxed)> {
         let Some(slide) = self.slides().get(index).cloned() else { return Vec::new() };
+        let caret = self.caret_para(index);
         let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
-        let d = Drawer { doc: &self.doc, art: &self.art, tables: &self.tables, ctx: &mut ctx, cache: &mut self.cache };
+        let d = Drawer { doc: &self.doc, art: &self.art, tables: &self.tables, ctx: &mut ctx, cache: &mut self.cache, caret };
         slide.frames.iter().filter(|f| !f.hidden).map(|f| (f.id, d.boxed(&slide, f, Map::IDENTITY))).collect()
     }
 
@@ -1362,8 +1363,9 @@ impl SlidesView {
     fn edit_flow(&mut self, host: &mut dyn Measurer, id: u32) -> Option<(FlowLayout, f64, f64, Boxed)> {
         let slide = self.slides().get(self.sel.active)?.clone();
         let f = slide.frames.iter().find(|f| f.id == id)?.clone();
+        let caret = self.caret_para(self.sel.active);
         let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
-        let mut d = Drawer { doc: &self.doc, art: &self.art, tables: &self.tables, ctx: &mut ctx, cache: &mut self.cache };
+        let mut d = Drawer { doc: &self.doc, art: &self.art, tables: &self.tables, ctx: &mut ctx, cache: &mut self.cache, caret };
         let b = d.boxed(&slide, &f, Map::IDENTITY);
         match &f.content {
             FrameContent::Shape { text: Some(body), .. } => {
@@ -1514,9 +1516,22 @@ impl SlidesView {
         // In a table cell, Enter is a new paragraph in the cell, like anywhere else.
         self.history.seal();
         self.edit_text(None, |blocks, sel| {
+            let sel = &typed_bullets(blocks, sel);
             let mut e = delete_text(blocks, sel);
             let at = e.selection.clone().map(|s| s.focus).unwrap_or_else(|| sel.focus.clone());
+            // A slide paragraph's bullet is in its own `a:pPr`, which the model keeps in the
+            // origin; the new paragraph takes it so the list carries on.
+            let origin = pos::para(blocks, &at.path).and_then(|p| p.origin.get()).map(|o| {
+                let mut o = o.clone();
+                o.remove_children(ns::A, "endParaRPr");
+                Origin::new(o)
+            });
             let s = edit::split_para(blocks, &at, None);
+            if let (Some(origin), Some(next)) = (origin, &s.selection) {
+                if let Some(p) = pos::para_mut(blocks, &next.focus.path) {
+                    p.origin = origin;
+                }
+            }
             e.splices.extend(s.splices);
             e.selection = s.selection;
             e
@@ -2032,8 +2047,48 @@ fn with_frame_blocks(f: &mut Frame, edit: impl FnOnce(&mut Vec<Block>)) {
     }
 }
 
+/// A bullet typed as text at the start of a paragraph, as earlier starter slides made them.
+const TYPED_BULLET: &str = "• ";
+
+/// Whether a paragraph has its own bullet or number (not one it inherits).
+fn has_own_bullet(p: &Paragraph) -> bool {
+    p.origin
+        .get()
+        .and_then(|o| o.child(ns::A, "pPr"))
+        .is_some_and(|pr| ["buChar", "buAutoNum", "buBlip"].iter().any(|k| pr.child(ns::A, k).is_some()))
+}
+
+/// When Enter is pressed in a paragraph whose bullet is typed text, that frame's typed bullets
+/// become real ones, so the list carries on and wraps like a list. Returns the selection moved
+/// with the text.
+fn typed_bullets(blocks: &mut [Block], sel: &Selection) -> Selection {
+    let typed = |p: &Paragraph| !has_own_bullet(p) && text::flat(p).text.starts_with(TYPED_BULLET);
+    let top = |path: &Path| path.container().is_empty();
+    // The paragraph Enter splits is the one where the selection starts.
+    let at = sel.start();
+    if !top(&at.path) || !pos::para(blocks, &at.path).is_some_and(typed) {
+        return sel.clone();
+    }
+    let n = TYPED_BULLET.len() as u32;
+    let mut sel = sel.clone();
+    for (i, b) in blocks.iter_mut().enumerate() {
+        let Block::Paragraph(p) = b else { continue };
+        if !typed(p) {
+            continue;
+        }
+        text::delete(p, 0, n);
+        set_bullet(p, Some(false));
+        for at in [&mut sel.anchor, &mut sel.focus] {
+            if top(&at.path) && at.path.block() == i as u32 {
+                at.offset = at.offset.saturating_sub(n);
+            }
+        }
+    }
+    sel
+}
+
 /// Sets a paragraph's bullet: a character, a number, or none.
-fn set_bullet(p: &mut Paragraph, numbered: Option<bool>) {
+pub(super) fn set_bullet(p: &mut Paragraph, numbered: Option<bool>) {
     let mut origin = p.origin.get().cloned().unwrap_or_else(|| Element::new(ns::A, "p"));
     let has_ppr = origin.child(ns::A, "pPr").is_some();
     if !has_ppr {
@@ -2048,17 +2103,17 @@ fn set_bullet(p: &mut Paragraph, numbered: Option<bool>) {
             ppr.set_attr("", "marL", "342900");
             ppr.set_attr("", "indent", "-342900");
             if n {
-                ppr.push(Element::new(ns::A, "buFont").with_attr("", "typeface", "+mj-lt"));
-                ppr.push(Element::new(ns::A, "buAutoNum").with_attr("", "type", "arabicPeriod"));
+                ppr.place(Element::new(ns::A, "buFont").with_attr("", "typeface", "+mj-lt"), PPR);
+                ppr.place(Element::new(ns::A, "buAutoNum").with_attr("", "type", "arabicPeriod"), PPR);
             } else {
-                ppr.push(Element::new(ns::A, "buFont").with_attr("", "typeface", "Arial"));
-                ppr.push(Element::new(ns::A, "buChar").with_attr("", "char", "•"));
+                ppr.place(Element::new(ns::A, "buFont").with_attr("", "typeface", "Arial"), PPR);
+                ppr.place(Element::new(ns::A, "buChar").with_attr("", "char", "•"), PPR);
             }
             p.props.indent_start = Some(Emu(342_900));
             p.props.indent_first_line = Some(Emu(-342_900));
         }
         None => {
-            ppr.push(Element::new(ns::A, "buNone"));
+            ppr.place(Element::new(ns::A, "buNone"), PPR);
             p.props.indent_start = Some(Emu(0));
             p.props.indent_first_line = Some(Emu(0));
         }

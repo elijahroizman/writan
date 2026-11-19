@@ -6,6 +6,7 @@ use office_core::model::{Align, Frame, FrameContent, LineSpacing, Origin, Paragr
 use office_core::units::{Emu, FontSize};
 use office_core::xml::{ns, Element};
 
+use super::commands::set_bullet;
 use super::{Sel, SlidesView};
 
 const MARGIN: f64 = 457_200.0;
@@ -121,7 +122,7 @@ impl SlidesView {
                 b.text(
                     (MARGIN, 1_720_000.0, CONTENT, 4_400_000.0),
                     "Content",
-                    "• First key point\n• Second key point\n• Third key point",
+                    "First key point\nSecond key point\nThird key point",
                     18.0,
                     "tx1",
                     false,
@@ -130,6 +131,7 @@ impl SlidesView {
                 );
                 if let FrameContent::Shape { text: Some(body), .. } = &mut b.frames.last_mut().unwrap().content {
                     for p in &mut body.paragraphs {
+                        set_bullet(p, Some(false));
                         p.props.line_spacing = Some(LineSpacing::Multiple(office_core::units::Percent(160_000)));
                     }
                 }

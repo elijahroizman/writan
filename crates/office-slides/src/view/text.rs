@@ -295,6 +295,7 @@ pub fn layout_body(
     resolved: &[(ParaProps, Vec<RunProps>)],
     text_color: Option<&Color>,
     width: f64,
+    caret: Option<usize>,
 ) -> FlowLayout {
     let mut blocks = Vec::with_capacity(paragraphs.len());
     let mut counters = [0u32; 9];
@@ -306,7 +307,22 @@ pub fn layout_body(
         let own = p.origin.get().and_then(|o| o.child(ns::A, "pPr"));
         let levels = cascade.levels(level, own);
         let bullet = bullet_of(&levels);
-        let spec = para_spec(ctx, paint, body, p, pp, runs, &levels, &bullet, &mut counters, &mut prev_level, level, text_color, i == 0);
+        let spec = para_spec(
+            ctx,
+            paint,
+            body,
+            p,
+            pp,
+            runs,
+            &levels,
+            &bullet,
+            &mut counters,
+            &mut prev_level,
+            level,
+            text_color,
+            i == 0,
+            caret == Some(i),
+        );
         let spec = Arc::new(spec);
         let layout = cache.layout(ctx, &spec, if body.wrap { width.max(1.0) } else { 100_000.0 });
         blocks.push(BlockBox::Para(ParaBox { path: Path::top(i as u32), spec, layout, keep: Keep::default(), y: 0.0 }));
@@ -323,7 +339,7 @@ pub fn cell_spec(ctx: &mut Ctx, paint: &Paint, p: &Paragraph, runs: &[RunProps],
     let own = p.origin.get().and_then(|o| o.child(ns::A, "pPr"));
     let levels: Vec<&Element> = own.into_iter().collect();
     let bullet = bullet_of(&levels);
-    para_spec(ctx, paint, &body, p, &pp, runs, &levels, &bullet, &mut [0; 9], &mut None, 0, text_color, true)
+    para_spec(ctx, paint, &body, p, &pp, runs, &levels, &bullet, &mut [0; 9], &mut None, 0, text_color, true, false)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -341,6 +357,7 @@ fn para_spec(
     level: usize,
     text_color: Option<&Color>,
     first: bool,
+    caret: bool,
 ) -> ParaSpec {
     let scale = body.font_scale;
     let style_of = |ctx: &mut Ctx, props: &RunProps, link: bool| -> StyleId {
@@ -411,8 +428,8 @@ fn para_spec(
         }
     }
 
-    // Bullets and numbers: an empty paragraph shows none, as in PowerPoint.
-    let has_text = !flat.text.trim().is_empty();
+    // Bullets and numbers: an empty paragraph shows none, as in PowerPoint, unless the caret is in it.
+    let has_text = !flat.text.trim().is_empty() || caret;
     if prev_level.is_none_or(|l| l < level) {
         for c in counters.iter_mut().skip(level) {
             *c = 0;
