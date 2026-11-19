@@ -555,6 +555,55 @@ fn duplicating_an_imported_slide_keeps_its_notes() {
 }
 
 #[test]
+fn duplicated_notes_stay_with_their_copies() {
+    // A copy without notes comes before one with them, and must not take its name.
+    let mut v = SlidesView::open(&imported_deck()).unwrap();
+    v.move_slide(1, 0);
+    v.duplicate_slides(&[0, 1]);
+    let notes = |v: &SlidesView| v.slide_infos().into_iter().map(|s| s.notes).collect::<Vec<_>>();
+    assert_eq!(notes(&v), vec!["", "Remember the demo", "", "Remember the demo"]);
+    let back = SlidesView::open(&v.save().unwrap()).unwrap();
+    assert_eq!(notes(&back), notes(&v));
+}
+
+#[test]
+fn a_new_slide_does_not_take_a_deleted_copys_notes() {
+    let mut v = SlidesView::open(&imported_deck()).unwrap();
+    v.duplicate_slides(&[0]);
+    v.delete_slides(&[1]);
+    v.add_slide(1, None);
+    assert_eq!(v.slide_infos()[2].notes, "");
+    let back = SlidesView::open(&v.save().unwrap()).unwrap();
+    assert_eq!(back.slide_infos()[2].notes, "");
+    v.undo();
+    v.undo();
+    assert_eq!(v.slide_infos()[1].notes, "Remember the demo");
+}
+
+#[test]
+fn a_duplicated_link_in_notes_points_at_its_url() {
+    let mut pkg = office_core::opc::Package::read(&imported_deck()).unwrap();
+    let notes_of = |pkg: &office_core::opc::Package, slide: &str| pkg.related(slide, "notesSlide").unwrap()[0].1.clone();
+    let notes = notes_of(&pkg, "ppt/slides/slide1.xml");
+    let rid = pkg.relate_external(&notes, "hyperlink", "https://example.com/demo").unwrap();
+    let xml = String::from_utf8(pkg.part(&notes).unwrap().to_vec()).unwrap();
+    let link = format!(r#"<a:r><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/></a:rPr><a:t> link</a:t></a:r>"#);
+    assert!(xml.contains("Remember the demo</a:t></a:r>"), "{xml}");
+    pkg.replace(&notes, xml.replace("Remember the demo</a:t></a:r>", &format!("Remember the demo</a:t></a:r>{link}")).into_bytes())
+        .unwrap();
+
+    let mut v = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
+    v.duplicate_slides(&[0]);
+    let saved = office_core::opc::Package::read(&v.save().unwrap()).unwrap();
+    let copy = SlidesView::open(&saved.to_bytes().unwrap()).unwrap().slides()[1].part.clone().unwrap();
+    let notes = notes_of(&saved, &copy);
+    let xml = String::from_utf8(saved.part(&notes).unwrap().to_vec()).unwrap();
+    let rid = xml.split("hlinkClick r:id=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or_else(|| panic!("{xml}"));
+    let rels = saved.rels(&notes).unwrap();
+    assert_eq!(rels.get(rid).map(|r| r.target.as_str()), Some("https://example.com/demo"));
+}
+
+#[test]
 fn pasting_an_imported_shape_keeps_its_outline_and_text_anchor() {
     let bytes = imported_deck();
     let mut source = SlidesView::open(&bytes).unwrap();

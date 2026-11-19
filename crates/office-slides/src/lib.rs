@@ -13,10 +13,10 @@ pub mod templates;
 pub mod view;
 
 use office_core::drawing::{Color, Rgba, Theme, Xfrm};
-use office_core::formats::common::PartCtx;
+use office_core::formats::common::{PartCtx, PartRels};
 use office_core::formats::dml::{read_paragraph, write_paragraph};
 use office_core::model::{
-    Body, Document, Frame, FrameContent, Kind, Origin, ParaProps, Paragraph, Placeholder as Ph, RunProps, Slide, TextBody,
+    Body, Document, Frame, FrameContent, Inline, Kind, Origin, ParaProps, Paragraph, Placeholder as Ph, RunProps, Slide, TextBody,
 };
 use office_core::opc::{rels::kind, Package};
 use office_core::xml::{ns, Element, Node, XmlDoc};
@@ -162,10 +162,12 @@ pub fn add_slide(doc: &mut Document, layout: &str) -> Option<usize> {
     Some(slides.len() - 1)
 }
 
-/// A slide part name no slide (read or added) has.
-/// A slide part name no slide, part in the package or name in `also` has.
+/// A slide part name no slide, part in the package, speaker notes or name in `also` has. Notes
+/// of a deleted slide stay for undo, so its name isn't reused.
 fn free_part(doc: &Document, also: &[String]) -> String {
-    let taken: Vec<&str> = slides(doc).iter().filter_map(|s| s.part.as_deref()).chain(also.iter().map(String::as_str)).collect();
+    let notes = ppt(doc).into_iter().flat_map(|p| p.notes.iter().map(|(s, _)| s.as_str()));
+    let taken: Vec<&str> =
+        slides(doc).iter().filter_map(|s| s.part.as_deref()).chain(also.iter().map(String::as_str)).chain(notes).collect();
     let in_pkg = |p: &str| doc.package.as_ref().is_some_and(|pkg| pkg.has(p));
     (1..).map(|n| format!("ppt/slides/slide{n}.xml")).find(|p| !taken.contains(&p.as_str()) && !in_pkg(p)).unwrap()
 }
@@ -286,7 +288,10 @@ fn read_notes(pkg: &Package, slide_part: &str) -> Result<Option<Vec<Paragraph>>>
         return Ok(None);
     }
     let xml = pkg.xml(&part)?;
-    Ok(Some(notes_body(&xml.root).map(|b| b.children_named(ns::A, "p").map(|p| read_paragraph(p, None)).collect()).unwrap_or_default()))
+    let rels = PartRels::new(pkg, &part)?;
+    Ok(Some(
+        notes_body(&xml.root).map(|b| b.children_named(ns::A, "p").map(|p| read_paragraph(p, Some(&rels))).collect()).unwrap_or_default(),
+    ))
 }
 
 /// The notes placeholder's text body in a notes slide.
@@ -335,7 +340,8 @@ pub fn copy_notes(doc: &mut Document, indexes: &[usize]) -> Vec<Option<String>> 
     indexes
         .iter()
         .map(|&i| {
-            let paragraphs = notes(doc, i);
+            let mut paragraphs = notes(doc, i);
+            paragraphs.iter_mut().for_each(drop_part_refs);
             if paragraphs.is_empty() {
                 return None;
             }
@@ -345,6 +351,23 @@ pub fn copy_notes(doc: &mut Document, indexes: &[usize]) -> Vec<Option<String>> 
             Some(part)
         })
         .collect()
+}
+
+/// Drops markup in copied notes that names parts by relationship id, which a copy's own notes
+/// part doesn't have. URL links are the model's and are related again when written.
+fn drop_part_refs(p: &mut Paragraph) {
+    let names = |o: &Origin| o.get().is_some_and(office_core::formats::common::names_parts);
+    if names(&p.origin) {
+        p.origin = Origin::default();
+    }
+    p.content.retain(|i| !matches!(i, Inline::Raw { xml } if office_core::formats::common::names_parts(xml)));
+    for i in &mut p.content {
+        match i {
+            Inline::Text(r) if r.link.is_none() && names(&r.origin) => r.origin = Origin::default(),
+            Inline::Break { origin, .. } if names(origin) => *origin = Origin::default(),
+            _ => {}
+        }
+    }
 }
 
 fn pml(local: &str) -> Element {
