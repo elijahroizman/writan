@@ -10,7 +10,7 @@ import { clearTextSelection } from './layers'
 import { PageRenderer } from './PageRenderer'
 
 export interface ViewerHandle {
-  /** Scroll to a page; `y` is points from the page's top. */
+  /** Scroll to a page and make it the current page; `y` is points from the page's top. */
   goTo(index: number, y?: number): void
   /** Scroll just enough to show `box` (points) on page `index`. */
   reveal(index: number, box: Box): void
@@ -71,7 +71,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
   const topAnchor = useRef<Anchor | null>(null)
   const listeners = useRef(new Set<() => void>())
   const currentRef = useRef(0)
-  /** A page the user just edited stays current until they scroll or click. */
+  /** A page the user just edited or went to stays current until they scroll or click. */
   const held = useRef(false)
   /** A position from an earlier viewer to go back to, once there is a layout to put it in. */
   const restore = useRef(positionKey ? positions.get(positionKey) : undefined)
@@ -88,6 +88,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
     const overscan = el.clientHeight
     const [first, last] = pagesIn(l, Math.max(0, top - overscan), bottom + overscan)
     setRange((r) => (r[0] === first && r[1] === last ? r : [first, last]))
+    if (currentRef.current >= l.tops.length) held.current = false
     const now = held.current ? currentRef.current : mostVisible(l, top, bottom)
     if (now !== currentRef.current) {
       currentRef.current = now
@@ -267,19 +268,32 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
     }
   }, [zoomTo])
 
+  /** Make a page current and hold it there until the user scrolls or clicks in the viewer. */
+  const select = (index: number) => {
+    held.current = true
+    if (currentRef.current === index) return
+    currentRef.current = index
+    setCurrent(index)
+    onPageChange(index)
+  }
+
   useImperativeHandle(
     ref,
     () => ({
       goTo(index, y) {
         const el = scrollRef.current
         const l = layoutRef.current
-        if (!el || index < 0 || index >= l.tops.length) return
+        if (!el || !Number.isInteger(index) || index < 0 || index >= l.tops.length) return
+        // The scroll alone may not change the current page: it may not move at all (the page is
+        // already at the top), may stop short (near the end), or a held page would win.
+        select(index)
         el.scrollTop = l.tops[index] + (y !== undefined ? y * l.unit - 8 : -8)
       },
       reveal(index, box) {
         const el = scrollRef.current
         const l = layoutRef.current
         if (!el || index >= l.tops.length) return
+        select(index)
         const top = l.tops[index] + box.y * l.unit
         const bottom = top + box.h * l.unit
         if (top < el.scrollTop + 40 || bottom > el.scrollTop + el.clientHeight - 100) el.scrollTop = top - el.clientHeight / 3

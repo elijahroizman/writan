@@ -1168,7 +1168,8 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
             onKeyDown={(e) => {
               if (e.key === 'Enter') {
                 const n = Number(e.currentTarget.value)
-                if (n >= 1 && n <= numPages) viewer.current?.goTo(n - 1)
+                if (Number.isInteger(n) && n >= 1 && n <= numPages) viewer.current?.goTo(n - 1)
+                else e.currentTarget.value = String(page + 1)
                 e.currentTarget.blur()
               }
             }}
