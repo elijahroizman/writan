@@ -5,7 +5,7 @@
 mod read;
 mod write;
 
-pub use read::{read, read_part_frames};
+pub use read::{diagram_frames, read, read_part_frames};
 pub use write::write;
 
 use crate::xml::ns;

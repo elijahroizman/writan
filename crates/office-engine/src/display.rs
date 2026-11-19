@@ -118,10 +118,13 @@ pub fn r(v: f64) -> f64 {
 pub trait Objects {
     /// Draws the object at inline `inline` of the paragraph at `para` into `out`, in the box
     /// `rect` (x, y, width, height).
-    fn object(&mut self, para: &crate::pos::Path, inline: u32, rect: Rect, out: &mut Vec<Item>);
+    fn object(&mut self, ctx: &mut Ctx, para: &crate::pos::Path, inline: u32, rect: Rect, out: &mut Vec<Item>);
 
     /// Draws an image in preserved markup, without an editable object id.
     fn preview_image(&mut self, _image: &Image, _rect: Rect, _out: &mut Vec<Item>) {}
+
+    /// Draws an object kept as raw markup (a SmartArt diagram) in preserved markup.
+    fn preview_raw(&mut self, _ctx: &mut Ctx, _xml: &office_core::xml::Element, _rect: Rect, _out: &mut Vec<Item>) {}
 }
 
 /// A link's address for the text at an offset of a paragraph, if it's linked.
@@ -138,7 +141,7 @@ pub struct Sink<'a> {
 pub struct NoObjects;
 
 impl Objects for NoObjects {
-    fn object(&mut self, _: &crate::pos::Path, _: u32, _: Rect, _: &mut Vec<Item>) {}
+    fn object(&mut self, _: &mut Ctx, _: &crate::pos::Path, _: u32, _: Rect, _: &mut Vec<Item>) {}
 }
 
 struct PreviewObjects<'a> {
@@ -147,9 +150,12 @@ struct PreviewObjects<'a> {
 }
 
 impl Objects for PreviewObjects<'_> {
-    fn object(&mut self, para: &crate::pos::Path, inline: u32, rect: Rect, out: &mut Vec<Item>) {
-        let Some(Inline::Image(img)) = crate::pos::para(self.blocks, para).and_then(|p| p.content.get(inline as usize)) else { return };
-        self.objects.preview_image(img, rect, out);
+    fn object(&mut self, ctx: &mut Ctx, para: &crate::pos::Path, inline: u32, rect: Rect, out: &mut Vec<Item>) {
+        match crate::pos::para(self.blocks, para).and_then(|p| p.content.get(inline as usize)) {
+            Some(Inline::Image(img)) => self.objects.preview_image(img, rect, out),
+            Some(Inline::Raw { xml }) => self.objects.preview_raw(ctx, xml, rect, out),
+            _ => {}
+        }
     }
 }
 
@@ -241,7 +247,7 @@ pub fn paint_line(ctx: &mut Ctx, p: &ParaBox, line: &crate::para::Line, x: f64, 
                 });
             }
             FragKind::Object { inline, height } => {
-                objects.object(&p.path, *inline, (r(x + f.x), r(baseline - height), r(f.width), r(*height)), out)
+                objects.object(ctx, &p.path, *inline, (r(x + f.x), r(baseline - height), r(f.width), r(*height)), out)
             }
             FragKind::Tab(s) => {
                 // Underlined or highlighted tabs show their line or color.

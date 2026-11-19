@@ -50,6 +50,16 @@ pub fn read_part_frames(pkg: &Package, part: &str, doc: &mut Document) -> Result
     Ok(tree.map(|t| t.elements().filter(|e| !is_tree_props(e)).map(|e| read_frame(e, &rels, doc)).collect()).unwrap_or_default())
 }
 
+/// The shapes of the SmartArt diagram in `graphic_data` (in `part`) as frames, positioned from
+/// the diagram's top left. See [`crate::formats::diagram::shapes`].
+pub fn diagram_frames(pkg: &Package, part: &str, graphic_data: &Element, size: (Emu, Emu)) -> Vec<Frame> {
+    let shapes = crate::formats::diagram::shapes(pkg, part, graphic_data, size);
+    let Ok(rels) = PartRels::new(pkg, part) else { return Vec::new() };
+    // Diagram shapes have no pictures of their own to register; their media stay unread.
+    let mut scratch = Document::new(Kind::Slides);
+    shapes.iter().map(|e| read_frame(e, &rels, &mut scratch)).collect()
+}
+
 fn read_slide(pkg: &Package, part: &str, doc: &mut Document) -> Result<Slide> {
     let xml = pkg.xml(part)?;
     let rels = PartRels::new(pkg, part)?;

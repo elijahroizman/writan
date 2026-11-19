@@ -25,7 +25,7 @@ use serde::Serialize;
 
 use crate::Decks;
 pub use commands::{RangeBoxes, TextOverlay, TextPatch};
-pub use draw::Boxed;
+pub use draw::{paint_diagram, Boxed};
 pub use elements::{Element, SlideInfo};
 
 /// Text being edited in a frame: which frame (and table cell), and the selection in its text.

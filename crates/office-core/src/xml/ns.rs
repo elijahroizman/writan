@@ -14,6 +14,10 @@ pub const XDR: &str = "http://schemas.openxmlformats.org/drawingml/2006/spreadsh
 pub const C: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 /// Office Math (OMML), Word's equations.
 pub const M: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+/// SmartArt's data, layout, colors and style parts.
+pub const DGM: &str = "http://schemas.openxmlformats.org/drawingml/2006/diagram";
+/// The drawing Office caches for a SmartArt diagram.
+pub const DSP: &str = "http://schemas.microsoft.com/office/drawing/2008/diagram";
 pub const MC: &str = "http://schemas.openxmlformats.org/markup-compatibility/2006";
 pub const CT: &str = "http://schemas.openxmlformats.org/package/2006/content-types";
 pub const PKG_REL: &str = "http://schemas.openxmlformats.org/package/2006/relationships";
@@ -66,6 +70,7 @@ pub fn canonical(uri: &str) -> &str {
         "drawingml/spreadsheetDrawing" => XDR,
         "drawingml/chart" => C,
         "officeDocument/math" => M,
+        "drawingml/diagram" => DGM,
         "officeDocument/extendedProperties" => EP,
         "officeDocument/docPropsVTypes" => VT,
         _ => uri,

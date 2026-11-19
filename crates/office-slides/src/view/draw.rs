@@ -252,7 +252,7 @@ impl Drawer<'_, '_, '_> {
                 if let Some(chart) = part.and_then(|p| super::chart::draw(self.ctx, self.doc, slide, p, xml, b)) {
                     items.push(chart);
                 } else {
-                    self.raw(part, xml, &b, &mut items);
+                    self.raw(slide, part, xml, &b, &mut items);
                 }
             }
         }
@@ -423,9 +423,18 @@ impl Drawer<'_, '_, '_> {
         display::paint_flow(self.ctx, &flow, 0.0, 0.0, (f64::MIN, f64::MAX), &mut Sink { objects: &mut NoObjects, links: &links, out });
     }
 
-    /// Objects the model keeps whole (charts, diagrams, embedded objects): their fallback
-    /// picture if they have one, else a quiet box where they are.
-    fn raw(&self, part: Option<&str>, xml: &Element, b: &Boxed, out: &mut Vec<Item>) {
+    /// Objects the model keeps whole (charts, diagrams, embedded objects): a SmartArt diagram's
+    /// shapes, else their fallback picture if they have one, else a quiet box where they are.
+    fn raw(&mut self, slide: &Slide, part: Option<&str>, xml: &Element, b: &Boxed, out: &mut Vec<Item>) {
+        let diagram = xml.path(ns::A, &["graphic", "graphicData"]).filter(|d| office_core::formats::diagram::is_diagram(d));
+        if let (Some(data), Some(pkg), Some(part)) = (diagram, self.doc.package.as_ref(), part) {
+            let size = xml.child(ns::P, "xfrm").map(Xfrm::parse).map(|x| (x.width, x.height)).unwrap_or_default();
+            let frames = office_core::formats::pptx::diagram_frames(pkg, part, data, size);
+            if !frames.is_empty() {
+                self.diagram(slide, Some(part), &frames, size, b, out);
+                return;
+            }
+        }
         let blip = xml.descendant(ns::A, "blip").and_then(|bl| bl.attr_ns(ns::R, "embed"));
         if let (Some(rid), Some(pkg), Some(part)) = (blip, self.doc.package.as_ref(), part) {
             if let Some(media) = pkg.rels(part).ok().and_then(|rels| rels.get(rid).and_then(|rel| pkg.target(part, rel))) {
@@ -445,6 +454,51 @@ impl Drawer<'_, '_, '_> {
             });
         }
     }
+}
+
+impl Drawer<'_, '_, '_> {
+    /// A diagram's frames, laid out in its `size` (EMUs), drawn inside the box `b`, in the box's
+    /// own coordinates.
+    fn diagram(
+        &mut self,
+        slide: &Slide,
+        part: Option<&str>,
+        frames: &[Frame],
+        size: (office_core::units::Emu, office_core::units::Emu),
+        b: &Boxed,
+        out: &mut Vec<Item>,
+    ) {
+        let scale = |box_px: f64, emu: office_core::units::Emu| if emu.0 > 0 { box_px / emu_px(emu) } else { 1.0 };
+        let map = Map { dx: 0.0, dy: 0.0, sx: scale(b.w, size.0), sy: scale(b.h, size.1) };
+        for f in frames {
+            self.frame(slide, part, f, map, None, out);
+        }
+    }
+}
+
+/// Draws the SmartArt diagram in `graphic_data`, which sits in `part` of `doc`'s package and is
+/// `size` (EMUs) big, into a `w` by `h` pixel box at the origin. For documents other than
+/// presentations: a Word drawing is laid out like a slide's shapes.
+pub fn paint_diagram(
+    doc: &Document,
+    ctx: &mut Ctx,
+    part: &str,
+    graphic_data: &Element,
+    size: (office_core::units::Emu, office_core::units::Emu),
+    w: f64,
+    h: f64,
+) -> Vec<Item> {
+    let Some(pkg) = doc.package.as_ref() else { return Vec::new() };
+    let frames = office_core::formats::pptx::diagram_frames(pkg, part, graphic_data, size);
+    let mut out = Vec::new();
+    if frames.is_empty() {
+        return out;
+    }
+    let (art, tables, mut cache) = (ArtSet { parts: Default::default() }, TableStyles::default(), flow::Cache::new());
+    let slide = Slide::default();
+    let mut d = Drawer { doc, art: &art, tables: &tables, ctx, cache: &mut cache };
+    d.diagram(&slide, Some(part), &frames, size, &Boxed { w, h, ..Default::default() }, &mut out);
+    out
 }
 
 /// Moves a drawn item (and, for a group, nothing inside it: children are relative).
