@@ -382,10 +382,11 @@ pub fn calculate_uncached(doc: &mut Document, now: Option<f64>) -> usize {
     calculate(doc, now, uncached).formulas
 }
 
-/// Whether a formula cell has no stored result. An empty text result is stored as `t="str"`
-/// with an empty `v`, and is a result.
+/// Whether a formula cell has no stored result. An empty `v` under `t="str"` may be a real
+/// empty text result, but writers that do not evaluate formulas (report generators such as
+/// ClosedXML or POI) write it for a result never worked out, so it is worked out too.
 fn uncached(cell: &SheetCell) -> bool {
-    cell.value.is_empty() && !cell.origin.get().is_some_and(|c| c.attr("t") == Some("str") && c.child(ns::X, "v").is_some())
+    cell.value.is_empty()
 }
 
 fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Recalculation {

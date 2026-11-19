@@ -68,7 +68,8 @@ fn setting_the_clock_preserves_imported_formula_caches() {
 #[test]
 fn setting_the_clock_calculates_formulas_without_cached_results() {
     // As openpyxl writes them: formulas with no result, or an empty `v`. B1's cached result
-    // is kept even though it is wrong; C1's empty text result is a result.
+    // is kept even though it is wrong; C1's `v` under `t="str"` is empty, so it is worked
+    // out like the rest — and shows the error its unsupported formula comes to.
     let bytes = SheetsView::blank(Kind::Sheets).save().unwrap();
     let mut package = Package::read(&bytes).unwrap();
     let source = format!(
@@ -86,19 +87,50 @@ fn setting_the_clock_calculates_formulas_without_cached_results() {
     assert_eq!(view.cell_info(0, CellRef::new(1, 2)).display, "12", "uses B1's cached result");
     assert_eq!(view.sheets()[0].value(CellRef::new(1, 3)), &Value::Number(46000.5));
     assert_eq!(view.sheets()[0].value(CellRef::new(0, 1)), &Value::Number(7.0));
-    assert_eq!(view.sheets()[0].value(CellRef::new(0, 2)), &Value::Empty);
+    assert_eq!(view.sheets()[0].value(CellRef::new(0, 2)), &Value::Error("#NAME?".into()));
 
     // Saved, the results are stored, so they show on the next open before the clock is set.
     let saved = view.save().unwrap();
     let xml = sheet_xml(&saved, "xl/worksheets/sheet1.xml");
-    assert!(xml.contains(r#"<c r="C1" t="str"><f>"x"&amp;NOPE()</f><v/></c>"#), "{xml}");
+    assert!(xml.contains(r#"<c r="C1" t="e"><f>"x"&amp;NOPE()</f><v>#NAME?</v></c>"#), "{xml}");
     let mut back = SheetsView::open(&saved, "openpyxl.xlsx").unwrap();
     assert_eq!(back.cell_info(0, CellRef::new(1, 1)).input, "=SUM(A1:A2)");
     assert_eq!(back.cell_info(0, CellRef::new(1, 1)).display, "5");
     assert_eq!(back.cell_info(0, CellRef::new(1, 2)).display, "12");
     assert_eq!(back.sheets()[0].value(CellRef::new(0, 1)), &Value::Number(7.0));
     back.set_now(46000.5);
-    assert_eq!(back.sheets()[0].value(CellRef::new(0, 2)), &Value::Empty, "the empty text result is kept");
+    assert_eq!(back.sheets()[0].value(CellRef::new(0, 2)), &Value::Error("#NAME?".into()));
+}
+
+#[test]
+fn a_string_formula_saved_without_its_result_shows_on_open() {
+    // Report generators write a string formula as `t="str"` with an empty `v` when they
+    // never worked it out; it is not a stored empty-text result, so `="Lost"` has to show
+    // its text like Excel does instead of staying blank.
+    let bytes = SheetsView::blank(Kind::Sheets).save().unwrap();
+    let mut package = Package::read(&bytes).unwrap();
+    let source = format!(
+        r#"<worksheet xmlns="{}"><sheetData><row r="1"><c r="A1" t="str"><f>"Lost"</f><v/></c><c r="B1" t="str"><f>"x"&amp;NOPE()</f><v></v></c></row></sheetData></worksheet>"#,
+        ns::X
+    );
+    package.replace("xl/worksheets/sheet1.xml", source.into_bytes()).unwrap();
+    let bytes = package.to_bytes().unwrap();
+    let mut view = SheetsView::open(&bytes, "report.xlsx").unwrap();
+    view.set_now(46000.5);
+    assert_eq!(view.cell_info(0, CellRef::new(0, 0)).display, "Lost");
+    // A formula the evaluator cannot reproduce gets the same answer every other uncached
+    // formula gets.
+    assert_eq!(view.sheets()[0].value(CellRef::new(0, 1)), &Value::Error("#NAME?".into()));
+
+    // Saved, the worked-out result is cached, so it shows on the next open before the
+    // clock is set.
+    let saved = view.save().unwrap();
+    let xml = sheet_xml(&saved, "xl/worksheets/sheet1.xml");
+    assert!(xml.contains(r#"<c r="A1" t="str"><f>"Lost"</f><v>Lost</v></c>"#), "{xml}");
+    assert!(xml.contains(r#"<c r="B1" t="e"><f>"x"&amp;NOPE()</f><v>#NAME?</v></c>"#), "{xml}");
+    let back = SheetsView::open(&saved, "report.xlsx").unwrap();
+    assert_eq!(back.cell_info(0, CellRef::new(0, 0)).display, "Lost");
+    assert_eq!(back.cell_info(0, CellRef::new(0, 0)).input, "=\"Lost\"");
 }
 
 #[test]
