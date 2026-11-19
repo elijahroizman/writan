@@ -156,15 +156,16 @@ pub fn add_slide(doc: &mut Document, layout: &str) -> Option<usize> {
             origin: Origin::default(),
         })
         .collect();
-    let part = free_part(doc);
+    let part = free_part(doc, &[]);
     let Body::Slides { slides, .. } = &mut doc.body else { return None };
     slides.push(Slide { frames, part: Some(part), layout: Some(layout.to_string()), ..Default::default() });
     Some(slides.len() - 1)
 }
 
 /// A slide part name no slide (read or added) has.
-fn free_part(doc: &Document) -> String {
-    let taken: Vec<&str> = slides(doc).iter().filter_map(|s| s.part.as_deref()).collect();
+/// A slide part name no slide, part in the package or name in `also` has.
+fn free_part(doc: &Document, also: &[String]) -> String {
+    let taken: Vec<&str> = slides(doc).iter().filter_map(|s| s.part.as_deref()).chain(also.iter().map(String::as_str)).collect();
     let in_pkg = |p: &str| doc.package.as_ref().is_some_and(|pkg| pkg.has(p));
     (1..).map(|n| format!("ppt/slides/slide{n}.xml")).find(|p| !taken.contains(&p.as_str()) && !in_pkg(p)).unwrap()
 }
@@ -309,17 +310,41 @@ pub fn set_notes(doc: &mut Document, slide_index: usize, paragraphs: Vec<Paragra
         return;
     }
     if slides(doc)[slide_index].part.is_none() {
-        let part = free_part(doc);
+        let part = free_part(doc, &[]);
         if let Body::Slides { slides, .. } = &mut doc.body {
             slides[slide_index].part = Some(part);
         }
     }
     let part = slides(doc)[slide_index].part.clone().unwrap();
+    put_notes(doc, part, paragraphs);
+}
+
+fn put_notes(doc: &mut Document, part: String, paragraphs: Vec<Paragraph>) {
     let ppt = ppt_mut(doc);
     match ppt.notes.iter_mut().find(|(s, _)| *s == part) {
         Some((_, n)) => *n = paragraphs,
         None => ppt.notes.push((part, paragraphs)),
     }
+}
+
+/// Part names for copies of slides `indexes`, with the speaker notes of each slide that has
+/// them stored under its copy's name. A copy of a slide without notes needs no name, and the
+/// copies' notes are their own however either slide's change.
+pub fn copy_notes(doc: &mut Document, indexes: &[usize]) -> Vec<Option<String>> {
+    let mut named = Vec::new();
+    indexes
+        .iter()
+        .map(|&i| {
+            let paragraphs = notes(doc, i);
+            if paragraphs.is_empty() {
+                return None;
+            }
+            let part = free_part(doc, &named);
+            named.push(part.clone());
+            put_notes(doc, part.clone(), paragraphs);
+            Some(part)
+        })
+        .collect()
 }
 
 fn pml(local: &str) -> Element {
