@@ -85,7 +85,14 @@ pub struct Page {
     pub body_y: f64,
     pub header: Option<usize>,
     pub footer: Option<usize>,
+    /// The footnotes referenced on this page, by index in the layer's `notes`, in order.
+    pub footnotes: Vec<usize>,
+    /// Where the footnotes end: the bottom of the body's area.
+    pub notes_bottom: f64,
 }
+
+/// The space above a page's footnotes, with the separator line across its middle.
+pub(crate) const NOTE_SEPARATOR: f64 = 16.0;
 
 pub struct WordView {
     pub doc: Document,
@@ -383,6 +390,7 @@ impl WordView {
                 labels: &self.labels,
                 label_prefix: &[],
                 fields: None,
+                note: None,
                 specs: &mut self.specs,
             };
             let flow = match old_flows.get_mut(i).and_then(Option::take) {
@@ -454,9 +462,66 @@ impl WordView {
             labels: &labels,
             label_prefix: &[],
             fields: Some(fields),
+            note: None,
             specs: &mut self.specs,
         };
         Some(flow::layout(&mut ctx, &mut self.cache, &mut r, &blocks, &[], width))
+    }
+
+    /// A footnote's or endnote's text laid out at `width`; its own mark shows its number.
+    pub(crate) fn note_flow(&mut self, host: &mut dyn Measurer, note: usize, width: f64) -> Option<FlowLayout> {
+        let n = word(&self.doc)?.notes.get(note)?;
+        let (blocks, id) = (n.blocks.clone(), n.id.clone());
+        let labels = HashMap::new();
+        let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
+        let mut r = WordResolver {
+            doc: &self.doc,
+            extras: &self.extras,
+            story: &blocks,
+            labels: &labels,
+            label_prefix: &[],
+            fields: None,
+            note: Some(&id),
+            specs: &mut self.specs,
+        };
+        Some(flow::layout(&mut ctx, &mut self.cache, &mut r, &blocks, &[], width))
+    }
+
+    /// Draws a page's footnotes at the bottom of its body area, under a short separator line.
+    fn paint_footnotes(&mut self, host: &mut dyn Measurer, p: &Page, out: &mut Vec<Item>) {
+        if p.footnotes.is_empty() {
+            return;
+        }
+        let width = emu_px(self.sections[p.section].section.text_width()).max(24.0);
+        let flows: Vec<(usize, FlowLayout)> = p.footnotes.iter().filter_map(|&n| Some((n, self.note_flow(host, n, width)?))).collect();
+        let total: f64 = flows.iter().map(|(_, f)| f.height).sum();
+        let mut y = p.notes_bottom - total;
+        let line_y = display::r(y - NOTE_SEPARATOR / 2.0);
+        let line_w = (width / 3.0).min(192.0);
+        out.push(Item::Line {
+            x1: display::r(p.body_x),
+            y1: line_y,
+            x2: display::r(p.body_x + line_w),
+            y2: line_y,
+            color: "#000000".into(),
+            w: 0.75,
+            dash: "solid",
+        });
+        let links = |_: &Path, _: u32| None;
+        for (n, flow) in flows {
+            let blocks = word(&self.doc).and_then(|w| w.notes.get(n)).map(|n| n.blocks.clone()).unwrap_or_default();
+            let mut objects = NoteObjects { blocks: &blocks };
+            let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
+            display::paint_flow(
+                &mut ctx,
+                &flow,
+                p.body_x,
+                y,
+                (f64::MIN, f64::MAX),
+                &mut display::Sink { objects: &mut objects, links: &links, out },
+            );
+            y += flow.height;
+        }
     }
 
     /// Where a header or footer's flow sits on its page: its top left.
@@ -525,6 +590,7 @@ impl WordView {
             &mut display::Sink { objects: &mut objects, links: &links, out: &mut items },
         );
         paint_floating(&mut ctx, &self.doc, &p, blocks, &sf.flow, &mut items);
+        self.paint_footnotes(host, &p, &mut items);
         PagePaint { width: display::r(p.width), height: display::r(p.height), items }
     }
 
@@ -881,6 +947,24 @@ impl PageObjects<'_> {
 /// A diagram's drawn shapes, placed at (`x`, `y`).
 fn diagram_item(items: Vec<Item>, x: f64, y: f64, w: f64, h: f64) -> Item {
     Item::Group { x, y, w: display::r(w), h: display::r(h), rot: 0.0, fh: false, fv: false, clip: false, id: None, items }
+}
+
+/// Draws pictures in a footnote's text.
+struct NoteObjects<'a> {
+    blocks: &'a [Block],
+}
+
+impl Objects for NoteObjects<'_> {
+    fn object(&mut self, _: &mut Ctx, para: &Path, inline: u32, rect: display::Rect, out: &mut Vec<Item>) {
+        paint_image(self.blocks, para, inline, rect, out);
+    }
+}
+
+fn paint_image(blocks: &[Block], para: &Path, inline: u32, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
+    let Some(p) = pos::para(blocks, para) else { return };
+    let Some(Inline::Image(img)) = p.content.get(inline as usize) else { return };
+    let id = format!("{}:{}", para.0.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."), inline);
+    out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: Some(id) });
 }
 
 /// A picture's crop (`a:srcRect`), as shares of its size cut from each side.

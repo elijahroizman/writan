@@ -2,15 +2,18 @@
 //! ends early for a page break, to keep a heading with what follows it, or to avoid a
 //! paragraph's first or last line alone on a page (widow and orphan control).
 
-use office_core::model::Document;
+use std::collections::HashMap;
+
+use office_core::model::{Block, Body, Document, Inline};
+use office_core::xml::{ns, Element};
 use office_engine::flow::{BlockBox, FlowLayout, Keep};
 use office_engine::measure::Measurer;
 use office_engine::para::LineEnd;
 
 use super::resolve::emu_px;
-use super::{Page, WordView};
+use super::{Page, WordView, NOTE_SEPARATOR};
 use crate::sections::Section;
-use crate::{word, StoryKind};
+use crate::{word, NoteKind, StoryKind};
 
 /// Something a page can't be cut inside: a line of a paragraph, or a table row.
 #[derive(Clone, Debug)]
@@ -23,15 +26,72 @@ struct Unit {
     keep: Keep,
     /// A page break ends this line.
     break_after: bool,
+    /// The footnotes referenced in it, by index in the layer's `notes`.
+    notes: Vec<usize>,
 }
 
-fn flow_units(flow: &FlowLayout, y: f64, out: &mut Vec<Unit>) {
+/// The footnote ids referenced inside a raw inline.
+fn note_refs(el: &Element, out: &mut Vec<String>) {
+    if el.is(ns::W, "footnoteReference") {
+        if let Some(id) = el.attr_ns(ns::W, "id") {
+            out.push(id.to_string());
+        }
+    }
+    for c in el.elements() {
+        note_refs(c, out);
+    }
+}
+
+/// The footnotes referenced in some blocks, at any depth.
+fn block_notes(blocks: &[Block], ids: &HashMap<&str, usize>, out: &mut Vec<usize>) {
+    for b in blocks {
+        match b {
+            Block::Paragraph(p) => {
+                for inline in &p.content {
+                    if let Inline::Raw { xml } = inline {
+                        let mut refs = Vec::new();
+                        note_refs(xml, &mut refs);
+                        out.extend(refs.iter().filter_map(|r| ids.get(r.as_str())));
+                    }
+                }
+            }
+            Block::Table(t) => {
+                for row in &t.rows {
+                    for cell in &row.cells {
+                        block_notes(&cell.blocks, ids, out);
+                    }
+                }
+            }
+            Block::Raw { .. } => {}
+        }
+    }
+}
+
+fn flow_units(flow: &FlowLayout, y: f64, body: &[Block], ids: &HashMap<&str, usize>, out: &mut Vec<Unit>) {
     for block in &flow.blocks {
         match block {
             BlockBox::Para(p) => {
+                // Each reference's offset in the paragraph, for finding the line it's on.
+                let mut refs: Vec<(u32, usize)> = Vec::new();
+                if !ids.is_empty() {
+                    if let Some(para) = office_engine::pos::para(body, &p.path) {
+                        let mut offset = 0;
+                        for inline in &para.content {
+                            if let Inline::Raw { xml } = inline {
+                                let mut found = Vec::new();
+                                note_refs(xml, &mut found);
+                                refs.extend(found.iter().filter_map(|r| ids.get(r.as_str())).map(|&n| (offset, n)));
+                            }
+                            offset += office_engine::text::inline_len(inline);
+                        }
+                    }
+                }
                 let n = p.layout.lines.len();
                 for (i, l) in p.layout.lines.iter().enumerate() {
+                    let last = i + 1 == n;
+                    let notes = refs.iter().filter(|(o, _)| *o >= l.start && (*o < l.end || last)).map(|(_, n)| *n).collect();
                     out.push(Unit {
+                        notes,
                         top: y + p.y + l.top,
                         bottom: y + p.y + l.top + l.height,
                         line: i,
@@ -39,11 +99,20 @@ fn flow_units(flow: &FlowLayout, y: f64, out: &mut Vec<Unit>) {
                         keep: p.keep,
                         break_after: l.ends == LineEnd::PageBreak,
                     });
+                    refs.retain(|(o, _)| *o >= l.end || last);
                 }
             }
             BlockBox::Table(t) => {
-                for r in &t.rows {
+                let table = office_engine::pos::blocks_at(body, t.path.container()).and_then(|b| b.get(t.path.block() as usize));
+                for (ri, r) in t.rows.iter().enumerate() {
+                    let mut notes = Vec::new();
+                    if let Some(Block::Table(table)) = table {
+                        for cell in table.rows.get(ri).map(|row| row.cells.as_slice()).unwrap_or(&[]) {
+                            block_notes(&cell.blocks, ids, &mut notes);
+                        }
+                    }
                     out.push(Unit {
+                        notes,
                         top: y + t.y + r.y,
                         bottom: y + t.y + r.y + r.height,
                         line: 0,
@@ -53,7 +122,7 @@ fn flow_units(flow: &FlowLayout, y: f64, out: &mut Vec<Unit>) {
                     });
                 }
             }
-            BlockBox::Preview { y: top, flow, .. } => flow_units(flow, y + top, out),
+            BlockBox::Preview { y: top, flow, .. } => flow_units(flow, y + top, body, &HashMap::new(), out),
             BlockBox::Empty { .. } => {}
         }
     }
@@ -122,6 +191,7 @@ fn story_height(view: &mut WordView, host: &mut dyn Measurer, story: Option<usiz
         labels: &labels,
         label_prefix: &[],
         fields: Some(super::resolve::PageFields { page: 1, pages: 1 }),
+        note: None,
         specs: &mut view.specs,
     };
     office_engine::flow::layout(&mut ctx, &mut view.cache, &mut r, &blocks, &[], w).height
@@ -131,6 +201,27 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
     let mut heights: std::collections::HashMap<(Option<usize>, u64), f64> = Default::default();
     let mut story_height = |view: &mut WordView, host: &mut dyn Measurer, story: Option<usize>, w: f64| -> f64 {
         *heights.entry((story, w.to_bits())).or_insert_with(|| story_height(view, host, story, w))
+    };
+    let mut note_heights: HashMap<(usize, u64), f64> = HashMap::new();
+    let mut note_height = |view: &mut WordView, host: &mut dyn Measurer, note: usize, w: f64| -> f64 {
+        *note_heights.entry((note, w.to_bits())).or_insert_with(|| view.note_flow(host, note, w).map_or(0.0, |f| f.height))
+    };
+    let section_units: Vec<Vec<Unit>> = {
+        let ids: HashMap<&str, usize> = word(&view.doc)
+            .map(|w| w.notes.iter().enumerate().filter(|(_, n)| n.kind == NoteKind::Footnote).map(|(i, n)| (n.id.as_str(), i)).collect())
+            .unwrap_or_default();
+        let body: &[Block] = match &view.doc.body {
+            Body::Flow { blocks } => blocks,
+            _ => &[],
+        };
+        view.sections
+            .iter()
+            .map(|s| {
+                let mut units = Vec::new();
+                flow_units(&s.flow, 0.0, body, &ids, &mut units);
+                units
+            })
+            .collect()
     };
     let mut pages: Vec<Page> = Vec::new();
     let mut inherited: [Vec<(String, usize)>; 2] = [Vec::new(), Vec::new()];
@@ -161,8 +252,7 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
             find("default")
         };
         let text_w = emu_px(section.text_width()).max(24.0);
-        let mut units = Vec::new();
-        flow_units(&view.sections[si].flow, 0.0, &mut units);
+        let units = &section_units[si];
         let flow_height = view.sections[si].flow.height;
         let mut page_top = units.first().map(|u| u.top).unwrap_or(0.0);
         let mut first_unit = 0;
@@ -177,7 +267,23 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
         let top_margin = emu_px(section.margin_top).max(if hh > 0.0 { emu_px(section.header) + hh } else { 0.0 });
         let bottom_margin = emu_px(section.margin_bottom).max(if fh > 0.0 { emu_px(section.footer) + fh } else { 0.0 });
         let avail = (h - top_margin - bottom_margin).max(24.0);
-        let mut make_page = |view: &mut WordView, host: &mut dyn Measurer, top: f64, bottom: f64, n: usize, pages: &mut Vec<Page>| {
+        // The footnotes referenced in some units, each once.
+        let notes_in = |units: &[Unit]| -> Vec<usize> {
+            let mut out: Vec<usize> = Vec::new();
+            for &n in units.iter().flat_map(|u| &u.notes) {
+                if !out.contains(&n) {
+                    out.push(n);
+                }
+            }
+            out
+        };
+        let mut make_page = |view: &mut WordView,
+                             host: &mut dyn Measurer,
+                             top: f64,
+                             bottom: f64,
+                             n: usize,
+                             footnotes: Vec<usize>,
+                             pages: &mut Vec<Page>| {
             let number = pages.len() as u32 + 1;
             let header = pick(&stories[0], n == 0, number.is_multiple_of(2));
             let footer = pick(&stories[1], n == 0, number.is_multiple_of(2));
@@ -194,38 +300,53 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
                 body_y,
                 header,
                 footer,
+                footnotes,
+                notes_bottom: h - bottom_margin,
             });
         };
+        // The height taken by the footnotes on the page so far, separator included.
+        let mut notes_h = 0.0;
+        let mut page_notes: Vec<usize> = Vec::new();
         while i < units.len() {
             let u = &units[i];
             let starts_page = i == first_unit;
             if !starts_page && u.line == 0 && u.keep.page_break_before {
-                make_page(view, host, page_top, u.top, index_in_section, &mut pages);
+                make_page(view, host, page_top, u.top, index_in_section, notes_in(&units[first_unit..i]), &mut pages);
                 index_in_section += 1;
                 page_top = u.top;
                 first_unit = i;
+                (notes_h, page_notes) = (0.0, Vec::new());
                 continue;
             }
-            if !starts_page && u.bottom - page_top > avail + 0.01 {
-                let cut = adjust(&units, i, first_unit);
-                make_page(view, host, page_top, units[cut].top, index_in_section, &mut pages);
+            let new_notes: Vec<usize> = notes_in(std::slice::from_ref(u)).into_iter().filter(|n| !page_notes.contains(n)).collect();
+            let mut add: f64 = new_notes.iter().map(|&n| note_height(view, host, n, text_w)).sum();
+            if !new_notes.is_empty() && page_notes.is_empty() {
+                add += NOTE_SEPARATOR;
+            }
+            if !starts_page && u.bottom - page_top + notes_h + add > avail + 0.01 {
+                let cut = adjust(units, i, first_unit);
+                make_page(view, host, page_top, units[cut].top, index_in_section, notes_in(&units[first_unit..cut]), &mut pages);
                 index_in_section += 1;
                 page_top = units[cut].top;
                 first_unit = cut;
                 i = cut;
+                (notes_h, page_notes) = (0.0, Vec::new());
                 continue;
             }
+            notes_h += add;
+            page_notes.extend(new_notes);
             if u.break_after {
                 let next_top = units.get(i + 1).map(|n| n.top).unwrap_or(u.bottom);
-                make_page(view, host, page_top, next_top, index_in_section, &mut pages);
+                make_page(view, host, page_top, next_top, index_in_section, notes_in(&units[first_unit..=i]), &mut pages);
                 index_in_section += 1;
                 page_top = next_top;
                 first_unit = i + 1;
+                (notes_h, page_notes) = (0.0, Vec::new());
             }
             i += 1;
         }
         if index_in_section == 0 || page_top < flow_height - 0.01 || units.last().is_some_and(|u| u.break_after) {
-            make_page(view, host, page_top, flow_height.max(page_top), index_in_section, &mut pages);
+            make_page(view, host, page_top, flow_height.max(page_top), index_in_section, notes_in(&units[first_unit..]), &mut pages);
         }
     }
     if pages.is_empty() {
@@ -241,6 +362,8 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
             body_y: emu_px(s.margin_top),
             header: None,
             footer: None,
+            footnotes: Vec::new(),
+            notes_bottom: emu_px(s.page_height - s.margin_bottom),
         });
     }
     pages
@@ -252,7 +375,7 @@ mod tests {
 
     fn unit(block: usize, line: usize, lines: usize, keep: Keep) -> Unit {
         let top = (block * 10 + line) as f64 * 10.0;
-        Unit { top, bottom: top + 10.0, line, lines, keep, break_after: false }
+        Unit { top, bottom: top + 10.0, line, lines, keep, break_after: false, notes: Vec::new() }
     }
 
     #[test]
