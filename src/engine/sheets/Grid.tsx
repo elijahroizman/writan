@@ -520,6 +520,31 @@ export function Grid({
               } as React.CSSProperties}
             />
           ))}
+          {engine.picturesOf(sheet).map((p, i) => {
+            const src = engine.media.url(p.media)
+            const [l, t, r, b] = p.crop ?? [0, 0, 0, 0]
+            const iw = p.w / Math.max(0.01, 1 - l - r)
+            const ih = p.h / Math.max(0.01, 1 - t - b)
+            return (
+              <div key={`pic${i}`} className="sg-picture" role="img" aria-label={p.name ?? 'Picture'} style={{ left: p.x * z, top: p.y * z, width: p.w * z, height: p.h * z }}>
+                {src && <img src={src} alt="" draggable={false} style={{ left: -l * iw * z, top: -t * ih * z, width: iw * z, height: ih * z }} />}
+              </div>
+            )
+          })}
+          {editing === null && engine.cell?.validation?.prompt && (
+            <div className="sg-prompt" role="tooltip" style={{ left: curX, top: curY + curH + 4 }}>
+              {engine.cell.validation.promptTitle && <strong>{engine.cell.validation.promptTitle}</strong>}
+              <span>{engine.cell.validation.prompt}</span>
+            </div>
+          )}
+          {editing === null && engine.cell?.validation?.list && (
+            <ValidationList
+              items={engine.cell.validation.list}
+              style={{ left: curX + curW + 1, top: curY }}
+              height={curH}
+              onPick={(v) => onCommit(v, 'none')}
+            />
+          )}
           {charts.map((c, i) => {
             const box = chartDrag?.index === i ? chartDrag.box : c
             const on = selectedChart === i
@@ -649,5 +674,34 @@ function CellEditor({
         e.stopPropagation()
       }}
     />
+  )
+}
+
+/** The drop-down arrow beside a cell whose data validation is a list, and the list it opens. */
+function ValidationList({ items, style, height, onPick }: { items: string[]; style: React.CSSProperties; height: number; onPick: (v: string) => void }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="sg-dropdown" style={style} onMouseDown={(e) => e.stopPropagation()}>
+      <button type="button" className="sg-dropdown-button" aria-label="Choose a value" aria-expanded={open} style={{ height }} onClick={() => setOpen(!open)}>
+        ▾
+      </button>
+      {open && (
+        <ul className="sg-dropdown-list" role="listbox">
+          {items.map((v, i) => (
+            <li
+              key={i}
+              role="option"
+              aria-selected={false}
+              onClick={() => {
+                setOpen(false)
+                onPick(v)
+              }}
+            >
+              {v}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   )
 }

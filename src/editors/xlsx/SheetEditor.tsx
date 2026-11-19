@@ -219,10 +219,32 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
     draft.current = null
     setEditing(null)
     pointer.current = null
-    if (!d || text !== d.original) engine.run({ cmd: 'input', sheet: targetSheet, row: r, col: c, text })
     const next: [number, number] = move === 'down' ? [r + 1, c] : move === 'up' ? [Math.max(0, r - 1), c] : move === 'right' ? [r, c + 1] : move === 'left' ? [r, Math.max(0, c - 1)] : [r, c]
-    // Back on the cell's sheet, if a reference took the view to another.
-    engine.run({ cmd: 'select', sheet: targetSheet, anchor: next, focus: next })
+    const put = () => {
+      engine.run({ cmd: 'input', sheet: targetSheet, row: r, col: c, text })
+      // Back on the cell's sheet, if a reference took the view to another.
+      engine.run({ cmd: 'select', sheet: targetSheet, anchor: next, focus: next })
+    }
+    if (d && text === d.original) {
+      engine.run({ cmd: 'select', sheet: targetSheet, anchor: next, focus: next })
+      return
+    }
+    const refusal = engine.validate(targetSheet, r, c, text)
+    if (!refusal) return put()
+    // As Excel does: Stop refuses the value, Warning asks, Information tells and takes it.
+    const message = refusal.message ?? 'This value doesn’t match the data validation rules for this cell.'
+    const title = refusal.title ?? (refusal.style === 'stop' ? 'Value not allowed' : 'Check this value')
+    if (refusal.style === 'stop') {
+      void showDialog({ kind: 'error', title, message, buttons: [{ label: 'OK', value: 'ok', primary: true }], cancelValue: 'ok' })
+    } else if (refusal.style === 'warning') {
+      void showDialog({ kind: 'warning', title, message: `${message}\n\nContinue?`, buttons: [{ label: 'No', value: 'no' }, { label: 'Yes', value: 'yes', primary: true }], cancelValue: 'no' }).then((v) => {
+        if (v === 'yes') put()
+      })
+    } else {
+      void showDialog({ kind: 'info', title, message, buttons: [{ label: 'Cancel', value: 'cancel' }, { label: 'OK', value: 'ok', primary: true }], cancelValue: 'cancel' }).then((v) => {
+        if (v === 'ok') put()
+      })
+    }
   }
 
   useLayoutEffect(() => {

@@ -87,6 +87,26 @@ export interface CellInfo {
   valign: string | null
   wrap: boolean
   merged: boolean
+  /** The cell's data validation: the list it offers and its input message. */
+  validation?: { list: string[] | null; promptTitle: string | null; prompt: string | null }
+}
+
+/** Why a cell's data validation refuses what was typed, and how firmly. */
+export interface Refusal {
+  style: 'stop' | 'warning' | 'information'
+  title: string | null
+  message: string | null
+}
+
+/** A picture on a sheet: its box in grid pixels and the part its image is in. */
+export interface PictureView {
+  x: number
+  y: number
+  w: number
+  h: number
+  media: string
+  crop?: [number, number, number, number]
+  name?: string
 }
 
 export type ChartKind = 'column' | 'bar' | 'line' | 'area' | 'pie' | 'doughnut' | 'scatter' | 'other'
@@ -140,6 +160,7 @@ export class SheetsEngine {
   tick = 0
   private geometry = new Map<number, { revision: number; g: Geometry }>()
   private chartCache = new Map<number, { revision: number; charts: ChartView[] }>()
+  private pictureCache = new Map<number, { revision: number; pictures: PictureView[] }>()
   private listeners = new Set<() => void>()
   private stopFonts: () => void
   private disposed = false
@@ -147,7 +168,10 @@ export class SheetsEngine {
   private constructor(doc: SheetsDoc) {
     this.doc = doc
     this.styles = new StyleSheet(`x${++sheets}s`)
-    this.media = new MediaCache(() => null)
+    this.media = new MediaCache((id) => {
+      const bytes = this.doc.media(id)
+      return bytes ? { bytes, type: this.doc.mediaType(id) ?? '' } : null
+    })
     this.stopFonts = onFontsChanged(() => {
       if (this.disposed) return
       this.styles.remeasure()
@@ -203,6 +227,20 @@ export class SheetsEngine {
     const g = new Geometry(JSON.parse(this.doc.grid(sheet)))
     this.geometry.set(sheet, { revision: this.revision, g })
     return g
+  }
+
+  /** A sheet's pictures, placed once per change. */
+  picturesOf(sheet: number): PictureView[] {
+    const hit = this.pictureCache.get(sheet)
+    if (hit && hit.revision === this.revision) return hit.pictures
+    const pictures = JSON.parse(this.doc.pictures(sheet)) as PictureView[]
+    this.pictureCache.set(sheet, { revision: this.revision, pictures })
+    return pictures
+  }
+
+  /** Why typing `text` into a cell would be refused by its data validation, or null. */
+  validate(sheet: number, row: number, col: number, text: string): Refusal | null {
+    return JSON.parse(this.doc.validate(sheet, row, col, text)) as Refusal | null
   }
 
   /** A sheet's charts, worked out once per change. */
