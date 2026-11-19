@@ -288,9 +288,10 @@ fn read_notes(pkg: &Package, slide_part: &str) -> Result<Option<Vec<Paragraph>>>
         return Ok(None);
     }
     let xml = pkg.xml(&part)?;
-    let rels = PartRels::new(pkg, &part)?;
+    // Notes whose relationships can't be read still open, without their links.
+    let rels = PartRels::new(pkg, &part).ok();
     Ok(Some(
-        notes_body(&xml.root).map(|b| b.children_named(ns::A, "p").map(|p| read_paragraph(p, Some(&rels))).collect()).unwrap_or_default(),
+        notes_body(&xml.root).map(|b| b.children_named(ns::A, "p").map(|p| read_paragraph(p, rels.as_ref())).collect()).unwrap_or_default(),
     ))
 }
 
@@ -354,20 +355,39 @@ pub fn copy_notes(doc: &mut Document, indexes: &[usize]) -> Vec<Option<String>> 
 }
 
 /// Drops markup in copied notes that names parts by relationship id, which a copy's own notes
-/// part doesn't have. URL links are the model's and are related again when written.
+/// part doesn't have, keeping the rest. URL links are the model's and are related again when
+/// written.
 fn drop_part_refs(p: &mut Paragraph) {
-    let names = |o: &Origin| o.get().is_some_and(office_core::formats::common::names_parts);
-    if names(&p.origin) {
-        p.origin = Origin::default();
+    fn strip(o: &mut Origin) {
+        let Some(el) = o.get().filter(|el| office_core::formats::common::names_parts(el)) else { return };
+        let mut el = el.clone();
+        *o = if names_parts_itself(&el) {
+            Origin::default()
+        } else {
+            strip_part_refs(&mut el);
+            Origin::new(el)
+        };
     }
-    p.content.retain(|i| !matches!(i, Inline::Raw { xml } if office_core::formats::common::names_parts(xml)));
+    strip(&mut p.origin);
+    p.content.retain(|i| !matches!(i, Inline::Raw { xml } if names_parts_itself(xml)));
     for i in &mut p.content {
         match i {
-            Inline::Text(r) if r.link.is_none() && names(&r.origin) => r.origin = Origin::default(),
-            Inline::Break { origin, .. } if names(origin) => *origin = Origin::default(),
-            _ => {}
+            Inline::Text(r) => strip(&mut r.origin),
+            Inline::Break { origin, .. } => strip(origin),
+            Inline::Raw { xml } => strip_part_refs(xml),
+            Inline::Image(_) => {}
         }
     }
+}
+
+fn names_parts_itself(el: &Element) -> bool {
+    el.attrs.iter().any(|a| !a.is_ns_decl() && a.ns.as_deref().is_some_and(|n| ns::same(n, ns::R)))
+}
+
+/// Removes the elements under `el` that name parts by relationship id.
+fn strip_part_refs(el: &mut Element) {
+    el.children.retain(|n| !matches!(n, Node::Element(e) if names_parts_itself(e)));
+    el.elements_mut().for_each(strip_part_refs);
 }
 
 fn pml(local: &str) -> Element {

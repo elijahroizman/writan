@@ -587,7 +587,9 @@ fn a_duplicated_link_in_notes_points_at_its_url() {
     let notes = notes_of(&pkg, "ppt/slides/slide1.xml");
     let rid = pkg.relate_external(&notes, "hyperlink", "https://example.com/demo").unwrap();
     let xml = String::from_utf8(pkg.part(&notes).unwrap().to_vec()).unwrap();
-    let link = format!(r#"<a:r><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/></a:rPr><a:t> link</a:t></a:r>"#);
+    let link = format!(
+        r#"<a:r><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/><a:hlinkMouseOver r:id="{rid}"/></a:rPr><a:t> link</a:t></a:r><a:fld id="{{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}}" type="slidenum"><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/></a:rPr><a:t>7</a:t></a:fld>"#
+    );
     assert!(xml.contains("Remember the demo</a:t></a:r>"), "{xml}");
     pkg.replace(&notes, xml.replace("Remember the demo</a:t></a:r>", &format!("Remember the demo</a:t></a:r>{link}")).into_bytes())
         .unwrap();
@@ -601,6 +603,11 @@ fn a_duplicated_link_in_notes_points_at_its_url() {
     let rid = xml.split("hlinkClick r:id=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or_else(|| panic!("{xml}"));
     let rels = saved.rels(&notes).unwrap();
     assert_eq!(rels.get(rid).map(|r| r.target.as_str()), Some("https://example.com/demo"));
+    // Every relationship id the copy's notes use is its own, and the field's text stays.
+    for id in xml.split("r:id=\"").skip(1).map(|r| r.split('"').next().unwrap()) {
+        assert!(rels.get(id).is_some(), "{id} in {xml}");
+    }
+    assert!(xml.contains(">7</a:t></a:fld>"), "{xml}");
 }
 
 #[test]
