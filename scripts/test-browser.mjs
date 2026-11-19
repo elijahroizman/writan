@@ -18,6 +18,7 @@ const scripts = [
   'tests/stress/ui/nasty.mjs',
   'tests/stress/ui/row-header-menu.mjs',
   'tests/stress/ui/security.mjs',
+  'tests/stress/ui/session.mjs',
   'tests/stress/ui/sheet-rename.mjs',
   'tests/stress/ui/slides-clipboard.mjs',
   'tests/stress/native/pdf-page-select.mjs',
@@ -25,7 +26,6 @@ const scripts = [
   'tests/stress/native/save-conflict.mjs',
 ]
 // ui/harness.mjs is shared setup, not a test.
-// ui/session.mjs observes unsaved-edit loss without asserting recovery.
 // native/pdf-unchanged.mjs requires an external signed PDF, not a committed fixture.
 
 const children = new Set()

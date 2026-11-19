@@ -10,17 +10,19 @@ The fake Tauri bridge exercises the real frontend, WASM engines, dialogs, save o
 
 ## High severity
 
-### UI-001. Open: unsaved edits and untitled tabs do not survive renderer reload
+### UI-001. Fixed: unsaved edits and untitled tabs do not survive renderer reload
 
 Sample: `tests/stress/samples/S1-text-utf16le-bom.txt` and an untitled text tab created during the test.
 
 Repro: disable autosave, open the sample, append `UNSAVED FILE MARKER`, create an untitled text tab containing `UNTITLED RECOVERY MARKER`, and reload without calling the normal quit handler. Run `ENGINE=chromium node tests/stress/ui/session.mjs`, then repeat with `ENGINE=webkit`.
 
-Observed in both browsers: the file path reopens with its original disk contents; its unsaved marker is gone. The untitled tab is gone. The persisted session contains only `paths` and `active`. The test verifies that no autosave wrote either marker before reload and prints `OPEN UI-001`; exit 0 means the bounded observation completed, not that crash recovery exists.
+Previously the file path reopened with its original disk contents, its unsaved marker gone, and the untitled tab was gone: `persistSession()` stored only `paths` and `active`.
 
-`persistSession()` in `src/state/workspace.ts` persists paths and the active path. It stores no document bytes, dirty buffer, encoding choice, or untitled document. Reopened text obtains its encoding from the file bytes and still decodes UTF-16 correctly. The textcodec changes preserve saved encoding and line endings; they provide no crash recovery. A recovery journal would need a separate design and is intentionally not implemented here.
+`src/lib/recovery.ts` now keeps a copy of every unsaved tab's document in IndexedDB (`writan-recovery`), a second after typing stops and at least every 10 seconds while it continues. It stores the bytes, kind, title, path, tab position, and the digest of the file as the tab last read or wrote it. On launch, `restoreSession()` reopens the saved paths and then puts each kept document back: into the reopened tab for its path, or into a new tab at its old position (untitled, or a file that has since been deleted, which then saves as new). A recovered tab stays unsaved until it is saved, even after undoing back to what was recovered. Saving compares the file against the kept digest, so a file changed on disk since the edits started asks before it is overwritten. Saving, reverting, or closing a tab with **Don't Save** drops its copy, and so does a quit after every unsaved tab is saved or discarded; a cancelled quit or failed update restart keeps recovery going. Documents of a disabled plugin stay stored until it is enabled again.
 
-The normal quit path is different. `datasafety.mjs` verifies that closing a changed tab or requesting window close prompts, Cancel keeps the work, and a failed save from the prompt keeps the tab. A renderer reload is a bounded crash-equivalent observation, not a simulated kernel crash or real native kill.
+The test asserts both documents come back unsaved with their text, UTF-16 decoding, tab order and active tab, that nothing is written to disk before a save, that undo keeps a recovered tab unsaved, the changed-on-disk prompt, and that save, **Don't Save** and quit each drop the kept copy. A renderer reload is a bounded crash-equivalent observation, not a simulated kernel crash or real native kill.
+
+The normal quit path is unchanged. `datasafety.mjs` verifies that closing a changed tab or requesting window close prompts, Cancel keeps the work, and a failed save from the prompt keeps the tab.
 
 ### UI-002. Fixed: opening and saving non-UTF-8 text corrupts existing content
 
@@ -138,12 +140,12 @@ Final per-suite logs are `/tmp/writan-ui-final-<suite>-<engine>.log` on bbb. Bui
 Final assertion counts per engine:
 
 - Data safety: 97 pass, 0 fail.
-- Session observation: 8 pass, plus the explicit open UI-001 observation.
+- Session recovery: all pass on Chromium.
 - Hidden sheets: 8 pass, 0 fail.
 - Malformed files: 113 pass, 1 known failure for UI-010.
 - Document links/content: 18 pass, 0 fail, with the PDF interaction gap described above.
 - CSS font names: 10 pass, 1 known failure for UI-006.
 
-Typecheck covers both src and plugins. The build includes the bundled Images plugin. The data-safety, session-observation, hidden-sheet, and document-link suites pass on both engines. The malformed-file suite has the known zero-page-PDF failure. The CSS-font suite retains the known core-borrow failure. These failures must remain visible in the combined report rather than being described as a clean stress run.
+Typecheck covers both src and plugins. The build includes the bundled Images plugin. The data-safety, session-recovery, hidden-sheet, and document-link suites pass on both engines. The malformed-file suite has the known zero-page-PDF failure. The CSS-font suite retains the known core-borrow failure. These failures must remain visible in the combined report rather than being described as a clean stress run.
 
 Known coverage limits: no exhaustive large-file or low-memory soak, IME/composition tests, real native kill/restart, actual macOS WKWebView, filesystem aliases, other processes writing in the final save window, or full Office/CSV/PDF import/export fidelity. Password-protected Office documents remain unsupported and now explain that limitation. The PDF password fixtures test the prompt, not unlock/edit/save. Broader corpus fidelity and native filesystem/PDF changes are owned by the other delegates.

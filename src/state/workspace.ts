@@ -27,6 +27,11 @@ export interface DocTab {
   /** Bumped to make the editor reload `bytes` (revert, external reload). */
   loadId: number
   dirty: boolean
+  /**
+   * `bytes` came from crash recovery, not from disk: it stays unsaved until it's saved, even when
+   * the editor is back to what it loaded (undo).
+   */
+  recovered?: boolean
 }
 
 export interface RecentFile {
@@ -120,6 +125,38 @@ export const autosaveHooks = {
   edited: (_tabId: string) => {},
   /** Save a tab now if autosave covers it. Resolves true once its changes are on disk. */
   flush: async (_tabId: string) => false,
+}
+
+/** An unsaved document crash recovery kept (see lib/recovery.ts). */
+export interface RecoveredDoc {
+  /** The tab it was in. */
+  id: string
+  kind: DocKind
+  title: string
+  path: string | null
+  bytes: Uint8Array
+  /** Digest of the file as that tab last read or wrote it, to tell whether it changed since. */
+  base: string | null
+  /** Where the tab was in the tab bar. */
+  index: number
+  savedAt: number
+}
+
+/** Crash recovery plugs in here (see lib/recovery.ts); until it does, nothing is kept. */
+export const recoveryHooks = {
+  /** A tab's document just changed. */
+  edited: (_tabId: string) => {},
+  /** Unsaved documents the last run left behind. */
+  load: async (): Promise<RecoveredDoc[]> => [],
+  /** Those documents are open again: [their old tab id, the tab now showing them]. */
+  adopt: (_pairs: [string, string][]) => {},
+}
+
+/** Digest of the file as a tab last read or wrote it; null if it has none. */
+export async function diskDigest(tabId: string): Promise<string | null> {
+  const known = disk.get(tabId)
+  if (!known) return null
+  return 'digest' in known ? known.digest : digest(known.bytes)
 }
 
 type Theme = 'dark' | 'light'
@@ -458,10 +495,12 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     markDirty: (id, dirty) => {
       const tab = get().tabs.find((t) => t.id === id)
       if (!tab) return
+      if (tab.recovered && !dirty) return
       if (tab.dirty !== dirty) set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, dirty } : t)) })
       if (dirty) {
         edits.set(id, (edits.get(id) ?? 0) + 1)
         autosaveHooks.edited(id)
+        recoveryHooks.edited(id)
       }
     },
 
@@ -511,7 +550,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
             const title = stripExtension(platform.basename(savePath))
             const dirty = (edits.get(tab.id) ?? 0) !== editsBefore || editor.getRevision?.() !== revisionBefore || getEditor(tab.id) !== editor
             if (!dirty) editor.markSaved?.()
-            set({ tabs: get().tabs.map((t) => (t.id === tab.id ? { ...t, path: savePath, title, dirty } : t)) })
+            set({ tabs: get().tabs.map((t) => (t.id === tab.id ? { ...t, path: savePath, title, dirty, recovered: dirty && t.recovered } : t)) })
             addRecent(savePath, tab.kind)
             return true
           })
@@ -540,7 +579,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         await platform.showError(String(err))
         return false
       }
-      set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1, dirty: false } : t)) })
+      set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1, dirty: false, recovered: false } : t)) })
       return true
     },
 
@@ -558,7 +597,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         const bytes = await platform.readFile(tab.path)
         await remember(tab.id, bytes, false)
         set({
-          tabs: get().tabs.map((t) => (t.id === tab.id ? { ...t, bytes, loadId: t.loadId + 1, dirty: false } : t)),
+          tabs: get().tabs.map((t) => (t.id === tab.id ? { ...t, bytes, loadId: t.loadId + 1, dirty: false, recovered: false } : t)),
         })
       } catch (err) {
         await platform.showError(String(err))
@@ -714,8 +753,16 @@ function persistPanels() {
   localStorage.setItem(STORAGE.panels, JSON.stringify({ left: leftOpen, right: rightOpen }))
 }
 
+interface Session {
+  paths: string[]
+  /** The active tab's file. */
+  active: string | null
+  /** The active tab's id, which finds it among recovered untitled documents. */
+  activeTab?: string
+}
+
 // Read once at startup, before anything can overwrite it.
-const initialSession = load<{ paths: string[]; active: string | null }>(STORAGE.session, { paths: [], active: null })
+const initialSession = load<Session>(STORAGE.session, { paths: [], active: null })
 let sessionRestored = false
 
 /**
@@ -739,19 +786,23 @@ export function persistSession() {
   const { tabs, activeId } = useWorkspace.getState()
   const paths = tabs.filter((t) => t.path && !t.path.startsWith('browser:')).map((t) => t.path as string)
   const active = tabs.find((t) => t.id === activeId)?.path ?? null
-  localStorage.setItem(STORAGE.session, JSON.stringify({ paths, active }))
+  localStorage.setItem(STORAGE.session, JSON.stringify({ paths, active, activeTab: activeId } satisfies Session))
 }
 
 export async function restoreSession() {
   try {
     await reopen(initialSession)
   } finally {
-    sessionRestored = true
-    persistSession()
+    try {
+      await recover(initialSession)
+    } finally {
+      sessionRestored = true
+      persistSession()
+    }
   }
 }
 
-async function reopen(session: { paths: string[]; active: string | null }) {
+async function reopen(session: Session) {
   if (!session.paths.length) return
   const existing = []
   for (const path of session.paths) {
@@ -766,4 +817,40 @@ async function reopen(session: { paths: string[]; active: string | null }) {
   const state = useWorkspace.getState()
   const active = state.tabs.find((t) => t.path === session.active)
   useWorkspace.setState({ activeId: active?.id ?? HOME_TAB_ID })
+}
+
+/**
+ * Put back what the last run hadn't saved when it crashed or was reloaded: into the tab that
+ * reopened its file, or a new unsaved tab where it was in the tab bar (also when its file is gone,
+ * so it can be saved somewhere else).
+ */
+async function recover(session: Session) {
+  const docs = await recoveryHooks.load()
+  if (!docs.length) return
+  const tabs = [...useWorkspace.getState().tabs]
+  let activeId = useWorkspace.getState().activeId
+  const pairs: [string, string][] = []
+  for (const doc of docs) {
+    // Its plugin is off or gone: leave it stored for when it's back.
+    if (!isKnownKind(doc.kind) || !kindEnabled(doc.kind)) continue
+    const taken = new Set(pairs.map(([, id]) => id))
+    const open = doc.path ? tabs.find((t) => t.path === doc.path && t.kind === doc.kind && !taken.has(t.id)) : undefined
+    let tab: DocTab
+    if (open) {
+      tab = { ...open, bytes: doc.bytes, loadId: open.loadId + 1, dirty: true, recovered: true }
+      tabs[tabs.indexOf(open)] = tab
+    } else {
+      const onDisk = !!doc.path && !doc.path.startsWith('browser:') && kindFromPath(doc.path) === doc.kind && (await platform.pathExists(doc.path).catch(() => false))
+      tab = { id: newId(), kind: doc.kind, title: doc.title, path: onDisk ? doc.path : null, bytes: doc.bytes, loadId: 0, dirty: true, recovered: true }
+      tabs.splice(Math.max(0, Math.min(doc.index, tabs.length)), 0, tab)
+    }
+    // A save then checks the file against what these changes started from, not what it is now.
+    if (tab.path && doc.base) disk.set(tab.id, { digest: doc.base })
+    else if (!tab.path) disk.delete(tab.id)
+    pairs.push([doc.id, tab.id])
+    if (session.activeTab === doc.id) activeId = tab.id
+  }
+  if (!pairs.length) return
+  useWorkspace.setState({ tabs, activeId })
+  recoveryHooks.adopt(pairs)
 }
