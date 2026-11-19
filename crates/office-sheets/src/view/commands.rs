@@ -480,6 +480,7 @@ impl SheetsView {
             let name = s.name.clone();
             prepare_shift(s, &name, Axis::Row, at, n);
             super::charts::shift_charts(s, true, at, n, |f| adjust_formula(f, &name, Axis::Row, at, n));
+            shift_rules(s, &name, Axis::Row, at, n);
             super::charts::shift_other_chart_refs(v.sheets_mut(), sheet, |f| adjust_formula(f, &name, Axis::Row, at, n));
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
             if n < 0 {
@@ -517,6 +518,7 @@ impl SheetsView {
             let name = s.name.clone();
             prepare_shift(s, &name, Axis::Col, at, n);
             super::charts::shift_charts(s, false, at, n, |f| adjust_formula(f, &name, Axis::Col, at, n));
+            shift_rules(s, &name, Axis::Col, at, n);
             super::charts::shift_other_chart_refs(v.sheets_mut(), sheet, |f| adjust_formula(f, &name, Axis::Col, at, n));
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
             for r in &mut s.rows {
@@ -1009,6 +1011,47 @@ fn clear_attr(o: &office_core::model::Origin, k: &str) -> office_core::model::Or
             office_core::model::Origin::new(el)
         }
         None => Default::default(),
+    }
+}
+
+/// Moves the ranges of a sheet's conditional formatting and data validation, and the references
+/// in their formulas, for rows or columns inserted at `at` (`n > 0`) or deleted (`n < 0`). A rule
+/// whose ranges are all deleted goes with them.
+fn shift_rules(s: &mut Sheet, name: &str, axis: Axis, at: u32, n: i64) {
+    use office_core::xml::{Element, Node};
+    let Some(root) = s.origin.get() else { return };
+    let mut root = root.clone();
+    let adjust = |f: &str| adjust_formula(f, name, axis, at, n);
+    let sqref = |v: &str| v.split_whitespace().map(adjust).filter(|p| !p.contains("#REF!")).collect::<Vec<_>>().join(" ");
+    fn set_text(el: &mut Element, text: String) {
+        el.children = vec![Node::Text(text)];
+    }
+    fn walk(el: &mut Element, sqref: &dyn Fn(&str) -> String, adjust: &dyn Fn(&str) -> String) {
+        if let Some(v) = el.attr("sqref").map(str::to_string) {
+            el.set_attr("", "sqref", sqref(&v));
+        }
+        match el.local.as_str() {
+            "sqref" => set_text(el, sqref(&el.text())),
+            "formula" | "formula1" | "formula2" | "f" => set_text(el, adjust(&el.text())),
+            _ => el.elements_mut().for_each(|c| walk(c, sqref, adjust)),
+        }
+        // A rule left with no cells is dropped.
+        el.children.retain(|c| match c {
+            Node::Element(e) => {
+                let gone = |v: &str| v.trim().is_empty();
+                !(e.attr("sqref").is_some_and(gone) || e.elements().any(|c| c.local == "sqref" && gone(&c.text())))
+            }
+            _ => true,
+        });
+    }
+    let mut changed = false;
+    for el in root.elements_mut().filter(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "extLst")) {
+        walk(el, &sqref, &adjust);
+        changed = true;
+    }
+    root.children.retain(|c| !matches!(c, Node::Element(e) if e.local == "conditionalFormatting" && e.attr("sqref").is_some_and(|v| v.trim().is_empty())));
+    if changed {
+        s.origin = office_core::model::Origin::new(root);
     }
 }
 
