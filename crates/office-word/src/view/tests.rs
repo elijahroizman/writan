@@ -1191,3 +1191,15 @@ fn a_long_footnote_on_the_last_line_continues_on_the_very_next_page() {
     let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
     assert_eq!(all, (1..=1500).collect::<Vec<_>>());
 }
+
+#[test]
+fn notes_referenced_while_a_long_one_continues_wait_their_turn() {
+    let mut host = FixedMeasurer::default();
+    let long: String = (1..=4000).map(|i| format!("t{i} ")).collect();
+    let body = format!("{}{}", footnote_para("Foo", "1"), footnote_para("Bar", "2"));
+    let mut v = WordView::open(&footnoted_doc(&body, &[("1", &long), ("2", "t4001")])).unwrap();
+    v.layout(&mut host);
+    let pages = note_words(&mut v, &mut host);
+    let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
+    assert_eq!(all, (1..=4001).collect::<Vec<_>>());
+}
