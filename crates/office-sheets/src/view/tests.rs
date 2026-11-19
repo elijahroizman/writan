@@ -89,11 +89,16 @@ fn setting_the_clock_calculates_formulas_without_cached_results() {
     assert_eq!(view.sheets()[0].value(CellRef::new(0, 2)), &Value::Empty);
 
     // Saved, the results are stored, so they show on the next open before the clock is set.
-    let back = SheetsView::open(&view.save().unwrap(), "openpyxl.xlsx").unwrap();
+    let saved = view.save().unwrap();
+    let xml = sheet_xml(&saved, "xl/worksheets/sheet1.xml");
+    assert!(xml.contains(r#"<c r="C1" t="str"><f>"x"&amp;NOPE()</f><v/></c>"#), "{xml}");
+    let mut back = SheetsView::open(&saved, "openpyxl.xlsx").unwrap();
     assert_eq!(back.cell_info(0, CellRef::new(1, 1)).input, "=SUM(A1:A2)");
     assert_eq!(back.cell_info(0, CellRef::new(1, 1)).display, "5");
     assert_eq!(back.cell_info(0, CellRef::new(1, 2)).display, "12");
     assert_eq!(back.sheets()[0].value(CellRef::new(0, 1)), &Value::Number(7.0));
+    back.set_now(46000.5);
+    assert_eq!(back.sheets()[0].value(CellRef::new(0, 2)), &Value::Empty, "the empty text result is kept");
 }
 
 #[test]
