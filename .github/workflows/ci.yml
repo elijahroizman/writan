@@ -106,7 +106,7 @@ jobs:
         with:
           packages: libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui
           # Bump only when the package list changes.
-          version: ubuntu-24.04-libreoffice-1
+          version: ubuntu-24.04-libreoffice-2
       - name: Restore LibreOffice registry
         if: steps.libreoffice.outputs.cache-hit == 'true'
         # These files are normally created by the packages' postinst scripts.
