@@ -140,7 +140,7 @@ impl Drawer<'_, '_, '_> {
         }
         out.extend(art_items);
         for f in &slide.frames {
-            self.frame(slide, slide.part.as_deref(), f, Map::IDENTITY, Some(f.id), out);
+            self.frame(slide, slide.relationship_part(), f, Map::IDENTITY, Some(f.id), out);
         }
     }
 

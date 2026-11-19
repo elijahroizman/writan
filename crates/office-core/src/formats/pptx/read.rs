@@ -69,6 +69,7 @@ fn read_slide(pkg: &Package, part: &str, doc: &mut Document) -> Result<Slide> {
         name: c_sld.and_then(|c| c.attr("name")).filter(|n| !n.is_empty()).map(str::to_string),
         hidden: root.attr("show").and_then(parse_bool) == Some(false),
         part: Some(part.to_string()),
+        relationship_source: None,
         layout: pkg.related(part, crate::opc::rels::kind::SLIDE_LAYOUT)?.into_iter().next().map(|(_, l)| l),
         origin: crate::model::Origin::new(origin),
     })

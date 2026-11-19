@@ -172,6 +172,27 @@ fn imported_doughnut_paints_cached_slices_and_preserves_chart_parts() {
 }
 
 #[test]
+fn duplicated_chart_slides_keep_their_relationships() {
+    let groups = format!("<c:doughnutChart>{CHART_SERIES}</c:doughnutChart>");
+    for with_notes in [false, true] {
+        let mut view = SlidesView::open(&chart_deck(&groups, false)).unwrap();
+        if with_notes {
+            crate::set_notes(&mut view.doc, 0, vec![Paragraph::text("Chart notes")]);
+        }
+        let mut host = FixedMeasurer::default();
+        let original = view.paint(&mut host, 0);
+        view.duplicate_slides(&[0]);
+        assert_eq!(chart_items(&view.paint(&mut host, 1)), chart_items(&original));
+        let mut reopened = SlidesView::open(&view.save().unwrap()).unwrap();
+        assert_eq!(chart_items(&reopened.paint(&mut host, 1)), chart_items(&original));
+        view.delete_slides(&[0]);
+        let mut reopened = SlidesView::open(&view.save().unwrap()).unwrap();
+        assert_eq!(chart_items(&reopened.paint(&mut host, 0)), chart_items(&original));
+        assert_eq!(reopened.slide_infos()[0].notes, if with_notes { "Chart notes" } else { "" });
+    }
+}
+
+#[test]
 fn imported_columns_show_cached_values_and_categories() {
     let groups = format!(r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{CHART_SERIES}</c:barChart>"#);
     let mut view = SlidesView::open(&chart_deck(&groups, false)).unwrap();

@@ -272,7 +272,15 @@ impl SlidesView {
         // when it takes its original's speaker notes.
         let parts = crate::copy_notes(&mut self.doc, &idx);
         self.change_deck(|slides| {
-            let copies: Vec<Slide> = idx.iter().zip(parts).map(|(&i, part)| Slide { part, ..slides[i].clone() }).collect();
+            let copies: Vec<Slide> = idx
+                .iter()
+                .zip(parts)
+                .map(|(&i, part)| Slide {
+                    part,
+                    relationship_source: slides[i].relationship_part().map(str::to_owned),
+                    ..slides[i].clone()
+                })
+                .collect();
             let at = (last + 1).min(slides.len());
             for (k, s) in copies.into_iter().enumerate() {
                 slides.insert(at + k, s);

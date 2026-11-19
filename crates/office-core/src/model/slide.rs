@@ -18,12 +18,21 @@ pub struct Slide {
     /// The part the slide was read from, so saving writes it back there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
+    /// For duplicated slides, the part that owns the original markup's relationship ids.
+    #[serde(skip)]
+    pub relationship_source: Option<String>,
     /// The layout part the slide is on (`ppt/slideLayouts/slideLayout2.xml`). A new slide
     /// without one goes on the layout of the slide before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
     #[serde(skip)]
     pub origin: Origin,
+}
+
+impl Slide {
+    pub fn relationship_part(&self) -> Option<&str> {
+        self.relationship_source.as_deref().or(self.part.as_deref())
+    }
 }
 
 /// One object on a slide: a shape (often with text), a picture, a table, a group, or something

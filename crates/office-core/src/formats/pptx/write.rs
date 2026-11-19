@@ -81,16 +81,21 @@ pub fn write(doc: &Document) -> Result<Package> {
                     (1..).map(|n| format!("ppt/slides/slide{n}.xml")).find(|p| !out.pkg.has(p) && !requested.contains(&p.as_str())).unwrap()
                 });
                 out.pkg.put_xml(&p, &XmlDoc::new(Element::new(ns::P, "sld")), types::PPTX_SLIDE);
-                match copy_of {
-                    // A copy takes its original's relationships, which the markup it kept refers
-                    // to (pictures, charts, its layout), all but the notes, which stay with the
-                    // original. It's in the same folder, so the targets still hold.
-                    Some(original) => {
-                        let mut rels = out.pkg.rels(original)?;
+                match slide
+                    .relationship_source
+                    .as_deref()
+                    .or(copy_of)
+                    .zip(doc.package.as_ref())
+                    .filter(|(part, input)| same && input.has(part))
+                {
+                    // Copy from the original package even if the source slide was deleted.
+                    Some((original, input)) => {
+                        let mut rels = input.rels(original)?;
                         rels.0.retain(|r| !r.is(kind::NOTES_SLIDE));
-                        if let Some(w) = &wanted {
-                            for r in rels.0.iter_mut().filter(|r| r.is(kind::SLIDE_LAYOUT)) {
-                                r.target = crate::opc::names::relative(&p, w);
+                        for r in rels.0.iter_mut() {
+                            if let Some(target) = input.target(original, r) {
+                                let target = if r.is(kind::SLIDE_LAYOUT) { wanted.as_deref().unwrap_or(&target) } else { &target };
+                                r.target = crate::opc::names::relative(&p, target);
                             }
                         }
                         out.pkg.put_rels(&p, &rels);
