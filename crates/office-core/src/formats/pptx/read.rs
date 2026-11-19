@@ -102,7 +102,7 @@ fn read_frame(el: &Element, rels: &PartRels, doc: &mut Document) -> Frame {
         link: c_nv.and_then(|c| crate::formats::dml::read_link(c, Some(rels))),
         // A group's frames are read below. Copying its whole tree here as well, at every level,
         // made nested groups quadratic.
-        content: FrameContent::Raw { xml: if el.is(ns::P, "grpSp") { Element::new("", "grpSp") } else { el.clone() } },
+        content: FrameContent::Raw { xml: if el.is(ns::P, "grpSp") { Element::new("", "grpSp") } else { el.clone() }, chart_part: None },
         origin: Default::default(),
     };
     if !el.in_ns(ns::P) {
@@ -126,7 +126,7 @@ fn read_frame(el: &Element, rels: &PartRels, doc: &mut Document) -> Frame {
             let media = blip.and_then(|b| rel_attr(b, "embed")).and_then(|id| rels.media(doc, id));
             let Some(media) = media else {
                 // A linked (not embedded) picture, or a broken one: keep it as it is.
-                frame.content = FrameContent::Raw { xml: el.clone() };
+                frame.content = FrameContent::Raw { xml: el.clone(), chart_part: None };
                 return frame;
             };
             let xfrm = frame.shape.xfrm.clone().unwrap_or_default();

@@ -20,6 +20,7 @@ pub mod kind {
     pub const SLIDE_LAYOUT: &str = "slideLayout";
     pub const SLIDE_MASTER: &str = "slideMaster";
     pub const NOTES_SLIDE: &str = "notesSlide";
+    pub const CHART: &str = "chart";
     pub const WORKSHEET: &str = "worksheet";
     pub const SHARED_STRINGS: &str = "sharedStrings";
     pub const DRAWING: &str = "drawing";

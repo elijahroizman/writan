@@ -81,6 +81,9 @@ pub enum FrameContent {
     },
     Raw {
         xml: Element,
+        /// A copied chart's package part, independent of the destination slide's relationship ids.
+        #[serde(skip)]
+        chart_part: Option<String>,
     },
 }
 

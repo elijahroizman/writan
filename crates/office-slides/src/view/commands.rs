@@ -4,6 +4,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use office_core::drawing::{Color, Fill, Line, Rgb, Xfrm};
+use office_core::formats::{common::names_parts, pptx, xlsx::chart::CHART_TYPE};
 use office_core::model::{Block, Cell, Frame, FrameContent, Image, Origin, Paragraph, Row, RunProps, Slide, Strike, Table, TextBody};
 use office_core::units::{Angle, Emu, FontSize};
 use office_core::xml::{ns, Element};
@@ -79,6 +80,14 @@ struct FrameClipboard {
     /// the source slide's other parts is left out.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     origins: Vec<Option<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    charts: Option<ClipboardCharts>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct ClipboardCharts {
+    scope: [u8; 16],
+    parts: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -572,6 +581,39 @@ impl SlidesView {
     pub fn copy_frames(&self) -> String {
         let Some(s) = self.slides().get(self.sel.active) else { return "[]".into() };
         let mut frames: Vec<Frame> = s.frames.iter().filter(|f| self.sel.frames.contains(&f.id)).cloned().collect();
+        let charts = (|| {
+            let mut parts = Vec::new();
+            visit_clipboard_charts(&mut frames, &mut |xml, chart_part| {
+                let pkg = self.doc.package.as_ref()?;
+                let target = chart_part.take().or_else(|| pptx::chart_target(pkg, s.relationship_part()?, xml))?;
+                if pkg.content_type(&target) != Some(CHART_TYPE) {
+                    return None;
+                }
+                pptx::chart_element_mut(xml)?.remove_attr(ns::R, "id");
+                // The frame's model carries ordinary hyperlinks. Raw actions and relationship
+                // ids point at the old slide; never let them bind to unrelated destination ids.
+                if let Some(nv) = xml.child_mut(ns::P, "nvGraphicFramePr").and_then(|nv| nv.child_mut(ns::P, "cNvPr")) {
+                    nv.clear(ns::A, &["hlinkClick", "hlinkMouseOver"]);
+                }
+                if names_parts(xml) {
+                    return None;
+                }
+                parts.push(target);
+                Some(())
+            })?;
+            if parts.is_empty() {
+                return Some(None);
+            }
+            let scope = (*self.chart_clipboard_scope.get_or_init(|| {
+                let mut token = [0; 16];
+                getrandom::fill(&mut token).ok().map(|()| token)
+            }))?;
+            Some(Some(ClipboardCharts { scope, parts }))
+        })();
+        let Some(charts) = charts else { return "[]".into() };
+        if frames.is_empty() {
+            return "[]".into();
+        }
         let mut ids = BTreeSet::new();
         for f in &mut frames {
             for_each_picture(f, &mut |image| {
@@ -590,13 +632,13 @@ impl SlidesView {
         let mut origins = Vec::new();
         for f in &mut frames {
             for_each_origin(f, &mut |o| {
-                origins.push(o.get().filter(|el| !office_core::formats::common::names_parts(el)).map(Element::to_xml_string));
+                origins.push(o.get().filter(|el| !names_parts(el)).map(Element::to_xml_string));
             });
         }
         if origins.iter().all(Option::is_none) {
             origins.clear();
         }
-        serde_json::to_string(&FrameClipboard { frames, media, origins }).unwrap_or_else(|_| "[]".into())
+        serde_json::to_string(&FrameClipboard { frames, media, origins, charts }).unwrap_or_else(|_| "[]".into())
     }
 
     /// Frames from the clipboard, put on the active slide and picked.
@@ -604,14 +646,38 @@ impl SlidesView {
         let Ok(clipboard) = serde_json::from_str::<FrameClipboard>(json).or_else(|_| {
             // Older clipboards can still paste shapes and text. Pictures need carried media:
             // an id present in this deck may refer to an unrelated picture.
-            serde_json::from_str::<Vec<Frame>>(json).map(|frames| FrameClipboard { frames, media: BTreeMap::new(), origins: Vec::new() })
+            serde_json::from_str::<Vec<Frame>>(json).map(|frames| FrameClipboard {
+                frames,
+                media: BTreeMap::new(),
+                origins: Vec::new(),
+                charts: None,
+            })
         }) else {
             return false;
         };
-        let FrameClipboard { mut frames, mut media, origins } = clipboard;
+        let FrameClipboard { mut frames, mut media, origins, charts } = clipboard;
         restore_origins(&mut frames, origins);
         let active = self.sel.active;
         if frames.is_empty() || self.slides().get(active).is_none() {
+            return false;
+        }
+        let mut parts = match charts {
+            Some(charts) if self.chart_clipboard_scope.get() == Some(&Some(charts.scope)) => charts.parts.into_iter(),
+            Some(_) => return false,
+            None => Vec::new().into_iter(),
+        };
+        if visit_clipboard_charts(&mut frames, &mut |xml, chart_part| {
+            let target = parts.next()?;
+            let pkg = self.doc.package.as_ref()?;
+            if names_parts(xml) || !pkg.has(&target) || pkg.content_type(&target) != Some(CHART_TYPE) {
+                return None;
+            }
+            *chart_part = Some(target);
+            Some(())
+        })
+        .is_none()
+            || parts.next().is_some()
+        {
             return false;
         }
         let mut ids = BTreeSet::new();
@@ -1769,6 +1835,18 @@ fn renumber(f: &mut Frame, next: &mut u32) {
             renumber(c, next);
         }
     }
+}
+
+fn visit_clipboard_charts(frames: &mut [Frame], visit: &mut impl FnMut(&mut Element, &mut Option<String>) -> Option<()>) -> Option<()> {
+    for frame in frames {
+        match &mut frame.content {
+            FrameContent::Group { frames } => visit_clipboard_charts(frames, visit)?,
+            FrameContent::Raw { xml, chart_part } if pptx::chart_element(xml).is_some() => visit(xml, chart_part)?,
+            FrameContent::Raw { xml, .. } if xml.descendant(ns::C, "chart").is_some() => return None,
+            _ => {}
+        }
+    }
+    Some(())
 }
 
 /// Keeps the typing style on the paragraph mark when a deletion leaves no text runs.

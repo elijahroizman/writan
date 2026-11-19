@@ -363,8 +363,10 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
       return
     }
     if (!st.frames.length) return
+    const frames = engine.doc.copyFrames()
     e.preventDefault()
-    e.clipboardData.setData(SLIDES_CLIPBOARD, engine.doc.copyFrames())
+    if (frames === '[]') return
+    e.clipboardData.setData(SLIDES_CLIPBOARD, frames)
     e.clipboardData.setData('text/plain', engine.elements.filter((x) => st.frames.includes(x.id)).map((x) => x.text).join('\n'))
     if (cut) run({ cmd: 'delete' })
   }
