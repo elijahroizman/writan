@@ -122,6 +122,9 @@ pub trait Objects {
 
     /// Draws an image in preserved markup, without an editable object id.
     fn preview_image(&mut self, _image: &Image, _rect: Rect, _out: &mut Vec<Item>) {}
+
+    /// Draws an object kept as raw markup (a SmartArt diagram) in preserved markup.
+    fn preview_raw(&mut self, _ctx: &mut Ctx, _xml: &office_core::xml::Element, _rect: Rect, _out: &mut Vec<Item>) {}
 }
 
 /// A link's address for the text at an offset of a paragraph, if it's linked.
@@ -147,9 +150,12 @@ struct PreviewObjects<'a> {
 }
 
 impl Objects for PreviewObjects<'_> {
-    fn object(&mut self, _: &mut Ctx, para: &crate::pos::Path, inline: u32, rect: Rect, out: &mut Vec<Item>) {
-        let Some(Inline::Image(img)) = crate::pos::para(self.blocks, para).and_then(|p| p.content.get(inline as usize)) else { return };
-        self.objects.preview_image(img, rect, out);
+    fn object(&mut self, ctx: &mut Ctx, para: &crate::pos::Path, inline: u32, rect: Rect, out: &mut Vec<Item>) {
+        match crate::pos::para(self.blocks, para).and_then(|p| p.content.get(inline as usize)) {
+            Some(Inline::Image(img)) => self.objects.preview_image(img, rect, out),
+            Some(Inline::Raw { xml }) => self.objects.preview_raw(ctx, xml, rect, out),
+            _ => {}
+        }
     }
 }
 

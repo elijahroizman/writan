@@ -848,13 +848,7 @@ impl Objects for PageObjects<'_> {
         };
         let Some(p) = pos::para(blocks, para) else { return };
         if let Some(Inline::Raw { xml }) = p.content.get(inline as usize) {
-            let part = match self.story {
-                StoryId::Body => self.doc.package.as_ref().and_then(|p| p.main_part().ok()),
-                StoryId::Story(i) => word(self.doc).and_then(|w| w.headers.get(i)).map(|s| s.part.clone()),
-            };
-            if let (Some((data, cx, cy)), Some(part)) = (resolve::inline_diagram(xml), part) {
-                out.push(diagram_item(office_slides::view::paint_diagram(self.doc, ctx, &part, data, (cx, cy), w, h), x, y, w, h));
-            }
+            self.diagram(ctx, xml, (x, y, w, h), out);
             return;
         }
         let Some(Inline::Image(img)) = p.content.get(inline as usize) else { return };
@@ -864,6 +858,23 @@ impl Objects for PageObjects<'_> {
 
     fn preview_image(&mut self, img: &office_core::model::Image, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
         out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: None });
+    }
+
+    fn preview_raw(&mut self, ctx: &mut Ctx, xml: &office_core::xml::Element, rect: display::Rect, out: &mut Vec<Item>) {
+        self.diagram(ctx, xml, rect, out);
+    }
+}
+
+impl PageObjects<'_> {
+    /// A run holding an inline SmartArt diagram, drawn in `rect`.
+    fn diagram(&self, ctx: &mut Ctx, xml: &office_core::xml::Element, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
+        let part = match self.story {
+            StoryId::Body => self.doc.package.as_ref().and_then(|p| p.main_part().ok()),
+            StoryId::Story(i) => word(self.doc).and_then(|w| w.headers.get(i)).map(|s| s.part.clone()),
+        };
+        if let (Some((data, cx, cy)), Some(part)) = (resolve::inline_diagram(xml), part) {
+            out.push(diagram_item(office_slides::view::paint_diagram(self.doc, ctx, &part, data, (cx, cy), w, h), x, y, w, h));
+        }
     }
 }
 

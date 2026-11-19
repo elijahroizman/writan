@@ -894,3 +894,30 @@ fn smartart_in_text_is_drawn_and_takes_its_room() {
     assert!(texts[1].1 - texts[0].1 > 80.0, "{texts:?}");
     assert!(office_core::opc::Package::read(&v.save().unwrap()).unwrap().has("word/diagrams/drawing1.xml"));
 }
+
+#[test]
+fn smartart_in_a_block_content_control_is_drawn() {
+    let mut host = FixedMeasurer::default();
+    let bytes = office_core::formats::diagram::test_diagram(&doc_bytes(&["After"]), "word/document.xml", true, |xml, data| {
+        let control = format!(
+            r#"<w:sdt><w:sdtPr/><w:sdtContent><w:p><w:r><w:drawing><wp:inline xmlns:wp="{}"><wp:extent cx="3048000" cy="1524000"/><wp:docPr id="1" name="Diagram 1"/><a:graphic xmlns:a="{}">{data}</a:graphic></wp:inline></w:drawing></w:r></w:p></w:sdtContent></w:sdt>"#,
+            ns::WP,
+            ns::A
+        );
+        xml.replacen("<w:body>", &format!("<w:body>{control}"), 1)
+    });
+    let mut v = WordView::open(&bytes).unwrap();
+    let page = v.paint(&mut host, 0);
+    fn walk(items: &[Item], out: &mut Vec<String>) {
+        for i in items {
+            match i {
+                Item::Text { text, .. } => out.push(text.clone()),
+                Item::Group { items, .. } => walk(items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut texts = Vec::new();
+    walk(&page.items, &mut texts);
+    assert_eq!(texts, vec!["Cached", "After"]);
+}
