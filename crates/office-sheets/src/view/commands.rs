@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use office_core::drawing::{Color, Rgb};
 use office_core::model::{CellRef, Origin, Range, Sheet, SheetCell, SheetRow, Value};
 use office_core::xml::ns;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{CStep, SheetSel, SheetsView};
 use crate::formula::{RefPart, Reference};
@@ -36,6 +36,21 @@ pub struct FormatPatch {
     pub number_format: Option<String>,
     /// `all`, `outside`, `bottom`, `none`.
     pub borders: Option<String>,
+}
+
+/// The spreadsheet-only clipboard format, alongside the plain-text values for other apps.
+#[derive(Deserialize, Serialize)]
+pub struct ClipboardRange {
+    from: (u32, u32),
+    cut: bool,
+    rows: Vec<Vec<ClipboardCell>>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum ClipboardCell {
+    Text(String),
+    Formula { formula: String },
 }
 
 impl SheetsView {
@@ -503,43 +518,80 @@ impl SheetsView {
 
     // ---- clipboard ----
 
-    /// A range as tab-separated text, as Excel copies it.
-    pub fn copy(&self, sheet: usize, range: Range) -> String {
-        let mut out = String::new();
+    /// A range as tab-separated displayed values, plus spreadsheet data when it contains formulas.
+    pub fn copy(&self, sheet: usize, range: Range, cut: bool) -> (String, Option<ClipboardRange>) {
+        let mut text = String::new();
+        let mut rows = Vec::new();
+        let mut has_formula = false;
         for r in range.start.row..=range.end.row.min(range.start.row + 100_000) {
-            let cells: Vec<String> =
-                (range.start.col..=range.end.col).map(|c| crate::display(&self.doc, sheet, CellRef::new(r, c))).collect();
-            out.push_str(&cells.join("\t"));
-            out.push('\n');
+            let mut row = Vec::new();
+            for c in range.start.col..=range.end.col {
+                let at = CellRef::new(r, c);
+                let display = crate::display(&self.doc, sheet, at);
+                if c > range.start.col {
+                    text.push('\t');
+                }
+                text.push_str(&display);
+                row.push(match crate::formula(&self.doc, sheet, at) {
+                    Some(formula) => {
+                        has_formula = true;
+                        ClipboardCell::Formula { formula }
+                    }
+                    None => ClipboardCell::Text(display),
+                });
+            }
+            rows.push(row);
+            text.push('\n');
         }
-        out
+        (text, has_formula.then_some(ClipboardRange { from: (range.start.row, range.start.col), cut, rows }))
     }
 
-    /// Pastes tab-separated text with its top left at `at`; a single value fills a picked range.
-    pub fn paste(&mut self, sheet: usize, at: Range, text: &str) {
-        let rows: Vec<Vec<String>> = text
-            .trim_end_matches(['\n', '\r'])
-            .split('\n')
-            .map(|l| l.trim_end_matches('\r').split('\t').map(str::to_string).collect())
-            .collect();
-        let single = rows.len() == 1 && rows[0].len() == 1;
-        let mut cells = Vec::new();
-        let mut inputs = Vec::new();
-        if single {
-            for c in all_cells(at, 20_000) {
-                cells.push(c);
-                inputs.push(rows[0][0].clone());
-            }
+    /// Pastes a range at `at`; a single cell fills the selection.
+    pub fn paste(&mut self, sheet: usize, at: Range, text: &str, clipboard: Option<ClipboardRange>) {
+        let (rows, copy_from) = if let Some(clipboard) = clipboard {
+            (clipboard.rows, (!clipboard.cut).then_some(clipboard.from))
         } else {
-            for (i, row) in rows.iter().enumerate() {
-                for (j, v) in row.iter().enumerate() {
-                    cells.push(CellRef::new(at.start.row + i as u32, at.start.col + j as u32));
-                    inputs.push(v.clone());
+            let rows = text
+                .trim_end_matches(['\n', '\r'])
+                .split('\n')
+                .map(|l| l.trim_end_matches('\r').split('\t').map(|s| ClipboardCell::Text(s.to_string())).collect())
+                .collect();
+            (rows, None)
+        };
+        let single = rows.len() == 1 && rows[0].len() == 1;
+        let cells = if single {
+            all_cells(at, 20_000)
+        } else {
+            rows.iter()
+                .enumerate()
+                .flat_map(|(r, row)| (0..row.len()).map(move |c| CellRef::new(at.start.row + r as u32, at.start.col + c as u32)))
+                .collect()
+        };
+        self.change_cells(sheet, &cells, |v, dest| {
+            let (r, c) = if single { (0, 0) } else { (dest.row - at.start.row, dest.col - at.start.col) };
+            match &rows[r as usize][c as usize] {
+                ClipboardCell::Text(input) => v.put_input(sheet, dest, input),
+                ClipboardCell::Formula { formula } => {
+                    let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
+                    let cell = s.cell_mut(dest);
+                    let anchor = if single { dest } else { at.start };
+                    cell.value = Value::Empty;
+                    cell.formula = Some(
+                        copy_from
+                            .and_then(|(row, col)| {
+                                crate::formula::shift(
+                                    formula,
+                                    i64::from(anchor.row) - i64::from(row),
+                                    i64::from(anchor.col) - i64::from(col),
+                                )
+                                .ok()
+                            })
+                            .unwrap_or_else(|| formula.clone()),
+                    );
+                    cell.origin = Default::default();
                 }
             }
-        }
-        let map: std::collections::HashMap<CellRef, String> = cells.iter().copied().zip(inputs).collect();
-        self.change_cells(sheet, &cells, |v, c| v.put_input(sheet, c, &map[&c]));
+        });
     }
 
     /// Copies the top row of a range down through it (⌘D), formulas shifted as Excel does.

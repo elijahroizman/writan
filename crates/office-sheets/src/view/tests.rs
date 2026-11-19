@@ -87,8 +87,10 @@ fn workbook_formats_columns_and_sheets() {
     v.add_sheet();
     v.rename_sheet(1, "Data");
     assert_eq!(v.sheets()[1].name, "Data");
-    v.paste(1, Range { start: CellRef::new(0, 0), end: CellRef::new(0, 0) }, "a\tb\n1\t2\n");
-    assert_eq!(v.copy(1, Range { start: CellRef::new(0, 0), end: CellRef::new(1, 1) }), "a\tb\n1\t2\n");
+    v.paste(1, Range { start: CellRef::new(0, 0), end: CellRef::new(0, 0) }, "a\tb\n1\t2\n", None);
+    let (text, clipboard) = v.copy(1, Range { start: CellRef::new(0, 0), end: CellRef::new(1, 1) }, false);
+    assert_eq!(text, "a\tb\n1\t2\n");
+    assert!(clipboard.is_none());
     let found = v.find("b");
     assert_eq!(found, vec![(1, CellRef::new(0, 1))]);
     let bytes = v.save().unwrap();
@@ -97,6 +99,59 @@ fn workbook_formats_columns_and_sheets() {
     assert!(back.cell_info(0, CellRef::new(1, 0)).bold);
     assert_eq!(back.grid(0).width(0), 120.0);
     assert!(!back.paint(&mut host, 0, 0, 10, 0, 5).items.is_empty());
+}
+
+#[test]
+fn clipboard_copies_formula_blocks_and_keeps_tab_separated_values() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    let source = CellRef::new(1, 1);
+    let dest = CellRef::new(3, 3);
+    v.set_input(0, CellRef::new(0, 0), "3");
+    v.set_input(0, source, "=A1+$A1+A$1+$A$1");
+    v.set_input(0, CellRef::new(1, 2), "4");
+    v.set_input(0, CellRef::new(2, 1), "line one\nline two");
+    v.set_input(0, CellRef::new(4, 4), "old");
+
+    let (text, clipboard) = v.copy(0, Range { start: source, end: CellRef::new(2, 2) }, false);
+    assert_eq!(text, "12\t4\nline one\nline two\t\n");
+    v.paste(0, Range { start: dest, end: dest }, &text, clipboard);
+    assert_eq!(crate::formula(&v.doc, 0, dest).as_deref(), Some("C3+$A3+C$1+$A$1"));
+    assert_eq!(v.cell_info(0, CellRef::new(3, 4)).input, "4");
+    assert_eq!(v.cell_info(0, CellRef::new(4, 3)).input, "line one\nline two");
+    assert_eq!(v.cell_info(0, CellRef::new(4, 4)).input, "");
+    assert!(v.undo());
+    assert_eq!(v.cell_info(0, CellRef::new(4, 4)).input, "old");
+    assert!(v.redo());
+    assert_eq!(crate::formula(&v.doc, 0, dest).as_deref(), Some("C3+$A3+C$1+$A$1"));
+}
+
+#[test]
+fn pasting_one_copied_formula_shifts_it_for_every_selected_cell() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    let source = CellRef::new(1, 1);
+    v.set_input(0, source, "=B1");
+    let (text, clipboard) = v.copy(0, Range { start: source, end: source }, false);
+    v.paste(0, Range { start: CellRef::new(2, 2), end: CellRef::new(3, 2) }, &text, clipboard);
+    assert_eq!(crate::formula(&v.doc, 0, CellRef::new(2, 2)).as_deref(), Some("C2"));
+    assert_eq!(crate::formula(&v.doc, 0, CellRef::new(3, 2)).as_deref(), Some("C3"));
+}
+
+#[test]
+fn cutting_a_formula_keeps_its_original_references() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    let source = CellRef::new(0, 1);
+    let dest = CellRef::new(0, 2);
+    let source_range = Range { start: source, end: source };
+    v.set_input(0, CellRef::new(0, 0), "5");
+    v.set_input(0, source, "=A1");
+
+    let (text, clipboard) = v.copy(0, source_range, true);
+    v.clear(0, source_range);
+    v.paste(0, Range { start: dest, end: dest }, &text, clipboard);
+    assert_eq!(crate::formula(&v.doc, 0, source), None);
+    assert_eq!(crate::formula(&v.doc, 0, dest).as_deref(), Some("A1"));
+    v.set_input(0, CellRef::new(0, 0), "9");
+    assert_eq!(v.cell_info(0, dest).display, "9");
 }
 
 #[test]

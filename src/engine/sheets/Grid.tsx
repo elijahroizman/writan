@@ -13,6 +13,7 @@ const HEAD_H = 22
 /** Rows and columns drawn beyond the view on each side. */
 const MARGIN_ROWS = 20
 const MARGIN_COLS = 6
+const SHEETS_CLIPBOARD = 'application/x-writan-sheets'
 
 interface Props {
   engine: SheetsEngine
@@ -397,15 +398,18 @@ export function Grid({
 
   const onCopy = (e: React.ClipboardEvent, cut: boolean) => {
     const rr = engine.range
+    const { text, clipboard } = JSON.parse(engine.doc.copy(sheet, rr.r0, rr.c0, rr.r1, rr.c1, cut)) as { text: string; clipboard: unknown }
     e.preventDefault()
-    e.clipboardData.setData('text/plain', engine.doc.copy(sheet, rr.r0, rr.c0, rr.r1, rr.c1))
+    e.clipboardData.setData('text/plain', text)
+    if (clipboard) e.clipboardData.setData(SHEETS_CLIPBOARD, JSON.stringify(clipboard))
     if (cut) engine.run({ cmd: 'clear', sheet, range: rr })
   }
   const onPaste = (e: React.ClipboardEvent) => {
     const text = e.clipboardData.getData('text/plain')
-    if (!text) return
+    const clipboard = e.clipboardData.getData(SHEETS_CLIPBOARD)
+    if (!text && !clipboard) return
     e.preventDefault()
-    engine.run({ cmd: 'paste', sheet, range: engine.range, text })
+    engine.run({ cmd: 'paste', sheet, range: engine.range, text, clipboard: clipboard || null })
   }
 
   // ── Charts

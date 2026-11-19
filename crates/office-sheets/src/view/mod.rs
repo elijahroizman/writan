@@ -24,7 +24,7 @@ use serde::Serialize;
 
 use crate::{format_of, CellFormat, Sheets};
 pub use charts::{ChartPatch, ChartView, SeriesView};
-pub use commands::FormatPatch;
+pub use commands::{ClipboardRange, FormatPatch};
 
 /// A picked range: where it started and where it's been extended to.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default, Serialize)]
