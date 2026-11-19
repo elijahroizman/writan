@@ -855,6 +855,11 @@ impl WordView {
     }
 
     pub fn set_style(&mut self, id: &str) {
+        if crate::ensure_style(&mut self.doc, id) {
+            self.extras = super::read_extras(&self.doc);
+            self.specs.clear();
+            self.dirty = super::Dirty::Full;
+        }
         let id = id.to_string();
         self.para_change(&move |p| p.props.style = Some(id.clone()));
     }

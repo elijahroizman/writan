@@ -40,6 +40,63 @@ fn opens_lays_out_and_paints() {
 }
 
 #[test]
+fn paragraph_styles_render_without_reopening() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::blank();
+    v.insert_text("Title");
+    v.enter();
+    v.insert_text("Body");
+    v.set_selection(Selection::caret(Pos::start()));
+    v.layout(&mut host);
+    assert!(v.outline().is_empty());
+    for (id, size, headings) in [("Heading1", 1600, 1), ("Heading2", 1300, 1), ("Title", 2800, 0), ("Normal", 1100, 0)] {
+        v.set_style(id);
+        v.layout(&mut host);
+        let p = pos::para(v.current_blocks(), &Path::top(0)).unwrap();
+        assert_eq!(crate::resolved_run(&v.doc, p, p.runs().next().unwrap()).size.unwrap().0, size, "{id}");
+        assert_eq!(v.outline().len(), headings, "{id}");
+        let mut page = v.paint(&mut host, 0);
+        let mut reopened = WordView::open(&v.save().unwrap()).unwrap();
+        reopened.layout(&mut host);
+        let mut back = reopened.paint(&mut host, 0);
+        assert_eq!(page.items.len(), back.items.len());
+        for (a, b) in page.items.iter_mut().zip(&mut back.items) {
+            if let (Item::Text { s: sa, .. }, Item::Text { s: sb, .. }) = (&mut *a, &mut *b) {
+                assert_eq!(v.styles.get(office_engine::para::StyleId(*sa)), reopened.styles.get(office_engine::para::StyleId(*sb)), "{id}");
+                *sa = 0;
+                *sb = 0;
+            }
+            assert_eq!(a, b, "{id}");
+        }
+    }
+}
+
+#[test]
+fn paragraph_styles_on_empty_paragraphs_and_unknown_styles() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::blank();
+    v.layout(&mut host);
+    v.set_style("Heading1");
+    v.layout(&mut host);
+    assert_eq!(v.outline(), vec![(String::new(), 0, Path::top(0))]);
+    assert_eq!(v.extras.para_styles["Heading1"].keep_next, Some(true));
+    v.undo();
+    v.layout(&mut host);
+    assert!(v.outline().is_empty());
+    v.redo();
+    v.layout(&mut host);
+    assert_eq!(v.outline().len(), 1);
+    let before = word(&v.doc).unwrap().styles.styles.clone();
+    v.set_style("UnknownStyle");
+    v.layout(&mut host);
+    assert!(v.outline().is_empty());
+    assert_eq!(word(&v.doc).unwrap().styles.styles, before);
+    v.set_style("Heading1");
+    v.layout(&mut host);
+    assert_eq!(word(&v.doc).unwrap().styles.styles, before, "existing styles are not replaced or duplicated");
+}
+
+#[test]
 fn many_paragraphs_make_pages() {
     let mut host = FixedMeasurer::default();
     let lines: Vec<String> = (0..200).map(|i| format!("Paragraph number {i}")).collect();

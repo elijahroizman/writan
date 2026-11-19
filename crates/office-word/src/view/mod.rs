@@ -1001,14 +1001,15 @@ fn body_labels(doc: &Document, memo: &mut ListMemo, last: &mut Vec<Option<(Strin
 }
 
 fn read_extras(doc: &Document) -> Extras {
-    let Some(pkg) = &doc.package else { return Extras::read(None, None, None) };
+    let edited_styles = crate::word(doc).and_then(|w| w.styles_xml.clone());
+    let Some(pkg) = &doc.package else { return Extras::read(edited_styles.as_ref(), None, None) };
     let Ok(main) = pkg.main_part() else { return Extras::read(None, None, None) };
     let part = |kind: &str| -> Option<office_core::xml::XmlDoc> {
         let (_, p) = pkg.related(&main, kind).ok()?.into_iter().next()?;
         pkg.xml(&p).ok()
     };
     use office_core::opc::rels::kind;
-    let styles = part(kind::STYLES);
+    let styles = edited_styles.or_else(|| part(kind::STYLES));
     let numbering = part(kind::NUMBERING);
     let settings = part("http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings");
     Extras::read(styles.as_ref(), numbering.as_ref(), settings.as_ref())
