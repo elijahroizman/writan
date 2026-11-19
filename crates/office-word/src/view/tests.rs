@@ -642,3 +642,60 @@ fn pasting_lines_into_an_empty_paragraph_leaves_their_direction() {
         .collect();
     assert_eq!(rtl, vec![None, None]);
 }
+
+/// The accents from LibreOffice's `math-accents.docx` (CORPUS-008), in one inline equation.
+const MATH_ACCENTS: &str = r#"<w:p><w:r><w:rPr></w:rPr></w:r><m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:acc><m:accPr><m:chr m:val="&#x301;"/></m:accPr><m:e><m:r><w:rPr><w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/></w:rPr><m:t xml:space="preserve">a</m:t></m:r></m:e></m:acc><m:acc><m:accPr><m:chr m:val="&#x2D9;"/></m:accPr><m:e><m:r><w:rPr><w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/></w:rPr><m:t xml:space="preserve">a</m:t></m:r></m:e></m:acc><m:bar><m:barPr><m:pos m:val="bot"/></m:barPr><m:e><m:r><w:rPr><w:rFonts w:ascii="Cambria Math" w:hAnsi="Cambria Math"/></w:rPr><m:t xml:space="preserve">a</m:t></m:r></m:e></m:bar></m:oMath></w:p>"#;
+
+fn painted_text(v: &mut WordView, host: &mut FixedMeasurer) -> Vec<(String, u32)> {
+    let mut out = Vec::new();
+    for page in 0..v.page_count() {
+        for i in v.paint(host, page).items {
+            if let Item::Text { text, s, .. } = i {
+                out.push((text, s));
+            }
+        }
+    }
+    out
+}
+
+#[test]
+fn office_math_equations_are_drawn_and_survive_saving() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&markup_bytes(MATH_ACCENTS)).unwrap();
+    for _ in 0..2 {
+        v.layout(&mut host);
+        let painted = painted_text(&mut v, &mut host);
+        assert_eq!(painted.iter().map(|(t, _)| t.as_str()).collect::<Vec<_>>(), ["a\u{301}a\u{307}a\u{332}"]);
+        let style = v.styles.get(office_engine::para::StyleId(painted[0].1));
+        assert!(style.font.family.starts_with("\"Cambria Math\""), "{}", style.font.family);
+        let body = saved_body(&mut v);
+        assert_eq!(body.matches("<m:acc>").count(), 2, "{body}");
+        assert!(body.contains("<m:bar>"), "{body}");
+        v = WordView::open(&v.save().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn display_equations_and_equations_in_content_controls_are_drawn() {
+    let mut host = FixedMeasurer::default();
+    let m = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+    let body = format!(
+        r#"<w:p><m:oMathPara xmlns:m="{m}"><m:oMath><m:r><m:t>E=m</m:t></m:r><m:sSup><m:e><m:r><m:t>c</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath></m:oMathPara></w:p><w:p><w:sdt><w:sdtContent><m:oMath xmlns:m="{m}"><m:f><m:num><m:r><m:t>1</m:t></m:r></m:num><m:den><m:r><m:t>x</m:t></m:r></m:den></m:f></m:oMath></w:sdtContent></w:sdt></w:p>"#
+    );
+    let mut v = WordView::open(&markup_bytes(&body)).unwrap();
+    v.layout(&mut host);
+    let painted: Vec<String> = painted_text(&mut v, &mut host).into_iter().map(|(t, _)| t).collect();
+    assert_eq!(painted, ["E=mc²", "1/x"]);
+}
+
+#[test]
+fn original_corpus_math_accents_are_drawn() {
+    let Some(dir) = std::env::var_os("CORPUS_FILES") else { return };
+    let bytes = std::fs::read(std::path::Path::new(&dir).join("lo-math-accents.docx")).unwrap();
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&bytes).unwrap();
+    v.layout(&mut host);
+    let text: String = painted_text(&mut v, &mut host).into_iter().map(|(t, _)| t).collect();
+    assert_eq!(text.chars().filter(|c| *c == 'a').count(), 13, "{text:?}");
+    assert!(text.contains("a\u{301}") && text.contains("a\u{20D7}") && text.contains("a\u{332}"), "{text:?}");
+}

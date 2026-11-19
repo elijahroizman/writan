@@ -6,6 +6,7 @@
 mod commands;
 pub mod extras;
 mod fingerprint;
+mod math;
 mod paginate;
 pub mod resolve;
 mod state;

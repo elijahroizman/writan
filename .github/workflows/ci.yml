@@ -160,6 +160,31 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
+  app-native:
+    name: App check on macOS and Windows
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.app == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: src-tauri
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+      - run: cargo check --all-targets
+      - run: cargo clippy --all-targets -- -D warnings
+
   frontend:
     name: Frontend build and browser tests
     needs: changes
@@ -209,7 +234,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, engine, engine-samples, app, frontend, packaging]
+    needs: [changes, engine, engine-samples, app, app-native, frontend, packaging]
     if: always()
     runs-on: ubuntu-24.04
     steps:
