@@ -8,7 +8,7 @@ import { SlideSwap } from './SlideSwap'
 import type { Element, SlideInfo, SlidesEngine } from '../../engine/slides/engine'
 import { parseVideoLink } from './video'
 import type { AnimationStep } from '../../engine/slides/engine'
-import { NO_STEPS, showSteps, stepBack, stepDuration } from './animations'
+import { NO_STEPS, hiddenAfter, showSteps, stepBack, stepDuration } from './animations'
 
 const resolveDuration = (slide: SlideInfo | undefined) => resolveTransitionDurationMs(slide?.transition)
 
@@ -133,7 +133,7 @@ export function PresentMode({
     const x = (e.clientX - stage.left - left) / scale
     const y = (e.clientY - stage.top - top) / scale
     const elements = JSON.parse(engine.doc.elements(current.i)) as Element[]
-    const hit = linkedAt(elements, x, y)
+    const hit = linkedAt(elements, x, y, hiddenAfter(steps, build.done))
     const url = hit?.link?.url
     if (hit && url) {
       const videoLink = parseVideoLink(url)
@@ -208,10 +208,11 @@ function Steps({ engine, steps, done, play, children }: { engine: SlidesEngine; 
   )
 }
 
-/** Linked frames are hit in paint order, using their rotated bounds. */
-function linkedAt(elements: readonly Element[], x: number, y: number): Element | undefined {
+/** Linked frames are hit in paint order, using their rotated bounds; frames an animation hides aren't. */
+function linkedAt(elements: readonly Element[], x: number, y: number, hidden: ReadonlySet<string>): Element | undefined {
   for (const el of [...elements].reverse()) {
-    const child = el.children && linkedAt(el.children, x, y)
+    if (hidden.has(el.id)) continue
+    const child = el.children && linkedAt(el.children, x, y, hidden)
     if (child) return child
     if (!el.link?.url) continue
     const angle = -el.rotation * Math.PI / 180

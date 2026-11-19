@@ -54,10 +54,16 @@ try {
 
   let s = await shown()
   check('frames that enter later are hidden when the slide comes up', same(s.shown, [4, 5]), JSON.stringify(s))
-  await page.keyboard.press('ArrowRight')
+  // Box 2 has a link, but while it's hidden a click on it plays the next step instead.
+  const hiddenBox = await page.evaluate(() => {
+    const r = [...document.querySelectorAll('.present .slide-surface')].at(-1).querySelector(':scope > [data-id="2"]').getBoundingClientRect()
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+  })
+  await page.mouse.click(hiddenBox.x, hiddenBox.y)
   await page.waitForTimeout(150)
   s = await shown()
   check('a click starts the first step and plays it', s.animating && s.shown.includes(2), JSON.stringify(s))
+  check('a hidden frame\'s link does not take the click', (await page.evaluate(() => window.__fake.opened)).length === 0)
   await page.waitForTimeout(1200)
   s = await shown()
   check('the effect set to follow the clicked one plays after it', same(s.shown, [2, 3, 4, 5]) && !s.animating, JSON.stringify(s))
