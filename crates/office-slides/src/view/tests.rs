@@ -510,3 +510,139 @@ fn spelling_reads_text_and_places_ranges() {
     assert_eq!(v.slide_text()[1].2, "A second line");
     assert!(!v.select_text(99, Selection::caret(Pos::new(Path(vec![0]), 0))));
 }
+
+// A rounded rectangle as PowerPoint writes one: its outline comes from the theme through
+// `p:style`, and its text is centered by `a:bodyPr`, neither of which the model holds.
+const ROUNDED_RECT: &str = r#"<p:sp><p:nvSpPr><p:cNvPr id="9" name="Rounded Rectangle 8"/><p:cNvSpPr/><p:nvPr/></p:nvSpPr><p:spPr><a:xfrm><a:off x="914400" y="2743200"/><a:ext cx="3657600" cy="1828800"/></a:xfrm><a:prstGeom prst="roundRect"><a:avLst/></a:prstGeom></p:spPr><p:style><a:lnRef idx="2"><a:schemeClr val="accent1"><a:shade val="50000"/></a:schemeClr></a:lnRef><a:fillRef idx="1"><a:schemeClr val="accent1"/></a:fillRef><a:effectRef idx="0"><a:schemeClr val="accent1"/></a:effectRef><a:fontRef idx="minor"><a:schemeClr val="lt1"/></a:fontRef></p:style><p:txBody><a:bodyPr rtlCol="0" anchor="ctr"/><a:lstStyle/><a:p><a:pPr algn="ctr"/><a:r><a:rPr lang="en-US" dirty="0"/><a:t>Rounded</a:t></a:r></a:p></p:txBody></p:sp>"#;
+
+/// A deck as if made in PowerPoint: slide 1 has a text box, the rounded rectangle and notes.
+fn imported_deck() -> Vec<u8> {
+    let mut v = SlidesView::open(&deck(&[&["Intro"], &["Other"]])).unwrap();
+    v.set_notes(0, "Remember the demo");
+    let mut pkg = office_core::opc::Package::read(&v.save().unwrap()).unwrap();
+    let part = "ppt/slides/slide1.xml";
+    let xml = String::from_utf8(pkg.part(part).unwrap().to_vec()).unwrap();
+    assert!(xml.contains("</p:spTree>"));
+    pkg.replace(part, xml.replace("</p:spTree>", &format!("{ROUNDED_RECT}</p:spTree>")).into_bytes()).unwrap();
+    pkg.to_bytes().unwrap()
+}
+
+fn slide_xml(bytes: &[u8], index: usize) -> String {
+    let v = SlidesView::open(bytes).unwrap();
+    let part = v.slides()[index].part.clone().unwrap();
+    let pkg = office_core::opc::Package::read(bytes).unwrap();
+    String::from_utf8(pkg.part(&part).unwrap().to_vec()).unwrap()
+}
+
+#[test]
+fn duplicating_an_imported_slide_keeps_its_notes() {
+    let mut v = SlidesView::open(&imported_deck()).unwrap();
+    assert_eq!(v.slide_infos()[0].notes, "Remember the demo");
+    v.duplicate_slides(&[0]);
+    assert_eq!(v.slides().len(), 3);
+    assert_eq!(v.slide_infos()[1].notes, "Remember the demo");
+    // The copy's notes are its own.
+    v.set_notes(1, "Copy notes");
+    assert_eq!(v.slide_infos()[0].notes, "Remember the demo");
+    let back = SlidesView::open(&v.save().unwrap()).unwrap();
+    let notes: Vec<String> = back.slide_infos().into_iter().map(|s| s.notes).collect();
+    assert_eq!(notes, vec!["Remember the demo", "Copy notes", ""]);
+    v.undo();
+    v.undo();
+    assert_eq!(v.slides().len(), 2);
+    v.redo();
+    assert_eq!(v.slide_infos()[1].notes, "Remember the demo");
+}
+
+#[test]
+fn duplicated_notes_stay_with_their_copies() {
+    // A copy without notes comes before one with them, and must not take its name.
+    let mut v = SlidesView::open(&imported_deck()).unwrap();
+    v.move_slide(1, 0);
+    v.duplicate_slides(&[0, 1]);
+    let notes = |v: &SlidesView| v.slide_infos().into_iter().map(|s| s.notes).collect::<Vec<_>>();
+    assert_eq!(notes(&v), vec!["", "Remember the demo", "", "Remember the demo"]);
+    let back = SlidesView::open(&v.save().unwrap()).unwrap();
+    assert_eq!(notes(&back), notes(&v));
+}
+
+#[test]
+fn a_new_slide_does_not_take_a_deleted_copys_notes() {
+    let mut v = SlidesView::open(&imported_deck()).unwrap();
+    v.duplicate_slides(&[0]);
+    v.delete_slides(&[1]);
+    v.add_slide(1, None);
+    assert_eq!(v.slide_infos()[2].notes, "");
+    let back = SlidesView::open(&v.save().unwrap()).unwrap();
+    assert_eq!(back.slide_infos()[2].notes, "");
+    v.undo();
+    v.undo();
+    assert_eq!(v.slide_infos()[1].notes, "Remember the demo");
+}
+
+#[test]
+fn a_new_slide_saved_under_a_deleted_copys_name_has_no_notes() {
+    let mut v = SlidesView::open(&imported_deck()).unwrap();
+    v.duplicate_slides(&[0]);
+    v.delete_slides(&[1]);
+    v.add_slide(1, None);
+    // The blank slide's copy is unnamed, so saving gives it the first free part name.
+    v.duplicate_slides(&[2]);
+    assert_eq!(v.slide_infos()[3].notes, "");
+    let back = SlidesView::open(&v.save().unwrap()).unwrap();
+    let notes: Vec<String> = back.slide_infos().into_iter().map(|s| s.notes).collect();
+    assert_eq!(notes, vec!["Remember the demo", "", "", ""]);
+}
+
+#[test]
+fn a_duplicated_link_in_notes_points_at_its_url() {
+    let mut pkg = office_core::opc::Package::read(&imported_deck()).unwrap();
+    let notes_of = |pkg: &office_core::opc::Package, slide: &str| pkg.related(slide, "notesSlide").unwrap()[0].1.clone();
+    let notes = notes_of(&pkg, "ppt/slides/slide1.xml");
+    let rid = pkg.relate_external(&notes, "hyperlink", "https://example.com/demo").unwrap();
+    let xml = String::from_utf8(pkg.part(&notes).unwrap().to_vec()).unwrap();
+    let link = format!(
+        r#"<a:r><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/><a:hlinkMouseOver r:id="{rid}"/></a:rPr><a:t> link</a:t></a:r><a:fld id="{{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}}" type="slidenum"><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/></a:rPr><a:t>7</a:t></a:fld></a:p><a:p><a:pPr><a:buBlip><a:blip r:embed="{rid}"/></a:buBlip></a:pPr><a:r><a:t>Pic</a:t></a:r>"#
+    );
+    assert!(xml.contains("Remember the demo</a:t></a:r>"), "{xml}");
+    pkg.replace(&notes, xml.replace("Remember the demo</a:t></a:r>", &format!("Remember the demo</a:t></a:r>{link}")).into_bytes())
+        .unwrap();
+
+    let mut v = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
+    v.duplicate_slides(&[0]);
+    let saved = office_core::opc::Package::read(&v.save().unwrap()).unwrap();
+    let copy = SlidesView::open(&saved.to_bytes().unwrap()).unwrap().slides()[1].part.clone().unwrap();
+    let notes = notes_of(&saved, &copy);
+    let xml = String::from_utf8(saved.part(&notes).unwrap().to_vec()).unwrap();
+    let rid = xml.split("hlinkClick r:id=\"").nth(1).and_then(|r| r.split('"').next()).unwrap_or_else(|| panic!("{xml}"));
+    let rels = saved.rels(&notes).unwrap();
+    assert_eq!(rels.get(rid).map(|r| r.target.as_str()), Some("https://example.com/demo"));
+    // Every relationship id the copy's notes use is its own, and the field's text stays.
+    for id in xml.split("r:id=\"").skip(1).map(|r| r.split('"').next().unwrap()) {
+        assert!(rels.get(id).is_some(), "{id} in {xml}");
+    }
+    assert!(xml.contains(">7</a:t></a:fld>"), "{xml}");
+    assert!(xml.contains(">Pic<") && !xml.contains("buBlip"), "{xml}");
+}
+
+#[test]
+fn pasting_an_imported_shape_keeps_its_outline_and_text_anchor() {
+    let bytes = imported_deck();
+    let mut source = SlidesView::open(&bytes).unwrap();
+    let rounded = source.slides()[0].frames.iter().find(|f| f.name == "Rounded Rectangle 8").unwrap().id;
+    source.sel.frames = vec![rounded];
+    let clipboard = source.copy_frames();
+    for same_deck in [true, false] {
+        let mut target = if same_deck { SlidesView::open(&bytes).unwrap() } else { SlidesView::open(&deck(&[&[]])).unwrap() };
+        let at = if same_deck { 1 } else { 0 };
+        target.sel.active = at;
+        assert!(target.paste_frames(&clipboard));
+        let saved = target.save().unwrap();
+        let xml = slide_xml(&saved, at);
+        assert!(xml.contains("prst=\"roundRect\""), "{xml}");
+        assert!(xml.contains("<a:lnRef idx=\"2\""), "outline: {xml}");
+        assert!(xml.contains("anchor=\"ctr\""), "anchor: {xml}");
+        assert!(xml.contains(">Rounded<"), "{xml}");
+        assert!(!xml.contains("<a:lnRef idx=\"2\" xmlns"), "redeclared namespaces: {xml}");
+    }
+}

@@ -13,10 +13,10 @@ pub mod templates;
 pub mod view;
 
 use office_core::drawing::{Color, Rgba, Theme, Xfrm};
-use office_core::formats::common::PartCtx;
+use office_core::formats::common::{PartCtx, PartRels};
 use office_core::formats::dml::{read_paragraph, write_paragraph};
 use office_core::model::{
-    Body, Document, Frame, FrameContent, Kind, Origin, ParaProps, Paragraph, Placeholder as Ph, RunProps, Slide, TextBody,
+    Body, Document, Frame, FrameContent, Inline, Kind, Origin, ParaProps, Paragraph, Placeholder as Ph, RunProps, Slide, TextBody,
 };
 use office_core::opc::{rels::kind, Package};
 use office_core::xml::{ns, Element, Node, XmlDoc};
@@ -86,8 +86,10 @@ impl Layer for Decks {
 
     fn write_parts(&self, doc: &Document, pkg: &mut Package, _to: Kind) -> Result<()> {
         let Some(ppt) = doc.extensions.get::<Ppt>() else { return Ok(()) };
+        // Notes of deleted slides are kept for undo, and a new slide may be written under one's name.
+        let live: Vec<&str> = slides(doc).iter().filter_map(|s| s.part.as_deref()).collect();
         for (part, paragraphs) in &ppt.notes {
-            if ppt.notes_read.iter().any(|(p, n)| p == part && n == paragraphs) || !pkg.has(part) {
+            if ppt.notes_read.iter().any(|(p, n)| p == part && n == paragraphs) || !pkg.has(part) || !live.contains(&part.as_str()) {
                 continue;
             }
             write_notes(pkg, part, paragraphs)?;
@@ -156,15 +158,18 @@ pub fn add_slide(doc: &mut Document, layout: &str) -> Option<usize> {
             origin: Origin::default(),
         })
         .collect();
-    let part = free_part(doc);
+    let part = free_part(doc, &[]);
     let Body::Slides { slides, .. } = &mut doc.body else { return None };
     slides.push(Slide { frames, part: Some(part), layout: Some(layout.to_string()), ..Default::default() });
     Some(slides.len() - 1)
 }
 
-/// A slide part name no slide (read or added) has.
-fn free_part(doc: &Document) -> String {
-    let taken: Vec<&str> = slides(doc).iter().filter_map(|s| s.part.as_deref()).collect();
+/// A slide part name no slide, part in the package, speaker notes or name in `also` has. Notes
+/// of a deleted slide stay for undo, so its name isn't reused.
+fn free_part(doc: &Document, also: &[String]) -> String {
+    let notes = ppt(doc).into_iter().flat_map(|p| p.notes.iter().map(|(s, _)| s.as_str()));
+    let taken: Vec<&str> =
+        slides(doc).iter().filter_map(|s| s.part.as_deref()).chain(also.iter().map(String::as_str)).chain(notes).collect();
     let in_pkg = |p: &str| doc.package.as_ref().is_some_and(|pkg| pkg.has(p));
     (1..).map(|n| format!("ppt/slides/slide{n}.xml")).find(|p| !taken.contains(&p.as_str()) && !in_pkg(p)).unwrap()
 }
@@ -285,7 +290,11 @@ fn read_notes(pkg: &Package, slide_part: &str) -> Result<Option<Vec<Paragraph>>>
         return Ok(None);
     }
     let xml = pkg.xml(&part)?;
-    Ok(Some(notes_body(&xml.root).map(|b| b.children_named(ns::A, "p").map(|p| read_paragraph(p, None)).collect()).unwrap_or_default()))
+    // Notes whose relationships can't be read still open, without their links.
+    let rels = PartRels::new(pkg, &part).ok();
+    Ok(Some(
+        notes_body(&xml.root).map(|b| b.children_named(ns::A, "p").map(|p| read_paragraph(p, rels.as_ref())).collect()).unwrap_or_default(),
+    ))
 }
 
 /// The notes placeholder's text body in a notes slide.
@@ -309,17 +318,82 @@ pub fn set_notes(doc: &mut Document, slide_index: usize, paragraphs: Vec<Paragra
         return;
     }
     if slides(doc)[slide_index].part.is_none() {
-        let part = free_part(doc);
+        let part = free_part(doc, &[]);
         if let Body::Slides { slides, .. } = &mut doc.body {
             slides[slide_index].part = Some(part);
         }
     }
     let part = slides(doc)[slide_index].part.clone().unwrap();
+    put_notes(doc, part, paragraphs);
+}
+
+fn put_notes(doc: &mut Document, part: String, paragraphs: Vec<Paragraph>) {
     let ppt = ppt_mut(doc);
     match ppt.notes.iter_mut().find(|(s, _)| *s == part) {
         Some((_, n)) => *n = paragraphs,
         None => ppt.notes.push((part, paragraphs)),
     }
+}
+
+/// Part names for copies of slides `indexes`, with the speaker notes of each slide that has
+/// them stored under its copy's name. A copy of a slide without notes needs no name, and the
+/// copies' notes are their own however either slide's change.
+pub fn copy_notes(doc: &mut Document, indexes: &[usize]) -> Vec<Option<String>> {
+    let mut named = Vec::new();
+    indexes
+        .iter()
+        .map(|&i| {
+            let mut paragraphs = notes(doc, i);
+            paragraphs.iter_mut().for_each(drop_part_refs);
+            if paragraphs.is_empty() {
+                return None;
+            }
+            let part = free_part(doc, &named);
+            named.push(part.clone());
+            put_notes(doc, part.clone(), paragraphs);
+            Some(part)
+        })
+        .collect()
+}
+
+/// Drops markup in copied notes that names parts by relationship id, which a copy's own notes
+/// part doesn't have, keeping the rest. URL links are the model's and are related again when
+/// written.
+fn drop_part_refs(p: &mut Paragraph) {
+    fn strip(o: &mut Origin) {
+        let Some(el) = o.get().filter(|el| office_core::formats::common::names_parts(el)) else { return };
+        let mut el = el.clone();
+        *o = if names_parts_itself(&el) {
+            Origin::default()
+        } else {
+            strip_part_refs(&mut el);
+            Origin::new(el)
+        };
+    }
+    strip(&mut p.origin);
+    p.content.retain(|i| !matches!(i, Inline::Raw { xml } if names_parts_itself(xml)));
+    for i in &mut p.content {
+        match i {
+            Inline::Text(r) => strip(&mut r.origin),
+            Inline::Break { origin, .. } => strip(origin),
+            Inline::Raw { xml } => strip_part_refs(xml),
+            Inline::Image(_) => {}
+        }
+    }
+}
+
+fn names_parts_itself(el: &Element) -> bool {
+    el.attrs.iter().any(|a| !a.is_ns_decl() && a.ns.as_deref().is_some_and(|n| ns::same(n, ns::R)))
+}
+
+/// Removes the elements under `el` that name parts by relationship id, and picture bullets,
+/// which are invalid without their picture.
+fn strip_part_refs(el: &mut Element) {
+    el.children.retain(|n| {
+        !matches!(n, Node::Element(e) if names_parts_itself(e)
+            || (e.is(ns::A, "buBlip") && office_core::formats::common::names_parts(e)))
+    });
+    el.elements_mut().for_each(strip_part_refs);
 }
 
 fn pml(local: &str) -> Element {

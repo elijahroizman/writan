@@ -74,6 +74,11 @@ struct FrameClipboard {
     frames: Vec<Frame>,
     #[serde(default)]
     media: BTreeMap<String, ClipboardMedia>,
+    /// The markup each frame was read from, which holds what the model doesn't (a shape's
+    /// theme outline, where its text sits), in [`for_each_origin`] order. Markup that names
+    /// the source slide's other parts is left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    origins: Vec<Option<String>>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -261,17 +266,13 @@ impl SlidesView {
         let mut idx: Vec<usize> = indexes.to_vec();
         idx.sort_unstable();
         idx.dedup();
+        idx.retain(|&i| i < self.slides().len());
         let last = idx.last().copied().unwrap_or(0);
+        // A copy is a new slide: its own part when saved, written from the model, named now
+        // when it takes its original's speaker notes.
+        let parts = crate::copy_notes(&mut self.doc, &idx);
         self.change_deck(|slides| {
-            let copies: Vec<Slide> = idx
-                .iter()
-                .filter_map(|&i| slides.get(i).cloned())
-                .map(|mut s| {
-                    // A copy is a new slide: its own part when saved, written from the model.
-                    s.part = None;
-                    s
-                })
-                .collect();
+            let copies: Vec<Slide> = idx.iter().zip(parts).map(|(&i, part)| Slide { part, ..slides[i].clone() }).collect();
             let at = (last + 1).min(slides.len());
             for (k, s) in copies.into_iter().enumerate() {
                 slides.insert(at + k, s);
@@ -578,7 +579,16 @@ impl SlidesView {
             })
             .collect();
         let Some(media) = media else { return "[]".into() };
-        serde_json::to_string(&FrameClipboard { frames, media }).unwrap_or_else(|_| "[]".into())
+        let mut origins = Vec::new();
+        for f in &mut frames {
+            for_each_origin(f, &mut |o| {
+                origins.push(o.get().filter(|el| !office_core::formats::common::names_parts(el)).map(Element::to_xml_string));
+            });
+        }
+        if origins.iter().all(Option::is_none) {
+            origins.clear();
+        }
+        serde_json::to_string(&FrameClipboard { frames, media, origins }).unwrap_or_else(|_| "[]".into())
     }
 
     /// Frames from the clipboard, put on the active slide and picked.
@@ -586,11 +596,12 @@ impl SlidesView {
         let Ok(clipboard) = serde_json::from_str::<FrameClipboard>(json).or_else(|_| {
             // Older clipboards can still paste shapes and text. Pictures need carried media:
             // an id present in this deck may refer to an unrelated picture.
-            serde_json::from_str::<Vec<Frame>>(json).map(|frames| FrameClipboard { frames, media: BTreeMap::new() })
+            serde_json::from_str::<Vec<Frame>>(json).map(|frames| FrameClipboard { frames, media: BTreeMap::new(), origins: Vec::new() })
         }) else {
             return false;
         };
-        let FrameClipboard { mut frames, mut media } = clipboard;
+        let FrameClipboard { mut frames, mut media, origins } = clipboard;
+        restore_origins(&mut frames, origins);
         let active = self.sel.active;
         if frames.is_empty() || self.slides().get(active).is_none() {
             return false;
@@ -1792,6 +1803,84 @@ fn strip_ids(o: &Origin) -> Origin {
         }
         None => Origin::default(),
     }
+}
+
+/// Every origin in a frame and what it holds, in a fixed order: the frame's, then its text's,
+/// table's or children's.
+fn for_each_origin(f: &mut Frame, cb: &mut dyn FnMut(&mut Origin)) {
+    fn paragraph(p: &mut Paragraph, cb: &mut dyn FnMut(&mut Origin)) {
+        cb(&mut p.origin);
+        for i in &mut p.content {
+            match i {
+                office_core::model::Inline::Text(r) => cb(&mut r.origin),
+                office_core::model::Inline::Break { origin, .. } => cb(origin),
+                office_core::model::Inline::Image(image) => cb(&mut image.origin),
+                office_core::model::Inline::Raw { .. } => {}
+            }
+        }
+    }
+    fn table(t: &mut Table, cb: &mut dyn FnMut(&mut Origin)) {
+        cb(&mut t.origin);
+        for row in &mut t.rows {
+            cb(&mut row.origin);
+            for cell in &mut row.cells {
+                cb(&mut cell.origin);
+                for b in &mut cell.blocks {
+                    match b {
+                        Block::Paragraph(p) => paragraph(p, cb),
+                        Block::Table(t) => table(t, cb),
+                        Block::Raw { .. } => {}
+                    }
+                }
+            }
+        }
+    }
+    cb(&mut f.origin);
+    match &mut f.content {
+        FrameContent::Shape { text: Some(body), .. } => {
+            cb(&mut body.origin);
+            body.paragraphs.iter_mut().for_each(|p| paragraph(p, cb));
+        }
+        FrameContent::Picture { image } => cb(&mut image.origin),
+        FrameContent::Table { table: t } => table(t, cb),
+        FrameContent::Group { frames } => frames.iter_mut().for_each(|c| for_each_origin(c, cb)),
+        FrameContent::Shape { text: None, .. } | FrameContent::Raw { .. } => {}
+    }
+}
+
+/// Puts a clipboard's markup back on its frames, if it is all there and readable.
+fn restore_origins(frames: &mut [Frame], origins: Vec<Option<String>>) {
+    let mut count = 0;
+    frames.iter_mut().for_each(|f| for_each_origin(f, &mut |_| count += 1));
+    if origins.len() != count {
+        return;
+    }
+    let Ok(parsed) = origins
+        .into_iter()
+        .map(|o| {
+            o.map(|xml| {
+                office_core::xml::parse_element(&xml).map(|mut el| {
+                    drop_ns_decls(&mut el);
+                    Origin::new(el)
+                })
+            })
+            .transpose()
+        })
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return;
+    };
+    let mut parsed = parsed.into_iter();
+    for f in frames {
+        for_each_origin(f, &mut |o| *o = parsed.next().flatten().unwrap_or_default());
+    }
+}
+
+/// Removes the namespace declarations a standalone origin carries, which the slide it is
+/// pasted into already has; the writer adds back any it lacks.
+fn drop_ns_decls(el: &mut Element) {
+    el.attrs.retain(|a| !a.is_ns_decl());
+    el.elements_mut().for_each(drop_ns_decls);
 }
 
 /// Every picture in a frame, including pictures inside nested groups.
