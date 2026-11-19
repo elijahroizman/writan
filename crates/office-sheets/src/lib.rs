@@ -356,12 +356,29 @@ impl<'a> SheetFormulas<'a> {
 /// one they're #N/A. A formula that depends on itself comes to 0, as in Excel. Returns how many
 /// formulas there were.
 pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
+    calculate(doc, now, |_| true)
+}
+
+/// Works out only the formulas that have no result yet, as a file written by a library
+/// without a calculation engine (openpyxl) has them; every other formula keeps the result
+/// Excel stored for it. Returns how many formulas were worked out.
+pub fn calculate_uncached(doc: &mut Document, now: Option<f64>) -> usize {
+    calculate(doc, now, uncached)
+}
+
+/// Whether a formula cell has no stored result. An empty text result is stored as `t="str"`
+/// with an empty `v`, and is a result.
+fn uncached(cell: &SheetCell) -> bool {
+    cell.value.is_empty() && !cell.origin.get().is_some_and(|c| c.attr("t") == Some("str") && c.child(ns::X, "v").is_some())
+}
+
+fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> usize {
     let Body::Workbook { sheets } = &doc.body else { return 0 };
     let mut formulas = HashMap::new();
     for (si, s) in sheets.iter().enumerate() {
         let mut reader = SheetFormulas::new(s);
         for row in &s.rows {
-            for c in &row.cells {
+            for c in row.cells.iter().filter(|c| include(c)) {
                 if let Some(text) = reader.read(CellRef::new(row.index, c.col), c) {
                     let expr = formula::parse(&text).unwrap_or(Expr::Error("#NAME?".into()));
                     formulas.insert((si, row.index, c.col), std::rc::Rc::new(expr));
