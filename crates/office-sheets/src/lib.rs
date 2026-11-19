@@ -31,6 +31,7 @@ pub mod eval;
 pub mod formula;
 pub mod numfmt;
 pub mod styles;
+mod tables;
 pub mod validation;
 pub mod view;
 
@@ -46,7 +47,8 @@ pub use dates::{DateSystem, DateTime};
 pub use styles::{Alignment, Border, BorderSide, CellFormat, Fill, Font, StyleSheet};
 
 use eval::{Book, V};
-use formula::Expr;
+use formula::{Expr, Reference, TableReference};
+use tables::Table;
 
 /// The layer: add it to a [`office_core::Compiler`].
 pub struct Sheets;
@@ -432,6 +434,7 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
     let x = excel(doc);
     let mut book = Workbook {
         sheets,
+        tables: doc.package.as_ref().map(|pkg| Table::read(pkg, sheets)).unwrap_or_default(),
         names: x.map(|x| x.names.clone()).unwrap_or_default(),
         date_system: x.map(|x| x.date_system).unwrap_or_default(),
         now,
@@ -569,6 +572,7 @@ impl Workbook<'_> {
 /// The workbook as formulas see it while they're worked out.
 struct Workbook<'a> {
     sheets: &'a [Sheet],
+    tables: Vec<Table<'a>>,
     names: Vec<DefinedName>,
     date_system: DateSystem,
     now: Option<f64>,
@@ -667,6 +671,11 @@ impl Book for Workbook<'_> {
             .find(|n| n.name.eq_ignore_ascii_case(name) && n.sheet.is_some() && n.sheet == here)
             .or_else(|| self.names.iter().find(|n| n.name.eq_ignore_ascii_case(name) && n.sheet.is_none()))?;
         formula::parse(&found.formula).ok()
+    }
+
+    fn table(&self, reference: &TableReference) -> Option<Result<Vec<Reference>, &'static str>> {
+        let here = self.path.last().map(|&(sheet, row, col)| (sheet, CellRef::new(row, col)));
+        Some(Table::find(&self.tables, reference.table.as_deref(), here)?.resolve(reference, here))
     }
 
     fn date_system(&self) -> DateSystem {
