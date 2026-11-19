@@ -199,13 +199,7 @@ mod tests {
 
     #[test]
     fn bundled_executable_resolves_to_the_app() {
-        let exe = parts(&[
-            "Applications",
-            "Writan.app",
-            "Contents",
-            "MacOS",
-            "writan",
-        ]);
+        let exe = parts(&["Applications", "Writan.app", "Contents", "MacOS", "writan"]);
         assert_eq!(
             bundle_app_dir(&exe),
             Some(parts(&["Applications", "Writan.app"]))
@@ -218,10 +212,7 @@ mod tests {
             bundle_app_dir(&parts(&["src-tauri", "target", "debug", "writan"])),
             None
         );
-        assert_eq!(
-            bundle_app_dir(&parts(&["Writan.app", "writan"])),
-            None
-        );
+        assert_eq!(bundle_app_dir(&parts(&["Writan.app", "writan"])), None);
     }
 
     #[test]

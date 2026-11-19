@@ -23,7 +23,10 @@ pub fn read_file(path: String) -> Result<Response, String> {
 /// With an `x-history` header the save is also kept in version history (see history.rs),
 /// named by the percent-encoded `x-history-label` if there is one.
 #[tauri::command]
-pub fn write_file<R: tauri::Runtime>(app: tauri::AppHandle<R>, request: Request<'_>) -> Result<(), String> {
+pub fn write_file<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    request: Request<'_>,
+) -> Result<(), String> {
     let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok());
     let encoded = header("x-path").ok_or("Missing destination path")?;
     let path = PathBuf::from(percent_decode(encoded)?);
@@ -35,7 +38,13 @@ pub fn write_file<R: tauri::Runtime>(app: tauri::AppHandle<R>, request: Request<
     if let Some(root) = &history {
         crate::history::remember_original(root, &path);
     }
-    atomic_write(&path, bytes).map_err(|e| format!("Couldn't save “{}”: {}.", display_name(&path.to_string_lossy()), save_error(&e)))?;
+    atomic_write(&path, bytes).map_err(|e| {
+        format!(
+            "Couldn't save “{}”: {}.",
+            display_name(&path.to_string_lossy()),
+            save_error(&e)
+        )
+    })?;
     if let Some(root) = history {
         let disk = crate::history::stamp(&path);
         // Off the save's path: hashing and copying a big file shouldn't hold up the next edit.
@@ -76,14 +85,16 @@ pub async fn fetch_bytes(url: String) -> Result<Response, String> {
 /// The timeout keeps a stalled download from blocking the video insert, which
 /// waits for the poster.
 pub(crate) fn http_agent() -> &'static ureq::Agent {
-    static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| agent(Some(Duration::from_secs(15)), None));
+    static AGENT: LazyLock<ureq::Agent> =
+        LazyLock::new(|| agent(Some(Duration::from_secs(15)), None));
     &AGENT
 }
 
 /// For large downloads (plugins): 15 s to connect, 30 s for the reply to start, and 15 minutes
 /// for the body, enough for 100 MB on a slow line, so a stalled transfer still ends.
 pub(crate) fn download_agent() -> &'static ureq::Agent {
-    static AGENT: LazyLock<ureq::Agent> = LazyLock::new(|| agent(None, Some(Duration::from_secs(15 * 60))));
+    static AGENT: LazyLock<ureq::Agent> =
+        LazyLock::new(|| agent(None, Some(Duration::from_secs(15 * 60))));
     &AGENT
 }
 
@@ -126,7 +137,12 @@ pub fn path_info(path: String) -> PathInfo {
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
         },
-        Err(_) => PathInfo { exists: false, is_dir: false, size: 0, modified_ms: 0 },
+        Err(_) => PathInfo {
+            exists: false,
+            is_dir: false,
+            size: 0,
+            modified_ms: 0,
+        },
     }
 }
 
@@ -140,7 +156,15 @@ pub struct DirEntry {
 
 /// Folders a document app has no business listing: hidden ones, version control, dependencies.
 fn skipped(name: &str) -> bool {
-    name.starts_with('.') || matches!(name, "node_modules" | "__pycache__" | "target" | "$RECYCLE.BIN" | "System Volume Information")
+    name.starts_with('.')
+        || matches!(
+            name,
+            "node_modules"
+                | "__pycache__"
+                | "target"
+                | "$RECYCLE.BIN"
+                | "System Volume Information"
+        )
 }
 
 /// A folder's contents for the folder sidebar: subfolders first, then files, each by name
@@ -156,31 +180,49 @@ pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
                 return None;
             }
             // Follows symlinks, so a linked folder opens like a folder.
-            let is_dir = fs::metadata(entry.path()).map(|m| m.is_dir()).unwrap_or(false);
-            Some(DirEntry { path: entry.path().to_string_lossy().into_owned(), name, is_dir })
+            let is_dir = fs::metadata(entry.path())
+                .map(|m| m.is_dir())
+                .unwrap_or(false);
+            Some(DirEntry {
+                path: entry.path().to_string_lossy().into_owned(),
+                name,
+                is_dir,
+            })
         })
         .collect();
-    entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| natural_cmp(&a.name, &b.name)));
+    entries.sort_by(|a, b| {
+        b.is_dir
+            .cmp(&a.is_dir)
+            .then_with(|| natural_cmp(&a.name, &b.name))
+    });
     Ok(entries)
 }
 
 /// Every file under `root` with one of `extensions`, for searching a folder by name. Stops after
 /// `limit` files or 20 folders deep, so pointing it at a home folder can't run away.
 #[tauri::command]
-pub async fn walk_dir(root: String, extensions: Vec<String>, limit: usize) -> Result<Vec<String>, String> {
+pub async fn walk_dir(
+    root: String,
+    extensions: Vec<String>,
+    limit: usize,
+) -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let extensions: Vec<String> = extensions.iter().map(|e| e.to_lowercase()).collect();
         let mut out = Vec::new();
         let mut stack = vec![(PathBuf::from(&root), 0usize)];
         while let Some((dir, depth)) = stack.pop() {
-            let Ok(read) = fs::read_dir(&dir) else { continue };
+            let Ok(read) = fs::read_dir(&dir) else {
+                continue;
+            };
             let mut subdirs = Vec::new();
             for entry in read.flatten() {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 if skipped(&name) {
                     continue;
                 }
-                let Ok(kind) = entry.file_type() else { continue };
+                let Ok(kind) = entry.file_type() else {
+                    continue;
+                };
                 if kind.is_dir() {
                     if depth < 20 {
                         subdirs.push(entry.path());
@@ -244,17 +286,30 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     atomic_write_with(path, |file| file.write_all(bytes))
 }
 
-fn atomic_write_with(path: &Path, write: impl FnOnce(&mut fs::File) -> std::io::Result<()>) -> std::io::Result<()> {
+fn atomic_write_with(
+    path: &Path,
+    write: impl FnOnce(&mut fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     // Saving through a symlink changes the file it points to and keeps the link.
     let linked = fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
-    let resolved = if linked { Some(fs::canonicalize(path)?) } else { None };
+    let resolved = if linked {
+        Some(fs::canonicalize(path)?)
+    } else {
+        None
+    };
     let path = resolved.as_deref().unwrap_or(path);
     // Replacing the file would succeed on a Mac or Linux, since only its folder needs to be
     // writable, but a read-only file is one someone meant not to change.
     if fs::metadata(path).is_ok_and(|m| m.permissions().readonly()) {
-        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the file is read-only. Use Save As to save a copy"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "the file is read-only. Use Save As to save a copy",
+        ));
     }
-    let dir = path.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
     // A separate, exclusively created file for each save. A predictable name can be a symlink
     // to another document, or be shared by two saves in progress.
     let mut builder = tempfile::Builder::new();
@@ -328,7 +383,10 @@ mod tests {
 
     #[test]
     fn decodes_unicode_paths() {
-        assert_eq!(percent_decode("%2FUsers%2Fe%2FR%C3%A9sum%C3%A9.docx").unwrap(), "/Users/e/Résumé.docx");
+        assert_eq!(
+            percent_decode("%2FUsers%2Fe%2FR%C3%A9sum%C3%A9.docx").unwrap(),
+            "/Users/e/Résumé.docx"
+        );
         assert_eq!(percent_decode("plain").unwrap(), "plain");
     }
 
@@ -347,7 +405,11 @@ mod tests {
         atomic_write(&file, b"one").unwrap();
         atomic_write(&file, b"two").unwrap();
         assert_eq!(fs::read(&file).unwrap(), b"two");
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "temp file left behind");
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "temp file left behind"
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
@@ -366,7 +428,10 @@ mod tests {
         );
         fs::set_permissions(&saved, fs::Permissions::from_mode(0o640)).unwrap();
         atomic_write(&saved, b"replacement").unwrap();
-        assert_eq!(fs::metadata(&saved).unwrap().permissions().mode() & 0o777, 0o640);
+        assert_eq!(
+            fs::metadata(&saved).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
     }
 
     #[test]
@@ -395,7 +460,8 @@ mod tests {
         let err = atomic_write_with(&file, |tmp| {
             tmp.write_all(b"partial")?;
             Err(std::io::Error::from(std::io::ErrorKind::StorageFull))
-        }).unwrap_err();
+        })
+        .unwrap_err();
         assert!(save_error(&err).contains("disk is full"));
         assert_eq!(fs::read(&file).unwrap(), b"original");
         assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
@@ -416,15 +482,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let file = dir.path().join("notes.md");
         let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
-        let workers: Vec<_> = (0u8..8).map(|i| {
-            let file = file.clone();
-            let barrier = barrier.clone();
-            std::thread::spawn(move || {
-                barrier.wait();
-                atomic_write(&file, &vec![i; 128 * 1024]).unwrap();
+        let workers: Vec<_> = (0u8..8)
+            .map(|i| {
+                let file = file.clone();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    atomic_write(&file, &vec![i; 128 * 1024]).unwrap();
+                })
             })
-        }).collect();
-        for worker in workers { worker.join().unwrap(); }
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
         let saved = fs::read(&file).unwrap();
         assert_eq!(saved.len(), 128 * 1024);
         assert!(saved.iter().all(|b| *b == saved[0]));
@@ -467,7 +537,11 @@ mod tests {
         let err = atomic_write(&file, &vec![b'x'; 1 << 20]).unwrap_err();
         assert!(save_error(&err).contains("disk is full"), "{err}");
         assert_eq!(fs::read(&file).unwrap(), b"original");
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1, "partial temp file left behind");
+        assert_eq!(
+            fs::read_dir(&dir).unwrap().count(),
+            1,
+            "partial temp file left behind"
+        );
     }
 
     #[cfg(unix)]
@@ -480,7 +554,10 @@ mod tests {
         fs::write(&target, b"one").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
         atomic_write(&link, b"two").unwrap();
-        assert!(fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+        assert!(fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert_eq!(fs::read(&target).unwrap(), b"two");
         fs::remove_dir_all(&dir).unwrap();
     }
@@ -495,7 +572,9 @@ mod tests {
         // Calling `ureq::get` here panics because `ureq` defaults to `TlsProvider::Rustls`
         // while only the `native-tls` feature is enabled. `http_agent()` should instead
         // attempt a native-tls handshake and return a normal `Err` when the peer closes.
-        let result = http_agent().get(&format!("https://127.0.0.1:{}/", addr.port())).call();
+        let result = http_agent()
+            .get(&format!("https://127.0.0.1:{}/", addr.port()))
+            .call();
         assert!(result.is_err());
     }
 }

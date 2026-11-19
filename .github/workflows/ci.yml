@@ -143,10 +143,11 @@ jobs:
           version: ubuntu-24.04-app-1
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: clippy
+          components: clippy, rustfmt
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+      - run: cargo fmt --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test
 
