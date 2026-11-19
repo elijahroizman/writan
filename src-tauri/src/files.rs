@@ -312,13 +312,15 @@ fn atomic_write_with(
         .unwrap_or(Path::new("."));
     // A separate, exclusively created file for each save. A predictable name can be a symlink
     // to another document, or be shared by two saves in progress.
-    let mut builder = tempfile::Builder::new();
+    let builder = tempfile::Builder::new();
     // Match ordinary new-file creation: the kernel applies the process umask.
     #[cfg(unix)]
-    {
+    let builder = {
         use std::os::unix::fs::PermissionsExt;
+        let mut builder = builder;
         builder.permissions(fs::Permissions::from_mode(0o666));
-    }
+        builder
+    };
     let mut tmp = builder.tempfile_in(dir)?;
     write(tmp.as_file_mut())?;
     tmp.as_file().sync_all()?;

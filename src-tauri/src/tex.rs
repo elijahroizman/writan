@@ -657,7 +657,7 @@ mod mac {
         Err(if err.contains("-128") {
             "Cancelled.".into()
         } else {
-            format!("{}", err.trim())
+            err.trim().to_string()
         })
     }
 }
