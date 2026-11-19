@@ -930,3 +930,120 @@ fn conditional_formats_reach_cells_that_hold_nothing() {
     let greens = p.items.iter().filter(|i| matches!(i, Item::Rect { fill: Some(f), .. } if f == "#00b050")).count();
     assert_eq!(greens, 5);
 }
+
+/// Deleting a row moves conditional formatting, validation and pictures with the cells.
+#[test]
+fn rules_and_pictures_follow_deleted_rows() {
+    let bytes = include_bytes!("../../../../tests/stress/samples/S2-xlsx-cf-validation-picture.xlsx");
+    let mut v = SheetsView::open(bytes, "visuals.xlsx").unwrap();
+    v.shift_rows(0, 0, -1);
+    let check = |v: &mut SheetsView| {
+        let mut host = FixedMeasurer::default();
+        let p = v.paint(&mut host, 0, 0, 6, 0, 6);
+        let grid = v.grid(0).clone();
+        let fill_at = |row: u32, col: u32| {
+            p.items.iter().find_map(|i| match i {
+                Item::Rect { x, y, fill: Some(f), .. } if (*x - grid.x(col)).abs() < 0.5 && (*y - grid.y(row)).abs() < 0.5 => {
+                    Some(f.clone())
+                }
+                _ => None,
+            })
+        };
+        assert_eq!(fill_at(0, 0).as_deref(), Some("#c6efce"));
+        assert_eq!(fill_at(3, 1).as_deref(), Some("#ffc7ce"));
+        assert_eq!(fill_at(4, 1), None);
+        assert!(v.cell_info(0, CellRef::new(0, 0)).validation.is_some());
+        assert!(v.cell_info(0, CellRef::new(9, 0)).validation.is_none());
+        let pictures = v.pictures(0);
+        assert_eq!((pictures[0].x, pictures[0].y), (grid.x(6), grid.y(0)));
+    };
+    check(&mut v);
+    let mut back = SheetsView::open(&v.save().unwrap(), "visuals.xlsx").unwrap();
+    check(&mut back);
+    // Deleting every row a rule covers takes the rule with it.
+    back.shift_rows(0, 0, -10);
+    assert!(back.cell_info(0, CellRef::new(0, 0)).validation.is_none());
+}
+
+/// Rules on one sheet that read another follow rows deleted there, and undo puts them back.
+#[test]
+fn rules_follow_rows_deleted_on_the_sheet_they_read() {
+    use crate::conditional::tests::{book, n, row, s};
+    let rules = r#"<dataValidations count="1"><dataValidation type="list" sqref="A1"><formula1>Other!$A$1:$A$3</formula1></dataValidation></dataValidations>"#;
+    let other = row(1, &[s("A1", "North")]) + &row(2, &[s("A2", "South")]) + &row(3, &[n("A3", 3.0)]);
+    let doc = book("", rules, &other, "");
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "lists.xlsx").unwrap();
+    let list = |v: &SheetsView| v.cell_info(0, CellRef::new(0, 0)).validation.and_then(|i| i.list);
+    assert_eq!(list(&v).map(|l| l.len()), Some(3));
+    v.shift_rows(1, 0, -1);
+    assert_eq!(list(&v), Some(vec!["South".to_string(), "3".into()]));
+    assert!(v.undo());
+    assert_eq!(list(&v).map(|l| l.len()), Some(3));
+}
+
+/// Shifting rows keeps the 2010 extension list's `<x14:formula1><xm:f>` shape.
+#[test]
+fn shifting_rows_keeps_extension_list_formulas_whole() {
+    use crate::conditional::tests::{book, n, row, s};
+    let rules = r#"<extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"><x14:dataValidations count="1"><x14:dataValidation type="list"><x14:formula1><xm:f>Other!$A$1:$A$3</xm:f></x14:formula1><xm:sqref>A5</xm:sqref></x14:dataValidation></x14:dataValidations></ext></extLst>"#;
+    let other = row(1, &[s("A1", "North")]) + &row(2, &[s("A2", "South")]) + &row(3, &[n("A3", 3.0)]);
+    let doc = book("", rules, &other, "");
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "lists.xlsx").unwrap();
+    v.shift_rows(0, 0, 1);
+    let back = SheetsView::open(&v.save().unwrap(), "lists.xlsx").unwrap();
+    assert_eq!(back.cell_info(0, CellRef::new(5, 0)).validation.and_then(|i| i.list).map(|l| l.len()), Some(3));
+    assert!(back.cell_info(0, CellRef::new(4, 0)).validation.is_none());
+}
+
+/// A rule over a whole column survives a row insert, and deleting the first row a relative rule
+/// covers leaves its formula written for the new first row.
+#[test]
+fn rule_ranges_clamp_and_rebase() {
+    let bytes = include_bytes!("../../../../tests/stress/samples/S2-xlsx-cf-validation-picture.xlsx");
+    let mut v = SheetsView::open(bytes, "visuals.xlsx").unwrap();
+    // A2:A5 is green where `$A2="Done"`: rows 2 and 4. Deleting row 2 leaves A2:A4 with Done in A3.
+    v.shift_rows(0, 1, -1);
+    let green = |v: &SheetsView, row: u32| crate::conditional::format_at(&v.doc, 0, CellRef::new(row, 0), None).fill.fg.is_some();
+    assert!(!green(&v, 1));
+    assert!(green(&v, 2));
+    assert!(!green(&v, 3));
+
+    use crate::conditional::tests::{book, row, s};
+    let rules = r#"<dataValidations count="1"><dataValidation type="list" sqref="A1:A1048576"><formula1>"x,y"</formula1></dataValidation></dataValidations>"#;
+    let doc = book(&row(1, &[s("A1", "x")]), rules, "", "");
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "column.xlsx").unwrap();
+    v.shift_rows(0, 3, 2);
+    let back = SheetsView::open(&v.save().unwrap(), "column.xlsx").unwrap();
+    assert!(back.cell_info(0, CellRef::new(0, 0)).validation.is_some());
+    assert!(back.cell_info(0, CellRef::new(1_048_575, 0)).validation.is_some());
+}
+
+#[test]
+fn spans_grow_shrink_and_go() {
+    use super::commands::shift_span;
+    assert_eq!(shift_span(1, 4, 3, 2, 100), Some((1, 6)));
+    assert_eq!(shift_span(1, 99, 3, 2, 100), Some((1, 99)));
+    assert_eq!(shift_span(1, 4, 1, -1, 100), Some((1, 3)));
+    assert_eq!(shift_span(1, 4, 0, -2, 100), Some((0, 2)));
+    assert_eq!(shift_span(2, 3, 1, -5, 100), None);
+    assert_eq!(shift_span(98, 99, 3, 2, 100), None);
+}
+
+/// When the first range of a rule is deleted, its formulas are rewritten for the next range's
+/// first cell along both axes.
+#[test]
+fn rules_rebase_onto_a_range_in_another_column() {
+    use crate::conditional::tests::{book, row, s};
+    let rules = r#"<conditionalFormatting sqref="A2 C5"><cfRule type="expression" dxfId="0" priority="1"><formula>B2="y"</formula></cfRule></conditionalFormatting>"#;
+    let green = r#"<dxf><fill><patternFill><bgColor rgb="FF00B050"/></patternFill></fill></dxf>"#;
+    let doc = book(&row(5, &[s("C5", "x"), s("D5", "y")]), rules, "", green);
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "rebase.xlsx").unwrap();
+    let on = |v: &SheetsView, at: &str| crate::conditional::format_at(&v.doc, 0, CellRef::parse(at).unwrap(), None).fill.fg.is_some();
+    assert!(on(&v, "C5"));
+    v.shift_rows(0, 1, -1);
+    assert!(on(&v, "C4"));
+}

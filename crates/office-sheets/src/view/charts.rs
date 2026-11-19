@@ -471,7 +471,7 @@ pub(super) fn shift_other_chart_refs(sheets: &mut [Sheet], skip: usize, adjust: 
     }
 }
 
-/// Moves a sheet's charts and their references for rows (`rows`) or columns inserted at `at`
+/// Moves a sheet's charts and pictures, and the charts' references, for rows (`rows`) or columns inserted at `at`
 /// (`n > 0`) or deleted (`n < 0`), with `adjust` moving one reference.
 pub(super) fn shift_charts(s: &mut Sheet, rows: bool, at: u32, n: i64, adjust: impl Fn(&str) -> String) {
     let shift = |i: u32| -> u32 {
@@ -483,14 +483,20 @@ pub(super) fn shift_charts(s: &mut Sheet, rows: bool, at: u32, n: i64, adjust: i
             (i as i64 + n).max(0) as u32
         }
     };
-    for c in &mut s.charts {
-        for p in [Some(&mut c.anchor.from), c.anchor.to.as_mut()].into_iter().flatten() {
+    let move_anchor = |a: &mut ChartAnchor| {
+        for p in [Some(&mut a.from), a.to.as_mut()].into_iter().flatten() {
             if rows {
                 p.row = shift(p.row);
             } else {
                 p.col = shift(p.col);
             }
         }
+    };
+    for p in &mut s.pictures {
+        move_anchor(&mut p.anchor);
+    }
+    for c in &mut s.charts {
+        move_anchor(&mut c.anchor);
         for ser in &mut c.series {
             for f in [ser.name_ref.as_mut(), ser.categories.as_mut(), Some(&mut ser.values)].into_iter().flatten() {
                 *f = adjust(f);

@@ -132,12 +132,12 @@ impl SheetsView {
     }
 
     /// Inserts or deletes rows or columns through `f`, as one step, then moves the references
-    /// to them in other sheets' formulas and in defined names. The step holds the whole book
-    /// when another sheet has charts whose references may move with it.
+    /// to them in other sheets' formulas, rules and defined names. The step holds the whole book
+    /// when another sheet has charts or rules whose references may move with it.
     fn change_for_shift(&mut self, sheet: usize, axis: Axis, at: u32, n: i64, f: impl FnOnce(&mut SheetsView)) {
         self.cancel_cut_on_sheet(sheet);
         let Some(name) = self.sheets().get(sheet).map(|s| s.name.clone()) else { return };
-        let book = self.sheets().iter().enumerate().any(|(i, s)| i != sheet && !s.charts.is_empty());
+        let book = self.sheets().iter().enumerate().any(|(i, s)| i != sheet && (!s.charts.is_empty() || has_rules(s)));
         let sel = self.sel;
         let before = if book { self.sheets().to_vec() } else { vec![self.sheets()[sheet].clone()] };
         f(self);
@@ -147,6 +147,7 @@ impl SheetsView {
                 continue;
             }
             let old = prepare_shift(s, &name, axis, at, n);
+            shift_rules(s, &name, false, axis, at, n);
             if !book && !old.is_empty() {
                 let cells = old.into_iter().map(|(at, before)| (at, Some(before), s.cell(at).cloned())).collect();
                 steps.push(CStep::Cells { sheet: i, cells });
@@ -480,6 +481,7 @@ impl SheetsView {
             let name = s.name.clone();
             prepare_shift(s, &name, Axis::Row, at, n);
             super::charts::shift_charts(s, true, at, n, |f| adjust_formula(f, &name, Axis::Row, at, n));
+            shift_rules(s, &name, true, Axis::Row, at, n);
             super::charts::shift_other_chart_refs(v.sheets_mut(), sheet, |f| adjust_formula(f, &name, Axis::Row, at, n));
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
             if n < 0 {
@@ -517,6 +519,7 @@ impl SheetsView {
             let name = s.name.clone();
             prepare_shift(s, &name, Axis::Col, at, n);
             super::charts::shift_charts(s, false, at, n, |f| adjust_formula(f, &name, Axis::Col, at, n));
+            shift_rules(s, &name, true, Axis::Col, at, n);
             super::charts::shift_other_chart_refs(v.sheets_mut(), sheet, |f| adjust_formula(f, &name, Axis::Col, at, n));
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
             for r in &mut s.rows {
@@ -1009,6 +1012,111 @@ fn clear_attr(o: &office_core::model::Origin, k: &str) -> office_core::model::Or
             office_core::model::Origin::new(el)
         }
         None => Default::default(),
+    }
+}
+
+/// Whether a sheet's markup holds conditional formatting or data validation.
+fn has_rules(s: &Sheet) -> bool {
+    s.origin.get().is_some_and(|r| r.elements().any(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "extLst")))
+}
+
+/// One span of rows or columns, `start..=end`, after inserting (`n > 0`) or deleting (`n < 0`) at
+/// `at`: it grows when the insert falls inside it, never runs past `max`, and shrinks when some
+/// of it is deleted. None when all of it is.
+pub(super) fn shift_span(start: u32, end: u32, at: u32, n: i64, max: u32) -> Option<(u32, u32)> {
+    let (at, last) = (at as i64, max as i64 - 1);
+    let moved = |i: u32| if (i as i64) < at { i as i64 } else { i as i64 + n };
+    if n >= 0 {
+        // A span pushed wholly off the sheet goes, as in Excel.
+        return (moved(start) <= last).then(|| (moved(start) as u32, moved(end).min(last) as u32));
+    }
+    let gone = |i: u32| (i as i64) >= at && (i as i64) < at - n;
+    let a = if gone(start) { at } else { moved(start) };
+    let b = if gone(end) { at - 1 } else { moved(end) };
+    (a <= b).then_some((a as u32, b as u32))
+}
+
+/// Moves the references in a sheet's conditional formatting and data validation to `target`, for
+/// rows or columns inserted there at `at` (`n > 0`) or deleted (`n < 0`), and, on `target` itself
+/// (`local`), the ranges the rules cover. A rule whose ranges are all deleted goes with them.
+fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n: i64) {
+    use office_core::xml::{Element, Node};
+    let Some(root) = s.origin.get() else { return };
+    let mut root = root.clone();
+    let rows = matches!(axis, Axis::Row);
+    let max = if rows { crate::MAX_ROWS } else { crate::MAX_COLS };
+    let pos = |r: &Range| if rows { r.start.row } else { r.start.col };
+    let move_range = |mut r: Range| -> Option<Range> {
+        if rows {
+            (r.start.row, r.end.row) = shift_span(r.start.row, r.end.row, at, n, max)?;
+        } else {
+            (r.start.col, r.end.col) = shift_span(r.start.col, r.end.col, at, n, max)?;
+        }
+        Some(r)
+    };
+    let ranges = |v: &str| v.split_whitespace().filter_map(Range::parse).collect::<Vec<_>>();
+    let sqref = |v: &str| -> String {
+        if !local {
+            return v.to_string();
+        }
+        ranges(v).into_iter().filter_map(move_range).map(|r| r.to_string()).collect::<Vec<_>>().join(" ")
+    };
+    // A rule's formulas are written for the first cell it covers. When that cell is deleted, the
+    // first one left takes over, so the formulas are first rewritten for it.
+    let rebase = |v: &str| -> (i64, i64) {
+        let all = ranges(v);
+        let (Some(first), Some(kept)) = (all.first(), all.iter().find(|r| local && move_range(**r).is_some())) else { return (0, 0) };
+        let p = pos(kept) as i64;
+        let from = if n < 0 && p >= at as i64 && p < at as i64 - n { at as i64 - n } else { p };
+        // The first cell left is `kept.start`, with its edited coordinate as it was before the shift.
+        let (row, col) = if rows { (from, kept.start.col as i64) } else { (kept.start.row as i64, from) };
+        (row - first.start.row as i64, col - first.start.col as i64)
+    };
+    let formula = |f: &str, (dr, dc): (i64, i64)| -> String {
+        let f = if (dr, dc) == (0, 0) { f.to_string() } else { crate::formula::shift(f, dr, dc).unwrap_or_else(|_| f.to_string()) };
+        adjust_formula_on(&f, target, local, axis, at, n)
+    };
+    fn set_text(el: &mut Element, text: String) {
+        el.children = vec![Node::Text(text)];
+    }
+    fn walk(
+        el: &mut Element,
+        sqref: &dyn Fn(&str) -> String,
+        rebase: &dyn Fn(&str) -> (i64, i64),
+        formula: &dyn Fn(&str, (i64, i64)) -> String,
+        delta: (i64, i64),
+    ) {
+        let own = el.attr("sqref").map(str::to_string).or_else(|| el.elements().find(|c| c.local == "sqref").map(Element::text));
+        let delta = own.as_deref().map_or(delta, rebase);
+        if let Some(v) = el.attr("sqref").map(str::to_string) {
+            el.set_attr("", "sqref", sqref(&v));
+        }
+        // `<x14:formula1>` holds its formula in an `<xm:f>`; only a leaf holds text to move.
+        let leaf = el.elements().next().is_none();
+        match el.local.as_str() {
+            "sqref" if leaf => set_text(el, sqref(&el.text())),
+            "formula" | "formula1" | "formula2" | "f" if leaf => set_text(el, formula(&el.text(), delta)),
+            _ => el.elements_mut().for_each(|c| walk(c, sqref, rebase, formula, delta)),
+        }
+        // A rule left with no cells is dropped.
+        el.children.retain(|c| match c {
+            Node::Element(e) => {
+                let gone = |v: &str| v.trim().is_empty();
+                !(e.attr("sqref").is_some_and(gone) || e.elements().any(|c| c.local == "sqref" && gone(&c.text())))
+            }
+            _ => true,
+        });
+    }
+    let mut changed = false;
+    for el in root.elements_mut().filter(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "extLst")) {
+        walk(el, &sqref, &rebase, &formula, (0, 0));
+        changed = true;
+    }
+    root.children.retain(
+        |c| !matches!(c, Node::Element(e) if e.local == "conditionalFormatting" && e.attr("sqref").is_some_and(|v| v.trim().is_empty())),
+    );
+    if changed {
+        s.origin = office_core::model::Origin::new(root);
     }
 }
 
