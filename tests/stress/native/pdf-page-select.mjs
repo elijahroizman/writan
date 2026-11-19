@@ -110,9 +110,9 @@ try {
   })
 
   const thumb = (n) => page.locator(`.thumb[data-page="${n}"]`)
-  const expectCurrent = async (n, step) => {
+  const expectCurrent = async (n, step, total = 3) => {
     try {
-      await page.getByText(`Page ${n} of 3`, { exact: true }).waitFor({ timeout: 5000 })
+      await page.getByText(`Page ${n} of ${total}`, { exact: true }).waitFor({ timeout: 5000 })
     } catch {
       const shown = await page.evaluate(() => [...document.querySelectorAll('*')].find((e) => /^Page \d+ of \d+$/.test(e.textContent ?? '') && !e.children.length)?.textContent)
       assert.fail(`${step}: expected page ${n} to be current, the inspector shows "${shown}"`)
@@ -138,8 +138,20 @@ try {
   const extracted = Buffer.from(await page.evaluate(() => btoa(String.fromCharCode(...window.__fake.files.get('/docs/extracted.pdf').bytes))), 'base64').toString('latin1')
   assert.match(extracted, /\/Rotate\s+90\b/, 'the extracted page is not the rotated page that was clicked')
   assert.match(streams(extracted), /\(Page two\)/, 'the extracted page is not "Page two"')
+
+  const pageNumber = page.getByRole('textbox', { name: 'Page number' })
+  await pageNumber.fill('1.5')
+  await pageNumber.press('Enter')
+  await expectCurrent(1, 'entering a fractional page number')
+
+  await thumb(3).click()
+  await expectCurrent(3, 'clicking thumbnail 3')
+  await thumb(3).click({ button: 'right' })
+  await page.getByRole('menuitem', { name: 'Delete page' }).click()
+  await expectCurrent(2, 'deleting the last page', 2)
+
   assert.deepEqual(errors, [])
-  console.log(`pdf-page-select: ${kind} passed move, thumbnail clicks, and extract`)
+  console.log(`pdf-page-select: ${kind} passed move, thumbnail clicks, extract, page number, and delete`)
 } finally {
   await browser.close()
 }
