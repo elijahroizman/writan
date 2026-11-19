@@ -227,6 +227,14 @@ impl Rules {
         self.rules.is_empty()
     }
 
+    /// The ranges of rules that can apply to a cell with nothing in it.
+    pub fn blank_ranges(&self) -> impl Iterator<Item = &Range> {
+        self.rules
+            .iter()
+            .filter(|r| matches!(r.kind.as_str(), "containsBlanks" | "expression" | "cellIs" | "notContainsText" | "notContainsErrors"))
+            .flat_map(|r| r.ranges.iter())
+    }
+
     /// What the rules do to the cell at `at`, if any apply.
     pub fn look(&self, doc: &Document, at: CellRef) -> Option<Look> {
         let mut out: Option<Look> = None;

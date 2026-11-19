@@ -436,6 +436,24 @@ impl SheetsView {
                 cells.push(CellRef::new(row.index, c.col));
             }
         }
+        // Rules can format cells that hold nothing, which the rows don't list.
+        if !rules.is_empty() {
+            let have: std::collections::HashSet<CellRef> = cells.iter().copied().collect();
+            let mut blank = Vec::new();
+            for range in rules.blank_ranges() {
+                for row in range.start.row.max(r0)..=range.end.row.min(r1.saturating_sub(1)) {
+                    for col in range.start.col.max(c0)..=range.end.col.min(c1.saturating_sub(1)) {
+                        let at = CellRef::new(row, col);
+                        if !have.contains(&at) {
+                            blank.push(at);
+                        }
+                    }
+                }
+            }
+            blank.sort();
+            blank.dedup();
+            cells.extend(blank);
+        }
         for at in cells {
             let merge = covered(at);
             if merge.is_some_and(|m| m.start != at) {

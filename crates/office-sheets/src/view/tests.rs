@@ -761,3 +761,17 @@ fn conditional_formats_validation_and_pictures_show() {
     assert_eq!(back.sheets()[0].pictures.len(), 1);
     assert!(back.cell_info(0, CellRef::new(5, 0)).validation.is_some());
 }
+
+#[test]
+fn conditional_formats_reach_cells_that_hold_nothing() {
+    use crate::conditional::tests::{book, row, s};
+    let rules = r#"<conditionalFormatting sqref="A1:B3"><cfRule type="containsBlanks" dxfId="0" priority="1"><formula>LEN(TRIM(A1))=0</formula></cfRule></conditionalFormatting>"#;
+    let green = r#"<dxf><fill><patternFill><bgColor rgb="FF00B050"/></patternFill></fill></dxf>"#;
+    let doc = book(&row(1, &[s("A1", "x")]), rules, "", green);
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "blanks.xlsx").unwrap();
+    let mut host = FixedMeasurer::default();
+    let p = v.paint(&mut host, 0, 0, 10, 0, 10);
+    let greens = p.items.iter().filter(|i| matches!(i, Item::Rect { fill: Some(f), .. } if f == "#00b050")).count();
+    assert_eq!(greens, 5);
+}
