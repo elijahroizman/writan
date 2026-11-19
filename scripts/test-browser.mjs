@@ -19,6 +19,7 @@ const scripts = [
   'tests/stress/ui/sheet-rename.mjs',
   'tests/stress/ui/slides-clipboard.mjs',
   'tests/stress/native/pdf-page-select.mjs',
+  'tests/stress/native/pdf-flatten.mjs',
   'tests/stress/native/save-conflict.mjs',
 ]
 // ui/harness.mjs is shared setup, not a test.

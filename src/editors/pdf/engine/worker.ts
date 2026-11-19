@@ -5,7 +5,7 @@
 
 import { PdfiumNative } from '@embedpdf/engines/pdfium'
 import type { PdfAnnotationObject, PdfDocumentObject, PdfPageObject, PdfBookmarkObject, PdfLinkTarget, PdfWidgetAnnoObject, Rect } from '@embedpdf/models'
-import { PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfActionType, PdfAnnotationSubtype, PdfPageFlattenFlag, PdfPageFlattenResult, PdfZoomMode } from '@embedpdf/models'
+import { AppearanceMode, PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfActionType, PdfAnnotationFlags, PdfAnnotationSubtype, PdfPageFlattenFlag, PdfPageFlattenResult, PdfZoomMode } from '@embedpdf/models'
 import { init } from '@embedpdf/pdfium'
 import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, Method, OpenResult, OutlineItem, PageInfo, Request, Response, TextRun } from './protocol'
 
@@ -549,8 +549,36 @@ async function open(bytes: ArrayBuffer, password: string): Promise<OpenResult> {
 const save = () => task(engine.saveAsCopy(doc!))
 
 /**
+ * Flattening keeps what prints, so in the copy, marks shown on screen are made to print too
+ * (files from other apps and earlier versions often lack the flag), and marks that will be baked
+ * in but have no drawing of their own get one, as the editor draws them.
+ */
+function printShownMarks(pagePtr: number) {
+  const count = mod.FPDFPage_GetAnnotCount(pagePtr)
+  for (let i = 0; i < count; i++) {
+    const annot = mod.FPDFPage_GetAnnot(pagePtr, i)
+    if (!annot) continue
+    try {
+      const subtype = mod.FPDFAnnot_GetSubtype(annot)
+      // Form fields are flattened as they print; links and popups have nothing to draw.
+      if (subtype === PdfAnnotationSubtype.WIDGET || subtype === PdfAnnotationSubtype.LINK || subtype === PdfAnnotationSubtype.POPUP) continue
+      let flags = mod.FPDFAnnot_GetFlags(annot)
+      if (flags & PdfAnnotationFlags.HIDDEN) continue
+      if (!(flags & (PdfAnnotationFlags.PRINT | PdfAnnotationFlags.NO_VIEW))) {
+        flags |= PdfAnnotationFlags.PRINT
+        mod.FPDFAnnot_SetFlags(annot, flags)
+      }
+      if (flags & PdfAnnotationFlags.PRINT && !mod.EPDFAnnot_HasAppearanceStream(annot, AppearanceMode.Normal)) mod.EPDFAnnot_GenerateAppearance(annot)
+    } finally {
+      mod.FPDFPage_CloseAnnot(annot)
+    }
+  }
+}
+
+/**
  * Save, open the result as a second document, bake every page's annotations and form fields
- * into its content (as printed: hidden ones go), and save that. The open document is untouched.
+ * into its content (what prints, plus marks shown on screen; hidden ones go), and save that.
+ * The open document is untouched.
  */
 async function flatten(): Promise<ArrayBuffer> {
   const bytes = await save()
@@ -561,6 +589,7 @@ async function flatten(): Promise<ArrayBuffer> {
     for (let i = 0; i < copy.pageCount; i++) {
       const pc = c.acquirePage(i)
       try {
+        printShownMarks(pc.pagePtr)
         // A page with nothing to flatten reports NothingToDo, which is fine.
         if (mod.FPDFPage_Flatten(pc.pagePtr, PdfPageFlattenFlag.Print) === PdfPageFlattenResult.Fail) throw new Error(`Couldn’t flatten page ${i + 1}`)
       } finally {
