@@ -13,7 +13,7 @@ use crate::xml::{ns, parse_element, Element, Node};
 
 /// Whether `graphic_data` (`a:graphicData`) holds a SmartArt diagram.
 pub fn is_diagram(graphic_data: &Element) -> bool {
-    graphic_data.attr("uri") == Some(ns::DGM) || graphic_data.child(ns::DGM, "relIds").is_some()
+    graphic_data.attr("uri").is_some_and(|u| ns::canonical(u) == ns::DGM) || graphic_data.child(ns::DGM, "relIds").is_some()
 }
 
 /// The shapes of the diagram in `graphic_data`, which sits in `part`, as `p:sp` and `p:grpSp`
@@ -273,6 +273,16 @@ mod tests {
             assert!(x.x.0 >= 0 && x.x.0 + x.width.0 <= 6_096_001 && x.y.0 >= 0 && x.y.0 + x.height.0 <= 4_064_001);
         }
         assert_eq!(shapes[0].text(), "PlanScope");
+    }
+
+    #[test]
+    fn strict_diagrams_are_diagrams() {
+        let strict = parse_element(r#"<a:graphicData xmlns:a="http://purl.oclc.org/ooxml/drawingml/main" uri="http://purl.oclc.org/ooxml/drawingml/diagram"><dgm:relIds xmlns:dgm="http://purl.oclc.org/ooxml/drawingml/diagram"/></a:graphicData>"#).unwrap();
+        assert!(is_diagram(&strict));
+        let mut uri_only = strict.clone();
+        uri_only.children.clear();
+        assert!(is_diagram(&uri_only));
+        assert!(strict.child(ns::DGM, "relIds").is_some());
     }
 
     #[test]

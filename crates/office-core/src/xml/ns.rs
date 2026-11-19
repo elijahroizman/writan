@@ -70,6 +70,7 @@ pub fn canonical(uri: &str) -> &str {
         "drawingml/spreadsheetDrawing" => XDR,
         "drawingml/chart" => C,
         "officeDocument/math" => M,
+        "drawingml/diagram" => DGM,
         "officeDocument/extendedProperties" => EP,
         "officeDocument/docPropsVTypes" => VT,
         _ => uri,
