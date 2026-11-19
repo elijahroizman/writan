@@ -108,9 +108,11 @@ pub fn sheet_to_table(sheet: &Sheet, width: Emu) -> Result<Table> {
         if r0 >= rows || c0 >= cols {
             continue;
         }
-        for r in r0..=(m.end.row as usize).min(rows - 1) {
-            for c in c0..=(m.end.col as usize).min(cols - 1) {
-                table.rows[r].cells[c].covered = (r, c) != (r0, c0);
+        let row_end = (m.end.row as usize).min(rows - 1) + 1;
+        let col_end = (m.end.col as usize).min(cols - 1) + 1;
+        for (r, row) in table.rows.iter_mut().enumerate().take(row_end).skip(r0) {
+            for (c, cell) in row.cells.iter_mut().enumerate().take(col_end).skip(c0) {
+                cell.covered = (r, c) != (r0, c0);
             }
         }
         let owner = &mut table.rows[r0].cells[c0];
@@ -578,8 +580,8 @@ mod tests {
         t.rows[0].header = true;
         // A row span across where the table will be cut.
         t.rows[10].cells[1].row_span = 4;
-        for r in 11..14 {
-            t.rows[r].cells[1].covered = true;
+        for row in &mut t.rows[11..14] {
+            row.cells[1].covered = true;
         }
         blocks.push(Block::Table(t));
         word.body = Body::Flow { blocks };
