@@ -89,6 +89,8 @@ pub struct Page {
     pub footnotes: Vec<usize>,
     /// Where the footnotes end: the bottom of the body's area.
     pub notes_bottom: f64,
+    /// The bottom of the last line or row on the page, in the flow's coordinates.
+    pub content_bottom: f64,
 }
 
 /// The space above a page's footnotes, with the separator line across its middle.
@@ -496,7 +498,7 @@ impl WordView {
         let flows: Vec<(usize, FlowLayout)> = p.footnotes.iter().filter_map(|&n| Some((n, self.note_flow(host, n, width)?))).collect();
         let total: f64 = flows.iter().map(|(_, f)| f.height).sum();
         // Below the body even when a page's first line and its notes don't fit together.
-        let mut y = (p.notes_bottom - total).max(p.body_y + p.bottom - p.top + NOTE_SEPARATOR);
+        let mut y = (p.notes_bottom - total).max(p.body_y + p.content_bottom - p.top + NOTE_SEPARATOR);
         let line_y = display::r(y - NOTE_SEPARATOR / 2.0);
         let line_w = (width / 3.0).min(192.0);
         out.push(Item::Line {
