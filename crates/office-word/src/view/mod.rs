@@ -85,16 +85,27 @@ pub struct Page {
     pub body_y: f64,
     pub header: Option<usize>,
     pub footer: Option<usize>,
-    /// The footnotes referenced on this page, by index in the layer's `notes`, in order.
-    pub footnotes: Vec<usize>,
+    /// The footnotes on this page, in order: those continuing from the page before, then those
+    /// referenced here.
+    pub footnotes: Vec<NoteSlice>,
     /// Where the footnotes end: the bottom of the body's area.
     pub notes_bottom: f64,
     /// The bottom of the last line or row on the page, in the flow's coordinates.
     pub content_bottom: f64,
-    /// The endnotes on this page (the document's last, and any pages added for them), by index
-    /// in the layer's `notes`, and where on the page the first one starts.
-    pub endnotes: Vec<usize>,
+    /// The endnotes on this page (the document's last, and any pages added for them), and where
+    /// on the page the first one starts.
+    pub endnotes: Vec<NoteSlice>,
     pub endnotes_y: f64,
+}
+
+/// A stretch of a note's text on a page, in its flow's coordinates: all of it, or the part that
+/// fits before it continues on the next page.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NoteSlice {
+    /// Its index in the layer's `notes`.
+    pub note: usize,
+    pub top: f64,
+    pub bottom: f64,
 }
 
 /// The space above a page's footnotes, with the separator line across its middle.
@@ -498,22 +509,22 @@ impl WordView {
         if p.footnotes.is_empty() {
             return;
         }
-        let width = emu_px(self.sections[p.section].section.text_width()).max(24.0);
-        let total: f64 = p.footnotes.iter().filter_map(|&n| self.note_flow(host, n, width)).map(|f| f.height).sum();
+        let total: f64 = p.footnotes.iter().map(|s| s.bottom - s.top).sum();
         // Below the body even when a page's first line and its notes don't fit together.
         let y = (p.notes_bottom - total).max(p.body_y + p.content_bottom - p.top + NOTE_SEPARATOR);
         self.paint_notes(host, p, &p.footnotes, y, out);
     }
 
-    /// Draws `notes` one after another from `y` down, under a short separator line.
-    fn paint_notes(&mut self, host: &mut dyn Measurer, p: &Page, notes: &[usize], mut y: f64, out: &mut Vec<Item>) {
+    /// Draws `notes` one after another from `y` down, under a separator line: a short one, or
+    /// one across the text when the first continues a note from the page before.
+    fn paint_notes(&mut self, host: &mut dyn Measurer, p: &Page, notes: &[NoteSlice], mut y: f64, out: &mut Vec<Item>) {
         if notes.is_empty() {
             return;
         }
         let width = emu_px(self.sections[p.section].section.text_width()).max(24.0);
-        let flows: Vec<(usize, FlowLayout)> = notes.iter().filter_map(|&n| Some((n, self.note_flow(host, n, width)?))).collect();
+        let flows: Vec<(NoteSlice, FlowLayout)> = notes.iter().filter_map(|&s| Some((s, self.note_flow(host, s.note, width)?))).collect();
         let line_y = display::r(y - NOTE_SEPARATOR / 2.0);
-        let line_w = (width / 3.0).min(192.0);
+        let line_w = if notes[0].top > 0.01 { width } else { (width / 3.0).min(192.0) };
         out.push(Item::Line {
             x1: display::r(p.body_x),
             y1: line_y,
@@ -524,19 +535,19 @@ impl WordView {
             dash: "solid",
         });
         let links = |_: &Path, _: u32| None;
-        for (n, flow) in flows {
-            let blocks = word(&self.doc).and_then(|w| w.notes.get(n)).map(|n| n.blocks.clone()).unwrap_or_default();
+        for (slice, flow) in flows {
+            let blocks = word(&self.doc).and_then(|w| w.notes.get(slice.note)).map(|n| n.blocks.clone()).unwrap_or_default();
             let mut objects = NoteObjects { blocks: &blocks };
             let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
             display::paint_flow(
                 &mut ctx,
                 &flow,
                 p.body_x,
-                y,
-                (f64::MIN, f64::MAX),
+                y - slice.top,
+                (slice.top, slice.bottom),
                 &mut display::Sink { objects: &mut objects, links: &links, out },
             );
-            y += flow.height;
+            y += slice.bottom - slice.top;
         }
     }
 

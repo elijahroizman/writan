@@ -1125,3 +1125,98 @@ fn the_settings_set_the_endnote_format() {
     let texts = page_texts(&v.paint(&mut host, 0).items);
     assert_eq!(texts.iter().filter(|(s, _)| s == "A").count(), 2, "{texts:?}");
 }
+
+/// The numbered words (`t1`, `t2`, …) painted on each page, and each page's widest separator.
+fn note_words(v: &mut WordView, host: &mut FixedMeasurer) -> Vec<(Vec<u32>, f64)> {
+    (0..v.page_count())
+        .map(|p| {
+            let page = v.paint(host, p);
+            let words = page_texts(&page.items)
+                .iter()
+                .flat_map(|(t, _)| t.split_whitespace().filter_map(|w| w.strip_prefix('t')?.parse().ok()).collect::<Vec<u32>>())
+                .collect();
+            let line = page
+                .items
+                .iter()
+                .filter_map(|i| match i {
+                    Item::Line { x1, x2, y1, y2, .. } if y1 == y2 => Some(x2 - x1),
+                    _ => None,
+                })
+                .fold(0.0, f64::max);
+            (words, line)
+        })
+        .collect()
+}
+
+#[test]
+fn a_footnote_too_long_for_its_page_continues_on_the_next() {
+    let mut host = FixedMeasurer::default();
+    let long: String = (1..=1500).map(|i| format!("t{i} ")).collect();
+    let body = format!("{}<w:p><w:r><w:t>After</w:t></w:r></w:p>", footnote_para("Foo", "1"));
+    let mut v = WordView::open(&footnoted_doc(&body, &[("1", &long)])).unwrap();
+    v.layout(&mut host);
+    let pages = note_words(&mut v, &mut host);
+    assert!(pages.len() >= 2, "{} pages", pages.len());
+    // The reference stays with the note's start; the rest follows in order, once.
+    let first = page_texts(&v.paint(&mut host, 0).items);
+    assert!(first.iter().any(|(t, _)| t.trim() == "Foo"), "{first:?}");
+    assert!(pages[0].0.first() == Some(&1) && !pages[1].0.is_empty(), "{:?}", pages.iter().map(|p| p.0.len()).collect::<Vec<_>>());
+    let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
+    assert_eq!(all, (1..=1500).collect::<Vec<_>>());
+    // A continuation separator runs across the text.
+    assert!(pages[1].1 > pages[0].1 * 1.5, "separators {} then {}", pages[0].1, pages[1].1);
+}
+
+#[test]
+fn an_endnote_too_long_for_its_page_continues_on_the_next() {
+    let mut host = FixedMeasurer::default();
+    let long: String = (1..=1500).map(|i| format!("t{i} ")).collect();
+    let mut v = WordView::open(&noted_doc(&endnote_para("Foo", "1"), "endnote", &[("1", &long)])).unwrap();
+    v.layout(&mut host);
+    let pages = note_words(&mut v, &mut host);
+    assert!(pages.len() >= 2, "{} pages", pages.len());
+    assert!(!pages[0].0.is_empty(), "the note starts after the last line, on its page");
+    let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
+    assert_eq!(all, (1..=1500).collect::<Vec<_>>());
+}
+
+#[test]
+fn a_long_footnote_on_the_last_line_continues_on_the_very_next_page() {
+    let mut host = FixedMeasurer::default();
+    let long: String = (1..=1500).map(|i| format!("t{i} ")).collect();
+    let mut v = WordView::open(&footnoted_doc(&footnote_para("Foo", "1"), &[("1", &long)])).unwrap();
+    v.layout(&mut host);
+    let pages = note_words(&mut v, &mut host);
+    assert!(pages.iter().all(|p| !p.0.is_empty()), "no blank page: {:?}", pages.iter().map(|p| p.0.len()).collect::<Vec<_>>());
+    let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
+    assert_eq!(all, (1..=1500).collect::<Vec<_>>());
+}
+
+#[test]
+fn notes_referenced_while_a_long_one_continues_wait_their_turn() {
+    let mut host = FixedMeasurer::default();
+    let long: String = (1..=4000).map(|i| format!("t{i} ")).collect();
+    let body = format!("{}{}", footnote_para("Foo", "1"), footnote_para("Bar", "2"));
+    let mut v = WordView::open(&footnoted_doc(&body, &[("1", &long), ("2", "t4001")])).unwrap();
+    v.layout(&mut host);
+    let pages = note_words(&mut v, &mut host);
+    let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
+    assert_eq!(all, (1..=4001).collect::<Vec<_>>());
+}
+
+#[test]
+fn notes_queued_behind_a_long_one_show_once_when_their_line_moves() {
+    let mut host = FixedMeasurer::default();
+    let long: String = (1..=4000).map(|i| format!("t{i} ")).collect();
+    let mut body = footnote_para("Foo", "1");
+    for i in 2..=60 {
+        body += &footnote_para(&format!("Para {i}"), &i.to_string());
+    }
+    let notes: Vec<(String, String)> =
+        std::iter::once(("1".to_string(), long)).chain((2..=60).map(|i| (i.to_string(), format!("t{}", 4000 + i - 1)))).collect();
+    let notes: Vec<(&str, &str)> = notes.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let mut v = WordView::open(&footnoted_doc(&body, &notes)).unwrap();
+    v.layout(&mut host);
+    let all: Vec<u32> = note_words(&mut v, &mut host).iter().flat_map(|p| p.0.clone()).collect();
+    assert_eq!(all, (1..=4059).collect::<Vec<_>>());
+}
