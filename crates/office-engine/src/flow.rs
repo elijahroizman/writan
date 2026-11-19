@@ -70,6 +70,10 @@ pub trait Resolver {
     fn para(&mut self, ctx: &mut Ctx, path: &Path, p: &Paragraph, width: f64) -> (Arc<ParaSpec>, Keep);
     /// How the table at `path` looks in a column `width` wide.
     fn table(&mut self, path: &Path, t: &Table, width: f64) -> TableLook;
+    /// Layout for preserved markup with a read-only preview. Its paths are local to the preview.
+    fn preview(&mut self, _ctx: &mut Ctx, _cache: &mut Cache, _path: &Path, _blocks: &[Block], _width: f64) -> FlowLayout {
+        FlowLayout::default()
+    }
 }
 
 /// Laid-out paragraphs: by spec (a layer hands back the same shared spec while a paragraph
@@ -137,6 +141,12 @@ impl Cache {
 pub enum BlockBox {
     Para(ParaBox),
     Table(TableBox),
+    Preview {
+        path: Path,
+        y: f64,
+        flow: FlowLayout,
+        blocks: Arc<[Block]>,
+    },
     /// Markup with nothing to lay out.
     Empty {
         path: Path,
@@ -242,6 +252,10 @@ pub fn layout_block(ctx: &mut Ctx, cache: &mut Cache, resolver: &mut dyn Resolve
             let look = resolver.table(&path, t, width);
             BlockBox::Table(table(ctx, cache, resolver, t, &look, &path, 0.0))
         }
+        Block::Raw { preview, .. } if !preview.is_empty() => {
+            let flow = resolver.preview(ctx, cache, &path, preview, width);
+            BlockBox::Preview { path, y: 0.0, flow, blocks: preview.clone() }
+        }
         Block::Raw { .. } => BlockBox::Empty { path },
     }
 }
@@ -265,6 +279,12 @@ pub fn restack(blocks: &mut [BlockBox]) -> f64 {
                 t.y = y;
                 y += t.height;
             }
+            BlockBox::Preview { y: top, flow, .. } => {
+                y += prev_after;
+                prev_after = 0.0;
+                *top = y;
+                y += flow.height;
+            }
             BlockBox::Empty { .. } => {}
         }
     }
@@ -276,7 +296,7 @@ impl BlockBox {
         match self {
             BlockBox::Para(p) => &p.path,
             BlockBox::Table(t) => &t.path,
-            BlockBox::Empty { path } => path,
+            BlockBox::Preview { path, .. } | BlockBox::Empty { path } => path,
         }
     }
 
@@ -290,7 +310,7 @@ impl BlockBox {
         }
         match self {
             BlockBox::Para(p) => shift_path(&mut p.path, delta),
-            BlockBox::Empty { path } => shift_path(path, delta),
+            BlockBox::Preview { path, .. } | BlockBox::Empty { path } => shift_path(path, delta),
             BlockBox::Table(t) => {
                 shift_path(&mut t.path, delta);
                 for cell in &mut t.cells {
@@ -411,14 +431,7 @@ impl FlowLayout {
     /// The story index of this flow's first block.
     fn first_index(&self) -> usize {
         let depth = self.depth();
-        self.blocks
-            .first()
-            .map(|b| match b {
-                BlockBox::Para(p) => p.path.0[depth] as usize,
-                BlockBox::Table(t) => t.path.0[depth] as usize,
-                BlockBox::Empty { path } => path.0[depth] as usize,
-            })
-            .unwrap_or(0)
+        self.blocks.first().map(|b| b.path().0[depth] as usize).unwrap_or(0)
     }
 
     /// How deep in the story this flow's blocks are, from their paths.
@@ -435,6 +448,12 @@ pub fn hit(ctx: &mut Ctx, flow: &FlowLayout, x: f64, y: f64) -> Option<crate::po
         let (top, bottom) = match b {
             BlockBox::Para(p) => (p.y - p.spec.space_before, p.y + p.layout.height + p.spec.space_after),
             BlockBox::Table(t) => (t.y, t.y + t.height),
+            BlockBox::Preview { y: top, flow, .. } => {
+                if y >= *top && y < *top + flow.height {
+                    return None;
+                }
+                continue;
+            }
             BlockBox::Empty { .. } => continue,
         };
         if y < bottom || best.is_none() {
@@ -465,7 +484,7 @@ pub fn hit(ctx: &mut Ctx, flow: &FlowLayout, x: f64, y: f64) -> Option<crate::po
                 .or_else(|| t.cells.last())?;
             hit(ctx, &cell.content, tx - cell.x - cell.look.margins[3], ty - cell.y - cell.content_y)
         }
-        BlockBox::Empty { .. } => None,
+        BlockBox::Preview { .. } | BlockBox::Empty { .. } => None,
     }
 }
 

@@ -10,7 +10,7 @@ use office_core::formats::docx::val;
 use office_core::model::{Align, Block, Document, Inline, LineSpacing, Paragraph, RunProps, Table};
 use office_core::units::Emu;
 use office_core::xml::{ns, Element};
-use office_engine::flow::{BorderLine, CellLook, Keep, Resolver, TableLook};
+use office_engine::flow::{self, BorderLine, Cache, CellLook, FlowLayout, Keep, Resolver, TableLook};
 use office_engine::para::{self, Ctx, Item, ItemKind, Label, ParaSpec, Spacing, StyleId, Tab};
 use office_engine::pos::{blocks_at, Path};
 use office_engine::style::TextStyle;
@@ -56,9 +56,19 @@ pub struct WordResolver<'a> {
     pub story: &'a [Block],
     /// List labels by paragraph path, for this story.
     pub labels: &'a HashMap<Path, String>,
+    /// A preview's layout paths are local; its list labels are still keyed within the story.
+    pub label_prefix: &'a [u32],
     pub fields: Option<PageFields>,
     /// Specs worked out before, by what they were worked out from (see [`spec_key`]).
     pub specs: &'a mut SpecCache,
+}
+
+pub(super) fn list_label<'a>(labels: &'a HashMap<Path, String>, prefix: &[u32], path: &Path) -> Option<&'a String> {
+    if prefix.is_empty() {
+        labels.get(path)
+    } else {
+        labels.get(&Path([prefix, &path.0].concat()))
+    }
 }
 
 /// Paragraph specs by [`WordResolver::spec_key`], and table looks by what decides them, each
@@ -332,7 +342,7 @@ impl WordResolver<'_> {
         let mut h = super::fingerprint::Fnv::default();
         super::fingerprint::paragraph(&mut h, p);
         path.0.hash(&mut h);
-        self.labels.get(path).hash(&mut h);
+        list_label(self.labels, self.label_prefix, path).hash(&mut h);
         for delta in [-1, 1] {
             self.sibling(path, delta).map(|q| (&q.props.style, q.origin.id())).hash(&mut h);
         }
@@ -347,6 +357,20 @@ impl WordResolver<'_> {
 }
 
 impl Resolver for WordResolver<'_> {
+    fn preview(&mut self, ctx: &mut Ctx, cache: &mut Cache, path: &Path, blocks: &[Block], width: f64) -> FlowLayout {
+        let prefix = [self.label_prefix, &path.0].concat();
+        let mut resolver = WordResolver {
+            doc: self.doc,
+            extras: self.extras,
+            story: blocks,
+            labels: self.labels,
+            label_prefix: &prefix,
+            fields: self.fields,
+            specs: self.specs,
+        };
+        flow::layout(ctx, cache, &mut resolver, blocks, &[], width)
+    }
+
     fn para(&mut self, ctx: &mut Ctx, path: &Path, p: &Paragraph, width: f64) -> (Arc<ParaSpec>, Keep) {
         let _ = width;
         let key = self.spec_key(path, p);
@@ -560,7 +584,7 @@ impl WordResolver<'_> {
             Some(LineSpacing::AtLeast(e)) => Spacing::AtLeast(emu_px(e)),
             None => Spacing::Multiple(1.0),
         };
-        let label = list.as_ref().and_then(|_| self.labels.get(path)).filter(|l| !l.is_empty()).map(|text| {
+        let label = list.as_ref().and_then(|_| list_label(self.labels, self.label_prefix, path)).filter(|l| !l.is_empty()).map(|text| {
             let mut props = mark_props.clone();
             if let Some(l) = level {
                 props.overlay(&l.run);
