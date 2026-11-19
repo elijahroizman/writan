@@ -455,12 +455,7 @@ fn reference(src: &str, at: usize, sheet: Option<String>) -> Option<(Reference, 
 /// Parses formula text (without its `=`).
 pub fn parse(src: &str) -> Result<Expr, String> {
     let toks = lex(src)?;
-    let mut p = Parser { toks: toks.into_iter().map(|(t, _)| t).collect(), at: 0, union_allowed: true, depth: 0 };
-    let e = p.compare()?;
-    if p.at != p.toks.len() {
-        return Err(format!("unexpected {:?}", p.toks[p.at]));
-    }
-    Ok(e)
+    Parser::new(&toks, None).parse()
 }
 
 /// How deep parentheses and unary prefixes may nest. A flat sum does not count:
@@ -470,16 +465,29 @@ pub fn parse(src: &str) -> Result<Expr, String> {
 /// and would overflow that stack.
 const MAX_PARSE_DEPTH: usize = 160;
 
-struct Parser {
-    toks: Vec<Tok>,
+struct Parser<'a> {
+    toks: &'a [(Tok, std::ops::Range<usize>)],
+    range_spans: Option<&'a mut Vec<std::ops::Range<usize>>>,
     at: usize,
     union_allowed: bool,
     depth: usize,
 }
 
-impl Parser {
+impl<'a> Parser<'a> {
+    fn new(toks: &'a [(Tok, std::ops::Range<usize>)], range_spans: Option<&'a mut Vec<std::ops::Range<usize>>>) -> Self {
+        Self { toks, range_spans, at: 0, union_allowed: true, depth: 0 }
+    }
+
+    fn parse(mut self) -> Result<Expr, String> {
+        let e = self.compare()?;
+        if let Some(tok) = self.peek() {
+            return Err(format!("unexpected {tok:?}"));
+        }
+        Ok(e)
+    }
+
     fn peek(&self) -> Option<&Tok> {
-        self.toks.get(self.at)
+        self.toks.get(self.at).map(|(t, _)| t)
     }
 
     fn op(&self, ops: &[&str]) -> Option<String> {
@@ -574,20 +582,30 @@ impl Parser {
         }
         macro_rules! ranges {
             ($parser:ident) => {{
+                let start = $parser.at;
                 let mut e = $parser.primary()?;
+                let end = $parser.at;
                 while $parser.peek() == Some(&Tok::Colon) {
                     $parser.at += 1;
                     e = Expr::Binary(Op::Range, Box::new(e), Box::new($parser.primary()?));
+                }
+                if $parser.at != end {
+                    $parser.record_range(start);
                 }
                 e
             }};
         }
         macro_rules! intersections {
             ($parser:ident) => {{
+                let start = $parser.at;
                 let mut e = ranges!($parser);
+                let end = $parser.at;
                 while $parser.peek() == Some(&Tok::Space) {
                     $parser.at += 1;
                     e = Expr::Binary(Op::Intersect, Box::new(e), Box::new(ranges!($parser)));
+                }
+                if $parser.at != end {
+                    $parser.record_range(start);
                 }
                 e
             }};
@@ -598,6 +616,12 @@ impl Parser {
             e = Expr::Binary(Op::Union, Box::new(e), Box::new(intersections!(self)));
         }
         Ok(e)
+    }
+
+    fn record_range(&mut self, start: usize) {
+        if let Some(spans) = &mut self.range_spans {
+            spans.push(start..self.at);
+        }
     }
 
     fn primary(&mut self) -> Result<Expr, String> {
@@ -726,71 +750,63 @@ impl MovedRange<'_> {
     /// their original sheet, even when the formula itself has moved to another sheet.
     pub fn rewrite(&self, src: &str, old_home: &str, new_home: &str) -> Option<String> {
         let tokens = lex(src).ok()?;
-        let operand = |index: usize| {
-            let (mut start, mut end) = (index, index + 1);
-            while start > 0
-                && tokens[start - 1].0 == Tok::Open
-                && tokens.get(end).is_some_and(|(t, _)| *t == Tok::Close)
-                && !(start >= 2 && matches!(tokens[start - 2].0, Tok::Ident(_)))
-            {
-                start -= 1;
-                end += 1;
+        // A moving reference stores whether to keep an explicit sheet qualifier.
+        let mut moves: Vec<_> = tokens
+            .iter()
+            .map(|(t, _)| match t {
+                Tok::Ref(r) if self.contains(r, old_home) => Some(r.sheet.is_some()),
+                _ => None,
+            })
+            .collect();
+        if tokens.iter().any(|(t, _)| matches!(t, Tok::Colon | Tok::Space)) {
+            let mut groups = Vec::new();
+            if Parser::new(&tokens, Some(&mut groups)).parse().is_ok() {
+                // The parser records inner spans before outer ones. Decide each outer range once.
+                let mut before = tokens.len();
+                for group in groups.into_iter().rev() {
+                    if group.end > before {
+                        continue;
+                    }
+                    before = group.start;
+                    let can_move = tokens[group.clone()].iter().zip(&moves[group.clone()]).all(|((t, _), m)| match t {
+                        Tok::Ref(_) => m.is_some(),
+                        Tok::Open | Tok::Close | Tok::Colon | Tok::Comma | Tok::Space => true,
+                        _ => false,
+                    });
+                    let qualify = moves[group.clone()].contains(&Some(true));
+                    moves[group].fill(can_move.then_some(qualify));
+                }
+            } else {
+                moves.fill(None);
             }
-            start..end
-        };
-        let left_of = |colon: usize| {
-            let i = tokens[..colon].iter().rposition(|(t, _)| *t != Tok::Close)?;
-            if !matches!(tokens[i].0, Tok::Ref(_)) {
-                return None;
-            }
-            let span = operand(i);
-            (span.end == colon).then_some(span.start)
-        };
+        }
         let mut result = None;
-        let mut end = tokens.len();
-        while end != 0 {
-            let i = end - 1;
-            if !matches!(tokens[i].0, Tok::Ref(_)) {
-                end = i;
+        for ((t, span), movement) in tokens.into_iter().zip(moves).rev() {
+            let Tok::Ref(r) = t else { continue };
+            let name = r.sheet.as_deref().unwrap_or(old_home);
+            let target = if movement.is_some() { self.to_sheet } else { name };
+            if movement.is_none() && (r.sheet.is_some() || target.eq_ignore_ascii_case(new_home)) {
                 continue;
             }
-            // Repeated sheet qualifiers and parenthesized refs use the colon operator.
-            let span = operand(i);
-            let (mut start, stop) = (span.start, span.end);
-            while let Some(left) = start.checked_sub(1).filter(|&i| tokens[i].0 == Tok::Colon).and_then(left_of) {
-                start = left;
+            let qualify = movement.unwrap_or(false) || !target.eq_ignore_ascii_case(new_home);
+            let mut replacement = if qualify { write_sheet(target) } else { String::new() };
+            if movement.is_some() {
+                let translate = |p: RefPart| RefPart {
+                    row: p.row.map(|row| self.to.row + (row - self.source.start.row)),
+                    col: p.col.map(|col| self.to.col + (col - self.source.start.col)),
+                    ..p
+                };
+                replacement.push_str(&write_part(&translate(r.start)));
+                if let Some(end) = r.end {
+                    replacement.push(':');
+                    replacement.push_str(&write_part(&translate(end)));
+                }
+            } else {
+                replacement.push_str(&src[span.clone()]);
             }
-            let refs = tokens[start..stop].iter().filter_map(|(t, span)| if let Tok::Ref(r) = t { Some((r, span)) } else { None });
-            let has_expression_endpoint =
-                start.checked_sub(1).is_some_and(|i| tokens[i].0 == Tok::Colon) || tokens.get(stop).is_some_and(|(t, _)| *t == Tok::Colon);
-            let moved = !has_expression_endpoint && refs.clone().all(|(r, _)| self.contains(r, old_home));
-            for (r, span) in refs.rev() {
-                let name = r.sheet.as_deref().unwrap_or(old_home);
-                let target = if moved { self.to_sheet } else { name };
-                if !moved && (r.sheet.is_some() || target.eq_ignore_ascii_case(new_home)) {
-                    continue;
-                }
-                let qualify = r.sheet.is_some() || !target.eq_ignore_ascii_case(new_home);
-                let mut replacement = if qualify { write_sheet(target) } else { String::new() };
-                if moved {
-                    let translate = |p: RefPart| RefPart {
-                        row: p.row.map(|row| self.to.row + (row - self.source.start.row)),
-                        col: p.col.map(|col| self.to.col + (col - self.source.start.col)),
-                        ..p
-                    };
-                    replacement.push_str(&write_part(&translate(r.start)));
-                    if let Some(end) = r.end {
-                        replacement.push(':');
-                        replacement.push_str(&write_part(&translate(end)));
-                    }
-                } else {
-                    replacement.push_str(&src[span.clone()]);
-                }
-                if src[span.clone()] != replacement {
-                    result.get_or_insert_with(|| src.to_string()).replace_range(span.clone(), &replacement);
-                }
+            if src[span.clone()] != replacement {
+                result.get_or_insert_with(|| src.to_string()).replace_range(span, &replacement);
             }
-            end = start;
         }
         result
     }
@@ -874,6 +890,22 @@ mod tests {
         moved.source = Range::parse("A1:B1").unwrap();
         assert_eq!(moved.rewrite(formula, "Q1", "Q1").as_deref(), Some("SUM('New totals'!D1:'New totals'!E1)"));
         assert_eq!(moved.rewrite("SUM((A1):(B1))", "Q1", "Q1").as_deref(), Some("SUM(('New totals'!D1):('New totals'!E1))"));
+    }
+
+    #[test]
+    fn nested_cut_range_moves_as_one_reference() {
+        let mut moved = MovedRange {
+            source: Range::parse("A1:B1").unwrap(),
+            from_sheet: "Q1",
+            to: CellRef::parse("D1").unwrap(),
+            to_sheet: "New totals",
+        };
+        let formula = "SUM((A1:B1):(C1))";
+        assert_eq!(moved.rewrite(formula, "Q1", "Q1"), None);
+        assert_eq!(moved.rewrite("SUM((Q1!A1:Q1!B1):Q1!C1)+A1", "Q1", "Q1").as_deref(), Some("SUM((Q1!A1:Q1!B1):Q1!C1)+'New totals'!D1"));
+        moved.source = Range::parse("A1:C1").unwrap();
+        assert_eq!(moved.rewrite(formula, "Q1", "Q1").as_deref(), Some("SUM(('New totals'!D1:E1):('New totals'!F1))"));
+        assert_eq!(moved.rewrite("SUM((A1:B1) (B1:C1))", "Q1", "Q1").as_deref(), Some("SUM(('New totals'!D1:E1) ('New totals'!E1:F1))"));
     }
 
     #[test]

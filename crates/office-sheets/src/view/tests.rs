@@ -255,6 +255,25 @@ fn cutting_values_retargets_formula_dependents_across_sheets_once() {
 }
 
 #[test]
+fn cutting_all_bounds_of_a_nested_range_preserves_its_value() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.add_sheet();
+    let source = Range::parse("A1:C1").unwrap();
+    let dest = Range::parse("D1").unwrap();
+    let dependent = CellRef::new(0, 3);
+    for col in 0..3 {
+        v.set_input(0, CellRef::new(0, col), "2");
+    }
+    v.set_input(0, dependent, "=SUM((A1:B1):C1)");
+    assert_eq!(v.cell_info(0, dependent).display, "6");
+    let (text, clipboard) = v.copy(0, source, Some("cut"));
+    v.cut(0, source, "cut".into());
+    v.paste(1, dest, &text, clipboard);
+    assert_eq!(v.cell_info(0, dependent).input, "=SUM((Sheet2!D1:E1):Sheet2!F1)");
+    assert_eq!(v.cell_info(0, dependent).display, "6");
+}
+
+#[test]
 fn cutting_dates_between_workbooks_preserves_the_calendar_date() {
     use crate::DateSystem::{From1900, From1904};
     for (from, to, serial, expected) in [(From1900, From1904, 45_000.5, 43_538.5), (From1904, From1900, 43_538.5, 45_000.5)] {
