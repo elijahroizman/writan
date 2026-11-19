@@ -961,6 +961,10 @@ impl Objects for NoteObjects<'_> {
     fn object(&mut self, _: &mut Ctx, para: &Path, inline: u32, rect: display::Rect, out: &mut Vec<Item>) {
         paint_image(self.blocks, para, inline, rect, out);
     }
+
+    fn preview_image(&mut self, img: &office_core::model::Image, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
+        out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: None });
+    }
 }
 
 fn paint_image(blocks: &[Block], para: &Path, inline: u32, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
