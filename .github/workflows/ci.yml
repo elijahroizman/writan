@@ -253,7 +253,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, engine, engine-samples, app, app-native, frontend, packaging]
+    needs: [changes, engine, engine-samples, engine-windows, app, app-native, frontend, packaging]
     if: always()
     runs-on: ubuntu-24.04
     steps:
