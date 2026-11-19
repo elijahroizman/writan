@@ -40,7 +40,7 @@ function detail(phase: UpdatePhase, error: string | null, publishedAt: string | 
   if (phase === 'ready') return date ? `Ready to install · ${date}` : 'Ready to install'
   if (isLinux && version && newer(version, __APP_VERSION__)) {
     return linux?.format
-      ? `Writan ${version} is out. Install the new .${linux.format} from GitHub, and later versions come through ${manager}.`
+      ? `Writan ${version} is out. Install the new .${linux.format === 'pacman' ? 'pkg.tar.zst' : linux.format} from GitHub, and later versions come through ${manager}.`
       : `Writan ${version} is out. Download it from GitHub.`
   }
   if (!updatesInstallable) return date ? `Latest GitHub release · ${date}` : 'Latest GitHub release'

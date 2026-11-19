@@ -88,6 +88,14 @@ const DNF_REPO: &str = "/etc/yum.repos.d/writan.repo";
 #[cfg(target_os = "linux")]
 const DNF_REPO_OLD: &str = "/etc/yum.repos.d/workspace.repo";
 
+/// Where the Arch package's install script adds Writan's pacman repository (scripts/arch-package.sh).
+#[cfg(target_os = "linux")]
+const PACMAN_CONF: &str = "/etc/pacman.conf";
+
+/// The pacman repository: one release per architecture, holding the newest package and its signature.
+#[cfg(target_os = "linux")]
+const PACMAN_REPO: &str = "https://github.com/elijahroizman/writan/releases/download/arch";
+
 /// Prefer the renamed repository file, while accepting an installation not yet migrated.
 #[cfg(target_os = "linux")]
 fn existing_file<'a>(primary: &'a str, legacy: &'a str) -> &'a str {
@@ -98,7 +106,7 @@ fn existing_file<'a>(primary: &'a str, legacy: &'a str) -> &'a str {
     }
 }
 
-/// How this Linux copy was installed: `format` is "deb" or "rpm" (none for a build run from
+/// How this Linux copy was installed: `format` is "deb", "rpm" or "pacman" (none for a build run from
 /// source), and `repo` says Writan's own repository is there and on, so the package manager
 /// can install new versions.
 #[derive(Serialize)]
@@ -114,6 +122,9 @@ fn query_installed(format: &str, name: &str) -> Option<String> {
         "deb" => std::process::Command::new("dpkg-query")
             .args(["-W", "-f=${Version}", name])
             .output(),
+        "pacman" => std::process::Command::new("pacman")
+            .args(["-Q", name])
+            .output(),
         _ => std::process::Command::new("rpm")
             .args(["-q", "--qf", "%{VERSION}-%{RELEASE}", name])
             .output(),
@@ -125,10 +136,14 @@ fn query_installed(format: &str, name: &str) -> Option<String> {
         .filter(|v| !v.is_empty())
 }
 
-/// The installed package version. `writan` is the package name. `workspace` is the previous name,
-/// still present until dnf obsoletes it or apt moves it to the empty transitional package.
+/// The installed package version (for pacman, `writan <version>`). `writan` is the package name.
+/// `workspace` is the previous name, still present until dnf obsoletes it or apt moves it to the
+/// empty transitional package. The Arch package was never called that.
 #[cfg(target_os = "linux")]
 fn installed_version(format: &str) -> Option<String> {
+    if format == "pacman" {
+        return query_installed(format, "writan");
+    }
     query_installed(format, "writan").or_else(|| query_installed(format, "workspace"))
 }
 
@@ -153,10 +168,33 @@ fn dnf_repo_enabled(repo: &str) -> bool {
     found && enabled
 }
 
+/// Whether pacman.conf has Writan's `[writan]` section, not commented out. Removing the package
+/// takes the section out again, and commenting it out is how updates are turned off.
+#[cfg(target_os = "linux")]
+fn pacman_repo_enabled(conf: &str) -> bool {
+    conf.lines().any(|line| line.trim() == "[writan]")
+}
+
+/// The Arch package file for a release, in the pacman repository. Only plain `x.y.z` versions:
+/// the version goes into the command pkexec runs, and pre-releases aren't published there.
+#[cfg(target_os = "linux")]
+fn pacman_package_url(version: &str, arch: &str) -> Option<String> {
+    let parts: Vec<&str> = version.split('.').collect();
+    let plain = parts.len() == 3
+        && parts
+            .iter()
+            .all(|p| !p.is_empty() && p.bytes().all(|b| b.is_ascii_digit()));
+    let arch = match arch {
+        "x86_64" | "aarch64" => arch,
+        _ => return None,
+    };
+    plain.then(|| format!("{PACMAN_REPO}/{arch}/writan-{version}-1-{arch}.pkg.tar.zst"))
+}
+
 #[cfg(target_os = "linux")]
 fn linux_package_now() -> LinuxPackage {
     use std::path::Path;
-    // The binary's path says which package put it there: dpkg and rpm both list their files.
+    // The binary's path says which package put it there: dpkg, rpm and pacman all list their files.
     let exe = std::env::current_exe().ok();
     let owned_by = |cmd: &str, args: &[&str]| {
         exe.as_ref().is_some_and(|exe| {
@@ -181,6 +219,13 @@ fn linux_package_now() -> LinuxPackage {
             format: Some("rpm"),
             repo: repo && Path::new("/usr/bin/dnf").is_file(),
         }
+    } else if owned_by("pacman", &["-Qqo"]) {
+        let repo =
+            std::fs::read_to_string(PACMAN_CONF).is_ok_and(|conf| pacman_repo_enabled(&conf));
+        LinuxPackage {
+            format: Some("pacman"),
+            repo: repo && Path::new("/usr/bin/pacman").is_file(),
+        }
     } else {
         LinuxPackage {
             format: None,
@@ -189,7 +234,7 @@ fn linux_package_now() -> LinuxPackage {
     }
 }
 
-/// How this copy was installed on Linux, and whether apt or dnf can update it.
+/// How this copy was installed on Linux, and whether apt, dnf or pacman can update it.
 #[tauri::command]
 pub async fn linux_package() -> LinuxPackage {
     #[cfg(target_os = "linux")]
@@ -210,14 +255,19 @@ pub async fn linux_package() -> LinuxPackage {
     }
 }
 
-/// Installs the newest Writan from its APT or dnf repository, after polkit asks for the
-/// password. Only Writan's own repository is refreshed, so a broken or slow mirror elsewhere
-/// can't stop it.
+/// Installs the newest Writan from its APT, dnf or pacman repository, after polkit asks for the
+/// password. Only Writan's own repository is read, so a broken or slow mirror elsewhere can't
+/// stop it.
+///
+/// pacman has no way to refresh one repository, and `pacman -Sy writan` would leave the rest of an
+/// Arch system partly upgraded, so it installs `version`'s package file from Writan's repository
+/// with `pacman -U`, which checks its signature against the key the package added to pacman's
+/// keyring. `pacman -Syu` brings the same package with the system's other updates.
 #[tauri::command]
-pub async fn package_upgrade() -> Result<(), String> {
+pub async fn package_upgrade(version: Option<String>) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
-        tauri::async_runtime::spawn_blocking(|| {
+        tauri::async_runtime::spawn_blocking(move || {
             let package = linux_package_now();
             let (format, line, what) = match package.format {
                 Some("deb") if package.repo => {
@@ -236,6 +286,13 @@ pub async fn package_upgrade() -> Result<(), String> {
                     let repo_id = if std::path::Path::new(DNF_REPO).is_file() { "writan" } else { "workspace" };
                     ("rpm", format!("dnf -y --refresh --repo={repo_id} upgrade writan"), "dnf")
                 }
+                Some("pacman") if package.repo => {
+                    let url = version
+                        .as_deref()
+                        .and_then(|v| pacman_package_url(v, std::env::consts::ARCH))
+                        .ok_or("pacman can't install this version from Writan's repository.")?;
+                    ("pacman", format!("pacman -U --noconfirm {url}"), "pacman")
+                }
                 _ => return Err("This copy of Writan didn't come with its update repository.".into()),
             };
             let before = installed_version(format);
@@ -252,7 +309,8 @@ pub async fn package_upgrade() -> Result<(), String> {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        Err("Updates through apt or dnf are for Linux.".into())
+        let _ = version;
+        Err("Updates through apt, dnf or pacman are for Linux.".into())
     }
 }
 
@@ -354,6 +412,31 @@ mod tests {
             sh_quote(std::path::Path::new("/tmp/O'Hare.app")),
             "'/tmp/O'\\''Hare.app'"
         );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_the_pacman_repo_section() {
+        assert!(pacman_repo_enabled(
+            "[core]\nInclude = x\n\n[writan]\nSigLevel = Required\n"
+        ));
+        assert!(pacman_repo_enabled("  [writan]  \n"));
+        assert!(!pacman_repo_enabled("#[writan]\n#Server = x\n"));
+        assert!(!pacman_repo_enabled("[core]\n"));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn builds_the_pacman_package_url() {
+        assert_eq!(
+            pacman_package_url("0.10.11", "aarch64").as_deref(),
+            Some("https://github.com/elijahroizman/writan/releases/download/arch/aarch64/writan-0.10.11-1-aarch64.pkg.tar.zst")
+        );
+        assert!(pacman_package_url("0.10.11", "x86_64").is_some());
+        assert!(pacman_package_url("0.11.0-beta.1", "x86_64").is_none());
+        assert!(pacman_package_url("1.2.3; rm -rf /", "x86_64").is_none());
+        assert!(pacman_package_url("1..3", "x86_64").is_none());
+        assert!(pacman_package_url("1.2.3", "riscv64").is_none());
     }
 
     #[cfg(target_os = "linux")]

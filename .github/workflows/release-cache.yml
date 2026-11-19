@@ -38,9 +38,9 @@ jobs:
         include:
           - name: Windows x64
             os: windows-latest
-          - name: macOS Apple silicon
+          - name: macOS universal
             os: macos-latest
-            args: --target aarch64-apple-darwin
+            args: --target universal-apple-darwin
           - name: Linux x64
             os: ubuntu-22.04
           - name: Linux ARM64
@@ -64,7 +64,7 @@ jobs:
       - id: toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,wasm32-unknown-unknown' || 'wasm32-unknown-unknown' }}
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown' || 'wasm32-unknown-unknown' }}
       - name: Document engine cache
         id: engine
         uses: actions/cache@v4
