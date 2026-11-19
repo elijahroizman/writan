@@ -356,14 +356,43 @@ impl Drawer<'_, '_, '_> {
         let (x, y, settings, flow) = self.text_flow(slide, f, body, b, look);
         let mut items = Vec::new();
         let links = |_: &Path, _: u32| None;
-        display::paint_flow(
-            self.ctx,
-            &flow,
-            x,
-            y,
-            (f64::MIN, f64::MAX),
-            &mut Sink { objects: &mut NoObjects, links: &links, out: &mut items },
-        );
+        if crate::animates_paragraphs(slide, f.id) {
+            // Each paragraph in a group of its own, for the slideshow to build one at a time.
+            for (i, block) in flow.blocks.iter().enumerate() {
+                let office_engine::flow::BlockBox::Para(p) = block else { continue };
+                let h = p.layout.lines.last().map_or(0.0, |l| l.top + l.height);
+                let mut lines = Vec::new();
+                display::paint_para(
+                    self.ctx,
+                    p,
+                    x,
+                    -p.y,
+                    (f64::MIN, f64::MAX),
+                    &mut Sink { objects: &mut NoObjects, links: &links, out: &mut lines },
+                );
+                items.push(Item::Group {
+                    x: 0.0,
+                    y: r(y + p.y),
+                    w: r(b.w),
+                    h: r(h),
+                    rot: 0.0,
+                    fh: false,
+                    fv: false,
+                    clip: false,
+                    id: Some(format!("p{i}")),
+                    items: lines,
+                });
+            }
+        } else {
+            display::paint_flow(
+                self.ctx,
+                &flow,
+                x,
+                y,
+                (f64::MIN, f64::MAX),
+                &mut Sink { objects: &mut NoObjects, links: &links, out: &mut items },
+            );
+        }
         if settings.vertical != 0 {
             let (w, h) = (b.h, b.w);
             out.push(Item::Group {

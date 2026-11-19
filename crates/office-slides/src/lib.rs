@@ -703,6 +703,9 @@ pub struct Effect {
     /// When it starts, after the step starts.
     pub delay_ms: u32,
     pub duration_ms: u32,
+    /// The paragraph of the frame's text it animates, when the text builds a paragraph at a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paragraph: Option<u32>,
 }
 
 impl AnimationStep {
@@ -728,29 +731,49 @@ fn child_ctns(ctn: &Element) -> impl Iterator<Item = &Element> {
         .filter_map(|e| e.child(ns::P, "cTn").or_else(|| e.child(ns::P, "cBhvr").and_then(|b| b.child(ns::P, "cTn"))))
 }
 
-fn effect(ctn: &Element, class: &str, delay_ms: u32) -> Option<Effect> {
-    let frame = ctn.descendant(ns::P, "spTgt")?.attr("spid")?.parse().ok()?;
+/// An effect node's effect, one per paragraph when it targets a range of the frame's text.
+fn effect(ctn: &Element, class: &str, delay_ms: u32) -> Vec<Effect> {
+    let Some(target) = ctn.descendant(ns::P, "spTgt") else { return Vec::new() };
+    let Some(frame) = target.attr("spid").and_then(|i| i.parse().ok()) else { return Vec::new() };
+    let range = target.child(ns::P, "txEl").and_then(|t| t.child(ns::P, "pRg")).and_then(|r| {
+        let at = |name: &str| r.attr(name).and_then(|v| v.parse::<u32>().ok());
+        Some((at("st")?, at("end")?))
+    });
     let duration_ms = child_ctns(ctn).filter_map(|b| Some(cond_delay(b) + b.attr("dur")?.parse::<u32>().ok()?)).max().unwrap_or(0);
     let number = |name: &str| ctn.attr(name).and_then(|v| v.parse().ok()).unwrap_or(0);
-    Some(Effect {
+    let effect = Effect {
         frame,
         class: class.to_string(),
         preset: number("presetID"),
         subtype: number("presetSubtype"),
         delay_ms: delay_ms + cond_delay(ctn),
         duration_ms,
-    })
+        paragraph: None,
+    };
+    match range {
+        Some((st, end)) if st <= end => (st..=end.min(st + 1000)).map(|p| Effect { paragraph: Some(p), ..effect.clone() }).collect(),
+        _ => vec![effect],
+    }
 }
 
 /// The effects under a time node, in order, with their start after `offset`.
 fn effects(ctn: &Element, offset: u32, out: &mut Vec<(Effect, Option<String>)>) {
     for c in child_ctns(ctn) {
         if let Some(class) = c.attr("presetClass") {
-            out.extend(effect(c, class, offset).map(|e| (e, c.attr("nodeType").map(str::to_string))));
+            let node = c.attr("nodeType").map(str::to_string);
+            out.extend(effect(c, class, offset).into_iter().map(|e| (e, node.clone())));
         } else {
             effects(c, offset + cond_delay(c), out);
         }
     }
+}
+
+/// Whether the slide animates the frame's text a paragraph at a time.
+pub fn animates_paragraphs(slide: &Slide, frame: u32) -> bool {
+    fn walk(el: &Element, id: &str) -> bool {
+        (el.is(ns::P, "spTgt") && el.attr("spid") == Some(id) && el.child(ns::P, "txEl").is_some()) || el.elements().any(|e| walk(e, id))
+    }
+    slide.origin.get().and_then(|o| o.child(ns::P, "timing")).is_some_and(|t| walk(t, &frame.to_string()))
 }
 
 /// The animations a slide plays as it's presented, one step per click, from its main sequence.
