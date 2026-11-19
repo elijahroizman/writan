@@ -661,7 +661,10 @@ pub(crate) mod tests {
         };
         let data = |cells: &str| {
             let cells = cells.to_string();
-            move |t: String| t.replace("<sheetData/>", "<sheetData></sheetData>").replace("<sheetData></sheetData>", &format!("<sheetData>{cells}</sheetData>"))
+            move |t: String| {
+                t.replace("<sheetData/>", "<sheetData></sheetData>")
+                    .replace("<sheetData></sheetData>", &format!("<sheetData>{cells}</sheetData>"))
+            }
         };
         let first = data(cells);
         edit(&mut pkg, "xl/worksheets/sheet1.xml", &|t| {
@@ -728,7 +731,19 @@ pub(crate) mod tests {
     #[test]
     fn scales_bars_and_icons_place_values_in_their_range() {
         let rules = r#"<conditionalFormatting sqref="A1:A3"><cfRule type="colorScale" priority="1"><colorScale><cfvo type="min"/><cfvo type="max"/><color rgb="FF000000"/><color rgb="FFFFFFFF"/></colorScale></cfRule></conditionalFormatting><conditionalFormatting sqref="B1:B3"><cfRule type="dataBar" priority="2"><dataBar showValue="0"><cfvo type="min"/><cfvo type="max"/><color rgb="FF638EC6"/></dataBar></cfRule></conditionalFormatting><conditionalFormatting sqref="C1:C3"><cfRule type="iconSet" priority="3"><iconSet iconSet="3Arrows"><cfvo type="percent" val="0"/><cfvo type="percent" val="33"/><cfvo type="percent" val="67"/></iconSet></cfRule></conditionalFormatting><conditionalFormatting sqref="D1:D4"><cfRule type="duplicateValues" dxfId="0" priority="4"/><cfRule type="top10" dxfId="1" priority="5" rank="1"/></conditionalFormatting>"#;
-        let cells = (1..=3).map(|i| row(i, &[n(&format!("A{i}"), i as f64), n(&format!("B{i}"), i as f64), n(&format!("C{i}"), i as f64), n(&format!("D{i}"), if i == 3 { 1.0 } else { i as f64 })])).collect::<String>()
+        let cells = (1..=3)
+            .map(|i| {
+                row(
+                    i,
+                    &[
+                        n(&format!("A{i}"), i as f64),
+                        n(&format!("B{i}"), i as f64),
+                        n(&format!("C{i}"), i as f64),
+                        n(&format!("D{i}"), if i == 3 { 1.0 } else { i as f64 }),
+                    ],
+                )
+            })
+            .collect::<String>()
             + &row(4, &[n("D4", 9.0)]);
         let doc = book(&cells, rules, "", &[GREEN, RED].concat());
         assert_eq!(fill(&doc, "A1").as_deref(), Some("#000000"));

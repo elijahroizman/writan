@@ -65,7 +65,13 @@ pub(super) fn read_pictures(pkg: &Package, sheet_part: &str) -> Result<Vec<Sheet
             });
             let props = pic.child(ns::XDR, "nvPicPr").and_then(|n| n.child(ns::XDR, "cNvPr"));
             let text = |k: &str| props.and_then(|p| p.attr(k)).filter(|v| !v.is_empty()).map(str::to_string);
-            out.push(SheetPicture { anchor: at, media, crop: crop.filter(|c| c.iter().any(|v| *v != 0.0)), name: text("name"), description: text("descr") });
+            out.push(SheetPicture {
+                anchor: at,
+                media,
+                crop: crop.filter(|c| c.iter().any(|v| *v != 0.0)),
+                name: text("name"),
+                description: text("descr"),
+            });
         }
     }
     Ok(out)

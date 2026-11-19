@@ -311,7 +311,8 @@ pub fn read_dxf(el: &Element) -> Dxf {
                 })
                 .unwrap_or_default()
         };
-        d.border = Border { left: side("left"), right: side("right"), top: side("top"), bottom: side("bottom"), diagonal: BorderSide::default() };
+        d.border =
+            Border { left: side("left"), right: side("right"), top: side("top"), bottom: side("bottom"), diagonal: BorderSide::default() };
     }
     d
 }

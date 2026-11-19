@@ -299,8 +299,13 @@ impl SheetsView {
         let used = s.used_range();
         let merges_end = s.merges.iter().map(|m| (m.end.row, m.end.col)).fold((0, 0), |a, b| (a.0.max(b.0), a.1.max(b.1)));
         // Room for the charts and pictures too.
-        let charts_end =
-            s.charts.iter().map(|c| c.anchor).chain(s.pictures.iter().map(|p| p.anchor)).map(|a| a.to.unwrap_or(a.from)).fold((0, 0), |a, p| (a.0.max(p.row), a.1.max(p.col)));
+        let charts_end = s
+            .charts
+            .iter()
+            .map(|c| c.anchor)
+            .chain(s.pictures.iter().map(|p| p.anchor))
+            .map(|a| a.to.unwrap_or(a.from))
+            .fold((0, 0), |a, p| (a.0.max(p.row), a.1.max(p.col)));
         let content = (
             used.map(|u| u.end.row + 1).unwrap_or(0).max(merges_end.0 + 1).max(charts_end.0 + 1),
             used.map(|u| u.end.col + 1).unwrap_or(0).max(merges_end.1 + 1).max(charts_end.1 + 1),
@@ -788,7 +793,10 @@ fn icon_path(icon: &crate::conditional::Icon) -> (String, String) {
     } else if icon.set.contains("Flags") {
         "M1 0L2.5 0L2.5 1L11 1L8 4.5L11 8L2.5 8L2.5 12L1 12Z"
     } else if icon.set.contains("Rating") || icon.set.contains("Quarters") || icon.set.contains("Boxes") || icon.set.contains("Stars") {
-        return ("M0 6a6 6 0 1 0 12 0a6 6 0 1 0 -12 0Z".into(), Rgba { rgb: tint(Rgb(0x44, 0x72, 0xc4), 0.8 * (1.0 - t)), alpha: 1.0 }.css());
+        return (
+            "M0 6a6 6 0 1 0 12 0a6 6 0 1 0 -12 0Z".into(),
+            Rgba { rgb: tint(Rgb(0x44, 0x72, 0xc4), 0.8 * (1.0 - t)), alpha: 1.0 }.css(),
+        );
     } else {
         "M0 6a6 6 0 1 0 12 0a6 6 0 1 0 -12 0Z"
     };
