@@ -1316,3 +1316,25 @@ fn office_smartart_in_documents_draws_its_cached_shapes() {
     }
     assert!(!fills.is_empty(), "{fills:?}");
 }
+
+#[test]
+fn a_new_list_hangs_its_label_at_its_levels_indent() {
+    let mut host = FixedMeasurer::default();
+    for kind in [crate::ListKind::Numbers, crate::ListKind::Bullets] {
+        let mut v = WordView::open(&doc_bytes(&["Thing", "Thing"])).unwrap();
+        v.layout(&mut host);
+        v.set_selection(Selection { anchor: Pos::new(Path::top(0), 0), focus: Pos::new(Path::top(1), 5) });
+        v.list(Some(kind));
+        v.layout(&mut host);
+        let new: Vec<(String, f64)> = text_items(&mut v, &mut host).into_iter().map(|(t, x, ..)| (t, x)).collect();
+        // The same document reopened reads the list's indents from its numbering part.
+        let mut back = WordView::open(&v.save().unwrap()).unwrap();
+        back.layout(&mut host);
+        let saved: Vec<(String, f64)> = text_items(&mut back, &mut host).into_iter().map(|(t, x, ..)| (t, x)).collect();
+        assert_eq!(new, saved, "{kind:?}");
+        // Word's list: the label at a quarter inch past the margin, the text at half an inch.
+        let x = |s: &str| new.iter().find(|(t, _)| t == s).map(|(_, x)| *x).unwrap();
+        let label = if kind == crate::ListKind::Numbers { "1." } else { "•" };
+        assert!((x("Thing") - x(label) - 24.0).abs() < 0.5, "{new:?}");
+    }
+}

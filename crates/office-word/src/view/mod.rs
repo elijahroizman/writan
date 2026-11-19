@@ -1243,8 +1243,10 @@ fn read_extras(doc: &Document) -> Extras {
 }
 
 fn read_parts_extras(doc: &Document) -> Extras {
+    // Parts changed while editing (styles added, lists made) come from the layer, not the file.
     let edited_styles = crate::word(doc).and_then(|w| w.styles_xml.clone());
-    let Some(pkg) = &doc.package else { return Extras::read(edited_styles.as_ref(), None, None) };
+    let edited_numbering = crate::word(doc).filter(|w| w.numbering_changed).and_then(|w| w.numbering_xml.clone());
+    let Some(pkg) = &doc.package else { return Extras::read(edited_styles.as_ref(), edited_numbering.as_ref(), None) };
     let Ok(main) = pkg.main_part() else { return Extras::read(None, None, None) };
     let part = |kind: &str| -> Option<office_core::xml::XmlDoc> {
         let (_, p) = pkg.related(&main, kind).ok()?.into_iter().next()?;
@@ -1252,7 +1254,7 @@ fn read_parts_extras(doc: &Document) -> Extras {
     };
     use office_core::opc::rels::kind;
     let styles = edited_styles.or_else(|| part(kind::STYLES));
-    let numbering = part(kind::NUMBERING);
+    let numbering = edited_numbering.or_else(|| part(kind::NUMBERING));
     let settings = part(kind::SETTINGS);
     Extras::read(styles.as_ref(), numbering.as_ref(), settings.as_ref())
 }
