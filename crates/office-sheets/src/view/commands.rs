@@ -217,6 +217,25 @@ impl SheetsView {
         self.change_cells(sheet, &[at], |v, at| v.put_input(sheet, at, &input));
     }
 
+    /// Why typing `input` into the cell at `at` would be refused by its data validation.
+    /// Formulas aren't checked: their results are only known once they're in.
+    pub fn refusal(&self, sheet: usize, at: CellRef, input: &str) -> Option<crate::validation::Refusal> {
+        let trimmed = input.trim();
+        let system = crate::excel(&self.doc).map(|x| x.date_system).unwrap_or_default();
+        let value = if trimmed.starts_with('=') || trimmed.is_empty() {
+            return None;
+        } else if trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("false") {
+            Value::Bool(trimmed.eq_ignore_ascii_case("true"))
+        } else if let Some(n) = parse_number(trimmed) {
+            Value::Number(n)
+        } else if let Some((date, _)) = parse_date(trimmed) {
+            Value::Number(crate::dates::to_serial(date, system))
+        } else {
+            Value::Text(input.to_string())
+        };
+        crate::validation::refusal(&self.doc, sheet, at, &value, self.now)
+    }
+
     fn put_input(&mut self, sheet: usize, at: CellRef, input: &str) {
         let trimmed = input.trim();
         let system = crate::excel(&self.doc).map(|x| x.date_system).unwrap_or_default();

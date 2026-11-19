@@ -97,7 +97,42 @@ fn locate(edges: &[f64], default: f64, v: f64) -> (u32, f64) {
     (i as u32, edges.get(i).copied().unwrap_or(0.0))
 }
 
+/// A picture as the app draws it: its box in grid pixels and the part its image is in.
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PictureView {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub media: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub crop: Option<[f64; 4]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+}
+
 impl SheetsView {
+    /// A sheet's pictures, back to front.
+    pub fn pictures(&mut self, sheet: usize) -> Vec<PictureView> {
+        self.grid(sheet);
+        let grid = &self.grids[&sheet];
+        let Some(s) = self.sheets().get(sheet) else { return Vec::new() };
+        s.pictures
+            .iter()
+            .map(|p| {
+                let (x, y, w, h) = grid.chart_rect(&p.anchor);
+                PictureView { x, y, w, h, media: p.media.clone(), crop: p.crop, name: p.description.clone().or_else(|| p.name.clone()) }
+            })
+            .collect()
+    }
+
+    /// A picture's bytes and media type, by part name.
+    pub fn media(&self, part: &str) -> Option<(&[u8], Option<&str>)> {
+        let pkg = self.doc.package.as_ref()?;
+        Some((pkg.part(part).ok()?, pkg.content_type(part)))
+    }
+
     /// A sheet's charts as the app draws them.
     pub fn charts(&mut self, sheet: usize) -> Vec<ChartView> {
         self.grid(sheet);

@@ -361,4 +361,44 @@ visible['A1'] = 'Visible contents'
 wb.active = 2
 wb.save(out('S2-xlsx-hidden-first.xlsx'))
 
+
+# Conditional formatting, data validation and a picture must all show (CORPUS-010).
+def excel_visuals():
+    from openpyxl.drawing.image import Image as XlImage
+    from openpyxl.formatting.rule import CellIsRule, ColorScaleRule, DataBarRule, FormulaRule, IconSetRule
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.worksheet.datavalidation import DataValidation
+    from PIL import Image as PilImage
+    wb = Workbook()
+    ws = wb.active
+    ws.title = 'Visuals'
+    ws['A1'], ws['B1'], ws['C1'], ws['D1'], ws['E1'] = 'Status', 'Score', 'Scale', 'Bar', 'Trend'
+    for i, (status, score) in enumerate([('Done', 92), ('Late', 41), ('Done', 77), ('Open', 15)], 2):
+        ws.cell(i, 1, status)
+        ws.cell(i, 2, score)
+        ws.cell(i, 3, score)
+        ws.cell(i, 4, score)
+        ws.cell(i, 5, score)
+    green = PatternFill(start_color='FFC6EFCE', end_color='FFC6EFCE', fill_type='solid')
+    red = PatternFill(start_color='FFFFC7CE', end_color='FFFFC7CE', fill_type='solid')
+    ws.conditional_formatting.add('A2:A5', FormulaRule(formula=['$A2="Done"'], fill=green))
+    ws.conditional_formatting.add('B2:B5', CellIsRule(operator='lessThan', formula=['50'], fill=red, font=Font(bold=True, color='FF9C0006')))
+    ws.conditional_formatting.add('C2:C5', ColorScaleRule(start_type='min', start_color='FFF8696B', end_type='max', end_color='FF63BE7B'))
+    ws.conditional_formatting.add('D2:D5', DataBarRule(start_type='min', end_type='max', color='FF638EC6'))
+    ws.conditional_formatting.add('E2:E5', IconSetRule('3Arrows', 'percent', [0, 33, 67]))
+    dv = DataValidation(type='list', formula1='"Open,Late,Done"', allow_blank=True, showErrorMessage=True,
+                        errorTitle='Not a status', error='Pick Open, Late or Done', promptTitle='Status', prompt='Pick a status')
+    dv.showInputMessage = True
+    ws.add_data_validation(dv)
+    dv.add('A2:A10')
+    img = io.BytesIO()
+    PilImage.new('RGB', (96, 64), (220, 60, 40)).save(img, 'PNG')
+    picture = XlImage(img)
+    picture.anchor = 'G2'
+    ws.add_image(picture)
+    wb.save(out('S2-xlsx-cf-validation-picture.xlsx'))
+
+
+excel_visuals()
+
 print('wrote', len(os.listdir(OUT)), 'files to', os.path.abspath(OUT))

@@ -73,6 +73,23 @@ pub struct ChartAnchor {
     pub size: Option<(i64, i64)>,
 }
 
+/// A picture on a worksheet, as its drawing places it. Pictures are shown, not edited: the
+/// drawing that holds them is saved as it was read.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SheetPicture {
+    pub anchor: ChartAnchor,
+    /// The image part.
+    pub media: String,
+    /// How much is cut off each side (left, top, right, bottom), as fractions of the image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crop: Option<[f64; 4]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
 /// What a file had cached for a series, for references the app can't follow.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

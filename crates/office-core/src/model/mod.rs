@@ -18,6 +18,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 pub use chart::{
+    SheetPicture,
     make_ref, parse_ref, quote_sheet, ref_cells, ref_numbers, ref_texts, rename_in_ref, AnchorPoint, Chart, ChartAnchor, ChartGrouping,
     ChartKind, ChartSeries, ChartSource, LegendPosition, SeriesCache,
 };
