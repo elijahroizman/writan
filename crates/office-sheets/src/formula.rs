@@ -725,41 +725,65 @@ impl MovedRange<'_> {
     /// Retarget references entirely inside the moved rectangle. References left behind still use
     /// their original sheet, even when the formula itself has moved to another sheet.
     pub fn rewrite(&self, src: &str, old_home: &str, new_home: &str) -> Option<String> {
+        let tokens = lex(src).ok()?;
         let mut result = None;
-        for (token, span) in lex(src).ok()?.into_iter().rev() {
-            let Tok::Ref(r) = token else { continue };
-            let name = r.sheet.as_deref().unwrap_or(old_home);
-            let end = r.end.unwrap_or(r.start);
-            let bounds = [
-                CellRef::new(r.start.row.unwrap_or(0), r.start.col.unwrap_or(0)),
-                CellRef::new(end.row.unwrap_or(1_048_575), end.col.unwrap_or(16_383)),
-            ];
-            let moved = name.eq_ignore_ascii_case(self.from_sheet) && bounds.into_iter().all(|at| self.source.contains(at));
-            let target = if moved { self.to_sheet } else { name };
-            if !moved && (r.sheet.is_some() || target.eq_ignore_ascii_case(new_home)) {
+        let mut end = tokens.len();
+        while end != 0 {
+            let mut start = end - 1;
+            if !matches!(tokens[start].0, Tok::Ref(_)) {
+                end = start;
                 continue;
             }
-            let qualify = r.sheet.is_some() || !target.eq_ignore_ascii_case(new_home);
-            let mut replacement = if qualify { write_sheet(target) } else { String::new() };
-            if moved {
-                let translate = |p: RefPart| RefPart {
-                    row: p.row.map(|row| self.to.row + (row - self.source.start.row)),
-                    col: p.col.map(|col| self.to.col + (col - self.source.start.col)),
-                    ..p
-                };
-                replacement.push_str(&write_part(&translate(r.start)));
-                if let Some(end) = r.end {
-                    replacement.push(':');
-                    replacement.push_str(&write_part(&translate(end)));
+            // Repeated sheet qualifiers produce separate reference tokens joined by colons.
+            while start >= 2 && tokens[start - 1].0 == Tok::Colon && matches!(tokens[start - 2].0, Tok::Ref(_)) {
+                start -= 2;
+            }
+            let refs = tokens[start..end].iter().step_by(2);
+            let has_expression_endpoint =
+                start.checked_sub(1).is_some_and(|i| tokens[i].0 == Tok::Colon) || tokens.get(end).is_some_and(|(t, _)| *t == Tok::Colon);
+            let moved = !has_expression_endpoint
+                && refs.clone().all(|(token, _)| {
+                    let Tok::Ref(r) = token else { unreachable!() };
+                    self.contains(r, old_home)
+                });
+            for (token, span) in refs.rev() {
+                let Tok::Ref(r) = token else { unreachable!() };
+                let name = r.sheet.as_deref().unwrap_or(old_home);
+                let target = if moved { self.to_sheet } else { name };
+                if !moved && (r.sheet.is_some() || target.eq_ignore_ascii_case(new_home)) {
+                    continue;
                 }
-            } else {
-                replacement.push_str(&src[span.clone()]);
+                let qualify = r.sheet.is_some() || !target.eq_ignore_ascii_case(new_home);
+                let mut replacement = if qualify { write_sheet(target) } else { String::new() };
+                if moved {
+                    let translate = |p: RefPart| RefPart {
+                        row: p.row.map(|row| self.to.row + (row - self.source.start.row)),
+                        col: p.col.map(|col| self.to.col + (col - self.source.start.col)),
+                        ..p
+                    };
+                    replacement.push_str(&write_part(&translate(r.start)));
+                    if let Some(end) = r.end {
+                        replacement.push(':');
+                        replacement.push_str(&write_part(&translate(end)));
+                    }
+                } else {
+                    replacement.push_str(&src[span.clone()]);
+                }
+                if src[span.clone()] != replacement {
+                    result.get_or_insert_with(|| src.to_string()).replace_range(span.clone(), &replacement);
+                }
             }
-            if src[span.clone()] != replacement {
-                result.get_or_insert_with(|| src.to_string()).replace_range(span, &replacement);
-            }
+            end = start;
         }
         result
+    }
+
+    fn contains(&self, r: &Reference, home: &str) -> bool {
+        let name = r.sheet.as_deref().unwrap_or(home);
+        let end = r.end.unwrap_or(r.start);
+        name.eq_ignore_ascii_case(self.from_sheet)
+            && self.source.contains(CellRef::new(r.start.row.unwrap_or(0), r.start.col.unwrap_or(0)))
+            && self.source.contains(CellRef::new(end.row.unwrap_or(1_048_575), end.col.unwrap_or(16_383)))
     }
 }
 
@@ -819,6 +843,18 @@ mod tests {
         assert_eq!(moved.rewrite("SUM(A1 : B1)", "Sheet1", "Sheet2").as_deref(), Some("SUM(Sheet1!A1 : B1)"));
         moved.source = Range::parse("A1:B1").unwrap();
         assert_eq!(moved.rewrite("SUM(A1 : B1)", "Sheet1", "Sheet1").as_deref(), Some("SUM(D1:E1)"));
+    }
+
+    #[test]
+    fn repeated_sheet_qualifiers_do_not_split_a_cut_range() {
+        let mut moved =
+            MovedRange { source: Range::parse("A1").unwrap(), from_sheet: "Q1", to: CellRef::parse("D1").unwrap(), to_sheet: "New totals" };
+        let formula = "SUM(Q1!A1:Q1!B1)";
+        assert_eq!(moved.rewrite(formula, "Q1", "Q1"), None);
+        assert_eq!(moved.rewrite("SUM(A1:B1)+SUM(Q1!A1 : 'Q1'!B1)", "Q1", "Other").as_deref(), Some("SUM(Q1!A1:B1)+SUM(Q1!A1 : 'Q1'!B1)"));
+        assert_eq!(moved.rewrite("SUM(Q1!A1:B1_Total)", "Q1", "Q1"), None);
+        moved.source = Range::parse("A1:B1").unwrap();
+        assert_eq!(moved.rewrite(formula, "Q1", "Q1").as_deref(), Some("SUM('New totals'!D1:'New totals'!E1)"));
     }
 
     #[test]
