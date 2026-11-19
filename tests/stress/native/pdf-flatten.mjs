@@ -56,7 +56,7 @@ function drawnXObjects(pdf) {
 const original = twoPagePdf()
 const browser = await pw[kind].launch()
 
-async function run({ highlight, answer }) {
+async function run({ highlight, answer, undoRedo = false }) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   page.setDefaultTimeout(20000)
   const errors = []
@@ -131,6 +131,12 @@ async function run({ highlight, answer }) {
     if (!before) await page.waitForFunction(() => window.__workspace.useWorkspace.getState().tabs[0].dirty)
     await page.waitForFunction(() => !getSelection().toString())
   }
+  if (undoRedo) {
+    await page.keyboard.press('ControlOrMeta+z')
+    await page.waitForTimeout(500)
+    await page.keyboard.press('ControlOrMeta+Shift+z')
+    await page.waitForTimeout(500)
+  }
   await page.evaluate((a) => (window.__fake.saveAnswer = a), answer)
   await page.getByRole('button', { name: /Save flattened copy/ }).first().click()
   await page.waitForFunction(() => window.__fake.saveDialogs > 0 || document.querySelector('.dialog'))
@@ -156,11 +162,11 @@ try {
     assert.deepEqual(r.writes, ['/docs/flat.pdf'])
   }
   {
-    const r = await run({ highlight: [0, 1], answer: '/docs/flat.pdf' })
+    const r = await run({ highlight: [0, 1], answer: '/docs/flat.pdf', undoRedo: true })
     assert.equal(r.dialog, null, `flattening failed: ${r.dialog}`)
     const flat = r.file('/docs/flat.pdf')
     assert.ok(flat, 'flattened copy was not written')
-    assert.equal(drawnXObjects(flat), drawnXObjects(original) + 4, 'highlights are missing from the flattened copy')
+    assert.equal(drawnXObjects(flat), drawnXObjects(original) + 4, 'highlights, one undone and redone, are missing from the flattened copy')
   }
   {
     const r = await run({ highlight: [0, 1], answer: null })

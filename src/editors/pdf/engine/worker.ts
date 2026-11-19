@@ -363,11 +363,14 @@ function clean(annot: PdfAnnotationObject, index: number): PdfAnnotationObject {
   return a
 }
 
+/** New marks print. Without the flag, printing and the flattened copy leave them out. */
+function printable(annot: PdfAnnotationObject): PdfAnnotationObject {
+  return annot.flags ? annot : { ...annot, flags: ['print'] }
+}
+
 async function createAnnotation(key: number, annot: PdfAnnotationObject, image: ArrayBuffer | null) {
   const p = page(key)
-  // Without the print flag, printing and the flattened copy leave the mark out.
-  const a = { ...clean(annot, p.index), flags: annot.flags?.length ? annot.flags : ['print'] } as PdfAnnotationObject
-  return task(engine.createPageAnnotation(doc!, p, a, (image ? { data: image } : undefined) as never))
+  return task(engine.createPageAnnotation(doc!, p, printable(clean(annot, p.index)), (image ? { data: image } : undefined) as never))
 }
 
 async function updateAnnotation(key: number, annot: PdfAnnotationObject) {
@@ -396,7 +399,7 @@ async function restoreAnnotation(token: number) {
   if (!saved) throw new Error('Nothing to restore')
   removedAnnots.delete(token)
   const p = page(saved.page)
-  return task(engine.createPageAnnotation(doc!, p, clean(saved.annot, p.index), (saved.appearance ? { appearance: saved.appearance } : undefined) as never))
+  return task(engine.createPageAnnotation(doc!, p, printable(clean(saved.annot, p.index)), (saved.appearance ? { appearance: saved.appearance } : undefined) as never))
 }
 
 async function setField(key: number, annot: PdfAnnotationObject, value: { text: string } | { checked: boolean } | { option: number }) {
