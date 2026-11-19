@@ -1179,3 +1179,15 @@ fn an_endnote_too_long_for_its_page_continues_on_the_next() {
     let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
     assert_eq!(all, (1..=1500).collect::<Vec<_>>());
 }
+
+#[test]
+fn a_long_footnote_on_the_last_line_continues_on_the_very_next_page() {
+    let mut host = FixedMeasurer::default();
+    let long: String = (1..=1500).map(|i| format!("t{i} ")).collect();
+    let mut v = WordView::open(&footnoted_doc(&footnote_para("Foo", "1"), &[("1", &long)])).unwrap();
+    v.layout(&mut host);
+    let pages = note_words(&mut v, &mut host);
+    assert!(pages.iter().all(|p| !p.0.is_empty()), "no blank page: {:?}", pages.iter().map(|p| p.0.len()).collect::<Vec<_>>());
+    let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
+    assert_eq!(all, (1..=1500).collect::<Vec<_>>());
+}

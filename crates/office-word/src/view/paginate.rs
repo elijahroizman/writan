@@ -511,7 +511,9 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
             }
             i += 1;
         }
-        if index_in_section == 0 || page_top < flow_height - 0.01 || units.last().is_some_and(|u| u.break_after) {
+        // (Nothing left but trailing spacing after a page that ended on the last line takes no page.)
+        let rest = first_unit < units.len() && page_top < flow_height - 0.01;
+        if index_in_section == 0 || rest || units.last().is_some_and(|u| u.break_after) {
             make_page(
                 view,
                 host,
