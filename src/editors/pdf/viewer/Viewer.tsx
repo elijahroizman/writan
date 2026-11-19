@@ -268,6 +268,15 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
     }
   }, [zoomTo])
 
+  /** Make a page current and hold it there until the user scrolls or clicks in the viewer. */
+  const select = (index: number) => {
+    held.current = true
+    if (currentRef.current === index) return
+    currentRef.current = index
+    setCurrent(index)
+    onPageChange(index)
+  }
+
   useImperativeHandle(
     ref,
     () => ({
@@ -277,18 +286,14 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
         if (!el || index < 0 || index >= l.tops.length) return
         // The scroll alone may not change the current page: it may not move at all (the page is
         // already at the top), may stop short (near the end), or a held page would win.
-        held.current = true
-        if (currentRef.current !== index) {
-          currentRef.current = index
-          setCurrent(index)
-          onPageChange(index)
-        }
+        select(index)
         el.scrollTop = l.tops[index] + (y !== undefined ? y * l.unit - 8 : -8)
       },
       reveal(index, box) {
         const el = scrollRef.current
         const l = layoutRef.current
         if (!el || index >= l.tops.length) return
+        select(index)
         const top = l.tops[index] + box.y * l.unit
         const bottom = top + box.h * l.unit
         if (top < el.scrollTop + 40 || bottom > el.scrollTop + el.clientHeight - 100) el.scrollTop = top - el.clientHeight / 3
