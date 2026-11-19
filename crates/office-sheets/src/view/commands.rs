@@ -142,7 +142,7 @@ impl SheetsView {
         let sel = self.sel;
         let before = if book { self.sheets().to_vec() } else { vec![self.sheets()[sheet].clone()] };
         f(self);
-        let mut steps = if matches!(axis, Axis::Row) { shift_table_rows(&mut self.doc, sheet, at, n) } else { Vec::new() };
+        let mut steps = shift_tables(&mut self.doc, sheet, &name, axis, at, n);
         for (i, s) in self.sheets_mut().iter_mut().enumerate() {
             if i == sheet {
                 continue;
@@ -1074,7 +1074,7 @@ fn rename_sheet_references(sheet: &mut Sheet, rename: &SheetRename<'_>) {
         match e.local.as_str() {
             "conditionalFormatting" | "dataValidations" | "extLst" => {
                 const XM: &str = "http://schemas.microsoft.com/office/excel/2006/main";
-                changed |= rename_formula_nodes(e, rename, |node| {
+                changed |= rewrite_formula_nodes(e, &|f| rename.formula(f), |node| {
                     node.is(XM, "f") || ["formula", "formula1", "formula2"].iter().any(|name| node.is(ns::X, name))
                 });
             }
@@ -1101,9 +1101,13 @@ fn rename_sheet_references(sheet: &mut Sheet, rename: &SheetRename<'_>) {
     }
 }
 
-fn rename_formula_nodes(el: &mut Element, rename: &SheetRename<'_>, is_formula: impl Fn(&Element) -> bool + Copy) -> bool {
+fn rewrite_formula_nodes(
+    el: &mut Element,
+    rewrite: &impl Fn(&str) -> Option<String>,
+    is_formula: impl Fn(&Element) -> bool + Copy,
+) -> bool {
     if is_formula(el) && el.elements().next().is_none() {
-        if let Some(next) = rename.formula(&el.text()) {
+        if let Some(next) = rewrite(&el.text()) {
             el.children = vec![Node::Text(next)];
             return true;
         }
@@ -1111,9 +1115,13 @@ fn rename_formula_nodes(el: &mut Element, rename: &SheetRename<'_>, is_formula: 
     }
     let mut changed = false;
     for child in el.elements_mut() {
-        changed |= rename_formula_nodes(child, rename, is_formula);
+        changed |= rewrite_formula_nodes(child, rewrite, is_formula);
     }
     changed
+}
+
+fn is_table_formula(el: &Element) -> bool {
+    el.is(ns::X, "calculatedColumnFormula") || el.is(ns::X, "totalsRowFormula")
 }
 
 fn rename_source_sheet(source: &mut Element, rename: &SheetRename<'_>) -> bool {
@@ -1137,7 +1145,7 @@ fn rename_package_references(doc: &mut office_core::model::Document, rename: &Sh
             }
             let mut xml = pkg.xml(name).ok()?;
             let changed = if media_type == TABLE {
-                rename_formula_nodes(&mut xml.root, rename, |e| e.is(ns::X, "calculatedColumnFormula") || e.is(ns::X, "totalsRowFormula"))
+                rewrite_formula_nodes(&mut xml.root, &|f| rename.formula(f), is_table_formula)
             } else {
                 let source = xml.root.child_mut(ns::X, "cacheSource")?.child_mut(ns::X, "worksheetSource")?;
                 rename_source_sheet(source, rename)
@@ -1155,41 +1163,44 @@ fn rename_package_references(doc: &mut office_core::model::Document, rename: &Sh
         .collect()
 }
 
-fn shift_table_rows(doc: &mut office_core::model::Document, sheet: usize, at: u32, n: i64) -> Vec<CStep> {
+fn shift_tables(doc: &mut office_core::model::Document, sheet: usize, target: &str, axis: Axis, at: u32, n: i64) -> Vec<CStep> {
+    let Body::Workbook { sheets } = &mut doc.body else { return Vec::new() };
+    let Some(pkg) = &mut doc.package else { return Vec::new() };
+    let mut steps = Vec::new();
+    for (i, s) in sheets.iter_mut().enumerate() {
+        let shift = FormulaShift { sheet_name: target, local: i == sheet, axis, at, n };
+        steps.extend(shift_sheet_tables(s, pkg, &shift));
+    }
+    steps
+}
+
+fn shift_sheet_tables(s: &mut Sheet, pkg: &mut office_core::opc::Package, shift: &FormulaShift<'_>) -> Vec<CStep> {
     use office_core::formats::common::rel_attr;
 
-    let Body::Workbook { sheets } = &mut doc.body else { return Vec::new() };
-    let Some((s, pkg)) = sheets.get_mut(sheet).zip(doc.package.as_mut()) else { return Vec::new() };
     let mut steps = Vec::new();
     let mut removed = Vec::new();
-    let shifted = |mut r: Range| {
-        (r.start.row, r.end.row) = shift_span(r.start.row, r.end.row, at, n, crate::MAX_ROWS)?;
-        Some(r)
+    let rewrite = |f: &str| {
+        let next = adjust_formula_on(f, shift.sheet_name, shift.local, shift.axis, shift.at, shift.n);
+        (next != f).then_some(next)
     };
     for (id, part) in crate::tables::parts(pkg, s) {
         let Ok(mut xml) = pkg.xml(&part) else { continue };
-        let Some(old) = crate::tables::range(&xml.root).filter(|_| xml.root.is(ns::X, "table")) else { continue };
-        let Some(new) = shifted(old) else {
-            removed.push(id);
-            continue;
-        };
-        if old == new && (n >= 0 || at > old.end.row) {
+        if !xml.root.is(ns::X, "table") {
             continue;
         }
-        for (attr, start, default) in [("headerRowCount", true, 1), ("totalsRowCount", false, 0)] {
-            let count = xml.root.attr(attr).and_then(|v| v.parse::<u32>().ok()).unwrap_or(default).min(old.rows());
-            if count == 0 || n >= 0 {
+        let resized = if shift.local && matches!(shift.axis, Axis::Row) {
+            let Some(resized) = shift_table_rows(&mut xml.root, shift.at, shift.n) else {
+                removed.push(id);
                 continue;
-            }
-            let section = if start { old.start.row..old.start.row + count } else { old.end.row + 1 - count..old.end.row + 1 };
-            let end = u32::try_from(i64::from(at) - n).unwrap_or(u32::MAX);
-            let deleted = section.end.min(end).saturating_sub(section.start.max(at));
-            if deleted != 0 {
-                xml.root.set_attr("", attr, (count - deleted).to_string());
-            }
+            };
+            resized
+        } else {
+            false
+        };
+        let rewritten = rewrite_formula_nodes(&mut xml.root, &rewrite, is_table_formula);
+        if !resized && !rewritten {
+            continue;
         }
-        xml.root.set_attr("", "ref", format!("{}:{}", new.start, new.end));
-        shift_table_filters(&mut xml.root, &shifted);
         let after = xml.to_bytes();
         if let Ok(before) = pkg.xml_bytes(&part).map(<[u8]>::to_vec) {
             if before != after && pkg.replace(&part, after.clone()).is_ok() {
@@ -1214,6 +1225,48 @@ fn shift_table_rows(doc: &mut office_core::model::Document, sheet: usize, at: u3
         }
     }
     steps
+}
+
+fn shift_table_rows(table: &mut Element, at: u32, n: i64) -> Option<bool> {
+    let Some(old) = crate::tables::range(table) else { return Some(false) };
+    let shifted = |mut r: Range| {
+        (r.start.row, r.end.row) = shift_span(r.start.row, r.end.row, at, n, crate::MAX_ROWS)?;
+        Some(r)
+    };
+    let new = shifted(old)?;
+    if old == new && (n >= 0 || at > old.end.row) {
+        return Some(false);
+    }
+    if n < 0 {
+        rebase_calculated_columns(table, old, at, i64::from(at) - n);
+    }
+    for (attr, start, default) in [("headerRowCount", true, 1), ("totalsRowCount", false, 0)] {
+        let count = table.attr(attr).and_then(|v| v.parse::<u32>().ok()).unwrap_or(default).min(old.rows());
+        if count == 0 || n >= 0 {
+            continue;
+        }
+        let section = if start { old.start.row..old.start.row + count } else { old.end.row + 1 - count..old.end.row + 1 };
+        let end = u32::try_from(i64::from(at) - n).unwrap_or(u32::MAX);
+        let deleted = section.end.min(end).saturating_sub(section.start.max(at));
+        if deleted != 0 {
+            table.set_attr("", attr, (count - deleted).to_string());
+        }
+    }
+    table.set_attr("", "ref", format!("{}:{}", new.start, new.end));
+    shift_table_filters(table, &shifted);
+    Some(true)
+}
+
+fn rebase_calculated_columns(table: &mut Element, old: Range, at: u32, end: i64) {
+    let headers = table.attr("headerRowCount").and_then(|v| v.parse::<u32>().ok()).unwrap_or(1).min(old.rows());
+    let totals = table.attr("totalsRowCount").and_then(|v| v.parse::<u32>().ok()).unwrap_or(0).min(old.rows() - headers);
+    let first = i64::from(old.start.row + headers);
+    let data_end = i64::from(old.end.row + 1 - totals);
+    if i64::from(at) <= first && first < end && end < data_end {
+        // The first surviving data row was the template's copy before the worksheet references moved.
+        let rebase = |f: &str| crate::formula::shift(f, end - first, 0).ok().filter(|next| next != f);
+        rewrite_formula_nodes(table, &rebase, |e| e.is(ns::X, "calculatedColumnFormula"));
+    }
 }
 
 fn shift_table_filters(el: &mut Element, shifted: &impl Fn(Range) -> Option<Range>) {
