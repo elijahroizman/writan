@@ -201,7 +201,8 @@ fn duplicating_a_slide_does_not_reuse_its_link_to_a_deleted_slide() {
     let kept = "ppt/slides/slide3.xml";
     let mut pkg = Package::read(&deck(&[&["Source"], &["Deleted"], &["Kept"]])).unwrap();
     let removed_id = pkg.relate(source, "slide", deleted).unwrap();
-    let kept_id = pkg.relate(source, "slide", kept).unwrap();
+    let jump = kept.to_ascii_uppercase();
+    let kept_id = pkg.relate(source, "slide", &jump).unwrap();
     let mut view = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
     view.duplicate_slides(&[0]);
     view.delete_slides(&[2]);
@@ -211,7 +212,9 @@ fn duplicating_a_slide_does_not_reuse_its_link_to_a_deleted_slide() {
     let duplicate = reopened.slides()[1].part.as_deref().unwrap();
     let links = saved.rels(duplicate).unwrap();
     assert!(links.get(&removed_id).is_none());
-    assert_eq!(saved.target(duplicate, links.get(&kept_id).unwrap()).as_deref(), Some(kept));
+    let target = saved.target(duplicate, links.get(&kept_id).unwrap()).unwrap();
+    assert_eq!(target, jump);
+    assert_eq!(saved.part(&target).unwrap(), saved.part(kept).unwrap());
 }
 
 #[test]

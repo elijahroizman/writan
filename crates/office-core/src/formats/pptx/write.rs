@@ -94,7 +94,8 @@ pub fn write(doc: &Document) -> Result<Package> {
                         rels.0.retain(|r| {
                             !r.is(kind::NOTES_SLIDE)
                                 && !r.is("comments")
-                                && (!r.is(kind::SLIDE) || input.target(original, r).is_some_and(|target| kept.contains(&target.as_str())))
+                                && (!r.is(kind::SLIDE)
+                                    || input.target(original, r).is_some_and(|target| kept.iter().any(|p| p.eq_ignore_ascii_case(&target))))
                         });
                         for r in rels.0.iter_mut() {
                             if let Some(target) = input.target(original, r) {
