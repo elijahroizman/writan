@@ -11,7 +11,7 @@ name: Release cache
 # drops a cache nobody has read for 7 days and a new stable Rust changes the rust-cache key.
 on:
   push:
-    branches: [main, devin/1795051298-release-cache]
+    branches: [main]
     paths:
       - 'crates/**'
       - 'src-tauri/Cargo.toml'
