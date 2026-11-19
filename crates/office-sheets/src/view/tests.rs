@@ -680,3 +680,29 @@ fn a_circular_reference_is_reported_and_saves_zero() {
     back.undo();
     assert_eq!(back.circular(), &[(0, a1)]);
 }
+
+#[test]
+fn a_circular_reference_saved_with_a_result_opens_as_zero() {
+    let a1 = CellRef::new(0, 0);
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.set_input(0, a1, "=A1+1");
+    // As 0.10.10 saved it: one step round the loop.
+    if let Body::Workbook { sheets } = &mut v.doc.body {
+        sheets[0].cell_mut(a1).value = Value::Number(1.0);
+    }
+    let bytes = v.save().unwrap();
+    let mut back = SheetsView::open(&bytes, "Book.xlsx").unwrap();
+    back.set_now(46000.0);
+    assert_eq!(back.circular(), &[(0, a1)]);
+    assert_eq!(back.cell_info(0, a1).display, "0");
+
+    // Only circular without the clock: it keeps its result.
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.set_now(46000.0);
+    v.set_input(0, a1, "=IFERROR(NOW(),A1)");
+    let bytes = v.save().unwrap();
+    let mut back = SheetsView::open(&bytes, "Book.xlsx").unwrap();
+    back.set_now(46001.0);
+    assert!(back.circular().is_empty());
+    assert_ne!(back.cell_info(0, a1).display, "0");
+}

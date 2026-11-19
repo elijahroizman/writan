@@ -183,15 +183,8 @@ impl SheetsView {
         v
     }
 
-    pub fn from_document(mut doc: Document, kind: Kind) -> SheetsView {
-        // A file keeps its cached results, except a circular reference's: that one is 0, not
-        // whatever the app that saved it got to.
+    pub fn from_document(doc: Document, kind: Kind) -> SheetsView {
         let circular = crate::circular_references(&doc, None);
-        if let Body::Workbook { sheets } = &mut doc.body {
-            for &(s, c) in &circular {
-                sheets[s].cell_mut(c).value = Value::Number(0.0);
-            }
-        }
         SheetsView {
             doc,
             kind,
@@ -231,7 +224,21 @@ impl SheetsView {
     /// formula Excel supports.
     pub fn set_now(&mut self, serial: f64) {
         self.now = Some(serial);
-        if crate::calculate_uncached(&mut self.doc, self.now) > 0 {
+        let worked_out = crate::calculate_uncached(&mut self.doc, self.now) > 0;
+        // A circular reference's cached result is whatever the app that saved it got to round
+        // the loop, so it is 0 instead. Without the clock, NOW() would make some look circular.
+        self.circular = crate::circular_references(&self.doc, self.now);
+        let mut zeroed = false;
+        if let Body::Workbook { sheets } = &mut self.doc.body {
+            for &(s, c) in &self.circular {
+                let cell = sheets[s].cell_mut(c);
+                if cell.value != Value::Number(0.0) {
+                    cell.value = Value::Number(0.0);
+                    zeroed = true;
+                }
+            }
+        }
+        if worked_out || zeroed {
             self.changed(None);
         }
     }
