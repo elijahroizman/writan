@@ -429,13 +429,14 @@ fn reference(src: &str, at: usize, sheet: Option<String>) -> Option<(Reference, 
     let (first, n1) = part(s, at)?;
     let mut len = n1;
     let mut end = None;
-    if s.get(at + len) == Some(&b':') {
-        if let Some((second, n2)) = part(s, at + len + 1) {
+    if let Some(tail) = src[at + len..].trim_start().strip_prefix(':') {
+        let second_at = src.len() - tail.trim_start().len();
+        if let Some((second, n2)) = part(s, second_at) {
             // Both ends must be the same kind: cells, whole columns or whole rows.
             let kind = |p: &RefPart| (p.row.is_some(), p.col.is_some());
             if kind(&first) == kind(&second) {
                 end = Some(second);
-                len += 1 + n2;
+                len = second_at - at + n2;
             }
         }
     }
@@ -808,6 +809,16 @@ mod tests {
 
     fn cell(row: u32, col: u32) -> RefPart {
         RefPart { row: Some(row), col: Some(col), row_abs: false, col_abs: false }
+    }
+
+    #[test]
+    fn spaced_ranges_move_only_when_both_endpoints_are_cut() {
+        let mut moved =
+            MovedRange { source: Range::parse("A1").unwrap(), from_sheet: "Sheet1", to: CellRef::parse("D1").unwrap(), to_sheet: "Sheet1" };
+        assert_eq!(moved.rewrite("SUM(A1 : B1)", "Sheet1", "Sheet1"), None);
+        assert_eq!(moved.rewrite("SUM(A1 : B1)", "Sheet1", "Sheet2").as_deref(), Some("SUM(Sheet1!A1 : B1)"));
+        moved.source = Range::parse("A1:B1").unwrap();
+        assert_eq!(moved.rewrite("SUM(A1 : B1)", "Sheet1", "Sheet1").as_deref(), Some("SUM(D1:E1)"));
     }
 
     #[test]
