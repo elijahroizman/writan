@@ -198,6 +198,103 @@ fn page_breaks_tables_and_lists() {
 }
 
 #[test]
+fn list_enter_continues_labels_and_undoes() {
+    for (kind, labels) in [(crate::ListKind::Numbers, vec!["1.", "2.", "3."]), (crate::ListKind::Bullets, vec!["•", "•", "•"])] {
+        let mut host = FixedMeasurer::default();
+        let mut v = WordView::open(&doc_bytes(&["one"])).unwrap();
+        v.set_selection(Selection::caret(Pos::new(Path::top(0), 3)));
+        v.list(Some(kind));
+        v = WordView::open(&v.save().unwrap()).unwrap();
+        v.set_selection(Selection::caret(Pos::new(Path::top(0), 3)));
+        for text in ["two", "three"] {
+            v.enter();
+            v.insert_text(text);
+        }
+        v.layout(&mut host);
+        for (i, label) in labels.iter().enumerate() {
+            assert_eq!(v.labels.get(&Path::top(i as u32)).map(String::as_str), Some(*label));
+        }
+        let expected: Vec<_> = labels.iter().map(|s| Some(s.to_string())).collect();
+        assert_eq!(crate::list_labels(&v.doc), expected);
+        let back = WordView::open(&v.save().unwrap()).unwrap();
+        assert_eq!(crate::list_labels(&back.doc), expected);
+        v.undo();
+        v.undo();
+        assert_eq!(texts(&v), vec!["one", "two"]);
+        v.redo();
+        assert_eq!(crate::list_labels(&v.doc), expected);
+    }
+}
+
+#[test]
+fn leaving_a_saved_list_restores_its_base_style() {
+    let mut v = WordView::open(&doc_bytes(&[""])).unwrap();
+    v.list(Some(crate::ListKind::Numbers));
+    v = WordView::open(&v.save().unwrap()).unwrap();
+    v.enter();
+    let p = pos::para(v.blocks(StoryId::Body), &Path::top(0)).unwrap();
+    assert_eq!(p.props.style.as_deref(), Some("Normal"));
+    let props = word(&v.doc).unwrap().styles.resolve_para(&p.props);
+    assert!(props.indent_start.is_none_or(|e| e.0 == 0));
+    assert!(props.indent_first_line.is_none_or(|e| e.0 == 0));
+    v.undo();
+    assert_eq!(v.state().list.as_deref(), Some("numbered"));
+    v.redo();
+    v.enter();
+    let back = WordView::open(&v.save().unwrap()).unwrap();
+    assert_eq!(crate::list_labels(&back.doc), vec![None, None]);
+}
+
+#[test]
+fn leaving_lists_resets_indent_and_is_undoable() {
+    use office_core::units::Emu;
+    use office_core::xml::{ns, Element};
+    for kind in [crate::ListKind::Numbers, crate::ListKind::Bullets] {
+        for exit in 0..3 {
+            let mut v = WordView::open(&doc_bytes(&[if exit == 0 { "" } else { "item" }])).unwrap();
+            v.list(Some(kind));
+            let path = Path::top(0);
+            let mut listed = pos::para(v.blocks(StoryId::Body), &path).unwrap().clone();
+            listed.props.indent_start = Some(Emu::from_twips(720));
+            listed.props.indent_first_line = Some(Emu::from_twips(-360));
+            let mut origin = listed.origin.get().unwrap().clone();
+            origin.child_or_insert(ns::W, "pPr").push(Element::new(ns::W, "ind").with_attr(ns::W, "left", "720").with_attr(
+                ns::W,
+                "hanging",
+                "360",
+            ));
+            listed.origin = office_core::model::Origin::new(origin);
+            v.blocks_mut(StoryId::Body)[0] = Block::Paragraph(listed.clone());
+            match exit {
+                0 => v.enter(),
+                1 => v.list(Some(kind)),
+                _ => v.backspace(false),
+            }
+            let normal = pos::para(v.blocks(StoryId::Body), &path).unwrap().clone();
+            assert_eq!(crate::list_labels(&v.doc), vec![None]);
+            assert_eq!(normal.props.indent_start, None);
+            assert_eq!(normal.props.indent_first_line, None);
+            assert_eq!(normal.props.style, None);
+            v.undo();
+            let restored = pos::para(v.blocks(StoryId::Body), &path).unwrap();
+            assert_eq!(restored.props, listed.props);
+            assert_eq!(crate::list_of(&v.doc, restored), crate::list_of(&v.doc, &listed));
+            v.redo();
+            v.set_selection(Selection::caret(Pos::new(path, if exit == 0 { 0 } else { 4 })));
+            v.enter();
+            v.insert_text("normal");
+            let back = WordView::open(&v.save().unwrap()).unwrap();
+            assert_eq!(crate::list_labels(&back.doc), vec![None, None]);
+            for block in back.blocks(StoryId::Body) {
+                let Block::Paragraph(p) = block else { panic!("paragraph") };
+                assert_eq!(p.props.indent_start, None);
+                assert_eq!(p.props.indent_first_line, None);
+            }
+        }
+    }
+}
+
+#[test]
 fn headers_with_page_numbers() {
     let mut host = FixedMeasurer::default();
     let mut v = WordView::open(&doc_bytes(&["body"])).unwrap();
