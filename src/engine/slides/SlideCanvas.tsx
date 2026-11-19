@@ -3,6 +3,7 @@
 // it, dragging on empty slide picks what's inside, and a double-click (or typing on a picked
 // text frame) edits its text, with the caret and selection drawn inside the frame.
 
+import type { ReactNode } from 'react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MenuEntry } from '../../components/ui'
 import { PopoverMenu } from '../../components/ui'
@@ -32,6 +33,10 @@ interface Props {
   wrapperRef?: React.MutableRefObject<HTMLDivElement | null>
   /** The scale in pixels per slide pixel, reported as it changes. */
   onPixelScale?: (s: number) => void
+  /** A double-click on a frame without text to edit, such as a video; true when it was handled. */
+  onOpenFrame?: (id: string) => boolean
+  /** Something shown over one of the slide's frames, such as its video playing. */
+  frameOverlay?: { id: string; node: ReactNode } | null
 }
 
 type Drag =
@@ -41,7 +46,7 @@ type Drag =
   | { kind: 'marquee'; x0: number; y0: number; x1: number; y1: number; additive: boolean }
   | { kind: 'text'; frame: string }
 
-export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu, viewportRef, wrapperRef, onPixelScale }: Props) {
+export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu, viewportRef, wrapperRef, onPixelScale, onOpenFrame, frameOverlay }: Props) {
   const viewport = useRef<HTMLDivElement | null>(null)
   const slideRef = useRef<HTMLDivElement | null>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -152,6 +157,7 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
         run({ cmd: 'beginEdit', id: Number(hit), x: p.x, y: p.y })
         return
       }
+      if (!additive && onOpenFrame?.(hit)) return
     }
     if (hit && !additive) setDrag({ kind: 'move', ids: engine.state.frames, x0: p.x, y0: p.y, dx: 0, dy: 0, moved: false })
     else if (!hit) setDrag({ kind: 'marquee', x0: p.x, y0: p.y, x1: p.x, y1: p.y, additive })
@@ -390,6 +396,7 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
   const moveOffset = drag?.kind === 'move' && drag.moved ? { dx: drag.dx, dy: drag.dy } : { dx: 0, dy: 0 }
   const text = st.text
   const caret = text?.caret
+  const overFrame = frameOverlay && engine.elements.find((x) => x.id === frameOverlay.id)
 
   // The input sits at the caret, so an input method's window opens there.
   const inputStyle: React.CSSProperties = caret && text ? { left: left + (text.x + caret[0]) * px, top: top + (text.y + caret[1]) * px, height: caret[2] * px, fontSize: Math.max(10, caret[2] * px * 0.7) } : {}
@@ -453,6 +460,11 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
             <div className="sc-marquee" style={{ left: Math.min(drag.x0, drag.x1), top: Math.min(drag.y0, drag.y1), width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0) }} />
           )}
         </div>
+        {frameOverlay && overFrame && (
+          <div className="sc-frame-overlay" style={{ left: left + overFrame.x * px, top: top + overFrame.y * px, width: overFrame.width * px, height: overFrame.height * px, rotate: `${overFrame.rotation}deg` }}>
+            {frameOverlay.node}
+          </div>
+        )}
         <textarea
           ref={inputRef}
           className="sc-input"
