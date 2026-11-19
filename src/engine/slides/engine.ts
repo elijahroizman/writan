@@ -27,6 +27,8 @@ export interface Effect {
   subtype: number
   delayMs: number
   durationMs: number
+  /** The paragraph of the frame's text it animates, when the text builds a paragraph at a time. */
+  paragraph?: number
 }
 
 /** What one click plays; `auto` steps play by themselves after the one before. */

@@ -24,21 +24,24 @@ export function stepBack(steps: readonly AnimationStep[], done: number): number 
   return null
 }
 
+/** What an effect animates: a frame (`"7"`), or one paragraph of its text (`"7/p1"`). */
+const target = (e: Effect) => (e.paragraph == null ? String(e.frame) : `${e.frame}/p${e.paragraph}`)
+
 /**
  * The frames hidden once `done` steps have played: a frame whose first effect is an entrance
  * is hidden until it plays, and an exit hides its frame.
  */
 export function hiddenAfter(steps: readonly AnimationStep[], done: number): Set<string> {
   const hidden = new Set<string>()
-  const seen = new Set<number>()
+  const seen = new Set<string>()
   for (const e of steps.flatMap((s) => s.effects)) {
-    if (seen.has(e.frame)) continue
-    seen.add(e.frame)
-    if (e.class === 'entr') hidden.add(String(e.frame))
+    if (seen.has(target(e))) continue
+    seen.add(target(e))
+    if (e.class === 'entr') hidden.add(target(e))
   }
   for (const e of steps.slice(0, done).flatMap((s) => s.effects)) {
-    if (e.class === 'entr') hidden.delete(String(e.frame))
-    else if (e.class === 'exit') hidden.add(String(e.frame))
+    if (e.class === 'entr') hidden.delete(target(e))
+    else if (e.class === 'exit') hidden.add(target(e))
   }
   return hidden
 }
@@ -50,6 +53,17 @@ const BOTTOM = 4
 const LEFT = 8
 
 interface Rect { x: number; y: number; w: number; h: number }
+
+/** Where an element is on the slide, in slide pixels. */
+function slideRect(el: HTMLElement): Rect {
+  let x = 0
+  let y = 0
+  for (let at: HTMLElement | null = el; at && !at.classList.contains('slide-surface'); at = at.offsetParent as HTMLElement | null) {
+    x += at.offsetLeft
+    y += at.offsetTop
+  }
+  return { x, y, w: el.offsetWidth, h: el.offsetHeight }
+}
 
 /** The keyframes of an entrance, or of an emphasis, in slide pixels; exits play entrances backwards. */
 function keyframes(e: Effect, frame: Rect, slide: { width: number; height: number }, base: string): Keyframe[] | null {
@@ -89,7 +103,10 @@ function keyframes(e: Effect, frame: Rect, slide: { width: number; height: numbe
  */
 export function showSteps(root: HTMLElement, steps: readonly AnimationStep[], done: number, play: boolean, slide: { width: number; height: number }): () => void {
   const frames = new Map<string, HTMLElement>()
-  root.querySelectorAll<HTMLElement>('.slide-surface > [data-id]').forEach((el) => frames.set(el.dataset.id!, el))
+  root.querySelectorAll<HTMLElement>('.slide-surface > [data-id]').forEach((el) => {
+    frames.set(el.dataset.id!, el)
+    el.querySelectorAll<HTMLElement>('[data-id^="p"]').forEach((p) => frames.set(`${el.dataset.id}/${p.dataset.id}`, p))
+  })
   const show = (n: number) => {
     const hidden = hiddenAfter(steps, n)
     frames.forEach((el, id) => (el.style.visibility = hidden.has(id) ? 'hidden' : ''))
@@ -99,9 +116,9 @@ export function showSteps(root: HTMLElement, steps: readonly AnimationStep[], do
   if (!playing) return () => {}
   const animations: Animation[] = []
   for (const e of playing.effects) {
-    const el = frames.get(String(e.frame))
+    const el = frames.get(target(e))
     if (!el) continue
-    const keys = keyframes(e, { x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }, slide, el.style.transform)
+    const keys = keyframes(e, slideRect(el), slide, el.style.transform)
     if (!keys) continue
     if (e.class === 'entr') el.style.visibility = ''
     const exit = e.class === 'exit'
