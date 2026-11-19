@@ -1203,3 +1203,20 @@ fn notes_referenced_while_a_long_one_continues_wait_their_turn() {
     let all: Vec<u32> = pages.iter().flat_map(|p| p.0.clone()).collect();
     assert_eq!(all, (1..=4001).collect::<Vec<_>>());
 }
+
+#[test]
+fn notes_queued_behind_a_long_one_show_once_when_their_line_moves() {
+    let mut host = FixedMeasurer::default();
+    let long: String = (1..=4000).map(|i| format!("t{i} ")).collect();
+    let mut body = footnote_para("Foo", "1");
+    for i in 2..=60 {
+        body += &footnote_para(&format!("Para {i}"), &i.to_string());
+    }
+    let notes: Vec<(String, String)> =
+        std::iter::once(("1".to_string(), long)).chain((2..=60).map(|i| (i.to_string(), format!("t{}", 4000 + i - 1)))).collect();
+    let notes: Vec<(&str, &str)> = notes.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let mut v = WordView::open(&footnoted_doc(&body, &notes)).unwrap();
+    v.layout(&mut host);
+    let all: Vec<u32> = note_words(&mut v, &mut host).iter().flat_map(|p| p.0.clone()).collect();
+    assert_eq!(all, (1..=4059).collect::<Vec<_>>());
+}

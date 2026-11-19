@@ -437,15 +437,12 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
                 (notes_h, carried, page_notes, fresh) = (0.0, 0, Vec::new(), true);
                 continue;
             }
-            let mut new_notes: Vec<usize> = notes_in(std::slice::from_ref(u)).into_iter().filter(|n| !page_notes.contains(n)).collect();
-            if !carry.is_empty() {
-                // An earlier note still continuing past this page: new ones queue behind it.
-                carry.extend(new_notes.iter().map(|&n| (n, 0.0)));
-                page_notes.append(&mut new_notes);
-            }
-            let sep = if slices.is_empty() && !new_notes.is_empty() { NOTE_SEPARATOR } else { 0.0 };
+            let new_notes: Vec<usize> = notes_in(std::slice::from_ref(u)).into_iter().filter(|n| !page_notes.contains(n)).collect();
+            // While an earlier note still continues past this page, new ones queue behind it.
+            let defer = !carry.is_empty();
+            let sep = if slices.is_empty() && !new_notes.is_empty() && !defer { NOTE_SEPARATOR } else { 0.0 };
             let mut add = sep;
-            for &n in &new_notes {
+            for &n in new_notes.iter().filter(|_| !defer) {
                 add += sizes.get(view, host, n, text_w).height;
             }
             if u.bottom - page_top + notes_h + add > avail + 0.01 {
@@ -482,6 +479,8 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
                     let keep = notes_in(&units[first_unit..cut]);
                     let on_page =
                         slices.iter().enumerate().filter(|(k, s)| *k < carried || keep.contains(&s.note)).map(|(_, s)| *s).collect();
+                    let moved = notes_in(&units[cut..i]);
+                    carry.retain(|(n, from)| *from > 0.0 || !moved.contains(n));
                     make_page(view, host, page_top, units[cut].top, index_in_section, &units[first_unit..cut], on_page, &mut pages);
                     slices.clear();
                     index_in_section += 1;
@@ -494,7 +493,11 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
             }
             notes_h += add;
             for &n in &new_notes {
-                slices.push(NoteSlice { note: n, top: 0.0, bottom: sizes.get(view, host, n, text_w).height });
+                if defer {
+                    carry.push((n, 0.0));
+                } else {
+                    slices.push(NoteSlice { note: n, top: 0.0, bottom: sizes.get(view, host, n, text_w).height });
+                }
             }
             page_notes.extend(new_notes);
             if u.break_after {
