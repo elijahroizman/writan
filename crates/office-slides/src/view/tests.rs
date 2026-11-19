@@ -1134,3 +1134,22 @@ fn office_smartart_draws_its_cached_shapes() {
         assert_eq!(fills, vec!["#4472c4"; 5]);
     }
 }
+
+#[test]
+fn insert_shape_menu_presets_are_real_ooxml_presets() {
+    // Inspector.tsx's Insert › Shape menu sends these names to `insert_shape`; an
+    // unknown one is drawn as a rectangle by the draw.rs fallback and saved as-is.
+    let inspector = include_str!("../../../../src/editors/pptx/Inspector.tsx");
+    let kinds: Vec<&str> =
+        inspector.lines().filter_map(|line| line.trim().strip_prefix("{ kind: '").and_then(|rest| rest.split('\'').next())).collect();
+    assert!(kinds.len() >= 8, "expected the menu's preset list, found {kinds:?}");
+    for kind in &kinds {
+        assert!(office_engine::geometry::preset(kind, 200.0, 100.0, &[]).is_some(), "Insert › Shape kind '{kind}' is not a preset");
+    }
+
+    let mut v = SlidesView::open(&deck(&[&[]])).unwrap();
+    v.insert_shape("rightArrow");
+    let pkg = office_core::opc::Package::read(&v.save().unwrap()).unwrap();
+    let slide = String::from_utf8(pkg.part("ppt/slides/slide1.xml").unwrap().to_vec()).unwrap();
+    assert!(slide.contains("prst=\"rightArrow\""), "{slide}");
+}
