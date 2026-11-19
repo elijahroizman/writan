@@ -351,12 +351,51 @@ impl<'a> SheetFormulas<'a> {
     }
 }
 
+/// What [`recalculate_with_report`] found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Recalculation {
+    /// How many formulas there were.
+    pub formulas: usize,
+    /// The formulas found in a circular reference (sheet index and cell), in sheet order.
+    pub circular: Vec<(usize, CellRef)>,
+}
+
 /// Works out every formula in the workbook again and puts the results in the cells, as Excel
 /// does when it recalculates. `now` (a serial number) is what NOW() and TODAY() give; without
-/// one they're #N/A. A formula that depends on itself comes to 0, as in Excel. Returns how many
-/// formulas there were.
+/// one they're #N/A. A formula in a circular reference comes to 0, as in Excel. Returns how
+/// many formulas there were.
 pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
-    let Body::Workbook { sheets } = &doc.body else { return 0 };
+    recalculate_with_report(doc, now).formulas
+}
+
+/// [`recalculate`], also saying which formulas are in a circular reference.
+pub fn recalculate_with_report(doc: &mut Document, now: Option<f64>) -> Recalculation {
+    let (results, circular) = evaluate(doc, now);
+    let formulas = results.len();
+    if let Body::Workbook { sheets } = &mut doc.body {
+        for ((s, r, c), value) in results {
+            let cell = sheets[s].cell_mut(CellRef::new(r, c));
+            if cell.value != value {
+                cell.value = value;
+            }
+        }
+    }
+    Recalculation { formulas, circular }
+}
+
+/// The formulas in a circular reference (sheet index and cell), in sheet order, found by
+/// working the workbook out without changing it.
+pub fn circular_references(doc: &Document, now: Option<f64>) -> Vec<(usize, CellRef)> {
+    evaluate(doc, now).1
+}
+
+type CellKey = (usize, u32, u32);
+
+/// Every formula's result, and the formulas in a circular reference (see [`evaluate`]).
+type Evaluated = (Vec<(CellKey, Value)>, Vec<(usize, CellRef)>);
+
+fn evaluate(doc: &Document, now: Option<f64>) -> Evaluated {
+    let Body::Workbook { sheets } = &doc.body else { return (Vec::new(), Vec::new()) };
     let mut formulas = HashMap::new();
     for (si, s) in sheets.iter().enumerate() {
         let mut reader = SheetFormulas::new(s);
@@ -378,13 +417,15 @@ pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
         formulas,
         done: HashMap::new(),
         working: HashSet::new(),
+        path: Vec::new(),
+        circular: HashSet::new(),
         current: vec![0],
         deep: None,
         extents: vec![Default::default(); sheets.len()],
     };
     // Top to bottom, so a chain that runs down the sheet (a running total) is worked out a
     // cell at a time instead of all at once from its last cell.
-    let mut keys: Vec<(usize, u32, u32)> = book.formulas.keys().copied().collect();
+    let mut keys: Vec<CellKey> = book.formulas.keys().copied().collect();
     keys.sort_unstable();
     for &key in &keys {
         // A chain deeper than MAX_DEPTH stops where it gets too deep; that cell is worked out
@@ -396,6 +437,8 @@ pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
             match book.deep.take() {
                 // A loop that long is a circular reference all the same.
                 Some(d) if stack.contains(&d) => {
+                    let from = stack.iter().position(|k| *k == d).unwrap_or(0);
+                    book.circular.extend(stack[from..].iter().copied());
                     book.done.insert(d, V::Num(0.0));
                 }
                 Some(d) => stack.push(d),
@@ -405,16 +448,10 @@ pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
             }
         }
     }
-    let results: Vec<((usize, u32, u32), Value)> =
-        keys.iter().map(|k| (*k, book.done.get(k).map(V::to_value).unwrap_or(Value::Number(0.0)))).collect();
-    let Body::Workbook { sheets } = &mut doc.body else { unreachable!() };
-    for ((s, r, c), value) in results {
-        let cell = sheets[s].cell_mut(CellRef::new(r, c));
-        if cell.value != value {
-            cell.value = value;
-        }
-    }
-    keys.len()
+    let results = keys.iter().map(|k| (*k, book.done.get(k).map(V::to_value).unwrap_or(Value::Number(0.0)))).collect();
+    let mut circular: Vec<CellKey> = book.circular.into_iter().collect();
+    circular.sort_unstable();
+    (results, circular.into_iter().map(|(s, r, c)| (s, CellRef::new(r, c))).collect())
 }
 
 /// The workbook as formulas see it while they're worked out.
@@ -425,14 +462,18 @@ struct Workbook<'a> {
     now: Option<f64>,
     /// Shared, so working one out doesn't copy its tree: a copy recurses, and a sum of a
     /// hundred thousand terms overflowed the stack.
-    formulas: HashMap<(usize, u32, u32), std::rc::Rc<Expr>>,
-    done: HashMap<(usize, u32, u32), V>,
-    working: HashSet<(usize, u32, u32)>,
+    formulas: HashMap<CellKey, std::rc::Rc<Expr>>,
+    done: HashMap<CellKey, V>,
+    working: HashSet<CellKey>,
+    /// The formulas being worked out, outermost first: `working` in order.
+    path: Vec<CellKey>,
+    /// The formulas found in a circular reference; each comes to 0.
+    circular: HashSet<CellKey>,
     /// The sheet of the formula being worked out, innermost last.
     current: Vec<usize>,
     /// The cell where a chain of formulas got too deep to follow; nothing worked out on the
     /// way to it is kept.
-    deep: Option<(usize, u32, u32)>,
+    deep: Option<CellKey>,
     /// Each sheet's last used row and column, once asked for.
     extents: Vec<std::cell::OnceCell<Option<(u32, u32)>>>,
 }
@@ -461,7 +502,9 @@ impl Workbook<'_> {
             return V::Empty;
         }
         if !self.working.insert(key) {
-            // A circular reference.
+            // A circular reference: every formula on the way back to this one is in it.
+            let from = self.path.iter().rposition(|k| *k == key).unwrap_or(0);
+            self.circular.extend(self.path[from..].iter().copied());
             return V::Num(0.0);
         }
         if self.working.len() > MAX_DEPTH || eval::depth() >= 64 {
@@ -469,15 +512,19 @@ impl Workbook<'_> {
             self.deep = Some(key);
             return V::Empty;
         }
+        self.path.push(key);
         self.current.push(s);
         let v = eval::eval(&expr, self);
         self.current.pop();
+        self.path.pop();
         self.working.remove(&key);
         if self.deep.is_some() {
             return V::Empty;
         }
-        // A formula's result is a single value; an array formula shows its first.
+        // A formula's result is a single value; an array formula shows its first. One in a
+        // circular reference comes to 0, as in Excel, not whatever the loop got to.
         let v = match v {
+            _ if self.circular.contains(&key) => V::Num(0.0),
             V::Range(rows) => rows.into_iter().next().and_then(|r| r.into_iter().next()).unwrap_or(V::Empty),
             v => v,
         };

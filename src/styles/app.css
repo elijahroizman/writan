@@ -1249,6 +1249,15 @@ kbd.kbd {
   padding: 0 4px;
 }
 
+.canvas-bar button.readout.circular {
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .canvas-bar input.readout {
   border: 0;
   background: transparent;

@@ -117,6 +117,8 @@ export interface SheetState {
   canRedo: boolean
   dirty: boolean
   csv: boolean
+  /** The formulas in a circular reference, in sheet order. */
+  circular: { sheet: number; row: number; col: number }[]
 }
 
 let sheets = 0
@@ -132,7 +134,7 @@ export class SheetsEngine {
   readonly styles: StyleSheet
   readonly media: MediaCache
   sheets: { name: string; hidden: boolean }[] = []
-  state: SheetState = { sheet: 0, anchor: [0, 0], focus: [0, 0], canUndo: false, canRedo: false, dirty: false, csv: false }
+  state: SheetState = { sheet: 0, anchor: [0, 0], focus: [0, 0], canUndo: false, canRedo: false, dirty: false, csv: false, circular: [] }
   cell: CellInfo | null = null
   revision = 0
   tick = 0

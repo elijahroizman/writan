@@ -118,6 +118,8 @@ pub struct SheetsView {
     /// What NOW() and TODAY() give: a serial number.
     pub(crate) now: Option<f64>,
     pending_cut: Option<commands::PendingCut>,
+    /// The formulas in a circular reference, as of the last recalculation.
+    pub(crate) circular: Vec<(usize, CellRef)>,
 }
 
 /// A block of the grid drawn: items in grid pixels.
@@ -182,6 +184,7 @@ impl SheetsView {
     }
 
     pub fn from_document(doc: Document, kind: Kind) -> SheetsView {
+        let circular = crate::circular_references(&doc, None);
         SheetsView {
             doc,
             kind,
@@ -196,6 +199,7 @@ impl SheetsView {
             revision: 1,
             pending_cut: None,
             now: None,
+            circular,
         }
     }
 
@@ -219,6 +223,16 @@ impl SheetsView {
     /// results: our evaluator cannot reproduce every formula Excel supports.
     pub fn set_now(&mut self, serial: f64) {
         self.now = Some(serial);
+    }
+
+    /// The formulas in a circular reference (sheet index and cell), in sheet order.
+    pub fn circular(&self) -> &[(usize, CellRef)] {
+        &self.circular
+    }
+
+    /// Works the formulas out again after a change.
+    pub(crate) fn recalculate(&mut self) {
+        self.circular = crate::recalculate_with_report(&mut self.doc, self.now).circular;
     }
 
     pub fn sheets(&self) -> &[Sheet] {

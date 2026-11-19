@@ -11,6 +11,7 @@ const port = 4173
 const url = `http://${host}:${port}/`
 const timeout = 180_000
 const scripts = [
+  'tests/stress/ui/circular-reference.mjs',
   'tests/stress/ui/css-fonts.mjs',
   'tests/stress/ui/datasafety.mjs',
   'tests/stress/ui/hidden-sheets.mjs',

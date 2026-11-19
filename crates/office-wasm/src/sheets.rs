@@ -111,7 +111,8 @@ impl SheetsDoc {
         json(&self.view.cell_info(sheet, CellRef::new(row, col)))
     }
 
-    /// `{ sheet, anchor, focus, canUndo, canRedo, dirty, csv }`.
+    /// `{ sheet, anchor, focus, canUndo, canRedo, dirty, csv, circular }`, `circular` being the
+    /// formulas in a circular reference as `{ sheet, row, col }`.
     pub fn state(&self) -> String {
         let s = self.view.selection();
         json(&serde_json::json!({
@@ -122,6 +123,12 @@ impl SheetsDoc {
             "canRedo": self.view.can_redo(),
             "dirty": self.view.is_dirty(),
             "csv": self.view.kind == Kind::Csv,
+            "circular": self
+                .view
+                .circular()
+                .iter()
+                .map(|(s, c)| serde_json::json!({ "sheet": s, "row": c.row, "col": c.col }))
+                .collect::<Vec<_>>(),
         }))
     }
 
