@@ -76,8 +76,24 @@ jobs:
         with:
           # wasm32 for the document engine (crates/office-wasm), which npm run build compiles.
           targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,wasm32-unknown-unknown' || 'wasm32-unknown-unknown' }}
+      # Tag runs can only read caches saved on main, so these two come from the Release cache
+      # workflow (release-cache.yml), which builds the same way on main. Saving them here would
+      # only store caches no other run can read.
+      - name: Restore the document engine
+        id: engine
+        uses: actions/cache/restore@v4
+        with:
+          path: src/engine/wasm
+          key: office-wasm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/**', '!crates/target/**') }}
+      - name: Use the restored document engine
+        # scripts/engine.mjs skips the build when the output is newer than everything in crates/.
+        if: steps.engine.outputs.cache-hit == 'true'
+        shell: bash
+        run: touch src/engine/wasm/*
       - uses: swatinem/rust-cache@v2
         with:
+          shared-key: release
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             src-tauri
             crates

@@ -1,0 +1,87 @@
+name: Release cache
+
+# Keeps the Release workflow's build caches warm. A tag run can only read caches saved on main,
+# so without this every release compiled the document engine and the app's Rust dependencies
+# from scratch on every platform. This builds the same way as release.yml on main and saves:
+# the document engine (src/engine/wasm), the Rust dependencies (rust-cache, shared key
+# "release") and the npm cache. Keep the matrix, toolchain and cache steps in step with
+# release.yml, or the keys stop matching and releases go back to cold builds.
+#
+# It runs when the Rust code or dependencies change on main, and every few days because GitHub
+# drops a cache nobody has read for 7 days and a new stable Rust changes the rust-cache key.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'crates/**'
+      - 'src-tauri/Cargo.toml'
+      - 'src-tauri/Cargo.lock'
+      - 'package-lock.json'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/release-cache.yml'
+  schedule:
+    - cron: '17 3 */3 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-cache-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+          - name: macOS Apple silicon
+            os: macos-latest
+            args: --target aarch64-apple-darwin
+          - name: Linux x64
+            os: ubuntu-22.04
+          - name: Linux ARM64
+            os: ubuntu-22.04-arm
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,wasm32-unknown-unknown' || 'wasm32-unknown-unknown' }}
+      - name: Document engine cache
+        id: engine
+        uses: actions/cache@v4
+        with:
+          path: src/engine/wasm
+          key: office-wasm-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('crates/**', '!crates/target/**') }}
+      - name: Use the cached document engine
+        if: steps.engine.outputs.cache-hit == 'true'
+        shell: bash
+        run: touch src/engine/wasm/*
+      - uses: swatinem/rust-cache@v2
+        with:
+          shared-key: release
+          workspaces: |
+            src-tauri
+            crates
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.129
+      - run: npm ci
+      # The same cargo build the release's tauri-action runs, without bundling or signing.
+      - run: npm run tauri build -- --no-bundle ${{ matrix.args }}
