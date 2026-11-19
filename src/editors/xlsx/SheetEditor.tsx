@@ -201,7 +201,10 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
     if (!d) return
     draft.current = null
     setEditing(null)
-    if (d.text !== d.original) engine.run({ cmd: 'input', sheet: d.sheet, row: d.row, col: d.col, text: d.text })
+    if (d.text === d.original) return
+    // With no chance to ask, a value the cell's validation stops is dropped rather than saved.
+    if (engine.validate(d.sheet, d.row, d.col, d.text)?.style === 'stop') return
+    engine.run({ cmd: 'input', sheet: d.sheet, row: d.row, col: d.col, text: d.text })
   }
 
   const range = engine.range
