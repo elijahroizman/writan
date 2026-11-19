@@ -193,6 +193,28 @@ fn duplicated_chart_slides_keep_their_relationships() {
 }
 
 #[test]
+fn duplicating_a_slide_does_not_reuse_its_link_to_a_deleted_slide() {
+    use office_core::opc::Package;
+
+    let source = "ppt/slides/slide1.xml";
+    let deleted = "ppt/slides/slide2.xml";
+    let kept = "ppt/slides/slide3.xml";
+    let mut pkg = Package::read(&deck(&[&["Source"], &["Deleted"], &["Kept"]])).unwrap();
+    let removed_id = pkg.relate(source, "slide", deleted).unwrap();
+    let kept_id = pkg.relate(source, "slide", kept).unwrap();
+    let mut view = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
+    view.duplicate_slides(&[0]);
+    view.delete_slides(&[2]);
+    let bytes = view.save().unwrap();
+    let saved = Package::read(&bytes).unwrap();
+    let reopened = SlidesView::open(&bytes).unwrap();
+    let duplicate = reopened.slides()[1].part.as_deref().unwrap();
+    let links = saved.rels(duplicate).unwrap();
+    assert!(links.get(&removed_id).is_none());
+    assert_eq!(saved.target(duplicate, links.get(&kept_id).unwrap()).as_deref(), Some(kept));
+}
+
+#[test]
 fn imported_columns_show_cached_values_and_categories() {
     let groups = format!(r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{CHART_SERIES}</c:barChart>"#);
     let mut view = SlidesView::open(&chart_deck(&groups, false)).unwrap();

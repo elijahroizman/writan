@@ -91,7 +91,10 @@ pub fn write(doc: &Document) -> Result<Package> {
                     // Copy from the original package even if the source slide was deleted.
                     Some((original, input)) => {
                         let mut rels = input.rels(original)?;
-                        rels.0.retain(|r| !r.is(kind::NOTES_SLIDE));
+                        rels.0.retain(|r| {
+                            !r.is(kind::NOTES_SLIDE)
+                                && (!r.is(kind::SLIDE) || input.target(original, r).is_some_and(|target| kept.contains(&target.as_str())))
+                        });
                         for r in rels.0.iter_mut() {
                             if let Some(target) = input.target(original, r) {
                                 let target = if r.is(kind::SLIDE_LAYOUT) { wanted.as_deref().unwrap_or(&target) } else { &target };
