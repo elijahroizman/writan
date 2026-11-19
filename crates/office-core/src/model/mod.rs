@@ -139,6 +139,9 @@ pub enum Block {
     /// content controls, custom XML), whole.
     Raw {
         xml: Element,
+        /// Decoded content for display only; the XML is still the source for saving.
+        #[serde(skip)]
+        preview: Arc<[Block]>,
     },
 }
 

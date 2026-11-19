@@ -10,7 +10,7 @@ use office_core::formats::docx::val;
 use office_core::model::{Align, Block, Document, Inline, LineSpacing, Paragraph, RunProps, Table};
 use office_core::units::Emu;
 use office_core::xml::{ns, Element};
-use office_engine::flow::{BorderLine, CellLook, Keep, Resolver, TableLook};
+use office_engine::flow::{self, BorderLine, Cache, CellLook, FlowLayout, Keep, Resolver, TableLook};
 use office_engine::para::{self, Ctx, Item, ItemKind, Label, ParaSpec, Spacing, StyleId, Tab};
 use office_engine::pos::{blocks_at, Path};
 use office_engine::style::TextStyle;
@@ -347,6 +347,18 @@ impl WordResolver<'_> {
 }
 
 impl Resolver for WordResolver<'_> {
+    fn preview(&mut self, ctx: &mut Ctx, cache: &mut Cache, blocks: &[Block], width: f64) -> FlowLayout {
+        let mut resolver = WordResolver {
+            doc: self.doc,
+            extras: self.extras,
+            story: blocks,
+            labels: &HashMap::new(),
+            fields: self.fields,
+            specs: self.specs,
+        };
+        flow::layout(ctx, cache, &mut resolver, blocks, &[], width)
+    }
+
     fn para(&mut self, ctx: &mut Ctx, path: &Path, p: &Paragraph, width: f64) -> (Arc<ParaSpec>, Keep) {
         let _ = width;
         let key = self.spec_key(path, p);

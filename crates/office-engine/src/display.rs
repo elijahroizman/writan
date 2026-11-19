@@ -3,6 +3,7 @@
 //! turns them into DOM, so text stays real text (selectable by assistive tech, crisp at any
 //! zoom), and the engine never touches the DOM.
 
+use office_core::model::{Block, Image, Inline};
 use serde::Serialize;
 
 use crate::flow::{BlockBox, BorderLine, FlowLayout, ParaBox, TableBox};
@@ -118,6 +119,9 @@ pub trait Objects {
     /// Draws the object at inline `inline` of the paragraph at `para` into `out`, in the box
     /// `rect` (x, y, width, height).
     fn object(&mut self, para: &crate::pos::Path, inline: u32, rect: Rect, out: &mut Vec<Item>);
+
+    /// Draws an image in preserved markup, without an editable object id.
+    fn preview_image(&mut self, _image: &Image, _rect: Rect, _out: &mut Vec<Item>) {}
 }
 
 /// A link's address for the text at an offset of a paragraph, if it's linked.
@@ -137,6 +141,18 @@ impl Objects for NoObjects {
     fn object(&mut self, _: &crate::pos::Path, _: u32, _: Rect, _: &mut Vec<Item>) {}
 }
 
+struct PreviewObjects<'a> {
+    blocks: &'a [Block],
+    objects: &'a mut dyn Objects,
+}
+
+impl Objects for PreviewObjects<'_> {
+    fn object(&mut self, para: &crate::pos::Path, inline: u32, rect: Rect, out: &mut Vec<Item>) {
+        let Some(Inline::Image(img)) = crate::pos::para(self.blocks, para).and_then(|p| p.content.get(inline as usize)) else { return };
+        self.objects.preview_image(img, rect, out);
+    }
+}
+
 /// Paints a flow with its top left at (`x`, `y`), drawing only what's within `rows` (from the
 /// flow's top), so a page can paint its share of a flow cut across pages.
 pub fn paint_flow(ctx: &mut Ctx, flow: &FlowLayout, x: f64, y: f64, rows: (f64, f64), sink: &mut Sink) {
@@ -144,6 +160,18 @@ pub fn paint_flow(ctx: &mut Ctx, flow: &FlowLayout, x: f64, y: f64, rows: (f64, 
         match b {
             BlockBox::Para(p) => paint_para(ctx, p, x, y, rows, sink),
             BlockBox::Table(t) => paint_table(ctx, t, x, y, rows, sink),
+            BlockBox::Preview { y: top, flow, blocks, .. } if *top < rows.1 && *top + flow.height > rows.0 => {
+                let mut objects = PreviewObjects { blocks, objects: sink.objects };
+                paint_flow(
+                    ctx,
+                    flow,
+                    x,
+                    y + top,
+                    (rows.0 - top, rows.1 - top),
+                    &mut Sink { objects: &mut objects, links: &|_, _| None, out: sink.out },
+                );
+            }
+            BlockBox::Preview { .. } => {}
             BlockBox::Empty { .. } => {}
         }
     }

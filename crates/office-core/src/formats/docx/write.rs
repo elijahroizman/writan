@@ -121,7 +121,7 @@ fn write_block(b: &Block, ctx: &mut Ctx, out: &mut Vec<Element>) -> Result<()> {
     match b {
         Block::Paragraph(p) => out.push(write_paragraph(p, ctx)?),
         Block::Table(t) => out.push(write_table(t, ctx)?),
-        Block::Raw { xml } if !foreign(xml) => out.push(xml.clone()),
+        Block::Raw { xml, .. } if !foreign(xml) => out.push(xml.clone()),
         Block::Raw { .. } => {}
     }
     Ok(())

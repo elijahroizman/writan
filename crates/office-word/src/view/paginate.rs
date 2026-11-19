@@ -25,16 +25,15 @@ struct Unit {
     break_after: bool,
 }
 
-fn units(flow: &FlowLayout) -> Vec<Unit> {
-    let mut out = Vec::new();
+fn flow_units(flow: &FlowLayout, y: f64, out: &mut Vec<Unit>) {
     for block in &flow.blocks {
         match block {
             BlockBox::Para(p) => {
                 let n = p.layout.lines.len();
                 for (i, l) in p.layout.lines.iter().enumerate() {
                     out.push(Unit {
-                        top: p.y + l.top,
-                        bottom: p.y + l.top + l.height,
+                        top: y + p.y + l.top,
+                        bottom: y + p.y + l.top + l.height,
                         line: i,
                         lines: n,
                         keep: p.keep,
@@ -45,8 +44,8 @@ fn units(flow: &FlowLayout) -> Vec<Unit> {
             BlockBox::Table(t) => {
                 for r in &t.rows {
                     out.push(Unit {
-                        top: t.y + r.y,
-                        bottom: t.y + r.y + r.height,
+                        top: y + t.y + r.y,
+                        bottom: y + t.y + r.y + r.height,
                         line: 0,
                         lines: 1,
                         keep: Keep::default(),
@@ -54,10 +53,10 @@ fn units(flow: &FlowLayout) -> Vec<Unit> {
                     });
                 }
             }
+            BlockBox::Preview { y: top, flow, .. } => flow_units(flow, y + top, out),
             BlockBox::Empty { .. } => {}
         }
     }
-    out
 }
 
 /// Where to start a new page, wanting to start it at unit `i` with the page starting at unit
@@ -161,7 +160,8 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
             find("default")
         };
         let text_w = emu_px(section.text_width()).max(24.0);
-        let units = units(&view.sections[si].flow);
+        let mut units = Vec::new();
+        flow_units(&view.sections[si].flow, 0.0, &mut units);
         let flow_height = view.sections[si].flow.height;
         let mut page_top = units.first().map(|u| u.top).unwrap_or(0.0);
         let mut first_unit = 0;

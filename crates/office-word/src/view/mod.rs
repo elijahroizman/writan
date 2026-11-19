@@ -781,7 +781,7 @@ fn same_labels(b: &BlockBox, labels: &HashMap<Path, String>) -> bool {
     match b {
         BlockBox::Para(p) => p.spec.label.as_ref().map(|l| &l.text) == labels.get(&p.path).filter(|l| !l.is_empty()),
         BlockBox::Table(t) => t.cells.iter().all(|c| c.content.blocks.iter().all(|b| same_labels(b, labels))),
-        BlockBox::Empty { .. } => true,
+        BlockBox::Preview { .. } | BlockBox::Empty { .. } => true,
     }
 }
 
@@ -842,6 +842,10 @@ impl Objects for PageObjects<'_> {
         let Some(Inline::Image(img)) = p.content.get(inline as usize) else { return };
         let id = format!("{}:{}", para.0.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."), inline);
         out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: Some(id) });
+    }
+
+    fn preview_image(&mut self, img: &office_core::model::Image, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
+        out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: None });
     }
 }
 
