@@ -495,7 +495,8 @@ impl WordView {
         let width = emu_px(self.sections[p.section].section.text_width()).max(24.0);
         let flows: Vec<(usize, FlowLayout)> = p.footnotes.iter().filter_map(|&n| Some((n, self.note_flow(host, n, width)?))).collect();
         let total: f64 = flows.iter().map(|(_, f)| f.height).sum();
-        let mut y = p.notes_bottom - total;
+        // Below the body even when a page's first line and its notes don't fit together.
+        let mut y = (p.notes_bottom - total).max(p.body_y + p.bottom - p.top + NOTE_SEPARATOR);
         let line_y = display::r(y - NOTE_SEPARATOR / 2.0);
         let line_w = (width / 3.0).min(192.0);
         out.push(Item::Line {
