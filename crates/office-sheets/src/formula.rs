@@ -726,28 +726,45 @@ impl MovedRange<'_> {
     /// their original sheet, even when the formula itself has moved to another sheet.
     pub fn rewrite(&self, src: &str, old_home: &str, new_home: &str) -> Option<String> {
         let tokens = lex(src).ok()?;
+        let operand = |index: usize| {
+            let (mut start, mut end) = (index, index + 1);
+            while start > 0
+                && tokens[start - 1].0 == Tok::Open
+                && tokens.get(end).is_some_and(|(t, _)| *t == Tok::Close)
+                && !(start >= 2 && matches!(tokens[start - 2].0, Tok::Ident(_)))
+            {
+                start -= 1;
+                end += 1;
+            }
+            start..end
+        };
+        let left_of = |colon: usize| {
+            let i = tokens[..colon].iter().rposition(|(t, _)| *t != Tok::Close)?;
+            if !matches!(tokens[i].0, Tok::Ref(_)) {
+                return None;
+            }
+            let span = operand(i);
+            (span.end == colon).then_some(span.start)
+        };
         let mut result = None;
         let mut end = tokens.len();
         while end != 0 {
-            let mut start = end - 1;
-            if !matches!(tokens[start].0, Tok::Ref(_)) {
-                end = start;
+            let i = end - 1;
+            if !matches!(tokens[i].0, Tok::Ref(_)) {
+                end = i;
                 continue;
             }
-            // Repeated sheet qualifiers produce separate reference tokens joined by colons.
-            while start >= 2 && tokens[start - 1].0 == Tok::Colon && matches!(tokens[start - 2].0, Tok::Ref(_)) {
-                start -= 2;
+            // Repeated sheet qualifiers and parenthesized refs use the colon operator.
+            let span = operand(i);
+            let (mut start, stop) = (span.start, span.end);
+            while let Some(left) = start.checked_sub(1).filter(|&i| tokens[i].0 == Tok::Colon).and_then(left_of) {
+                start = left;
             }
-            let refs = tokens[start..end].iter().step_by(2);
+            let refs = tokens[start..stop].iter().filter_map(|(t, span)| if let Tok::Ref(r) = t { Some((r, span)) } else { None });
             let has_expression_endpoint =
-                start.checked_sub(1).is_some_and(|i| tokens[i].0 == Tok::Colon) || tokens.get(end).is_some_and(|(t, _)| *t == Tok::Colon);
-            let moved = !has_expression_endpoint
-                && refs.clone().all(|(token, _)| {
-                    let Tok::Ref(r) = token else { unreachable!() };
-                    self.contains(r, old_home)
-                });
-            for (token, span) in refs.rev() {
-                let Tok::Ref(r) = token else { unreachable!() };
+                start.checked_sub(1).is_some_and(|i| tokens[i].0 == Tok::Colon) || tokens.get(stop).is_some_and(|(t, _)| *t == Tok::Colon);
+            let moved = !has_expression_endpoint && refs.clone().all(|(r, _)| self.contains(r, old_home));
+            for (r, span) in refs.rev() {
                 let name = r.sheet.as_deref().unwrap_or(old_home);
                 let target = if moved { self.to_sheet } else { name };
                 if !moved && (r.sheet.is_some() || target.eq_ignore_ascii_case(new_home)) {
@@ -853,8 +870,10 @@ mod tests {
         assert_eq!(moved.rewrite(formula, "Q1", "Q1"), None);
         assert_eq!(moved.rewrite("SUM(A1:B1)+SUM(Q1!A1 : 'Q1'!B1)", "Q1", "Other").as_deref(), Some("SUM(Q1!A1:B1)+SUM(Q1!A1 : 'Q1'!B1)"));
         assert_eq!(moved.rewrite("SUM(Q1!A1:B1_Total)", "Q1", "Q1"), None);
+        assert_eq!(moved.rewrite("SUM((A1):(B1))", "Q1", "Q1"), None);
         moved.source = Range::parse("A1:B1").unwrap();
         assert_eq!(moved.rewrite(formula, "Q1", "Q1").as_deref(), Some("SUM('New totals'!D1:'New totals'!E1)"));
+        assert_eq!(moved.rewrite("SUM((A1):(B1))", "Q1", "Q1").as_deref(), Some("SUM(('New totals'!D1):('New totals'!E1))"));
     }
 
     #[test]
