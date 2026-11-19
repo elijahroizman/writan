@@ -215,6 +215,30 @@ fn duplicating_a_slide_does_not_reuse_its_link_to_a_deleted_slide() {
 }
 
 #[test]
+fn duplicated_slides_do_not_share_the_original_comments_part() {
+    use office_core::opc::Package;
+
+    let source = "ppt/slides/slide1.xml";
+    let comments = "ppt/comments/comment1.xml";
+    let mut pkg = Package::read(&deck(&[&["Source"]])).unwrap();
+    pkg.put(
+        comments,
+        br#"<p:cmLst xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"/>"#.to_vec(),
+        "application/vnd.openxmlformats-officedocument.presentationml.comments+xml",
+    );
+    pkg.relate(source, "comments", comments).unwrap();
+    let mut view = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
+    view.duplicate_slides(&[0]);
+    let bytes = view.save().unwrap();
+    let saved = Package::read(&bytes).unwrap();
+    let reopened = SlidesView::open(&bytes).unwrap();
+    let duplicate = reopened.slides()[1].part.as_deref().unwrap();
+    assert_eq!(saved.related(source, "comments").unwrap()[0].1, comments);
+    assert_eq!(saved.part(comments).unwrap(), pkg.part(comments).unwrap());
+    assert!(saved.related(duplicate, "comments").unwrap().is_empty());
+}
+
+#[test]
 fn imported_columns_show_cached_values_and_categories() {
     let groups = format!(r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{CHART_SERIES}</c:barChart>"#);
     let mut view = SlidesView::open(&chart_deck(&groups, false)).unwrap();

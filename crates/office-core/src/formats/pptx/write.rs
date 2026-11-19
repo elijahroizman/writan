@@ -93,6 +93,7 @@ pub fn write(doc: &Document) -> Result<Package> {
                         let mut rels = input.rels(original)?;
                         rels.0.retain(|r| {
                             !r.is(kind::NOTES_SLIDE)
+                                && !r.is("comments")
                                 && (!r.is(kind::SLIDE) || input.target(original, r).is_some_and(|target| kept.contains(&target.as_str())))
                         });
                         for r in rels.0.iter_mut() {
