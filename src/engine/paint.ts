@@ -103,7 +103,7 @@ export type MediaUrl = (id: string) => string | undefined
 
 type Box = [number, number, number, number]
 
-/** A box holding everything a path draws: its points, Bézier control points and whole arc ellipses. */
+/** A box holding everything an absolute path draws: its points, Bézier control points and whole arc ellipses. */
 export function pathBox(d: string): Box | null {
   const tokens = d.match(/[A-Za-z]|-?(?:\d+\.?\d*|\.\d+)(?:e[-+]?\d+)?/gi) ?? []
   const box: Box = [Infinity, Infinity, -Infinity, -Infinity]
@@ -138,6 +138,11 @@ export function pathBox(d: string): Box | null {
       cx = x
       cy = y
       args = []
+    } else if (cmd === 'H' || cmd === 'V') {
+      if (cmd === 'H') cx = args[0]
+      else cy = args[0]
+      add(cx, cy)
+      args = []
     } else if (args.length === 2) {
       add(args[0], args[1])
       cx = args[0]
@@ -155,7 +160,8 @@ export function pathBox(d: string): Box | null {
  */
 function svgBox(x: number, y: number, box: Box | null, stroke: number): string {
   if (!box) return ` style="left:${n(x)}px;top:${n(y)}px"`
-  const pad = stroke / 2 + 1
+  // SVG's default miter limit lets a sharp corner reach twice the stroke width past its point.
+  const pad = stroke * 2 + 1
   const [l, t] = [box[0] - pad, box[1] - pad]
   const [w, h] = [box[2] - box[0] + 2 * pad, box[3] - box[1] + 2 * pad]
   return ` style="left:${n(x + l)}px;top:${n(y + t)}px;width:${n(w)}px;height:${n(h)}px" viewBox="${n(l)} ${n(t)} ${n(w)} ${n(h)}"`
