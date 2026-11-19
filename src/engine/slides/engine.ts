@@ -17,6 +17,24 @@ export interface Transition {
   afterMs?: number
 }
 
+/** One animation effect on a frame, as PowerPoint names it. */
+export interface Effect {
+  frame: number
+  /** `entr`, `exit`, `emph` or `path`. */
+  class: string
+  /** 1 Appear, 2 Fly, 10 Fade, 22 Wipe… */
+  preset: number
+  subtype: number
+  delayMs: number
+  durationMs: number
+}
+
+/** What one click plays; `auto` steps play by themselves after the one before. */
+export interface AnimationStep {
+  auto: boolean
+  effects: Effect[]
+}
+
 export interface SlideInfo {
   id: string
   hidden: boolean
@@ -24,6 +42,7 @@ export interface SlideInfo {
   layoutName: string | null
   notes: string
   transition?: Transition
+  animations?: AnimationStep[]
   revision: number
   showMasterShapes: boolean
 }

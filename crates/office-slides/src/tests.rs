@@ -227,6 +227,75 @@ fn newer_transitions_and_animations_are_read() {
 }
 
 #[test]
+fn animation_steps_follow_the_main_sequence() {
+    // As PowerPoint writes it: title fades in on its own, then a click flies the body in from the
+    // bottom with a wipe on the title after it, then a click fades the title out. A shape-click
+    // trigger sequence is not a step.
+    let effect = |id: u32, class: &str, preset: u32, subtype: u32, node: &str, delay: u32, behaviors: &str| {
+        format!(
+            r#"<p:par><p:cTn id="{id}" presetID="{preset}" presetClass="{class}" presetSubtype="{subtype}" fill="hold" nodeType="{node}"><p:stCondLst><p:cond delay="{delay}"/></p:stCondLst><p:childTnLst>{behaviors}</p:childTnLst></p:cTn></p:par>"#
+        )
+    };
+    let set = |spid: u32| {
+        format!(
+            r#"<p:set><p:cBhvr><p:cTn id="90" dur="1" fill="hold"><p:stCondLst><p:cond delay="0"/></p:stCondLst></p:cTn><p:tgtEl><p:spTgt spid="{spid}"/></p:tgtEl><p:attrNameLst><p:attrName>style.visibility</p:attrName></p:attrNameLst></p:cBhvr><p:to><p:strVal val="visible"/></p:to></p:set>"#
+        )
+    };
+    let fade = |spid: u32, dur: u32| {
+        format!(
+            r#"<p:animEffect transition="in" filter="fade"><p:cBhvr><p:cTn id="91" dur="{dur}"/><p:tgtEl><p:spTgt spid="{spid}"/></p:tgtEl></p:cBhvr></p:animEffect>"#
+        )
+    };
+    let group = |id: u32, delay: &str, inner: &str| {
+        format!(
+            r#"<p:par><p:cTn id="{id}" fill="hold"><p:stCondLst><p:cond delay="{delay}"/></p:stCondLst><p:childTnLst>{inner}</p:childTnLst></p:cTn></p:par>"#
+        )
+    };
+    let step1 = group(3, "indefinite", &group(4, "0", &effect(5, "entr", 10, 0, "afterEffect", 0, &(set(2) + &fade(2, 500)))));
+    let step2 = group(
+        6,
+        "indefinite",
+        &(group(7, "0", &effect(8, "entr", 2, 4, "clickEffect", 0, &(set(3) + &fade(3, 500))))
+            + &group(9, "500", &effect(10, "emph", 22, 1, "afterEffect", 250, &fade(2, 1000)))),
+    );
+    let step3 = group(11, "indefinite", &group(12, "0", &effect(13, "exit", 10, 0, "clickEffect", 0, &fade(2, 750))));
+    let trigger = format!(
+        r#"<p:seq concurrent="1" nextAc="seek"><p:cTn id="14" restart="whenNotActive" fill="hold" nodeType="interactiveSeq"><p:childTnLst>{}</p:childTnLst></p:cTn></p:seq>"#,
+        group(15, "indefinite", &effect(16, "entr", 10, 0, "clickEffect", 0, &fade(3, 500)))
+    );
+    let markup = format!(
+        r#"<p:timing><p:tnLst><p:par><p:cTn id="1" dur="indefinite" restart="never" nodeType="tmRoot"><p:childTnLst><p:seq concurrent="1" nextAc="seek"><p:cTn id="2" dur="indefinite" nodeType="mainSeq"><p:childTnLst>{step1}{step2}{step3}</p:childTnLst></p:cTn><p:prevCondLst/><p:nextCondLst/></p:seq>{trigger}</p:childTnLst></p:cTn></p:par></p:tnLst></p:timing>"#
+    );
+    let doc =
+        edited(&deck(vec![slide(vec![placeholder(2, Some("title"), None, "A"), placeholder(3, None, Some(1), "B")])]), |part, text| {
+            if part == "ppt/slides/slide1.xml" {
+                text.replacen("</p:sld>", &format!("{markup}</p:sld>"), 1)
+            } else {
+                text
+            }
+        });
+    let fx = |frame, class: &str, preset, subtype, delay_ms, duration_ms| Effect {
+        frame,
+        class: class.into(),
+        preset,
+        subtype,
+        delay_ms,
+        duration_ms,
+    };
+    let steps = animation_steps(&slides_of(&doc)[0]);
+    assert_eq!(
+        steps,
+        [
+            AnimationStep { auto: true, effects: vec![fx(2, "entr", 10, 0, 0, 500)] },
+            AnimationStep { auto: false, effects: vec![fx(3, "entr", 2, 4, 0, 500), fx(2, "emph", 22, 1, 750, 1000)] },
+            AnimationStep { auto: false, effects: vec![fx(2, "exit", 10, 0, 0, 750)] },
+        ]
+    );
+    assert_eq!(steps[1].duration_ms(), 1750);
+    assert!(animation_steps(&slides_of(&deck(vec![slide(vec![])]))[0]).is_empty());
+}
+
+#[test]
 fn theme_colors_go_through_the_color_map() {
     let doc = deck(vec![slide(vec![])]);
     let normal = round_trip(&doc);

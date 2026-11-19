@@ -165,11 +165,11 @@ export function Grid({
     else if (y + h > el.scrollTop + el.clientHeight - HEAD_H) el.scrollTop = y + h - el.clientHeight + HEAD_H
   }
 
-  const select = (anchor: [number, number], focus: [number, number]) => {
+  const select = (anchor: [number, number], focus: [number, number], scroll = true) => {
     if (editing !== null) onCommit(editing, 'none')
     const clamp = (p: [number, number]): [number, number] => [Math.max(0, Math.min(g.info.rows - 1, p[0])), Math.max(0, Math.min(g.info.cols - 1, p[1]))]
     engine.run({ cmd: 'select', sheet, anchor: clamp(anchor), focus: clamp(focus) })
-    reveal(...clamp(focus))
+    if (scroll) reveal(...clamp(focus))
   }
 
   // ── Pointer
@@ -201,6 +201,7 @@ export function Grid({
     drag.current = { kind: 'cells', from: e.shiftKey ? st.anchor : at }
   }
   const onColHeadDown = (e: React.MouseEvent, c: number) => {
+    if (e.button !== 0) return
     e.preventDefault()
     inputRef.current?.focus({ preventScroll: true })
     const edge = (e.target as HTMLElement).dataset.edge
@@ -214,6 +215,7 @@ export function Grid({
     drag.current = { kind: 'cols', from: [0, c] }
   }
   const onRowHeadDown = (e: React.MouseEvent, r: number) => {
+    if (e.button !== 0) return
     e.preventDefault()
     inputRef.current?.focus({ preventScroll: true })
     const edge = (e.target as HTMLElement).dataset.edge
@@ -474,6 +476,26 @@ export function Grid({
   const rows: number[] = []
   for (let r = r0; r < r1; r++) rows.push(r)
   const inSel = (k: number, lo: number, hi: number) => k >= lo && k <= hi
+  // Right-click on a header: keep a selection it is already part of, else select what it
+  // stands for — all without revealing, so the menu opens where the click happened.
+  const onCornerMenu = (e: React.MouseEvent) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!(range.r0 === 0 && range.r1 === g.info.rows - 1 && range.c0 === 0 && range.c1 === g.info.cols - 1)) select([0, 0], [g.info.rows - 1, g.info.cols - 1], false)
+    onContextMenu?.(e.clientX, e.clientY)
+  }
+  const onColHeadMenu = (e: React.MouseEvent, c: number) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!(range.r0 === 0 && range.r1 === g.info.rows - 1 && inSel(c, range.c0, range.c1))) select([0, c], [g.info.rows - 1, c], false)
+    onContextMenu?.(e.clientX, e.clientY)
+  }
+  const onRowHeadMenu = (e: React.MouseEvent, r: number) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (!(range.c0 === 0 && range.c1 === g.info.cols - 1 && inSel(r, range.r0, range.r1))) select([r, 0], [r, g.info.cols - 1], false)
+    onContextMenu?.(e.clientX, e.clientY)
+  }
 
   return (
     <div className="sg-scroller" ref={scroller} onContextMenu={(e) => {
@@ -484,12 +506,13 @@ export function Grid({
     }}>
       <div className="sg-space" style={{ width: g.width * z + HEAD_W, height: g.height * z + HEAD_H }}>
         <div className="sg-corner" onMouseDown={(e) => {
+          if (e.button !== 0) return
           e.preventDefault()
           select([0, 0], [g.info.rows - 1, g.info.cols - 1])
-        }} />
+        }} onContextMenu={onCornerMenu} />
         <div className="sg-colheads" style={{ width: g.width * z }}>
           {cols.map((c) => (
-            <div key={c} className={`sg-colhead ${inSel(c, range.c0, range.c1) ? 'on' : ''}`} style={{ left: g.x(c) * z, width: (g.x(c + 1) - g.x(c)) * z }} onMouseDown={(e) => onColHeadDown(e, c)}>
+            <div key={c} className={`sg-colhead ${inSel(c, range.c0, range.c1) ? 'on' : ''}`} style={{ left: g.x(c) * z, width: (g.x(c + 1) - g.x(c)) * z }} onMouseDown={(e) => onColHeadDown(e, c)} onContextMenu={(e) => onColHeadMenu(e, c)}>
               {columnName(c)}
               <span className="sg-edge" data-edge={c} />
             </div>
@@ -497,7 +520,7 @@ export function Grid({
         </div>
         <div className="sg-rowheads" style={{ height: g.height * z }}>
           {rows.map((r) => (
-            <div key={r} className={`sg-rowhead ${inSel(r, range.r0, range.r1) ? 'on' : ''}`} style={{ top: g.y(r) * z, height: (g.y(r + 1) - g.y(r)) * z }} onMouseDown={(e) => onRowHeadDown(e, r)}>
+            <div key={r} className={`sg-rowhead ${inSel(r, range.r0, range.r1) ? 'on' : ''}`} style={{ top: g.y(r) * z, height: (g.y(r + 1) - g.y(r)) * z }} onMouseDown={(e) => onRowHeadDown(e, r)} onContextMenu={(e) => onRowHeadMenu(e, r)}>
               {r + 1}
               <span className="sg-edge" data-edge={r} />
             </div>

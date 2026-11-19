@@ -5,7 +5,8 @@
 //!   its text's formatting at each outline level) and what the theme's colors map to, put
 //!   together in [`resolve`] and [`color`]; adding slides on a layout ([`add_slide`]).
 //! - **Speaker notes** ([`notes`], [`set_notes`]).
-//! - **Transitions** ([`transition`], [`set_transition`]) and which frames are animated.
+//! - **Transitions** ([`transition`], [`set_transition`]), which frames are animated, and the
+//!   steps the slideshow plays them in ([`animation_steps`]).
 //!
 //! Add [`Decks`] to a compiler to have it read and write all this.
 
@@ -668,6 +669,110 @@ pub fn animated_frames(slide: &Slide) -> Vec<u32> {
         walk(timing, &mut out);
     }
     out
+}
+
+/// One click's worth of a slide's animations: the effects a click starts (or, for `auto`, that
+/// start by themselves when the previous step, or the slide, has finished).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AnimationStep {
+    /// Starts without a click: the step's first effect is "with" or "after previous".
+    pub auto: bool,
+    pub effects: Vec<Effect>,
+}
+
+/// One animation effect on a frame.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Effect {
+    /// The frame it animates.
+    pub frame: u32,
+    /// `entr`, `exit`, `emph` or `path` (PowerPoint's `presetClass`).
+    pub class: String,
+    /// PowerPoint's preset number: 1 Appear, 2 Fly, 10 Fade, 22 Wipe…
+    pub preset: u32,
+    /// The preset's variant, such as the direction a Fly comes from.
+    pub subtype: u32,
+    /// When it starts, after the step starts.
+    pub delay_ms: u32,
+    pub duration_ms: u32,
+}
+
+impl AnimationStep {
+    /// How long the step takes, from its start to its last effect's end.
+    pub fn duration_ms(&self) -> u32 {
+        self.effects.iter().map(|e| e.delay_ms + e.duration_ms).max().unwrap_or(0)
+    }
+}
+
+fn cond_delay(ctn: &Element) -> u32 {
+    ctn.child(ns::P, "stCondLst")
+        .into_iter()
+        .flat_map(|l| l.children_named(ns::P, "cond"))
+        .find_map(|c| c.attr("delay").and_then(|d| d.parse::<u32>().ok()))
+        .unwrap_or(0)
+}
+
+/// The time nodes under a time node: the `cTn` of each `par`, `seq` or behavior below it.
+fn child_ctns(ctn: &Element) -> impl Iterator<Item = &Element> {
+    ctn.child(ns::P, "childTnLst")
+        .into_iter()
+        .flat_map(|l| l.elements())
+        .filter_map(|e| e.child(ns::P, "cTn").or_else(|| e.child(ns::P, "cBhvr").and_then(|b| b.child(ns::P, "cTn"))))
+}
+
+fn effect(ctn: &Element, class: &str, delay_ms: u32) -> Option<Effect> {
+    let frame = ctn.descendant(ns::P, "spTgt")?.attr("spid")?.parse().ok()?;
+    let duration_ms = child_ctns(ctn).filter_map(|b| Some(cond_delay(b) + b.attr("dur")?.parse::<u32>().ok()?)).max().unwrap_or(0);
+    let number = |name: &str| ctn.attr(name).and_then(|v| v.parse().ok()).unwrap_or(0);
+    Some(Effect {
+        frame,
+        class: class.to_string(),
+        preset: number("presetID"),
+        subtype: number("presetSubtype"),
+        delay_ms: delay_ms + cond_delay(ctn),
+        duration_ms,
+    })
+}
+
+/// The effects under a time node, in order, with their start after `offset`.
+fn effects(ctn: &Element, offset: u32, out: &mut Vec<(Effect, Option<String>)>) {
+    for c in child_ctns(ctn) {
+        if let Some(class) = c.attr("presetClass") {
+            out.extend(effect(c, class, offset).map(|e| (e, c.attr("nodeType").map(str::to_string))));
+        } else {
+            effects(c, offset + cond_delay(c), out);
+        }
+    }
+}
+
+/// The animations a slide plays as it's presented, one step per click, from its main sequence.
+/// Animations a click on a shape triggers are left out.
+pub fn animation_steps(slide: &Slide) -> Vec<AnimationStep> {
+    fn main_seq(el: &Element) -> Option<&Element> {
+        if el.is(ns::P, "seq") {
+            if let Some(ctn) = el.child(ns::P, "cTn").filter(|c| c.attr("nodeType") == Some("mainSeq")) {
+                return Some(ctn);
+            }
+        }
+        el.elements().find_map(main_seq)
+    }
+    let Some(seq) = slide.origin.get().and_then(|o| o.child(ns::P, "timing")).and_then(main_seq) else { return Vec::new() };
+    child_ctns(seq)
+        .filter_map(|group| {
+            let mut found = Vec::new();
+            effects(group, 0, &mut found);
+            let first = found.first()?.1.clone();
+            let auto = match first.as_deref() {
+                Some("clickEffect") => false,
+                Some(_) => true,
+                None => group
+                    .child(ns::P, "stCondLst")
+                    .is_some_and(|l| l.children_named(ns::P, "cond").all(|c| c.attr("delay") != Some("indefinite"))),
+            };
+            Some(AnimationStep { auto, effects: found.into_iter().map(|(e, _)| e).collect() })
+        })
+        .collect()
 }
 
 /// Removes a slide's animations.
