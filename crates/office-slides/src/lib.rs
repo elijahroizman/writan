@@ -384,9 +384,13 @@ fn names_parts_itself(el: &Element) -> bool {
     el.attrs.iter().any(|a| !a.is_ns_decl() && a.ns.as_deref().is_some_and(|n| ns::same(n, ns::R)))
 }
 
-/// Removes the elements under `el` that name parts by relationship id.
+/// Removes the elements under `el` that name parts by relationship id, and picture bullets,
+/// which are invalid without their picture.
 fn strip_part_refs(el: &mut Element) {
-    el.children.retain(|n| !matches!(n, Node::Element(e) if names_parts_itself(e)));
+    el.children.retain(|n| {
+        !matches!(n, Node::Element(e) if names_parts_itself(e)
+            || (e.is(ns::A, "buBlip") && office_core::formats::common::names_parts(e)))
+    });
     el.elements_mut().for_each(strip_part_refs);
 }
 

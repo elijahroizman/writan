@@ -588,7 +588,7 @@ fn a_duplicated_link_in_notes_points_at_its_url() {
     let rid = pkg.relate_external(&notes, "hyperlink", "https://example.com/demo").unwrap();
     let xml = String::from_utf8(pkg.part(&notes).unwrap().to_vec()).unwrap();
     let link = format!(
-        r#"<a:r><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/><a:hlinkMouseOver r:id="{rid}"/></a:rPr><a:t> link</a:t></a:r><a:fld id="{{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}}" type="slidenum"><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/></a:rPr><a:t>7</a:t></a:fld>"#
+        r#"<a:r><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/><a:hlinkMouseOver r:id="{rid}"/></a:rPr><a:t> link</a:t></a:r><a:fld id="{{B6F15528-21DE-4FAA-801E-634DDDAF4B2B}}" type="slidenum"><a:rPr lang="en-US"><a:hlinkClick r:id="{rid}"/></a:rPr><a:t>7</a:t></a:fld></a:p><a:p><a:pPr><a:buBlip><a:blip r:embed="{rid}"/></a:buBlip></a:pPr><a:r><a:t>Pic</a:t></a:r>"#
     );
     assert!(xml.contains("Remember the demo</a:t></a:r>"), "{xml}");
     pkg.replace(&notes, xml.replace("Remember the demo</a:t></a:r>", &format!("Remember the demo</a:t></a:r>{link}")).into_bytes())
@@ -608,6 +608,7 @@ fn a_duplicated_link_in_notes_points_at_its_url() {
         assert!(rels.get(id).is_some(), "{id} in {xml}");
     }
     assert!(xml.contains(">7</a:t></a:fld>"), "{xml}");
+    assert!(xml.contains(">Pic<") && !xml.contains("buBlip"), "{xml}");
 }
 
 #[test]
