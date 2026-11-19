@@ -16,6 +16,7 @@ const scripts = [
   'tests/stress/ui/hidden-sheets.mjs',
   'tests/stress/ui/nasty.mjs',
   'tests/stress/ui/security.mjs',
+  'tests/stress/ui/slides-clipboard.mjs',
   'tests/stress/native/save-conflict.mjs',
 ]
 // ui/harness.mjs is shared setup, not a test.

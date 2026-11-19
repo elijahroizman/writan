@@ -35,6 +35,7 @@ jobs:
           filters: |
             engine:
               - 'crates/**'
+              - 'src/engine/slides/**'
               - '.github/workflows/ci.yml'
             app:
               - 'src-tauri/**'
@@ -46,6 +47,7 @@ jobs:
               - 'public/**'
               - 'tests/stress/ui/**'
               - 'tests/stress/native/**'
+              - 'tests/stress/samples/**'
               - 'index.html'
               - 'package.json'
               - 'package-lock.json'

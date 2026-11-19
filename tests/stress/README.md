@@ -30,7 +30,7 @@ VITE_TEST_HOOKS=1 npm run build
 npm run test:browser
 ```
 
-The runner owns a preview server on `127.0.0.1:4173`; leave that port free. It runs CSS-font safety, data safety, hidden sheets, malformed files, security and save conflicts sequentially, with a 180-second timeout per script and a nonzero exit on failure. The curated list and exclusion reasons live in `scripts/test-browser.mjs`. Session recovery observations and the external signed-PDF test remain manual; follow the component reports for those commands and fixtures.
+The runner owns a preview server on `127.0.0.1:4173`; leave that port free. It runs CSS-font safety, data safety, hidden sheets, malformed files, security, slide clipboard and save conflicts sequentially, with a 180-second timeout per script and a nonzero exit on failure. The curated list and exclusion reasons live in `scripts/test-browser.mjs`. Session recovery observations and the external signed-PDF test remain manual; follow the component reports for those commands and fixtures.
 
 CI checks changed components on pull requests, and everything on `main` or manual runs: Office formatting/Clippy/tests/WASM builds and LibreOffice samples, native Linux Clippy/tests, and the frontend build/typecheck/browser suite. Engine changes also trigger the frontend. Run `cargo test --workspace --all-features` in `crates/` for the Office tests locally.
 
