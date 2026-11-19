@@ -2,6 +2,24 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.10.10 — 2026-11-19
+
+### Word
+- Pressing Return in a numbered or bulleted list continues the list instead of starting a new one at 1, and the paragraph after a list no longer keeps the list's indent.
+- Choosing a style such as **Heading 1** on a new document applies it right away, and the heading shows in the outline, without closing and reopening the document.
+
+### PowerPoint
+- Copy, Cut and Paste work on selected shapes and text on a slide, from the keyboard and the Edit menu.
+- Deleting all the text in a title keeps its font and size, so new typing matches instead of turning into 18 pt Calibri.
+- A duplicated slide keeps its speaker notes, and editing one copy's notes leaves the other's alone. Pasted shapes from imported presentations keep their outline and text position.
+
+### Spreadsheets
+- Copying or cutting a cell with a formula pastes the formula, not its result. A copy shifts its relative references, as in Excel.
+- Cutting cells to another place or sheet keeps the formulas that use them pointing at the moved cells, and the moved formulas keep reading their original inputs.
+
+### PDF
+- **Save flattened copy…** works on PDFs with pages that have no annotations, and keeps highlights.
+
 ## 0.10.9 — 2026-11-16
 
 ### Linux
