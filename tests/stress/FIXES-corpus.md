@@ -16,6 +16,12 @@ The unchanged NZ RFP save preserves the original checklist order. LibreOffice ex
 
 [cjk-list-markers.docx](samples/cjk-list-markers.docx), 1.6 KB, is an original generated fixture that includes the transition to decimal. Four regressions check the finite sequences, zero/large values, nested templates and overrides, actual display-list markers, and save/reopen behavior. With `CORPUS_FILES` set, they also check both original `lo-cjklist30.docx` and `lo-cjklist31.docx` documents. All four fail against the baseline implementation and pass with the fix. Both browsers paint all 20 expected markers from each original, including the decimal suffixes after the ideograph ranges.
 
+## CORPUS-011 fixed
+
+`w:bidiVisual` already reached the table layout through the right-to-left work of #41 (`5543e8e`): `office-word`'s `table_look` reads it from `w:tblPr`, and `office-engine`'s `flow::table` mirrors each cell's x and swaps its start/end margins and borders, so the first grid column draws at the right and the indent measures from the right edge. The gap was untested rather than unfixed.
+
+[rtl-table.docx](samples/rtl-table.docx), 1.0 KB, is an original generated sample with a `w:bidiVisual` two-column table of unequal widths and a `w:tblInd`, plus an ordinary table. `office-word/tests/rtl_table.rs` checks the painted display order of every row, that the LTR table is unchanged, and that `w:bidiVisual` survives a save/reopen; with `CORPUS_FILES` set it also checks the original `lo-table-rtl.docx`. With the `bidiVisual` read reverted, the sample assertions fail (`second` paints right of `first`).
+
 ## Commands and results
 
 All builds, formatting checks, Python analysis, and browser tests ran on bbb. No local builds or tests ran. Sources were touched on bbb before Cargo runs to avoid stale fingerprints from the clock difference. The final WASM command used `--force`; its log confirms compilation of the changed crates. Recorded source hashes match the local commit inputs.
