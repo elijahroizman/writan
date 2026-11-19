@@ -117,6 +117,7 @@ pub struct SheetsView {
     pub(crate) revision: u64,
     /// What NOW() and TODAY() give: a serial number.
     pub(crate) now: Option<f64>,
+    pending_cut: Option<commands::PendingCut>,
 }
 
 /// A block of the grid drawn: items in grid pixels.
@@ -193,6 +194,7 @@ impl SheetsView {
             styles_sent: 0,
             grids: HashMap::new(),
             revision: 1,
+            pending_cut: None,
             now: None,
         }
     }

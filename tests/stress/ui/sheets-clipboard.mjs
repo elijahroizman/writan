@@ -8,9 +8,9 @@ try {
   await grid.waitFor()
   await grid.focus()
   const run = (command) => page.evaluate((cmd) => window.__sheets.run({ sheet: 0, ...cmd }), command)
-  const input = (row, col, text) => run({ cmd: 'input', row, col, text })
-  const select = (row, col) => run({ cmd: 'select', anchor: [row, col], focus: [row, col] })
-  const cell = (row, col) => page.evaluate(([r, c]) => JSON.parse(window.__sheets.doc.cell(0, r, c)), [row, col])
+  const input = (row, col, text, sheet = 0) => run({ cmd: 'input', sheet, row, col, text })
+  const select = (row, col, sheet = 0, focus = [row, col]) => run({ cmd: 'select', sheet, anchor: [row, col], focus })
+  const cell = (row, col, sheet = 0) => page.evaluate(([s, r, c]) => JSON.parse(window.__sheets.doc.cell(s, r, c)), [sheet, row, col])
   const key = (k) => page.keyboard.press(`ControlOrMeta+${k}`)
 
   await input(1, 1, '125')
@@ -44,6 +44,27 @@ try {
   check('cut pastes the original formula without changing its references', moved.input === '=SUM(B2:B4)' && moved.display === '200', moved.input)
   await input(1, 1, '225')
   check('the moved formula still recalculates', (await cell(4, 3)).display === '300')
+
+  await run({ cmd: 'addSheet' })
+  await run({ cmd: 'renameSheet', sheet: 1, name: 'New totals' })
+  await input(0, 0, '5')
+  await input(1, 0, '7')
+  await input(0, 2, '10')
+  await input(0, 1, '=SUM($A$1:A2)+C1')
+  await input(0, 5, '=B1')
+  await select(0, 0, 0, [1, 1])
+  await grid.focus()
+  await key('x')
+  await select(2, 2, 1)
+  await grid.focus()
+  await key('v')
+  const crossSheet = await cell(2, 3, 1)
+  check('cross-sheet cuts remap moved references and qualify those left behind',
+    crossSheet.input === '=SUM($C$3:C4)+Sheet1!C1' && crossSheet.display === '22', crossSheet.input)
+  check('a formula outside the selection follows the moved formula',
+    (await cell(0, 5)).input === "='New totals'!D3" && (await cell(0, 5)).display === '22')
+  await input(2, 2, '15', 1)
+  check('new inputs recalculate the moved formula and its dependent', (await cell(2, 3, 1)).display === '32' && (await cell(0, 5)).display === '32')
 } finally {
   await done(browser, logs)
 }

@@ -1,7 +1,7 @@
 //! Formulas: reading Excel's formula text into a tree, and moving a formula's relative
 //! references the way copying it to another cell does (which is how shared formulas work).
 
-use office_core::model::CellRef;
+use office_core::model::{CellRef, Range};
 
 /// One end of a reference. A whole column (`A:A`) has no row; a whole row (`1:1`) no column.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -703,12 +703,62 @@ fn write_part(p: &RefPart) -> String {
 }
 
 fn write_sheet(name: &str) -> String {
-    let plain =
-        name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.') && !name.chars().next().is_some_and(|c| c.is_ascii_digit());
+    let plain = name.chars().next().is_some_and(|c| c == '_' || c.is_alphabetic())
+        && name.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '.');
     if plain {
         format!("{name}!")
     } else {
         format!("'{}'!", name.replace('\'', "''"))
+    }
+}
+
+/// The source and destination of a cut within one workbook.
+pub(crate) struct MovedRange<'a> {
+    pub source: Range,
+    pub from_sheet: &'a str,
+    pub to: CellRef,
+    pub to_sheet: &'a str,
+}
+
+impl MovedRange<'_> {
+    /// Retarget references entirely inside the moved rectangle. References left behind still use
+    /// their original sheet, even when the formula itself has moved to another sheet.
+    pub fn rewrite(&self, src: &str, old_home: &str, new_home: &str) -> Option<String> {
+        let mut result = None;
+        for (token, span) in lex(src).ok()?.into_iter().rev() {
+            let Tok::Ref(r) = token else { continue };
+            let name = r.sheet.as_deref().unwrap_or(old_home);
+            let end = r.end.unwrap_or(r.start);
+            let bounds = [
+                CellRef::new(r.start.row.unwrap_or(0), r.start.col.unwrap_or(0)),
+                CellRef::new(end.row.unwrap_or(1_048_575), end.col.unwrap_or(16_383)),
+            ];
+            let moved = name.eq_ignore_ascii_case(self.from_sheet) && bounds.into_iter().all(|at| self.source.contains(at));
+            let target = if moved { self.to_sheet } else { name };
+            if !moved && (r.sheet.is_some() || target.eq_ignore_ascii_case(new_home)) {
+                continue;
+            }
+            let qualify = r.sheet.is_some() || !target.eq_ignore_ascii_case(new_home);
+            let mut replacement = if qualify { write_sheet(target) } else { String::new() };
+            if moved {
+                let translate = |p: RefPart| RefPart {
+                    row: p.row.map(|row| self.to.row + (row - self.source.start.row)),
+                    col: p.col.map(|col| self.to.col + (col - self.source.start.col)),
+                    ..p
+                };
+                replacement.push_str(&write_part(&translate(r.start)));
+                if let Some(end) = r.end {
+                    replacement.push(':');
+                    replacement.push_str(&write_part(&translate(end)));
+                }
+            } else {
+                replacement.push_str(&src[span.clone()]);
+            }
+            if src[span.clone()] != replacement {
+                result.get_or_insert_with(|| src.to_string()).replace_range(span, &replacement);
+            }
+        }
+        result
     }
 }
 

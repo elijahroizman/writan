@@ -39,6 +39,7 @@ enum Cmd {
     Select { sheet: usize, anchor: (u32, u32), focus: (u32, u32) },
     Input { sheet: usize, row: u32, col: u32, text: String },
     Clear { sheet: usize, range: R },
+    Cut { sheet: usize, range: R, move_id: String },
     Format { sheet: usize, range: R, patch: FormatPatch },
     ColumnWidth { sheet: usize, col: u32, px: Option<f64> },
     RowHeight { sheet: usize, row: u32, px: Option<f64> },
@@ -130,8 +131,8 @@ impl SheetsDoc {
     }
 
     /// A range as clipboard data: `{ text, clipboard }`.
-    pub fn copy(&self, sheet: usize, r0: u32, c0: u32, r1: u32, c1: u32, cut: bool) -> String {
-        let (text, clipboard) = self.view.copy(sheet, R { r0, c0, r1, c1 }.range(), cut);
+    pub fn copy(&self, sheet: usize, r0: u32, c0: u32, r1: u32, c1: u32, move_id: Option<String>) -> String {
+        let (text, clipboard) = self.view.copy(sheet, R { r0, c0, r1, c1 }.range(), move_id.as_deref());
         json(&serde_json::json!({ "text": text, "clipboard": clipboard }))
     }
 
@@ -161,6 +162,10 @@ impl SheetsDoc {
             }
             Cmd::Clear { sheet, range } => {
                 v.clear(sheet, range.range());
+                null
+            }
+            Cmd::Cut { sheet, range, move_id } => {
+                v.cut(sheet, range.range(), move_id);
                 null
             }
             Cmd::Format { sheet, range, patch } => {
