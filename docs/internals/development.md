@@ -14,7 +14,7 @@ cd src-tauri && cargo test
 cd crates && cargo test     # the office compiler
 ```
 
-Type checking uses [tsc-rs](https://github.com/pingdotgg/ts-rust), not Microsoft's `tsc`. In October 2026 it was also faster here than [tsc-ts](https://github.com/vercel-labs/tsc-ts) (0.73 s against 0.87 s for the app).
+Type checking uses [tsc-rs](https://github.com/pingdotgg/ts-rust), not Microsoft's `tsc`. In November 2026 it was the fastest checker here on 8 cores: checking the app and the plugins took 0.19 s with tsc-rs 0.8.0, 0.22 s with [tsrs](https://github.com/oxc-project/tsrs), 0.23 s with [tsc-ts](https://github.com/vercel-labs/tsc-ts) and 0.50 s with TypeScript 7.1 beta. On 4 cores tsc-rs and tsrs tie, and on 2 cores tsrs is faster.
 
 ## Testing in a browser
 
