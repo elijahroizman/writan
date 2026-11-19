@@ -1147,7 +1147,6 @@ fn insert_shape_menu_presets_are_real_ooxml_presets() {
         assert!(office_engine::geometry::preset(kind, 200.0, 100.0, &[]).is_some(), "Insert › Shape kind '{kind}' is not a preset");
     }
 
-    let mut host = FixedMeasurer::default();
     let mut v = SlidesView::open(&deck(&[&[]])).unwrap();
     v.insert_shape("rightArrow");
     let pkg = office_core::opc::Package::read(&v.save().unwrap()).unwrap();
