@@ -750,6 +750,7 @@ fn conditional_formats_validation_and_pictures_show() {
     assert_eq!(validation.prompt.as_deref(), Some("Pick a status"));
     assert_eq!(v.refusal(0, CellRef::new(5, 0), "Lost").map(|r| r.message), Some(Some("Pick Open, Late or Done".into())));
     assert!(v.refusal(0, CellRef::new(5, 0), "late").is_none());
+    assert!(v.refusal(0, CellRef::new(5, 1), "anything").is_none());
     let pictures = v.pictures(0);
     assert_eq!(pictures.len(), 1);
     assert_eq!(pictures[0].media, "xl/media/image1.png");
