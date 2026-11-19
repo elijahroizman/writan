@@ -2,11 +2,12 @@
 //! sheets, the clipboard, find and replace, and undo. Formulas are worked out again after each
 //! change.
 
+use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use office_core::drawing::{Color, Rgb};
-use office_core::model::{CellRef, Origin, Range, Sheet, SheetCell, SheetRow, Value};
-use office_core::xml::{ns, Node};
+use office_core::model::{quote_sheet, CellRef, Origin, Range, Sheet, SheetCell, SheetRow, Value};
+use office_core::xml::{ns, Element, Node};
 use serde::{Deserialize, Serialize};
 
 use super::{CStep, SheetSel, SheetsView};
@@ -168,13 +169,16 @@ impl SheetsView {
     /// Moves defined names' references to `target` for a row or column insert or delete, in the
     /// names the formulas use and in the workbook XML they're saved in.
     fn shift_names(&mut self, target: &str, axis: Axis, at: u32, n: i64) -> Option<CStep> {
-        let adjust = |name: &str, f: &str| {
+        self.rewrite_names(|name, f| {
             if name.eq_ignore_ascii_case(crate::SIZE_NAME) {
                 f.to_string()
             } else {
                 adjust_formula_on(f, target, false, axis, at, n)
             }
-        };
+        })
+    }
+
+    fn rewrite_names(&mut self, adjust: impl Fn(&str, &str) -> String) -> Option<CStep> {
         let before = crate::names(&self.doc).to_vec();
         let after: Vec<DefinedName> = before.iter().map(|d| DefinedName { formula: adjust(&d.name, &d.formula), ..d.clone() }).collect();
         if after == before {
@@ -199,13 +203,21 @@ impl SheetsView {
     }
 
     fn change_book(&mut self, f: impl FnOnce(&mut SheetsView)) {
+        self.change_book_with_steps(|v| {
+            f(v);
+            Vec::new()
+        });
+    }
+
+    fn change_book_with_steps(&mut self, f: impl FnOnce(&mut SheetsView) -> Vec<CStep>) {
         let before = self.sheets().to_vec();
         let sel = self.sel;
-        f(self);
+        let mut steps = f(self);
         let after = self.sheets().to_vec();
         self.changed(None);
         self.sel.sheet = self.sel.sheet.min(after.len().saturating_sub(1));
-        self.record(vec![CStep::Book { before, after }], sel);
+        steps.insert(0, CStep::Book { before, after });
+        self.record(steps, sel);
     }
 
     pub fn undo(&mut self) -> bool {
@@ -257,6 +269,11 @@ impl SheetsView {
                 let (names, origin) = if undo { &**before } else { &**after };
                 self.doc.origin = origin.clone();
                 crate::excel_mut(&mut self.doc).names = names.clone();
+            }
+            CStep::Part { name, before, after } => {
+                if let Some(pkg) = &mut self.doc.package {
+                    let _ = pkg.replace(name, if undo { before.clone() } else { after.clone() });
+                }
             }
         }
     }
@@ -609,14 +626,19 @@ impl SheetsView {
             return;
         }
         let Some(old) = self.sheets().get(sheet).map(|s| s.name.clone()) else { return };
-        if old != name {
-            self.cancel_cut_on_sheet(sheet);
+        if old == name {
+            return;
         }
-        self.change_book(|v| {
-            super::charts::rename_charts(v.sheets_mut(), &old, &name);
-            if let Some(s) = v.sheets_mut().get_mut(sheet) {
-                s.name = name;
+        self.cancel_cut_on_sheet(sheet);
+        self.change_book_with_steps(|v| {
+            let rename = SheetRename { old: &old, new: &name, quoted: quote_sheet(&name) };
+            for s in v.sheets_mut() {
+                rename_sheet_references(s, &rename);
             }
+            let mut steps = rename_package_references(&mut v.doc, &rename);
+            steps.extend(v.rewrite_names(|_, f| rename.formula(f).unwrap_or_else(|| f.to_string())));
+            v.sheets_mut()[sheet].name = name;
+            steps
         });
     }
 
@@ -1018,6 +1040,119 @@ fn clear_attr(o: &office_core::model::Origin, k: &str) -> office_core::model::Or
 /// Whether a sheet's markup holds conditional formatting or data validation.
 fn has_rules(s: &Sheet) -> bool {
     s.origin.get().is_some_and(|r| r.elements().any(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "extLst")))
+}
+
+fn rename_sheet_references(sheet: &mut Sheet, rename: &SheetRename<'_>) {
+    for row in &mut sheet.rows {
+        for cell in &mut row.cells {
+            if let Some(next) = cell.formula.as_deref().and_then(|f| rename.formula(f)) {
+                // Shared followers still use their leader at the same offset.
+                set_formula_markup(&mut cell.origin, &next);
+                cell.formula = Some(next);
+            }
+        }
+    }
+    for chart in &mut sheet.charts {
+        for series in &mut chart.series {
+            for formula in [series.name_ref.as_mut(), series.categories.as_mut(), Some(&mut series.values)].into_iter().flatten() {
+                if let Some(next) = rename.formula(formula) {
+                    *formula = next;
+                }
+            }
+        }
+    }
+    let Some(root) = sheet.origin.get() else { return };
+    if !root
+        .elements()
+        .any(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "dataConsolidate" | "hyperlinks" | "extLst"))
+    {
+        return;
+    }
+    let mut root = root.clone();
+    let mut changed = false;
+    for e in root.elements_mut() {
+        match e.local.as_str() {
+            "conditionalFormatting" | "dataValidations" | "extLst" => {
+                const XM: &str = "http://schemas.microsoft.com/office/excel/2006/main";
+                changed |= rename_formula_nodes(e, rename, |node| {
+                    node.is(XM, "f") || ["formula", "formula1", "formula2"].iter().any(|name| node.is(ns::X, name))
+                });
+            }
+            "dataConsolidate" => {
+                if let Some(refs) = e.child_mut(ns::X, "dataRefs") {
+                    for source in refs.elements_mut().filter(|node| node.is(ns::X, "dataRef")) {
+                        changed |= rename_source_sheet(source, rename);
+                    }
+                }
+            }
+            "hyperlinks" => {
+                for link in e.elements_mut().filter(|e| e.is(ns::X, "hyperlink") && e.attr_ns(ns::R, "id").is_none()) {
+                    if let Some(next) = link.attr("location").and_then(|f| rename.formula(f)) {
+                        link.set_attr("", "location", next);
+                        changed = true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    if changed {
+        sheet.origin = Origin::new(root);
+    }
+}
+
+fn rename_formula_nodes(el: &mut Element, rename: &SheetRename<'_>, is_formula: impl Fn(&Element) -> bool + Copy) -> bool {
+    if is_formula(el) && el.elements().next().is_none() {
+        if let Some(next) = rename.formula(&el.text()) {
+            el.children = vec![Node::Text(next)];
+            return true;
+        }
+        return false;
+    }
+    let mut changed = false;
+    for child in el.elements_mut() {
+        changed |= rename_formula_nodes(child, rename, is_formula);
+    }
+    changed
+}
+
+fn rename_source_sheet(source: &mut Element, rename: &SheetRename<'_>) -> bool {
+    if source.attr_ns(ns::R, "id").is_none() && source.attr("sheet").is_some_and(|s| s.eq_ignore_ascii_case(rename.old)) {
+        source.set_attr("", "sheet", rename.new);
+        return true;
+    }
+    false
+}
+
+fn rename_package_references(doc: &mut office_core::model::Document, rename: &SheetRename<'_>) -> Vec<CStep> {
+    const TABLE: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml";
+    const PIVOT: &str = "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml";
+    let Some(pkg) = &mut doc.package else { return Vec::new() };
+    let changes: Vec<_> = pkg
+        .part_names()
+        .filter_map(|name| {
+            let media_type = pkg.content_type(name)?;
+            if !matches!(media_type, TABLE | PIVOT) {
+                return None;
+            }
+            let mut xml = pkg.xml(name).ok()?;
+            let changed = if media_type == TABLE {
+                rename_formula_nodes(&mut xml.root, rename, |e| e.is(ns::X, "calculatedColumnFormula") || e.is(ns::X, "totalsRowFormula"))
+            } else {
+                let source = xml.root.child_mut(ns::X, "cacheSource")?.child_mut(ns::X, "worksheetSource")?;
+                rename_source_sheet(source, rename)
+            };
+            changed.then(|| (name.to_string(), xml.to_bytes()))
+        })
+        .collect();
+    changes
+        .into_iter()
+        .filter_map(|(name, after)| {
+            let before = pkg.xml_bytes(&name).ok()?.to_vec();
+            pkg.replace(&name, after.clone()).ok()?;
+            Some(CStep::Part { name, before, after })
+        })
+        .collect()
 }
 
 /// One span of rows or columns, `start..=end`, after inserting (`n > 0`) or deleting (`n < 0`) at
@@ -1571,29 +1706,133 @@ fn adjust_formula_on(src: &str, sheet_name: &str, local: bool, axis: Axis, at: u
     out
 }
 
-fn quoted_sheet(src: &str, i: usize) -> Option<(String, usize)> {
+struct SheetRename<'a> {
+    old: &'a str,
+    new: &'a str,
+    quoted: String,
+}
+
+impl SheetRename<'_> {
+    /// Rewrite only sheet qualifiers, including in formulas the evaluator doesn't understand.
+    /// The rest of the original text (coordinates, functions, and whitespace) stays verbatim.
+    fn formula(&self, src: &str) -> Option<String> {
+        let b = src.as_bytes();
+        let mut out = String::new();
+        let mut copied = 0;
+        let mut i = 0;
+        while i < b.len() {
+            let start = i;
+            match b[i] {
+                b'"' => {
+                    i = quoted_end(src, i, b'"').unwrap_or(b.len());
+                    continue;
+                }
+                b'[' => {
+                    // Structured references may nest and escape a bracket with an apostrophe.
+                    let mut depth = 1;
+                    i += 1;
+                    while i < b.len() && depth > 0 {
+                        match b[i] {
+                            b'\'' if b.get(i + 1).is_some_and(|c| matches!(c, b'[' | b']' | b'#' | b'\'' | b'@')) => i += 1,
+                            b'[' => depth += 1,
+                            b']' => depth -= 1,
+                            _ => {}
+                        }
+                        i += 1;
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+            let Some((first, end)) = sheet_label(src, i) else {
+                if b[i] == b'\'' {
+                    break;
+                }
+                i += src[i..].chars().next().unwrap().len_utf8();
+                continue;
+            };
+            i = end;
+            // A 3-D reference may quote the two sheet names together or separately.
+            let (first, last) = if b.get(i) == Some(&b':') && (b[start] == b'\'' || CellRef::parse(&first).is_none()) {
+                if let Some((last, end)) = sheet_label(src, i + 1).filter(|(_, end)| b.get(*end) == Some(&b'!')) {
+                    i = end;
+                    (first, Some(last))
+                } else {
+                    (first, None)
+                }
+            } else {
+                (first, None)
+            };
+            if b.get(i) != Some(&b'!') {
+                continue;
+            }
+            let end = i;
+            i += 1;
+            // An external workbook qualifier isn't local; neither is the #REF! error token.
+            if start > 0 && matches!(b[start - 1], b']' | b'#')
+                || first.contains(['[', ']'])
+                || last.as_ref().is_some_and(|s| s.contains(['[', ']']))
+            {
+                continue;
+            }
+            let (first, last) = match first.split_once(':') {
+                Some((a, z)) if last.is_none() => (a, Some(z)),
+                _ => (first.as_ref(), last.as_deref()),
+            };
+            let first_matches = first.eq_ignore_ascii_case(self.old);
+            let last_matches = last.is_some_and(|s| s.eq_ignore_ascii_case(self.old));
+            if first_matches || last_matches {
+                out.push_str(&src[copied..start]);
+                if let Some(last) = last {
+                    let a = if first_matches { self.new } else { first };
+                    let z = if last_matches { self.new } else { last };
+                    if quote_sheet(a) == a && quote_sheet(z) == z {
+                        out.push_str(&format!("{a}:{z}"));
+                    } else {
+                        out.push_str(&quote_sheet(&format!("{a}:{z}")));
+                    }
+                } else {
+                    out.push_str(&self.quoted);
+                }
+                copied = end;
+            }
+        }
+        if copied == 0 {
+            return None;
+        }
+        out.push_str(&src[copied..]);
+        Some(out)
+    }
+}
+
+fn quoted_end(src: &str, start: usize, quote: u8) -> Option<usize> {
     let b = src.as_bytes();
-    let mut j = i + 1;
-    let mut name = String::new();
+    let mut j = start + 1;
     loop {
         match b.get(j) {
-            Some(b'\'') if b.get(j + 1) == Some(&b'\'') => {
-                name.push('\'');
-                j += 2;
-            }
-            Some(b'\'') => break,
-            Some(_) => {
-                let ch = src[j..].chars().next().unwrap();
-                name.push(ch);
-                j += ch.len_utf8();
-            }
+            Some(&c) if c == quote && b.get(j + 1) == Some(&quote) => j += 2,
+            Some(&c) if c == quote => return Some(j + 1),
+            Some(_) => j += 1,
             None => return None,
         }
     }
-    if b.get(j + 1) != Some(&b'!') {
-        return None;
+}
+
+fn sheet_label(src: &str, start: usize) -> Option<(Cow<'_, str>, usize)> {
+    if src.as_bytes().get(start) == Some(&b'\'') {
+        let end = quoted_end(src, start, b'\'')?;
+        let name = &src[start + 1..end - 1];
+        let name = if name.contains('\'') { Cow::Owned(name.replace("''", "'")) } else { Cow::Borrowed(name) };
+        Some((name, end))
+    } else {
+        let end = scan_word(src, start);
+        (end > start).then(|| (Cow::Borrowed(&src[start..end]), end))
     }
-    Some((name, j + 2))
+}
+
+fn quoted_sheet(src: &str, i: usize) -> Option<(String, usize)> {
+    let (name, end) = sheet_label(src, i)?;
+    (src.as_bytes().get(end) == Some(&b'!')).then(|| (name.into_owned(), end + 1))
 }
 
 fn scan_word(src: &str, i: usize) -> usize {
@@ -1711,6 +1950,32 @@ fn replace_ci(text: &str, query: &str, by: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sheet_rename_rewrites_qualifiers_not_formula_literals_or_external_workbooks() {
+        let rename = SheetRename { old: "Sheet2", new: "Bob's Data", quoted: quote_sheet("Bob's Data") };
+        for (before, after) in [
+            ("SUM(sheet2!$a$5 : $b$7, 'SHEET2'!LocalName)", "SUM('Bob''s Data'!$a$5 : $b$7, 'Bob''s Data'!LocalName)"),
+            ("_xlfn.FUTURE(Sheet2!A:A, Sheet20!B1, A1:Sheet2!B5)", "_xlfn.FUTURE('Bob''s Data'!A:A, Sheet20!B1, A1:'Bob''s Data'!B5)"),
+            (
+                "SUM(Sheet2:Last!A1,'First Tab:Sheet2'!A2,First:'Sheet2'!A3)",
+                "SUM('Bob''s Data:Last'!A1,'First Tab:Bob''s Data'!A2,'First:Bob''s Data'!A3)",
+            ),
+            (r#"IF(A1="a ""Sheet2!A1"" b", Sheet2!A1, #REF!)"#, r#"IF(A1="a ""Sheet2!A1"" b", 'Bob''s Data'!A1, #REF!)"#),
+        ] {
+            assert_eq!(rename.formula(before).as_deref(), Some(after), "{before}");
+        }
+        for untouched in [
+            r#"INDIRECT("Sheet2!A1")"#,
+            "Table1[[Sheet2!A1],[escaped '] Sheet2!A1]]",
+            "[1]Sheet2!A1 + '[2]Sheet2'!A1 + [3]Start:Sheet2!A5",
+            "Sheet20!A1 + 'Not Sheet2'!A1",
+        ] {
+            assert_eq!(rename.formula(untouched), None, "{untouched}");
+        }
+        let rename_again = SheetRename { old: "Bob's Data", new: "Q1", quoted: quote_sheet("Q1") };
+        assert_eq!(rename_again.formula("'Bob''s Data'!A1").as_deref(), Some("'Q1'!A1"));
+    }
 
     #[test]
     fn numbers_and_dates_as_typed() {

@@ -58,6 +58,8 @@ pub enum CStep {
         before: Box<(Vec<crate::DefinedName>, office_core::model::Origin)>,
         after: Box<(Vec<crate::DefinedName>, office_core::model::Origin)>,
     },
+    /// An imported Excel part whose references changed, outside the editable sheet model.
+    Part { name: String, before: Vec<u8>, after: Vec<u8> },
 }
 
 impl Step for CStep {}

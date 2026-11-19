@@ -997,6 +997,106 @@ fn rules_and_pictures_follow_deleted_rows() {
     assert!(back.cell_info(0, CellRef::new(0, 0)).validation.is_none());
 }
 
+#[test]
+fn renaming_sheet_keeps_workbook_references_on_save_and_undo() {
+    use crate::conditional::tests::{book, n, row, s};
+    let cells = r#"<row r="1"><c r="B1"><f>Other!B1</f></c><c r="C1"><f>Rate*2</f></c><c r="D1"><f>LocalRate*2</f></c><c r="E1"><f t="array" ref="E1">Other!B1*3</f></c><c r="F1"><f t="shared" si="0" ref="F1:F2">Other!B1*4</f></c></row><row r="2"><c r="F2"><f t="shared" si="0"/></c></row>"#;
+    let rules = r#"<conditionalFormatting sqref="B1"><cfRule type="expression" dxfId="0" priority="1"><formula>Other!$B$1&gt;0</formula></cfRule></conditionalFormatting><dataValidations count="1"><dataValidation type="list" sqref="A1"><formula1>Other!$A$1:$A$2</formula1></dataValidation></dataValidations><hyperlinks><hyperlink ref="A3" location="Other!A1"/></hyperlinks><extLst><ext uri="{CCE6A557-97BC-4b89-ADB6-D9C93CAAB3DF}" xmlns:x14="http://schemas.microsoft.com/office/spreadsheetml/2009/9/main" xmlns:xm="http://schemas.microsoft.com/office/excel/2006/main"><x14:dataValidations count="1"><x14:dataValidation type="list"><x14:formula1><xm:f>Other!$A$1:$A$2</xm:f></x14:formula1><xm:sqref>A2</xm:sqref></x14:dataValidation></x14:dataValidations></ext></extLst>"#;
+    let other = row(1, &[s("A1", "North"), n("B1", 8.0)]) + &row(2, &[s("A2", "South"), n("B2", 10.0)]);
+    let doc = book(cells, rules, &other, r#"<dxf><fill><patternFill><bgColor rgb="FF00B050"/></patternFill></fill></dxf>"#);
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, Kind::Sheets).unwrap();
+    let mut pkg = Package::read(&bytes).unwrap();
+    let workbook = sheet_xml(&bytes, "xl/workbook.xml").replace(
+        "</sheets>",
+        r#"</sheets><definedNames><definedName name="Rate">Other!$B$1</definedName><definedName name="LocalRate" localSheetId="0" hidden="1">'OTHER'!$B$2</definedName></definedNames>"#,
+    );
+    pkg.replace("xl/workbook.xml", workbook.into_bytes()).unwrap();
+    let mut v = SheetsView::open(&pkg.to_bytes().unwrap(), "Rename.xlsx").unwrap();
+    v.sheets_mut()[0].charts.push(office_core::model::Chart {
+        series: vec![office_core::model::ChartSeries {
+            name_ref: Some("Other!$A$1".into()),
+            categories: Some("Other!$A$1:$A$2".into()),
+            values: "Other!$B$1:$B$2".into(),
+            ..Default::default()
+        }],
+        ..Default::default()
+    });
+
+    let assert_values_and_rules = |v: &SheetsView| {
+        for (at, shown) in [("B1", "8"), ("C1", "16"), ("D1", "20"), ("E1", "24"), ("F1", "32"), ("F2", "40")] {
+            assert_eq!(v.cell_info(0, CellRef::parse(at).unwrap()).display, shown, "{at}");
+        }
+        for row in [0, 1] {
+            let list = v.cell_info(0, CellRef::new(row, 0)).validation.and_then(|i| i.list).unwrap();
+            assert_eq!(list, ["North", "South"]);
+        }
+        assert!(crate::conditional::format_at(&v.doc, 0, CellRef::new(0, 1), None).fill.fg.is_some());
+    };
+    let assert_renamed = |v: &SheetsView| {
+        assert_eq!(v.sheets()[1].name, "Bob's Data");
+        assert_eq!(other_formula(v, 0, "B1").as_deref(), Some("'Bob''s Data'!B1"));
+        assert_eq!(name_formulas(v), ["'Bob''s Data'!$B$1", "'Bob''s Data'!$B$2"]);
+        assert_eq!(crate::names(&v.doc)[1].sheet, Some(0));
+        assert!(crate::names(&v.doc)[1].hidden);
+        let series = &v.sheets()[0].charts[0].series[0];
+        assert_eq!(series.name_ref.as_deref(), Some("'Bob''s Data'!$A$1"));
+        assert_eq!(series.categories.as_deref(), Some("'Bob''s Data'!$A$1:$A$2"));
+        assert_eq!(series.values, "'Bob''s Data'!$B$1:$B$2");
+        assert_values_and_rules(v);
+    };
+
+    v.rename_sheet(1, "Bob's Data");
+    assert_renamed(&v);
+    assert!(v.undo());
+    assert_eq!(v.sheets()[1].name, "Other");
+    assert_eq!(other_formula(&v, 0, "B1").as_deref(), Some("Other!B1"));
+    assert_eq!(name_formulas(&v), ["Other!$B$1", "'OTHER'!$B$2"]);
+    assert_values_and_rules(&v);
+    assert!(v.redo());
+    assert_renamed(&v);
+
+    let saved = v.save().unwrap();
+    let part = v.sheets()[0].part.as_deref().unwrap();
+    let xml = sheet_xml(&saved, part);
+    assert!(xml.contains(r#"<f t="array" ref="E1">'Bob''s Data'!B1*3</f>"#), "{xml}");
+    assert!(xml.contains(r#"<f t="shared" si="0" ref="F1:F2">'Bob''s Data'!B1*4</f>"#), "{xml}");
+    assert!(xml.contains(r#"location="'Bob''s Data'!A1""#), "{xml}");
+    let mut back = SheetsView::open(&saved, "Rename.xlsx").unwrap();
+    crate::recalculate(&mut back.doc, None);
+    assert_renamed(&back);
+}
+
+#[test]
+fn renaming_sheet_updates_imported_table_formulas_and_pivot_sources() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.add_sheet();
+    let mut pkg = Package::read(&v.save().unwrap()).unwrap();
+    let table = "xl/tables/table1.xml";
+    let pivot = "xl/pivotCache/pivotCacheDefinition1.xml";
+    pkg.put(
+        table,
+        format!(r#"<table xmlns="{}"><tableColumns count="1"><tableColumn id="1" name="Rate"><calculatedColumnFormula>Sheet2!B2</calculatedColumnFormula></tableColumn></tableColumns></table>"#, ns::X).into_bytes(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml",
+    );
+    pkg.put(
+        pivot,
+        format!(r#"<pivotCacheDefinition xmlns="{}"><cacheSource type="worksheet"><worksheetSource ref="B1:B5" sheet="Sheet2"/></cacheSource></pivotCacheDefinition>"#, ns::X).into_bytes(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.pivotCacheDefinition+xml",
+    );
+    let mut v = SheetsView::open(&pkg.to_bytes().unwrap(), "Rename.xlsx").unwrap();
+    let assert_parts = |v: &mut SheetsView, sheet: &str, reference: &str| {
+        let saved = v.save().unwrap();
+        assert!(sheet_xml(&saved, pivot).contains(&format!(r#"sheet="{sheet}""#)));
+        assert!(sheet_xml(&saved, table).contains(&format!("<calculatedColumnFormula>{reference}</calculatedColumnFormula>")));
+    };
+    v.rename_sheet(1, "Bob's Data");
+    assert_parts(&mut v, "Bob's Data", "'Bob''s Data'!B2");
+    assert!(v.undo());
+    assert_parts(&mut v, "Sheet2", "Sheet2!B2");
+    assert!(v.redo());
+    assert_parts(&mut v, "Bob's Data", "'Bob''s Data'!B2");
+}
+
 /// Rules on one sheet that read another follow rows deleted there, and undo puts them back.
 #[test]
 fn rules_follow_rows_deleted_on_the_sheet_they_read() {
