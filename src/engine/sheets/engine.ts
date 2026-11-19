@@ -273,6 +273,7 @@ export class SheetsEngine {
     this.disposed = true
     this.stopFonts()
     this.styles.dispose()
+    this.media.dispose()
     this.listeners.clear()
     this.doc.free()
   }
