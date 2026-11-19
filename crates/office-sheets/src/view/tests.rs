@@ -155,6 +155,19 @@ fn cutting_a_formula_keeps_its_original_references() {
 }
 
 #[test]
+fn clipboard_copies_shared_formula_followers_without_the_leader() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    put_shared(&mut v, CellRef::new(0, 1), Value::Number(0.0), Some("A1+1"), "0", Some("B1:B3"));
+    put_shared(&mut v, CellRef::new(1, 1), Value::Number(0.0), None, "0", None);
+    put_shared(&mut v, CellRef::new(2, 1), Value::Number(0.0), None, "0", None);
+    let dest = CellRef::new(1, 3);
+    let (text, clipboard) = v.copy(0, Range { start: CellRef::new(1, 1), end: CellRef::new(2, 1) }, false);
+    v.paste(0, Range { start: dest, end: dest }, &text, clipboard);
+    assert_eq!(formula_text(&v, dest).as_deref(), Some("C2+1"));
+    assert_eq!(formula_text(&v, CellRef::new(2, 3)).as_deref(), Some("C3+1"));
+}
+
+#[test]
 fn typed_currency_uses_that_symbol_and_impossible_dates_stay_text() {
     let mut v = SheetsView::blank(Kind::Sheets);
     v.set_input(0, CellRef::new(0, 0), "€5");

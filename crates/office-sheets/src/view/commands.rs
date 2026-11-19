@@ -521,10 +521,18 @@ impl SheetsView {
     /// A range as tab-separated displayed values, plus spreadsheet data when it contains formulas.
     pub fn copy(&self, sheet: usize, mut range: Range, cut: bool) -> (String, Option<ClipboardRange>) {
         range.end.row = range.end.row.min(range.start.row.saturating_add(100_000));
-        let mut formulas: HashMap<_, _> = existing_cells(self.sheets().get(sheet), range)
-            .into_iter()
-            .filter_map(|at| crate::formula(&self.doc, sheet, at).map(|formula| (at, formula)))
-            .collect();
+        let mut formulas = HashMap::new();
+        if let Some(s) = self.sheets().get(sheet) {
+            let mut reader = crate::SheetFormulas::new(s);
+            for row in s.rows.iter().filter(|r| (range.start.row..=range.end.row).contains(&r.index)) {
+                for cell in row.cells.iter().filter(|c| (range.start.col..=range.end.col).contains(&c.col)) {
+                    let at = CellRef::new(row.index, cell.col);
+                    if let Some(formula) = reader.read(at, cell) {
+                        formulas.insert(at, formula);
+                    }
+                }
+            }
+        }
         let mut clipboard = (!formulas.is_empty()).then(|| ClipboardRange { source: range, cut, cells: Vec::new() });
         let mut text = String::new();
         for r in range.start.row..=range.end.row {

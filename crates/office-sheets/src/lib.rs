@@ -34,7 +34,7 @@ pub mod view;
 
 use std::collections::{HashMap, HashSet};
 
-use office_core::model::{Body, CellRef, Document, Kind, Origin, Sheet, Value};
+use office_core::model::{Body, CellRef, Document, Kind, Origin, Sheet, SheetCell, Value};
 use office_core::opc::Package;
 use office_core::units::parse_bool;
 use office_core::xml::{ns, Element, Node};
@@ -318,6 +318,39 @@ pub fn formula(doc: &Document, sheet_index: usize, at: CellRef) -> Option<String
     None
 }
 
+struct SheetFormulas<'a> {
+    sheet: &'a Sheet,
+    leaders: Option<HashMap<&'a str, (CellRef, &'a str)>>,
+}
+
+impl<'a> SheetFormulas<'a> {
+    fn new(sheet: &'a Sheet) -> Self {
+        Self { sheet, leaders: None }
+    }
+
+    fn read(&mut self, at: CellRef, cell: &SheetCell) -> Option<String> {
+        if let Some(text) = &cell.formula {
+            return Some(text.clone());
+        }
+        let (group, _) = shared(&cell.origin)?;
+        let leaders = self.leaders.get_or_insert_with(|| {
+            self.sheet
+                .rows
+                .iter()
+                .flat_map(|row| {
+                    row.cells.iter().filter_map(|c| {
+                        let text = c.formula.as_deref()?;
+                        let (group, _) = shared(&c.origin).filter(|(_, range)| range.is_some())?;
+                        Some((group, (CellRef::new(row.index, c.col), text)))
+                    })
+                })
+                .collect()
+        });
+        let (leader, text) = leaders.get(group)?;
+        formula::shift(text, i64::from(at.row) - i64::from(leader.row), i64::from(at.col) - i64::from(leader.col)).ok()
+    }
+}
+
 /// Works out every formula in the workbook again and puts the results in the cells, as Excel
 /// does when it recalculates. `now` (a serial number) is what NOW() and TODAY() give; without
 /// one they're #N/A. A formula that depends on itself comes to 0, as in Excel. Returns how many
@@ -326,25 +359,10 @@ pub fn recalculate(doc: &mut Document, now: Option<f64>) -> usize {
     let Body::Workbook { sheets } = &doc.body else { return 0 };
     let mut formulas = HashMap::new();
     for (si, s) in sheets.iter().enumerate() {
-        // Each shared formula's first cell and text, so its other cells can copy it.
-        let mut groups: HashMap<&str, (u32, u32, &str)> = HashMap::new();
+        let mut reader = SheetFormulas::new(s);
         for row in &s.rows {
             for c in &row.cells {
-                if let (Some(text), Some((g, Some(_)))) = (&c.formula, shared(&c.origin)) {
-                    groups.insert(g, (row.index, c.col, text));
-                }
-            }
-        }
-        for row in &s.rows {
-            for c in &row.cells {
-                let text = match (&c.formula, shared(&c.origin)) {
-                    (Some(f), _) => Some(f.clone()),
-                    (None, Some((g, _))) => groups
-                        .get(g)
-                        .and_then(|(r, col, text)| formula::shift(text, row.index as i64 - *r as i64, c.col as i64 - *col as i64).ok()),
-                    _ => None,
-                };
-                if let Some(text) = text {
+                if let Some(text) = reader.read(CellRef::new(row.index, c.col), c) {
                     let expr = formula::parse(&text).unwrap_or(Expr::Error("#NAME?".into()));
                     formulas.insert((si, row.index, c.col), std::rc::Rc::new(expr));
                 }
