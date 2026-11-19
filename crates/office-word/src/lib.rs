@@ -37,6 +37,8 @@ pub struct Words;
 #[derive(Clone, Debug, Default)]
 pub struct Word {
     pub styles: Styles,
+    /// The style sheet with built-in styles added during editing.
+    styles_xml: Option<XmlDoc>,
     pub numbering: Numbering,
     /// The numbering part as read, with any lists added since.
     numbering_xml: Option<XmlDoc>,
@@ -85,6 +87,11 @@ impl Layer for Words {
 
     fn write_parts(&self, doc: &Document, pkg: &mut Package, _to: Kind) -> Result<()> {
         let main = pkg.main_part()?;
+        if let Some(sheet) = word(doc).and_then(|w| w.styles_xml.as_ref()) {
+            let part = pkg.related(&main, kind::STYLES)?.into_iter().next().map(|(_, p)| p).unwrap_or_else(|| "word/styles.xml".into());
+            pkg.put_xml(&part, sheet, types::DOCX_STYLES);
+            pkg.relate(&main, kind::STYLES, &part)?;
+        }
         // Built-in styles the document uses and its style sheet doesn't have.
         let used = used_styles(doc);
         // A file's style sheet was parsed on reading it; going back to the part (Word's runs to
@@ -128,6 +135,26 @@ pub fn word_mut(doc: &mut Document) -> &mut Word {
         doc.extensions.insert(Word { styles: Styles::parse(&default_styles()), ..Default::default() });
     }
     doc.extensions.get_mut::<Word>().unwrap()
+}
+
+pub(crate) fn ensure_style(doc: &mut Document, id: &str) -> bool {
+    if word(doc).is_some_and(|w| w.styles.get(id).is_some()) || styles::builtin(id).is_none() {
+        return false;
+    }
+    let mut sheet = word(doc)
+        .and_then(|w| w.styles_xml.clone())
+        .or_else(|| {
+            let pkg = doc.package.as_ref()?;
+            let main = pkg.main_part().ok()?;
+            let (_, part) = pkg.related(&main, kind::STYLES).ok()?.into_iter().next()?;
+            pkg.xml(&part).ok()
+        })
+        .unwrap_or_else(default_styles);
+    styles::add_missing(&mut sheet, &[id.to_string()]);
+    let w = word_mut(doc);
+    w.styles = Styles::parse(&sheet);
+    w.styles_xml = Some(sheet);
+    true
 }
 
 fn blocks(doc: &Document) -> &[Block] {
