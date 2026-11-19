@@ -1084,3 +1084,10 @@ fn endnotes_that_dont_fit_go_on_new_pages_in_order() {
     assert_eq!(seen, (1..=20).collect::<Vec<_>>());
     assert!(v.page_count() > last_body_page + 1, "endnotes continue on pages of their own");
 }
+
+#[test]
+fn huge_note_ids_show_as_written() {
+    let extras = Extras { endnote_format: Some("lowerLetter".into()), ..Default::default() };
+    assert_eq!(extras.note_label(crate::NoteKind::Endnote, "4294967295"), "4294967295");
+    assert_eq!(extras.note_label(crate::NoteKind::Endnote, "28"), "bb");
+}

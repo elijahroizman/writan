@@ -279,9 +279,10 @@ impl Extras {
             crate::NoteKind::Footnote => self.footnote_format.as_deref().unwrap_or("decimal"),
             crate::NoteKind::Endnote => self.endnote_format.as_deref().unwrap_or("lowerRoman"),
         };
+        // Letter formats repeat a letter once per 26, so a huge id would make a huge mark.
         match id.parse::<u32>() {
-            Ok(n) => crate::numbering::format_number(n, format),
-            Err(_) => id.to_string(),
+            Ok(n) if n <= 32_767 => crate::numbering::format_number(n, format),
+            _ => id.to_string(),
         }
     }
 
