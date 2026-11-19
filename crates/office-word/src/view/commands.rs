@@ -1014,7 +1014,12 @@ impl WordView {
                 pos::prev_para(&blocks, &from.path).and_then(|pp| pos::para(&blocks, &pp)).and_then(|p| crate::list_of(&self.doc, p));
             match prev {
                 Some((n, _)) if n != "0" && self.list_kind(&n) == Some(k) => n,
-                _ => crate::add_list(&mut self.doc, k),
+                _ => {
+                    let id = crate::add_list(&mut self.doc, k);
+                    // The new list's indents are in the numbering part.
+                    self.extras = super::read_extras(&self.doc);
+                    id
+                }
             }
         });
         // Lists change paragraphs' markup (numPr), which the layer writes into their origins.
