@@ -69,7 +69,12 @@ fn push(el: &Element, out: &mut String) {
         "acc" => {
             let base = arg(el, "e");
             let chr = prop(el, "accPr", "chr").and_then(|v| v.chars().next()).unwrap_or('\u{0302}');
-            out.push_str(&base);
+            // A mark on its own would sit on the last character only, so a longer base is bracketed.
+            if base.chars().filter(|c| !is_mark(*c)).count() > 1 {
+                out.push_str(&format!("({base})"));
+            } else {
+                out.push_str(&base);
+            }
             out.push(combining(chr));
         }
         "bar" => {
@@ -203,6 +208,10 @@ fn push(el: &Element, out: &mut String) {
     }
 }
 
+fn is_mark(c: char) -> bool {
+    matches!(c, '\u{0300}'..='\u{036F}' | '\u{20D0}'..='\u{20FF}')
+}
+
 /// An operand, in parentheses unless it is a single number or name.
 fn group(s: &str) -> String {
     if s.chars().count() <= 1 || s.chars().all(|c| c.is_alphanumeric() || c == '.') {
@@ -313,6 +322,8 @@ mod tests {
         assert_eq!(math(&acc("\u{0301}")), "a\u{0301}");
         assert_eq!(math(&acc("˙")), "a\u{0307}");
         assert_eq!(math(&format!("<m:acc><m:e>{}</m:e></m:acc>", r("x"))), "x\u{0302}");
+        assert_eq!(math(&format!("<m:acc><m:e>{}</m:e></m:acc>", r("x+y"))), "(x+y)\u{0302}");
+        assert_eq!(math(&format!("<m:acc><m:e>{}</m:e></m:acc>", r("a\u{0301}"))), "a\u{0301}\u{0302}");
         assert_eq!(math(&format!("<m:bar><m:e>{}</m:e></m:bar>", r("ab"))), "a\u{0332}b\u{0332}");
         assert_eq!(math(&format!(r#"<m:bar><m:barPr><m:pos m:val="top"/></m:barPr><m:e>{}</m:e></m:bar>"#, r("a"))), "a\u{0305}");
     }
