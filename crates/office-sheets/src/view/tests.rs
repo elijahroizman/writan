@@ -1029,4 +1029,21 @@ fn spans_grow_shrink_and_go() {
     assert_eq!(shift_span(1, 4, 1, -1, 100), Some((1, 3)));
     assert_eq!(shift_span(1, 4, 0, -2, 100), Some((0, 2)));
     assert_eq!(shift_span(2, 3, 1, -5, 100), None);
+    assert_eq!(shift_span(98, 99, 3, 2, 100), None);
+}
+
+/// When the first range of a rule is deleted, its formulas are rewritten for the next range's
+/// first cell along both axes.
+#[test]
+fn rules_rebase_onto_a_range_in_another_column() {
+    use crate::conditional::tests::{book, row, s};
+    let rules = r#"<conditionalFormatting sqref="A2 C5"><cfRule type="expression" dxfId="0" priority="1"><formula>B2="y"</formula></cfRule></conditionalFormatting>"#;
+    let green = r#"<dxf><fill><patternFill><bgColor rgb="FF00B050"/></patternFill></fill></dxf>"#;
+    let doc = book(&row(5, &[s("C5", "x"), s("D5", "y")]), rules, "", green);
+    let bytes = office_core::Compiler::new().with_layer(crate::Sheets).write(&doc, office_core::Kind::Sheets).unwrap();
+    let mut v = SheetsView::open(&bytes, "rebase.xlsx").unwrap();
+    let on = |v: &SheetsView, at: &str| crate::conditional::format_at(&v.doc, 0, CellRef::parse(at).unwrap(), None).fill.fg.is_some();
+    assert!(on(&v, "C5"));
+    v.shift_rows(0, 1, -1);
+    assert!(on(&v, "C4"));
 }

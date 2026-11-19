@@ -1027,7 +1027,8 @@ pub(super) fn shift_span(start: u32, end: u32, at: u32, n: i64, max: u32) -> Opt
     let (at, last) = (at as i64, max as i64 - 1);
     let moved = |i: u32| if (i as i64) < at { i as i64 } else { i as i64 + n };
     if n >= 0 {
-        return Some((moved(start).min(last) as u32, moved(end).min(last) as u32));
+        // A span pushed wholly off the sheet goes, as in Excel.
+        return (moved(start) <= last).then(|| (moved(start) as u32, moved(end).min(last) as u32));
     }
     let gone = |i: u32| (i as i64) >= at && (i as i64) < at - n;
     let a = if gone(start) { at } else { moved(start) };
@@ -1062,16 +1063,17 @@ fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n:
     };
     // A rule's formulas are written for the first cell it covers. When that cell is deleted, the
     // first one left takes over, so the formulas are first rewritten for it.
-    let rebase = |v: &str| -> i64 {
+    let rebase = |v: &str| -> (i64, i64) {
         let all = ranges(v);
-        let (Some(first), Some(kept)) = (all.first(), all.iter().find(|r| local && move_range(**r).is_some())) else { return 0 };
+        let (Some(first), Some(kept)) = (all.first(), all.iter().find(|r| local && move_range(**r).is_some())) else { return (0, 0) };
         let p = pos(kept) as i64;
         let from = if n < 0 && p >= at as i64 && p < at as i64 - n { at as i64 - n } else { p };
-        from - pos(first) as i64
+        // The first cell left is `kept.start`, with its edited coordinate as it was before the shift.
+        let (row, col) = if rows { (from, kept.start.col as i64) } else { (kept.start.row as i64, from) };
+        (row - first.start.row as i64, col - first.start.col as i64)
     };
-    let formula = |f: &str, delta: i64| -> String {
-        let (dr, dc) = if rows { (delta, 0) } else { (0, delta) };
-        let f = if delta == 0 { f.to_string() } else { crate::formula::shift(f, dr, dc).unwrap_or_else(|_| f.to_string()) };
+    let formula = |f: &str, (dr, dc): (i64, i64)| -> String {
+        let f = if (dr, dc) == (0, 0) { f.to_string() } else { crate::formula::shift(f, dr, dc).unwrap_or_else(|_| f.to_string()) };
         adjust_formula_on(&f, target, local, axis, at, n)
     };
     fn set_text(el: &mut Element, text: String) {
@@ -1080,9 +1082,9 @@ fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n:
     fn walk(
         el: &mut Element,
         sqref: &dyn Fn(&str) -> String,
-        rebase: &dyn Fn(&str) -> i64,
-        formula: &dyn Fn(&str, i64) -> String,
-        delta: i64,
+        rebase: &dyn Fn(&str) -> (i64, i64),
+        formula: &dyn Fn(&str, (i64, i64)) -> String,
+        delta: (i64, i64),
     ) {
         let own = el.attr("sqref").map(str::to_string).or_else(|| el.elements().find(|c| c.local == "sqref").map(Element::text));
         let delta = own.as_deref().map_or(delta, rebase);
@@ -1107,7 +1109,7 @@ fn shift_rules(s: &mut Sheet, target: &str, local: bool, axis: Axis, at: u32, n:
     }
     let mut changed = false;
     for el in root.elements_mut().filter(|e| matches!(e.local.as_str(), "conditionalFormatting" | "dataValidations" | "extLst")) {
-        walk(el, &sqref, &rebase, &formula, 0);
+        walk(el, &sqref, &rebase, &formula, (0, 0));
         changed = true;
     }
     root.children.retain(
