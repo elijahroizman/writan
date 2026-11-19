@@ -21,6 +21,23 @@ pub struct Reference {
 }
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum TableRows {
+    All,
+    Headers,
+    Data,
+    Totals,
+    ThisRow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct TableReference {
+    pub table: Option<String>,
+    pub rows: Vec<TableRows>,
+    pub first_column: Option<String>,
+    pub last_column: Option<String>,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     Add,
     Sub,
@@ -46,6 +63,7 @@ pub enum Expr {
     Bool(bool),
     Error(String),
     Ref(Reference),
+    Table(Box<TableReference>),
     /// A defined name.
     Name(String),
     Neg(Box<Expr>),
@@ -121,6 +139,7 @@ enum Tok {
     Text(String),
     Error(String),
     Ref(Reference),
+    Table(Box<TableReference>),
     Ident(String),
     Op(String),
     Open,
@@ -136,11 +155,19 @@ enum Tok {
 /// A typed formula with the brackets left open closed at its end, as Excel does on Enter.
 pub fn close_brackets(src: &str) -> String {
     let (mut depth, mut quote) = (0usize, None);
-    for c in src.chars() {
+    let mut chars = src.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
         match (quote, c) {
             (Some(q), _) if c == q => quote = None,
             (Some(_), _) => {}
             (None, '"' | '\'') => quote = Some(c),
+            (None, '[') => {
+                if let Some(end) = bracket_end(src.as_bytes(), i) {
+                    while chars.peek().is_some_and(|(j, _)| *j < end) {
+                        chars.next();
+                    }
+                }
+            }
             (None, '(') => depth += 1,
             (None, ')') => depth = depth.saturating_sub(1),
             _ => {}
@@ -215,6 +242,111 @@ fn rewrite_function_names(src: &str, for_file: bool) -> String {
 
 const ERRORS: [&str; 8] = ["#NULL!", "#DIV/0!", "#VALUE!", "#REF!", "#NAME?", "#NUM!", "#N/A", "#GETTING_DATA"];
 
+pub(crate) fn bracket_end(src: &[u8], start: usize) -> Option<usize> {
+    let mut i = start + 1;
+    let mut depth = 1;
+    while let Some(&b) = src.get(i) {
+        match b {
+            b'\'' if src.get(i + 1).is_some_and(|c| matches!(c, b'[' | b']' | b'#' | b'\'' | b'@')) => i += 1,
+            b'[' => depth += 1,
+            b']' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i + 1);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+fn table_reference(src: &str, table: Option<String>) -> Result<(TableReference, usize), String> {
+    fn item(src: &mut &str) -> Option<String> {
+        let mut text = String::new();
+        while let Some(c) = src.chars().next() {
+            *src = &src[c.len_utf8()..];
+            match c {
+                ']' => return Some(text),
+                '[' => return None,
+                '\'' => {
+                    let escaped = src.chars().next().filter(|c| matches!(c, '[' | ']' | '#' | '\'' | '@'))?;
+                    // Preserve the escape until we distinguish keywords from column names.
+                    text.push(c);
+                    text.push(escaped);
+                    *src = &src[escaped.len_utf8()..];
+                }
+                _ => text.push(c),
+            }
+        }
+        None
+    }
+
+    fn parse(src: &str, table: Option<String>) -> Option<(TableReference, usize)> {
+        let mut rest = src.strip_prefix('[')?;
+        let mut reference = TableReference { table, ..TableReference::default() };
+        if let Some(next) = rest.strip_prefix('@') {
+            reference.rows.push(TableRows::ThisRow);
+            rest = next;
+        }
+        let nested = rest.trim_start().starts_with('[');
+        let mut end_column = false;
+        loop {
+            if nested {
+                rest = rest.trim_start().strip_prefix('[')?;
+            }
+            let text = item(&mut rest)?;
+            let rows = match text.to_ascii_lowercase().as_str() {
+                "#all" => Some(TableRows::All),
+                "#headers" => Some(TableRows::Headers),
+                "#data" => Some(TableRows::Data),
+                "#totals" => Some(TableRows::Totals),
+                "#this row" => Some(TableRows::ThisRow),
+                _ if text.starts_with('#') => return None,
+                _ => None,
+            };
+            if let Some(rows) = rows {
+                if end_column {
+                    return None;
+                }
+                reference.rows.push(rows);
+            } else if !text.is_empty() {
+                let mut chars = text.chars();
+                let name = std::iter::from_fn(|| chars.next().and_then(|c| if c == '\'' { chars.next() } else { Some(c) })).collect();
+                let column = if end_column { &mut reference.last_column } else { &mut reference.first_column };
+                if column.replace(name).is_some() {
+                    return None;
+                }
+            } else if nested || (reference.table.is_none() && reference.rows.is_empty()) {
+                return None;
+            }
+            if !nested {
+                break;
+            }
+            rest = rest.trim_start();
+            if let Some(next) = rest.strip_prefix(']') {
+                rest = next;
+                break;
+            }
+            if let Some(next) = rest.strip_prefix(':').filter(|_| reference.first_column.is_some() && !end_column) {
+                rest = next;
+                end_column = true;
+            } else {
+                rest = rest.strip_prefix(',')?;
+                end_column = false;
+            }
+        }
+        // An external workbook prefix such as [Book.xlsx]Sheet! is not a table.
+        if rest.starts_with(|c: char| c.is_alphanumeric() || matches!(c, '\'' | '!' | '_' | '\\')) {
+            return None;
+        }
+        Some((reference, src.len() - rest.len()))
+    }
+
+    parse(src, table).ok_or_else(|| "invalid structured reference".into())
+}
+
 /// Splits formula text into tokens with where each one is (so references can be rewritten in
 /// place). Spaces between reference operands are intersection operators.
 fn lex(src: &str) -> Result<Vec<(Tok, std::ops::Range<usize>)>, String> {
@@ -225,6 +357,11 @@ fn lex(src: &str) -> Result<Vec<(Tok, std::ops::Range<usize>)>, String> {
         let start = i;
         let c = src[i..].chars().next().unwrap();
         let tok = match c {
+            '[' => {
+                let (r, len) = table_reference(&src[i..], None)?;
+                i += len;
+                Tok::Table(Box::new(r))
+            }
             ' ' | '\t' | '\n' | '\r' => {
                 while b.get(i).is_some_and(u8::is_ascii_whitespace) {
                     i += 1;
@@ -358,7 +495,11 @@ fn lex(src: &str) -> Result<Vec<(Tok, std::ops::Range<usize>)>, String> {
                     }
                 }
                 // Sheet prefixes take priority over cell-like names such as Q1.
-                if b.get(j) == Some(&b'!') {
+                if b.get(j) == Some(&b'[') {
+                    let (r, len) = table_reference(&src[j..], Some(src[i..j].to_string()))?;
+                    i = j + len;
+                    Tok::Table(Box::new(r))
+                } else if b.get(j) == Some(&b'!') {
                     let (r, len) = reference(src, j + 1, Some(src[i..j].to_string())).ok_or("no reference after the sheet name")?;
                     i = j + 1 + len;
                     Tok::Ref(r)
@@ -381,8 +522,8 @@ fn lex(src: &str) -> Result<Vec<(Tok, std::ops::Range<usize>)>, String> {
     let significant = |at: usize| {
         let before = at.checked_sub(1).and_then(|i| out.get(i)).map(|(t, _)| t);
         let after = out.get(at + 1).map(|(t, _)| t);
-        matches!(before, Some(Tok::Ref(_) | Tok::Ident(_) | Tok::Close))
-            && matches!(after, Some(Tok::Ref(_) | Tok::Ident(_) | Tok::Open))
+        matches!(before, Some(Tok::Ref(_) | Tok::Table(_) | Tok::Ident(_) | Tok::Close))
+            && matches!(after, Some(Tok::Ref(_) | Tok::Table(_) | Tok::Ident(_) | Tok::Open))
             && !matches!((before, after), (Some(Tok::Ident(_)), Some(Tok::Open)))
     };
     Ok(out.iter().enumerate().filter(|(i, (t, _))| *t != Tok::Space || significant(*i)).map(|(_, t)| t.clone()).collect())
@@ -632,6 +773,7 @@ impl<'a> Parser<'a> {
             Tok::Text(s) => Expr::Text(s),
             Tok::Error(e) => Expr::Error(e),
             Tok::Ref(r) => Expr::Ref(r),
+            Tok::Table(r) => Expr::Table(r),
             Tok::Open => {
                 let previous = self.union_allowed;
                 self.union_allowed = true;

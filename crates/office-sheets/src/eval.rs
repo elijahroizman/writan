@@ -6,7 +6,7 @@ use std::collections::{HashMap, HashSet};
 use office_core::model::{format_number, Value};
 
 use crate::dates::{self, DateSystem};
-use crate::formula::{Expr, Op, RefPart, Reference};
+use crate::formula::{Expr, Op, RefPart, Reference, TableReference};
 
 /// A value while a formula is worked out.
 #[derive(Clone, Debug, PartialEq)]
@@ -61,6 +61,9 @@ pub trait Book {
     fn extent(&self, sheet: Option<&str>) -> Option<(u32, u32)>;
     /// A defined name's formula, from the formula's own sheet's point of view.
     fn name(&self, name: &str) -> Option<Expr>;
+    fn table(&self, _reference: &TableReference) -> Option<Result<Vec<Reference>, &'static str>> {
+        None
+    }
     fn date_system(&self) -> DateSystem;
     /// Now, as a serial number, for NOW() and TODAY(); `None` makes them #N/A.
     fn now(&self) -> Option<f64>;
@@ -84,6 +87,9 @@ impl Book for Context<'_> {
     }
     fn name(&self, name: &str) -> Option<Expr> {
         self.book.name(name)
+    }
+    fn table(&self, reference: &TableReference) -> Option<Result<Vec<Reference>, &'static str>> {
+        self.book.table(reference)
     }
     fn date_system(&self) -> DateSystem {
         self.book.date_system()
@@ -149,22 +155,12 @@ fn eval_unchecked(expr: &Expr, book: &mut Context<'_>) -> R {
             }
             let value = match book.name(n) {
                 Some(e) => eval_inner(&e, book),
-                None => Err("#NAME?"),
+                None => table_name(n, book).ok_or("#NAME?").and_then(|r| range_values(r?, book)),
             };
             book.names.remove(&key);
             value?
         }
-        Expr::Binary(Op::Range | Op::Intersect | Op::Union, _, _) => {
-            let refs = references(expr, book)?;
-            let mut rows = Vec::new();
-            for r in refs {
-                match reference(&r, book)? {
-                    V::Range(r) => rows.extend(r),
-                    v => rows.push(vec![v]),
-                }
-            }
-            V::Range(rows)
-        }
+        Expr::Table(_) | Expr::Binary(Op::Range | Op::Intersect | Op::Union, _, _) => range_values(references(expr, book)?, book)?,
         Expr::Neg(e) => V::Num(-num(&scalar(eval_inner(e, book)?))?),
         Expr::Percent(e) => V::Num(num(&scalar(eval_inner(e, book)?))? / 100.0),
         Expr::Binary(op, a, b) => eval_chain(*op, a, b, book)?,
@@ -221,6 +217,17 @@ fn reference(r: &Reference, book: &mut Context<'_>) -> R {
         return Err("#NUM!");
     }
     Ok(V::Range((r0..=r1).map(|row| (c0..=c1).map(|col| book.cell(sheet, row, col)).collect()).collect()))
+}
+
+fn range_values(refs: Vec<Reference>, book: &mut Context<'_>) -> R {
+    let mut rows = Vec::new();
+    for r in refs {
+        match reference(&r, book)? {
+            V::Range(r) => rows.extend(r),
+            v => rows.push(vec![v]),
+        }
+    }
+    Ok(V::Range(rows))
 }
 
 /// A single value from what may be a range: its top-left one.
@@ -342,10 +349,14 @@ fn finite(n: f64) -> R {
     }
 }
 
+fn table_name(name: &str, book: &Context<'_>) -> Option<Result<Vec<Reference>, &'static str>> {
+    book.table(&TableReference { table: Some(name.to_string()), ..TableReference::default() })
+}
+
 fn is_reference(expr: &Expr, book: &Context<'_>, depth: usize) -> bool {
     match expr {
-        Expr::Ref(_) | Expr::Binary(Op::Range | Op::Intersect | Op::Union, _, _) => true,
-        Expr::Name(n) if depth < 128 => book.name(n).is_some_and(|e| is_reference(&e, book, depth + 1)),
+        Expr::Ref(_) | Expr::Table(_) | Expr::Binary(Op::Range | Op::Intersect | Op::Union, _, _) => true,
+        Expr::Name(n) if depth < 128 => book.name(n).map_or_else(|| table_name(n, book).is_some(), |e| is_reference(&e, book, depth + 1)),
         _ => false,
     }
 }
@@ -356,12 +367,16 @@ fn references(expr: &Expr, book: &mut Context<'_>) -> Result<Vec<Reference>, &'s
     let _depth = Depth::enter()?;
     match expr {
         Expr::Ref(r) => Ok(vec![r.clone()]),
+        Expr::Table(r) => book.table(r).ok_or(if r.table.is_some() { "#NAME?" } else { "#VALUE!" })?,
         Expr::Name(n) => {
             let key = n.to_uppercase();
             if !book.names.insert(key.clone()) {
                 return Err("#REF!");
             }
-            let result = book.name(n).ok_or("#NAME?").and_then(|e| references(&e, book));
+            let result = match book.name(n) {
+                Some(e) => references(&e, book),
+                None => table_name(n, book).ok_or("#NAME?").and_then(|r| r),
+            };
             book.names.remove(&key);
             result
         }

@@ -6,7 +6,7 @@ use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 
 use office_core::drawing::{Color, Rgb};
-use office_core::model::{quote_sheet, CellRef, Origin, Range, Sheet, SheetCell, SheetRow, Value};
+use office_core::model::{quote_sheet, Body, CellRef, Origin, Range, Sheet, SheetCell, SheetRow, Value};
 use office_core::xml::{ns, Element, Node};
 use serde::{Deserialize, Serialize};
 
@@ -142,7 +142,7 @@ impl SheetsView {
         let sel = self.sel;
         let before = if book { self.sheets().to_vec() } else { vec![self.sheets()[sheet].clone()] };
         f(self);
-        let mut steps = Vec::new();
+        let mut steps = if matches!(axis, Axis::Row) { shift_table_rows(&mut self.doc, sheet, at, n) } else { Vec::new() };
         for (i, s) in self.sheets_mut().iter_mut().enumerate() {
             if i == sheet {
                 continue;
@@ -1155,6 +1155,82 @@ fn rename_package_references(doc: &mut office_core::model::Document, rename: &Sh
         .collect()
 }
 
+fn shift_table_rows(doc: &mut office_core::model::Document, sheet: usize, at: u32, n: i64) -> Vec<CStep> {
+    use office_core::formats::common::rel_attr;
+
+    let Body::Workbook { sheets } = &mut doc.body else { return Vec::new() };
+    let Some((s, pkg)) = sheets.get_mut(sheet).zip(doc.package.as_mut()) else { return Vec::new() };
+    let mut steps = Vec::new();
+    let mut removed = Vec::new();
+    let shifted = |mut r: Range| {
+        (r.start.row, r.end.row) = shift_span(r.start.row, r.end.row, at, n, crate::MAX_ROWS)?;
+        Some(r)
+    };
+    for (id, part) in crate::tables::parts(pkg, s) {
+        let Ok(mut xml) = pkg.xml(&part) else { continue };
+        let Some(old) = crate::tables::range(&xml.root).filter(|_| xml.root.is(ns::X, "table")) else { continue };
+        let Some(new) = shifted(old) else {
+            removed.push(id);
+            continue;
+        };
+        if old == new && (n >= 0 || at > old.end.row) {
+            continue;
+        }
+        for (attr, start, default) in [("headerRowCount", true, 1), ("totalsRowCount", false, 0)] {
+            let count = xml.root.attr(attr).and_then(|v| v.parse::<u32>().ok()).unwrap_or(default).min(old.rows());
+            if count == 0 || n >= 0 {
+                continue;
+            }
+            let section = if start { old.start.row..old.start.row + count } else { old.end.row + 1 - count..old.end.row + 1 };
+            let end = u32::try_from(i64::from(at) - n).unwrap_or(u32::MAX);
+            let deleted = section.end.min(end).saturating_sub(section.start.max(at));
+            if deleted != 0 {
+                xml.root.set_attr("", attr, (count - deleted).to_string());
+            }
+        }
+        xml.root.set_attr("", "ref", format!("{}:{}", new.start, new.end));
+        shift_table_filters(&mut xml.root, &shifted);
+        let after = xml.to_bytes();
+        if let Ok(before) = pkg.xml_bytes(&part).map(<[u8]>::to_vec) {
+            if before != after && pkg.replace(&part, after.clone()).is_ok() {
+                steps.push(CStep::Part { name: part, before, after });
+            }
+        }
+    }
+    if !removed.is_empty() {
+        if let Some(mut root) = s.origin.get().cloned() {
+            if let Some(list) = root.child_mut(ns::X, "tableParts") {
+                list.children.retain(|n| {
+                    !matches!(n, Node::Element(e) if e.is(ns::X, "tablePart") && rel_attr(e, "id").is_some_and(|id| removed.iter().any(|r| r == id)))
+                });
+                let count = list.children_named(ns::X, "tablePart").count();
+                if count == 0 {
+                    root.remove_children(ns::X, "tableParts");
+                } else {
+                    list.set_attr("", "count", count.to_string());
+                }
+            }
+            s.origin = Origin::new(root);
+        }
+    }
+    steps
+}
+
+fn shift_table_filters(el: &mut Element, shifted: &impl Fn(Range) -> Option<Range>) {
+    el.children.retain_mut(|child| {
+        let Node::Element(child) = child else { return true };
+        if !child.in_ns(ns::X) || !matches!(child.local.as_str(), "autoFilter" | "sortState" | "sortCondition") {
+            return true;
+        }
+        if let Some(r) = crate::tables::range(child) {
+            let Some(r) = shifted(r) else { return false };
+            child.set_attr("", "ref", format!("{}:{}", r.start, r.end));
+        }
+        shift_table_filters(child, shifted);
+        true
+    });
+}
+
 /// One span of rows or columns, `start..=end`, after inserting (`n > 0`) or deleting (`n < 0`) at
 /// `at`: it grows when the insert falls inside it, never runs past `max`, and shrinks when some
 /// of it is deleted. None when all of it is.
@@ -1405,12 +1481,15 @@ fn prepare_shift(sheet: &mut Sheet, target: &str, axis: Axis, at: u32, n: i64) -
         // inserting rows inside a copied range would make one cell's formula no longer the
         // leader's formula shifted by the same offset.
         let structural = local && g.members.iter().any(|&(r, c)| axis_index(axis, r, c) >= at);
-        let refs_move = g
-            .members
-            .iter()
-            .any(|&(r, c)| crate::formula::shift(&text, r as i64 - mr as i64, c as i64 - mc as i64).is_ok_and(|f| adjust(&f) != f));
-        if !structural && !refs_move {
-            continue;
+        if !structural {
+            let leader = adjust(&text);
+            let breaks = g.members.iter().any(|&(r, c)| {
+                let shift = |f| crate::formula::shift(f, r as i64 - mr as i64, c as i64 - mc as i64);
+                shift(&text).is_ok_and(|f| shift(&leader).is_ok_and(|shared| adjust(&f) != shared))
+            });
+            if !breaks {
+                continue;
+            }
         }
         for (r, c) in g.members {
             let at = CellRef::new(r, c);
@@ -1626,6 +1705,11 @@ fn adjust_formula_on(src: &str, sheet_name: &str, local: bool, axis: Axis, at: u
     while i < b.len() {
         let c = src[i..].chars().next().unwrap();
         match c {
+            '[' => {
+                let end = crate::formula::bracket_end(b, i).unwrap_or(b.len());
+                out.push_str(&src[i..end]);
+                i = end;
+            }
             '"' => {
                 out.push('"');
                 i += 1;
@@ -1679,7 +1763,7 @@ fn adjust_formula_on(src: &str, sheet_name: &str, local: bool, axis: Axis, at: u
                         continue;
                     }
                 }
-                if let Some((r, len)) = parse_ref(src, i, None) {
+                if let Some((r, len)) = parse_ref(src, i, None).filter(|(_, len)| b.get(i + len) != Some(&b'[')) {
                     rewrite(&mut out, src, i, i, i + len, r, &shift);
                     i += len;
                     continue;
@@ -1728,18 +1812,7 @@ impl SheetRename<'_> {
                     continue;
                 }
                 b'[' => {
-                    // Structured references may nest and escape a bracket with an apostrophe.
-                    let mut depth = 1;
-                    i += 1;
-                    while i < b.len() && depth > 0 {
-                        match b[i] {
-                            b'\'' if b.get(i + 1).is_some_and(|c| matches!(c, b'[' | b']' | b'#' | b'\'' | b'@')) => i += 1,
-                            b'[' => depth += 1,
-                            b']' => depth -= 1,
-                            _ => {}
-                        }
-                        i += 1;
-                    }
+                    i = crate::formula::bracket_end(b, i).unwrap_or(b.len());
                     continue;
                 }
                 _ => {}

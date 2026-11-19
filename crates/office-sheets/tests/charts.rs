@@ -1,6 +1,6 @@
 //! Charts: made from cells, saved as Excel chart parts, read back, moved, changed and deleted.
 
-use office_core::model::{CellRef, ChartKind, LegendPosition, Range};
+use office_core::model::{CellRef, ChartKind, LegendPosition, Range, Value};
 use office_core::opc::Package;
 use office_core::xml::{ns, Element, Node};
 use office_core::Kind;
@@ -24,6 +24,106 @@ fn book() -> SheetsView {
 fn part(bytes: &[u8], name: &str) -> Option<String> {
     let pkg = Package::read(bytes).unwrap();
     pkg.has(name).then(|| String::from_utf8(pkg.part(name).unwrap().to_vec()).unwrap())
+}
+
+#[test]
+fn poi_monthly_budget_recalculates_totals_and_chart() {
+    // Apache POI: test-data/spreadsheet/simple-monthly-budget.xlsx
+    let mut v = SheetsView::open(include_bytes!("poi-simple-monthly-budget.xlsx"), "budget.xlsx").unwrap();
+    let at = |s: &str| CellRef::parse(s).unwrap();
+    assert_eq!(v.sheets()[0].value(at("E9")), &Value::Number(3750.0));
+    let original_chart = v.charts(0);
+    assert!(!original_chart.is_empty());
+    v.set_input(0, at("C5"), "2600");
+    let check = |v: &mut SheetsView| {
+        let sheet = &v.sheets()[0];
+        for (cell, expected) in [("E4", 2336.0), ("H4", 2336.0 / 3850.0), ("E9", 3850.0), ("F9", 2336.0), ("G9", 1514.0)] {
+            assert_eq!(sheet.value(at(cell)), &Value::Number(expected), "{cell}");
+        }
+        assert_eq!(sheet.cell(at("E9")).unwrap().formula.as_deref(), Some("TotalMonthlyIncome"));
+        let chart = v.charts(0);
+        assert_eq!(chart[0].series[0].values, [Some(3850.0), Some(2336.0)]);
+    };
+    check(&mut v);
+    let bytes = v.save().unwrap();
+    let workbook = part(&bytes, "xl/workbook.xml").unwrap();
+    assert!(workbook.contains("SUM(tblIncome[Amount])"));
+    let original = include_bytes!("poi-simple-monthly-budget.xlsx");
+    for name in ["xl/tables/table1.xml", "xl/tables/table2.xml"] {
+        assert_eq!(part(&bytes, name), part(original, name));
+    }
+    check(&mut SheetsView::open(&bytes, "budget.xlsx").unwrap());
+}
+
+#[test]
+fn poi_monthly_budget_tables_follow_inserted_and_deleted_rows() {
+    let mut v = SheetsView::open(include_bytes!("poi-simple-monthly-budget.xlsx"), "budget.xlsx").unwrap();
+    let at = |s: &str| CellRef::parse(s).unwrap();
+    v.set_input(0, at("C5"), "2600");
+    v.add_sheet();
+    v.set_input(1, at("A1"), "=SUM(tblIncome[Amount])");
+    v.shift_rows(0, at("C6").row, 1);
+    v.set_input(0, at("C6"), "100");
+    let check = |v: &SheetsView, summary: &str, amount| {
+        assert_eq!(v.sheets()[0].value(at(summary)), &Value::Number(amount));
+        assert_eq!(v.sheets()[1].value(at("A1")), &Value::Number(amount));
+        assert_eq!(v.sheets()[1].cell(at("A1")).unwrap().formula.as_deref(), Some("SUM(tblIncome[Amount])"));
+    };
+    check(&v, "E10", 3950.0);
+    let inserted = v.save().unwrap();
+    assert!(part(&inserted, "xl/tables/table1.xml").unwrap().contains("ref=\"B4:C8\""));
+    assert!(part(&inserted, "xl/tables/table2.xml").unwrap().contains("ref=\"B11:C24\""));
+    v.shift_rows(0, at("C5").row, -1);
+    check(&v, "E9", 1350.0);
+    assert!(v.undo());
+    check(&v, "E10", 3950.0);
+    assert!(v.redo());
+    check(&v, "E9", 1350.0);
+    let deleted = v.save().unwrap();
+    let pkg = Package::read(&deleted).unwrap();
+    for (name, coords) in [("table1", "B4:C7"), ("table2", "B10:C23")] {
+        let table = pkg.xml(&format!("xl/tables/{name}.xml")).unwrap().root;
+        assert_eq!(table.attr("ref"), Some(coords));
+        assert_eq!(table.child(ns::X, "autoFilter").unwrap().attr("ref"), Some(coords));
+    }
+    assert!(part(&deleted, "xl/workbook.xml").unwrap().contains("SUM(tblIncome[Amount])"));
+    let mut reopened = SheetsView::open(&deleted, "budget.xlsx").unwrap();
+    check(&reopened, "E9", 1350.0);
+    reopened.set_input(0, at("C5"), "200");
+    check(&reopened, "E9", 1450.0);
+}
+
+#[test]
+fn poi_monthly_budget_structured_reference_selectors() {
+    let mut pkg = Package::read(include_bytes!("poi-simple-monthly-budget.xlsx")).unwrap();
+    let table = "xl/tables/table1.xml";
+    let mut xml = pkg.xml(table).unwrap();
+    xml.root.set_attr("", "totalsRowCount", "1");
+    xml.root.child_mut(ns::X, "tableColumns").unwrap().elements_mut().next().unwrap().set_attr("", "name", "A5]#");
+    pkg.replace(table, xml.to_bytes()).unwrap();
+    let mut v = SheetsView::open(&pkg.to_bytes().unwrap(), "budget.xlsx").unwrap();
+    let at = |s: &str| CellRef::parse(s).unwrap();
+    let check = |v: &mut SheetsView, cell, formula, expected| {
+        v.set_input(0, at(cell), formula);
+        assert_eq!(v.sheets()[0].value(at(cell)), &expected, "{formula}");
+    };
+    for (cell, formula, expected) in [
+        ("K4", "=SUM(TBLincome)", 3500.0),
+        ("K5", "=SUM(tblIncome[[#All],[Amount]])", 3750.0),
+        ("K6", "=SUM(tblIncome[[#Data],[A5']'#]:[Amount]])", 3500.0),
+        ("K7", "=SUM(tblIncome[[#Totals],[Amount]])", 250.0),
+        ("K8", "=SUM(tblIncome[[#Data],[#Totals],[Amount]])", 3750.0),
+        ("K9", "=SUM(tblIncome[Amount] C6:C7)", 1000.0),
+    ] {
+        check(&mut v, cell, formula, Value::Number(expected));
+    }
+    check(&mut v, "K10", "=tblIncome[@[Amount]]", Value::Error("#VALUE!".into()));
+    check(&mut v, "K11", "=tblIncome[[#Headers],[Amount]]", Value::Text("Amount".into()));
+    check(&mut v, "B5", "=[@Amount]", Value::Number(2500.0));
+    check(&mut v, "B6", "=tblIncome[[#This Row],[Amount]]", Value::Number(1000.0));
+    v.shift_rows(0, at("C5").row, 1);
+    assert_eq!(v.sheets()[0].cell(at("K7")).unwrap().formula.as_deref(), Some("SUM(tblIncome[[#Data],[A5']'#]:[Amount]])"));
+    assert_eq!(v.sheets()[0].value(at("B6")), &Value::Number(2500.0));
 }
 
 #[test]
