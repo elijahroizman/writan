@@ -2,6 +2,40 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.11.0 — 2026-11-19
+
+### Install and updates
+- The Mac app is now universal: one download, `Writan_<version>_universal.dmg`, runs natively on Apple silicon and Intel Macs.
+- Linux packages now come for ARM as well as x64: the Debian/Ubuntu `.deb`, the Fedora `.rpm` and the Arch `.pkg.tar.zst` all have `arm64`/`aarch64` builds.
+- Arch Linux has a Writan repository now, signed like the packages, so `pacman -S writan` installs and upgrades Writan once your `pacman.conf` has the `[writan]` section the package adds.
+- The apt, dnf and pacman repositories carry both architectures at once, so ARM Linux machines get updates the same way x64 ones do.
+
+### Reliability
+- After a crash or a reload, Writan offers to recover your unsaved edits and untitled tabs.
+
+### Word
+- Footnotes show at the bottom of the page their reference is on, and endnotes show after the document's last line.
+- Office Math equations are drawn instead of leaving a blank space.
+- Tracked changes can be accepted or rejected one at a time from the inspector.
+- Block content controls saved in a document show their contents.
+- SmartArt shows as a diagram instead of a blank page or an empty box.
+
+### PowerPoint
+- Charts saved in a presentation render from their cached data.
+- SmartArt shows as a diagram instead of a blank page or an empty box.
+- The slideshow plays object animations, and its text builds a paragraph at a time.
+
+### Spreadsheets
+- Conditional formatting, data validation dropdowns and pasted pictures show on the sheet, and move along when rows or columns are inserted or deleted.
+- Formulas saved by Excel without a cached result, and string formulas saved with an empty one, show their result instead of a blank cell.
+- Moving rows or columns keeps other sheets' formulas and defined names pointing at the same cells.
+- A circular reference warns instead of saving a made-up value.
+- Right-clicking a row or column header no longer scrolls to the last cell.
+- Renaming a worksheet tab works again.
+
+### PDF
+- Flattened copies keep highlights that were saved without the print flag, and rotating or moving a page keeps the selection on the page you clicked.
+
 ## 0.10.10 — 2026-11-19
 
 ### Word
