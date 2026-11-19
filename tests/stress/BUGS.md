@@ -33,7 +33,7 @@ Additional findings recovered after the 0.10.5 release are tracked in [FOLLOWUP-
 | CORPUS-005: footnote bodies are absent although reference marks appear. | Open. | Pinned `lo-footnote.docx` and `au-budget-bp1_bs-4.docx`. |
 | CORPUS-006: existing PowerPoint charts show empty rectangles. | Open. | Pinned `lo-chart_pt_color_bg1.pptx`. |
 | CORPUS-007: SmartArt is absent in Word and PowerPoint. | Open. | Pinned `lo-smartart.docx` and `lo-smartart-accent-process.pptx`. |
-| CORPUS-008: Office Math equations render blank. | Open. | Pinned `lo-math-accents.docx`. |
+| CORPUS-008: Office Math equations render blank. | Fixed for display: equations show as one line of linear text (accents as combining marks, Unicode scripts, written-out fractions and roots), not built-up math. The original XML survives saving. | Pinned `lo-math-accents.docx`; Rust `office_math_equations_are_drawn_and_survive_saving`, and `original_corpus_math_accents_are_drawn` with `CORPUS_FILES`. |
 | CORPUS-010: conditional-formatting colors are missing. | Fixed: conditional formatting (including 2010 extension rules), data validation lists and messages, and pictures show; rules and drawings still save as read. | Pinned `lo-conditional_fmt_checkpriority.xlsx`. |
 | CORPUS-011: RTL table columns display in the wrong order. | Open. | Pinned `lo-table-rtl.docx`. |
 | CORPUS-003: an unchanged RFP save reverses checklist cells and expands 22 pages to 32. | Fixed. Mixed raw/modeled table siblings retain order; reference saves return to 22 pages. | Pinned `nz-template-rfp-government-model.docx`; small samples and checks in [corpus fixes](FIXES-corpus.md). |

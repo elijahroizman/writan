@@ -54,3 +54,21 @@ for i, (fmt, count) in enumerate([('ideographTraditional', 12), ('ideographZodia
     for n in range(1, count + 1):
         body += f'<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{i}"/></w:numPr></w:pPr><w:r><w:t>{fmt} item {n}</w:t></w:r></w:p>'
 package('cjk-list-markers.docx', body, definitions)
+
+# A right-to-left table: w:bidiVisual puts the first grid column at the right, and its indent
+# measures from the right edge. Unequal columns catch a mirroring that only swaps labels.
+rtl_rows = '<w:tr>' + cell('first') + cell('second') + '</w:tr>'
+rtl_rows += '<w:tr>' + cell('alpha') + cell('beta') + '</w:tr>'
+rtl_tbl = (
+    '<w:tbl><w:tblPr><w:bidiVisual/><w:tblW w:w="0" w:type="auto"/><w:tblInd w:w="720" w:type="dxa"/>'
+    '<w:tblBorders>'
+    + ''.join(f'<w:{s} w:val="single" w:sz="4" w:space="0" w:color="auto"/>' for s in
+              ['top', 'left', 'bottom', 'right', 'insideH', 'insideV'])
+    + '</w:tblBorders></w:tblPr><w:tblGrid><w:gridCol w:w="2000"/><w:gridCol w:w="4000"/></w:tblGrid>'
+    + rtl_rows + '</w:tbl>')
+# An ordinary table after it, whose left-to-right order must not change.
+ltr_tbl = (
+    '<w:tbl><w:tblPr><w:tblW w:w="0" w:type="auto"/></w:tblPr>'
+    '<w:tblGrid><w:gridCol w:w="2400"/><w:gridCol w:w="2400"/></w:tblGrid>'
+    '<w:tr>' + cell('west') + cell('east') + '</w:tr></w:tbl>')
+package('rtl-table.docx', rtl_tbl + ltr_tbl)

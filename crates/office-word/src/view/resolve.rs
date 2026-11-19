@@ -87,6 +87,9 @@ impl SpecCache {
     }
 }
 
+/// Word's font for equations whose runs name none.
+const MATH_FONT: &str = "Cambria Math";
+
 /// Word's font when nothing names one.
 pub const DEFAULT_FONT: &str = "Times New Roman";
 
@@ -229,6 +232,8 @@ enum RawShow {
     Simple(String, String),
     /// A footnote or endnote reference mark.
     NoteRef(String),
+    /// An equation, as text.
+    Math(String),
 }
 
 fn raw_show(el: &Element) -> RawShow {
@@ -281,11 +286,19 @@ fn raw_show(el: &Element) -> RawShow {
         collect_text(el, &mut s);
         return if s.is_empty() { RawShow::Hidden } else { RawShow::Text(s) };
     }
+    if super::math::is_math(el) {
+        let s = super::math::linear(el);
+        return if s.is_empty() { RawShow::Hidden } else { RawShow::Math(s) };
+    }
     RawShow::Hidden
 }
 
 fn collect_text(el: &Element, out: &mut String) {
     for c in el.elements() {
+        if super::math::is_math(c) {
+            out.push_str(&super::math::linear(c));
+            continue;
+        }
         if !c.in_ns(ns::W) {
             collect_text(c, out);
             continue;
@@ -505,6 +518,18 @@ impl WordResolver<'_> {
                                     style: self.style(ctx, &self.run_props(p, &rpr, path), false),
                                     inline: i as u32,
                                 }
+                            }
+                        }
+                        RawShow::Math(s) => {
+                            if matches!(&field, Some((_, false, _))) {
+                                ItemKind::Hidden
+                            } else {
+                                let rpr = xml.descendant(ns::W, "rPr").map(office_core::formats::docx::read_run_props).unwrap_or_default();
+                                let mut props = self.run_props(p, &rpr, path);
+                                if rpr.font.is_none() {
+                                    props.font = Some(MATH_FONT.into());
+                                }
+                                ItemKind::Atomic { text: s, style: self.style(ctx, &props, false), inline: i as u32 }
                             }
                         }
                         RawShow::Hidden => ItemKind::Hidden,
