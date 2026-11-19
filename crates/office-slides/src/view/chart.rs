@@ -17,16 +17,12 @@ use super::text::Paint;
 
 const MAX_POINTS: usize = 4096;
 
-pub(super) fn draw(ctx: &mut Ctx, doc: &Document, slide: &Slide, part: &str, frame: &Element, b: Boxed) -> Option<Item> {
-    if !frame.is(ns::P, "graphicFrame") || b.w < 16.0 || b.h < 16.0 {
+pub(super) fn draw(ctx: &mut Ctx, doc: &Document, slide: &Slide, target: &str, b: Boxed) -> Option<Item> {
+    if b.w < 16.0 || b.h < 16.0 {
         return None;
     }
-    let data = frame.path(ns::A, &["graphic", "graphicData"])?;
-    let rid = data.child(ns::C, "chart")?.attr_ns(ns::R, "id")?;
     let package = doc.package.as_ref()?;
-    let rels = package.rels(part).ok()?;
-    let rel = rels.get(rid).filter(|r| r.is("chart"))?;
-    let xml = package.xml(&package.target(part, rel)?).ok()?;
+    let xml = package.xml(target).ok()?;
     let root = &xml.root;
     let plot = root.path(ns::C, &["chart", "plotArea"])?;
     let mut groups = plot.elements().filter(|e| e.in_ns(ns::C) && e.local.ends_with("Chart"));

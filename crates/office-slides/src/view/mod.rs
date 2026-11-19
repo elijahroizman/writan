@@ -96,6 +96,8 @@ pub struct SlidesView {
     pub(crate) goal_x: Option<f64>,
     /// Formatting picked with a caret while editing, for the next text typed.
     pub(crate) pending: Option<RunProps>,
+    /// Chart clipboard payloads can only refer to the deck they were copied from.
+    pub(crate) chart_clipboard_scope: std::sync::OnceLock<Option<[u8; 16]>>,
 }
 
 /// A slide drawn.
@@ -180,6 +182,7 @@ impl SlidesView {
             next_revision: n as u64 + 1,
             goal_x: None,
             pending: None,
+            chart_clipboard_scope: Default::default(),
         }
     }
 

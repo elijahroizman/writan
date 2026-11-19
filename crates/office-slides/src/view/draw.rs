@@ -248,8 +248,10 @@ impl Drawer<'_, '_, '_> {
                 }
             }
             FrameContent::Table { table } => self.table(slide, table, &b, &mut items),
-            FrameContent::Raw { xml } => {
-                if let Some(chart) = part.and_then(|p| super::chart::draw(self.ctx, self.doc, slide, p, xml, b)) {
+            FrameContent::Raw { xml, chart_part } => {
+                let target =
+                    chart_part.clone().or_else(|| office_core::formats::pptx::chart_target(self.doc.package.as_ref()?, part?, xml));
+                if let Some(chart) = target.and_then(|target| super::chart::draw(self.ctx, self.doc, slide, &target, b)) {
                     items.push(chart);
                 } else {
                     self.raw(slide, part, xml, &b, &mut items);

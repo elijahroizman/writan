@@ -337,7 +337,10 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
     const ids = engine.state.frames
     const items: MenuEntry[] = []
     const copy = () => {
-      copied.current = engine.doc.copyFrames()
+      const frames = engine.doc.copyFrames()
+      if (frames === '[]') return false
+      copied.current = frames
+      return true
     }
     if (ids.length) {
       items.push(
@@ -346,8 +349,7 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
           icon: <Scissors size={14} />,
           shortcut: '⌘X',
           onSelect: () => {
-            copy()
-            engine.run({ cmd: 'delete' })
+            if (copy()) engine.run({ cmd: 'delete' })
           },
         },
         { label: 'Copy', icon: <Copy size={14} />, shortcut: '⌘C', onSelect: copy },

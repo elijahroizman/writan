@@ -327,12 +327,7 @@ fn write_frame(frame: &Frame, ctx: &mut PartCtx, out: &mut Out, ids: &mut FrameI
                     )
             });
             patch_nv(&mut el, "nvGraphicFramePr", frame, id);
-            if let Some(x) = &frame.shape.xfrm {
-                let new = x.to_xml(ns::P);
-                if el.child(ns::P, "xfrm").map(crate::drawing::Xfrm::parse).as_ref() != Some(x) {
-                    el.place(new, &[&["nvGraphicFramePr"], &["xfrm"], &["graphic"], &["extLst"]]);
-                }
-            }
+            patch_graphic_xfrm(&mut el, frame);
             let data = el.child_or_insert(ns::A, "graphic").child_or_insert(ns::A, "graphicData");
             data.set_attr("", "uri", TABLE_URI);
             data.remove_children(ns::A, "tbl");
@@ -368,7 +363,22 @@ fn write_frame(frame: &Frame, ctx: &mut PartCtx, out: &mut Out, ids: &mut FrameI
         }
         // Charts, diagrams and objects from this format come back as they were; other formats'
         // raw markup can't sit on a slide.
-        FrameContent::Raw { xml } if xml.in_ns(ns::P) || xml.in_ns(ns::MC) => xml.clone(),
+        FrameContent::Raw { xml, chart_part } if xml.in_ns(ns::P) || xml.in_ns(ns::MC) => {
+            let mut el = xml.clone();
+            if let Some(part) = chart_part {
+                if !out.pkg.has(part) {
+                    return Err(Error::MissingPart(part.clone()));
+                }
+                let chart =
+                    super::chart_element_mut(&mut el).ok_or_else(|| Error::Invalid("a copied chart has no chart reference".into()))?;
+                chart.set_attr(ns::R, "id", ctx.relate(kind::CHART, part));
+                patch_nv(&mut el, "nvGraphicFramePr", frame, id);
+            }
+            if super::chart_element(&el).is_some() {
+                patch_graphic_xfrm(&mut el, frame);
+            }
+            el
+        }
         FrameContent::Raw { .. } => return Ok(None),
     };
     // Keep unknown action links and all attributes of unchanged hyperlinks intact.
@@ -389,6 +399,14 @@ fn write_frame(frame: &Frame, ctx: &mut PartCtx, out: &mut Out, ids: &mut FrameI
 
 fn nv_props(local: &str, c_nv_x: Element) -> Element {
     Element::new(ns::P, local).with_child(Element::new(ns::P, "cNvPr")).with_child(c_nv_x).with_child(Element::new(ns::P, "nvPr"))
+}
+
+fn patch_graphic_xfrm(el: &mut Element, frame: &Frame) {
+    if let Some(x) = &frame.shape.xfrm {
+        if el.child(ns::P, "xfrm").map(crate::drawing::Xfrm::parse).as_ref() != Some(x) {
+            el.place(x.to_xml(ns::P), &[&["nvGraphicFramePr"], &["xfrm"], &["graphic"], &["extLst"]]);
+        }
+    }
 }
 
 /// Puts the frame's id, name, description, visibility and placeholder into its non-visual properties.

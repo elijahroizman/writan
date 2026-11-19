@@ -193,6 +193,102 @@ fn duplicated_chart_slides_keep_their_relationships() {
 }
 
 #[test]
+fn pasted_chart_remaps_slide_relationship_and_frame_ids() {
+    use office_core::formats::pptx::{chart_element, chart_target};
+    use office_core::opc::{rels::kind, Package};
+    use office_core::xml::ns;
+
+    let groups = format!("<c:doughnutChart>{CHART_SERIES}</c:doughnutChart>");
+    let mut view = SlidesView::open(&chart_deck(&groups, false)).unwrap();
+    view.add_slide(0, None);
+    let mut input = Package::read(&view.save().unwrap()).unwrap();
+    let source = "ppt/slides/slide1.xml";
+    let target = "ppt/slides/slide2.xml";
+    let source_id = input.rels(source).unwrap().first(kind::CHART).unwrap().id.clone();
+    let collision = input.relate_external(target, kind::HYPERLINK, "https://example.com/").unwrap();
+    assert_eq!(source_id, collision, "the original rId means something else on the destination");
+    let mut view = SlidesView::open(&input.to_bytes().unwrap()).unwrap();
+    let mut existing = view.slides()[0].frames[0].clone();
+    existing.id = 20;
+    view.slides_mut()[1].frames.push(existing);
+    let legacy = serde_json::to_string(&[view.slides()[0].frames.last().unwrap()]).unwrap();
+    view.select_frames(vec![20]);
+    let clipboard = view.copy_frames();
+    let mut independent = SlidesView::open(&input.to_bytes().unwrap()).unwrap();
+    independent.select_frames(vec![20]);
+    assert_ne!(independent.copy_frames(), "[]");
+    assert!(!independent.paste_frames(&clipboard));
+    assert!(!independent.is_dirty());
+
+    view.set_active(1);
+    assert!(!view.paste_frames(&legacy), "a bare chart rId is not a portable clipboard reference");
+    assert!(view.paste_frames(&clipboard));
+    let id = view.selection().frames[0];
+    assert_ne!(id, 20);
+    let mut host = FixedMeasurer::default();
+    let painted =
+        |p: SlidePaint| p.items.into_iter().find(|item| matches!(item, Item::Group { id: Some(i), .. } if i == &id.to_string())).unwrap();
+    let before = painted(view.paint(&mut host, 1));
+    assert!(matches!(&before, Item::Group { items, .. } if matches!(
+        items.as_slice(),
+        [Item::Group { clip: true, items, .. }] if items.len() == 2
+            && items.iter().all(|item| matches!(item, Item::Path { fill: Some(_), .. }))
+    )));
+    assert!(view.undo());
+    assert!(view.redo());
+    assert_eq!(painted(view.paint(&mut host, 1)), before);
+
+    // Recopy a pasted chart, which no longer uses the original slide's rId.
+    view.select_frames(vec![id]);
+    let clipboard = view.copy_frames();
+    view.add_slide(1, None);
+    assert!(view.paste_frames(&clipboard));
+
+    let saved = view.save().unwrap();
+    let output = Package::read(&saved).unwrap();
+    let slide_xml = output.xml(target).unwrap();
+    let frame = slide_xml.root.descendant(ns::P, "graphicFrame").unwrap();
+    assert_eq!(chart_target(&output, target, frame).as_deref(), Some(CHART_PART));
+    assert_ne!(chart_element(frame).unwrap().attr_ns(ns::R, "id"), Some(source_id.as_str()));
+    assert_eq!(output.rels(target).unwrap().get(&collision).unwrap().target, "https://example.com/");
+    for part in [CHART_PART, "ppt/charts/_rels/chart1.xml.rels", CHART_BOOK] {
+        assert_eq!(output.part(part).unwrap(), input.part(part).unwrap(), "{part}");
+    }
+    let mut reopened = SlidesView::open(&saved).unwrap();
+    assert_eq!(painted(reopened.paint(&mut host, 1)), before);
+    let part = reopened.slides()[2].part.as_deref().unwrap();
+    let slide_xml = output.xml(part).unwrap();
+    assert_eq!(chart_target(&output, part, slide_xml.root.descendant(ns::P, "graphicFrame").unwrap()).as_deref(), Some(CHART_PART));
+}
+
+#[test]
+fn chart_move_and_resize_survive_reopening() {
+    use office_core::opc::Package;
+
+    let groups = format!("<c:doughnutChart>{CHART_SERIES}</c:doughnutChart>");
+    let bytes = chart_deck(&groups, false);
+    let mut view = SlidesView::open(&bytes).unwrap();
+    let mut host = FixedMeasurer::default();
+    let original = Package::read(&bytes).unwrap();
+    let part = "ppt/slides/slide1.xml";
+    let untouched = Package::read(&view.save().unwrap()).unwrap();
+    assert_eq!(untouched.part(part).unwrap(), original.part(part).unwrap());
+
+    view.set_box(&mut host, 20, Boxed { x: 100.0, y: 200.0, w: 320.0, h: 185.0, ..Default::default() });
+    view.move_frames(&mut host, &[20], 58.0, -73.0);
+    let mut reopened = SlidesView::open(&view.save().unwrap()).unwrap();
+    let paint = reopened.paint(&mut host, 0);
+    let chart = paint.items.iter().find(|item| matches!(item, Item::Group { id: Some(id), .. } if id == "20")).unwrap();
+    let Item::Group { x, y, w, h, items, .. } = chart else { unreachable!() };
+    assert_eq!((*x, *y, *w, *h), (158.0, 127.0, 320.0, 185.0));
+    assert!(matches!(items.as_slice(), [Item::Group { clip: true, .. }]));
+    let output = reopened.doc.package.as_ref().unwrap();
+    for part in [CHART_PART, "ppt/charts/_rels/chart1.xml.rels", CHART_BOOK] {
+        assert_eq!(output.part(part).unwrap(), original.part(part).unwrap(), "{part}");
+    }
+}
+
+#[test]
 fn duplicating_a_slide_does_not_reuse_its_link_to_a_deleted_slide() {
     use office_core::opc::Package;
     use office_core::xml::{ns, Element};
