@@ -8,13 +8,19 @@ use tauri::{AppHandle, Runtime};
 
 /// The words in `words` that are misspelled.
 #[tauri::command]
-pub async fn spell_check<R: Runtime>(app: AppHandle<R>, words: Vec<String>) -> Result<Vec<String>, String> {
+pub async fn spell_check<R: Runtime>(
+    app: AppHandle<R>,
+    words: Vec<String>,
+) -> Result<Vec<String>, String> {
     run(app, move |s| s.misspelled(&words)).await
 }
 
 /// Corrections for a misspelled word, best first.
 #[tauri::command]
-pub async fn spell_suggest<R: Runtime>(app: AppHandle<R>, word: String) -> Result<Vec<String>, String> {
+pub async fn spell_suggest<R: Runtime>(
+    app: AppHandle<R>,
+    word: String,
+) -> Result<Vec<String>, String> {
     run(app, move |s| s.suggest(&word)).await
 }
 
@@ -29,13 +35,29 @@ pub async fn spell_learn<R: Runtime>(app: AppHandle<R>, word: String) -> Result<
 /// Hebrew or Arabic alphabet go only to a checker for a language written in it.
 #[cfg(any(windows, target_os = "linux"))]
 fn can_judge(language: &str, word: &str) -> bool {
-    let lang = language.split(['-', '_']).next().unwrap_or("").to_ascii_lowercase();
-    let has = |ranges: &[std::ops::RangeInclusive<u32>]| word.chars().any(|c| ranges.iter().any(|r| r.contains(&(c as u32))));
+    let lang = language
+        .split(['-', '_'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let has = |ranges: &[std::ops::RangeInclusive<u32>]| {
+        word.chars()
+            .any(|c| ranges.iter().any(|r| r.contains(&(c as u32))))
+    };
     if has(&[0x0590..=0x05FF, 0xFB1D..=0xFB4F]) {
         return matches!(lang.as_str(), "he" | "iw" | "yi");
     }
-    if has(&[0x0600..=0x06FF, 0x0750..=0x077F, 0x08A0..=0x08FF, 0xFB50..=0xFDFF, 0xFE70..=0xFEFF]) {
-        return matches!(lang.as_str(), "ar" | "fa" | "ur" | "ps" | "ug" | "ku" | "ckb" | "sd");
+    if has(&[
+        0x0600..=0x06FF,
+        0x0750..=0x077F,
+        0x08A0..=0x08FF,
+        0xFB50..=0xFDFF,
+        0xFE70..=0xFEFF,
+    ]) {
+        return matches!(
+            lang.as_str(),
+            "ar" | "fa" | "ur" | "ps" | "ug" | "ku" | "ckb" | "sd"
+        );
     }
     true
 }
@@ -49,13 +71,18 @@ trait Speller {
 // ---- macOS: NSSpellChecker, on the main thread like the rest of AppKit.
 
 #[cfg(target_os = "macos")]
-async fn run<R: Runtime, T: Send + Default + 'static>(app: AppHandle<R>, f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static) -> Result<T, String> {
+async fn run<R: Runtime, T: Send + Default + 'static>(
+    app: AppHandle<R>,
+    f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static,
+) -> Result<T, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     app.run_on_main_thread(move || {
         let _ = tx.send(f(&mut mac::Mac));
     })
     .map_err(|e| e.to_string())?;
-    tauri::async_runtime::spawn_blocking(move || rx.recv().unwrap_or_default()).await.map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || rx.recv().unwrap_or_default())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(target_os = "macos")]
@@ -97,7 +124,10 @@ mod mac {
 // ---- Windows: the system spell checker (ISpellChecker), in the user's language.
 
 #[cfg(windows)]
-async fn run<R: Runtime, T: Send + Default + 'static>(_app: AppHandle<R>, f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static) -> Result<T, String> {
+async fn run<R: Runtime, T: Send + Default + 'static>(
+    _app: AppHandle<R>,
+    f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static,
+) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(move || match win::Win::new() {
         Some(mut s) => f(&mut s),
         None => T::default(),
@@ -109,8 +139,12 @@ async fn run<R: Runtime, T: Send + Default + 'static>(_app: AppHandle<R>, f: imp
 #[cfg(windows)]
 mod win {
     use windows::core::{HSTRING, PWSTR};
-    use windows::Win32::Globalization::{GetUserDefaultLocaleName, ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory};
-    use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED};
+    use windows::Win32::Globalization::{
+        GetUserDefaultLocaleName, ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory,
+    };
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
+    };
 
     /// The checker, and its language's tag.
     pub struct Win(ISpellChecker, String);
@@ -121,16 +155,25 @@ mod win {
             unsafe {
                 // Already initialised on this thread is fine.
                 let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-                let factory: ISpellCheckerFactory = CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER).ok()?;
+                let factory: ISpellCheckerFactory =
+                    CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER).ok()?;
                 let mut name = [0u16; 85];
                 let n = GetUserDefaultLocaleName(&mut name);
-                let user = if n > 1 { String::from_utf16_lossy(&name[..n as usize - 1]) } else { String::new() };
+                let user = if n > 1 {
+                    String::from_utf16_lossy(&name[..n as usize - 1])
+                } else {
+                    String::new()
+                };
                 for tag in [user.as_str(), "en-US"] {
                     if tag.is_empty() {
                         continue;
                     }
                     let name = HSTRING::from(tag);
-                    if factory.IsSupported(&name).map(|b| b.as_bool()).unwrap_or(false) {
+                    if factory
+                        .IsSupported(&name)
+                        .map(|b| b.as_bool())
+                        .unwrap_or(false)
+                    {
                         if let Ok(checker) = factory.CreateSpellChecker(&name) {
                             return Some(Win(checker, tag.to_string()));
                         }
@@ -147,7 +190,9 @@ mod win {
                 .iter()
                 .filter(|w| super::can_judge(&self.1, w))
                 .filter(|w| unsafe {
-                    let Ok(errors) = self.0.Check(&HSTRING::from(w.as_str())) else { return false };
+                    let Ok(errors) = self.0.Check(&HSTRING::from(w.as_str())) else {
+                        return false;
+                    };
                     let mut error = None;
                     errors.Next(&mut error).is_ok() && error.is_some()
                 })
@@ -158,11 +203,17 @@ mod win {
         fn suggest(&mut self, word: &str) -> Vec<String> {
             let mut out = Vec::new();
             unsafe {
-                let Ok(list) = self.0.Suggest(&HSTRING::from(word)) else { return out };
+                let Ok(list) = self.0.Suggest(&HSTRING::from(word)) else {
+                    return out;
+                };
                 loop {
                     let mut item = [PWSTR::null()];
                     let mut fetched = 0u32;
-                    if list.Next(&mut item, Some(&mut fetched as *mut u32)).is_err() || fetched == 0 {
+                    if list
+                        .Next(&mut item, Some(&mut fetched as *mut u32))
+                        .is_err()
+                        || fetched == 0
+                    {
                         break;
                     }
                     if let Ok(s) = item[0].to_string() {
@@ -185,9 +236,16 @@ mod win {
 // ---- Linux: Hunspell dictionaries from the system (hunspell-en-us and the like).
 
 #[cfg(target_os = "linux")]
-async fn run<R: Runtime, T: Send + Default + 'static>(app: AppHandle<R>, f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static) -> Result<T, String> {
+async fn run<R: Runtime, T: Send + Default + 'static>(
+    app: AppHandle<R>,
+    f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static,
+) -> Result<T, String> {
     use tauri::Manager;
-    let words = app.path().app_data_dir().ok().map(|d| d.join("spelling-words.txt"));
+    let words = app
+        .path()
+        .app_data_dir()
+        .ok()
+        .map(|d| d.join("spelling-words.txt"));
     tauri::async_runtime::spawn_blocking(move || {
         let mut guard = linux::SPELLER.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
@@ -217,7 +275,13 @@ pub(crate) mod linux {
         words: Option<PathBuf>,
     }
 
-    const DIRS: &[&str] = &["/usr/share/hunspell", "/usr/share/myspell", "/usr/share/myspell/dicts", "/usr/local/share/hunspell", "/app/share/hunspell"];
+    const DIRS: &[&str] = &[
+        "/usr/share/hunspell",
+        "/usr/share/myspell",
+        "/usr/share/myspell/dicts",
+        "/usr/local/share/hunspell",
+        "/app/share/hunspell",
+    ];
 
     /// The user's language, as Hunspell names dictionaries: `en_AU` from `en_AU.UTF-8`.
     pub fn language() -> Option<String> {
@@ -233,7 +297,10 @@ pub(crate) mod linux {
         let lang = language.unwrap_or("en_US");
         let base = lang.split('_').next().unwrap_or("en");
         let pair = |dir: &Path, name: &str| {
-            let (aff, dic) = (dir.join(format!("{name}.aff")), dir.join(format!("{name}.dic")));
+            let (aff, dic) = (
+                dir.join(format!("{name}.aff")),
+                dir.join(format!("{name}.dic")),
+            );
             (aff.is_file() && dic.is_file()).then_some((aff, dic))
         };
         for name in [lang.to_string(), lang.replace('-', "_")] {
@@ -246,19 +313,30 @@ pub(crate) mod linux {
             .filter_map(|d| std::fs::read_dir(d).ok())
             .flatten()
             .flatten()
-            .filter_map(|e| e.file_name().to_str()?.strip_suffix(".dic").map(str::to_string))
+            .filter_map(|e| {
+                e.file_name()
+                    .to_str()?
+                    .strip_suffix(".dic")
+                    .map(str::to_string)
+            })
             .filter(|n| n == base || n.starts_with(&format!("{base}_")))
             .collect();
         others.sort();
         others.push("en_US".to_string());
-        others.iter().find_map(|n| dirs.iter().find_map(|d| pair(d, n)))
+        others
+            .iter()
+            .find_map(|n| dirs.iter().find_map(|d| pair(d, n)))
     }
 
     impl Hunspell {
         pub fn load(words: Option<PathBuf>) -> Self {
             let dirs: Vec<&Path> = DIRS.iter().map(Path::new).collect();
             let found = find_dictionary(&dirs, language().as_deref());
-            let lang = found.as_ref().and_then(|(aff, _)| aff.file_stem()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let lang = found
+                .as_ref()
+                .and_then(|(aff, _)| aff.file_stem())
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_default();
             let dict = found.and_then(|(aff, dic)| {
                 let aff = std::fs::read_to_string(aff).ok()?;
                 let dic = std::fs::read_to_string(dic).ok()?;
@@ -266,7 +344,11 @@ pub(crate) mod linux {
             });
             let mut s = Hunspell { dict, lang, words };
             if let (Some(dict), Some(path)) = (&mut s.dict, &s.words) {
-                for w in std::fs::read_to_string(path).unwrap_or_default().lines().filter(|l| !l.trim().is_empty()) {
+                for w in std::fs::read_to_string(path)
+                    .unwrap_or_default()
+                    .lines()
+                    .filter(|l| !l.trim().is_empty())
+                {
                     let _ = dict.add(w.trim());
                 }
             }
@@ -275,14 +357,24 @@ pub(crate) mod linux {
 
         #[cfg(test)]
         pub fn from_files(aff: &str, dic: &str) -> Self {
-            Hunspell { dict: spellbook::Dictionary::new(aff, dic).ok(), lang: "en_US".into(), words: None }
+            Hunspell {
+                dict: spellbook::Dictionary::new(aff, dic).ok(),
+                lang: "en_US".into(),
+                words: None,
+            }
         }
     }
 
     impl super::Speller for Hunspell {
         fn misspelled(&mut self, words: &[String]) -> Vec<String> {
-            let Some(dict) = &self.dict else { return Vec::new() };
-            words.iter().filter(|w| super::can_judge(&self.lang, w) && !dict.check(w)).cloned().collect()
+            let Some(dict) = &self.dict else {
+                return Vec::new();
+            };
+            words
+                .iter()
+                .filter(|w| super::can_judge(&self.lang, w) && !dict.check(w))
+                .cloned()
+                .collect()
         }
 
         fn suggest(&mut self, word: &str) -> Vec<String> {
@@ -302,7 +394,11 @@ pub(crate) mod linux {
                 if let Some(dir) = path.parent() {
                     let _ = std::fs::create_dir_all(dir);
                 }
-                if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                if let Ok(mut f) = std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(path)
+                {
                     let _ = writeln!(f, "{word}");
                 }
             }
@@ -319,7 +415,11 @@ pub(crate) mod linux {
             use super::super::can_judge;
             assert!(can_judge("en_US", "hello") && can_judge("he_IL", "hello"));
             assert!(!can_judge("en_US", "שלום") && !can_judge("en-US", "مرحبا"));
-            assert!(can_judge("he_IL", "שלום") && can_judge("he-IL", "שלום") && can_judge("ar", "مرحبا"));
+            assert!(
+                can_judge("he_IL", "שלום")
+                    && can_judge("he-IL", "שלום")
+                    && can_judge("ar", "مرحبا")
+            );
             assert!(!can_judge("ar_EG", "שלום"));
         }
 
@@ -331,7 +431,10 @@ pub(crate) mod linux {
                 std::fs::write(dir.path().join(format!("{n}.dic")), "0\n").unwrap();
             }
             let dirs = [dir.path()];
-            let name = |l: Option<&str>| find_dictionary(&dirs, l).map(|(a, _)| a.file_stem().unwrap().to_string_lossy().into_owned());
+            let name = |l: Option<&str>| {
+                find_dictionary(&dirs, l)
+                    .map(|(a, _)| a.file_stem().unwrap().to_string_lossy().into_owned())
+            };
             assert_eq!(name(Some("de_DE")).as_deref(), Some("de_DE"));
             // No Australian dictionary: another English one.
             assert_eq!(name(Some("en_AU")).as_deref(), Some("en_GB"));
@@ -346,8 +449,14 @@ pub(crate) mod linux {
                 eprintln!("no Hunspell dictionary installed; skipped");
                 return;
             };
-            let mut s = Hunspell::from_files(&std::fs::read_to_string(aff).unwrap(), &std::fs::read_to_string(dic).unwrap());
-            let words: Vec<String> = ["The", "quick", "brwon", "fox", "doesn't", "jumpped"].iter().map(|w| w.to_string()).collect();
+            let mut s = Hunspell::from_files(
+                &std::fs::read_to_string(aff).unwrap(),
+                &std::fs::read_to_string(dic).unwrap(),
+            );
+            let words: Vec<String> = ["The", "quick", "brwon", "fox", "doesn't", "jumpped"]
+                .iter()
+                .map(|w| w.to_string())
+                .collect();
             assert_eq!(s.misspelled(&words), ["brwon", "jumpped"]);
             assert!(s.suggest("brwon").iter().any(|w| w == "brown"));
             s.learn("Writan");
@@ -359,6 +468,9 @@ pub(crate) mod linux {
 // ---- Elsewhere: no checker.
 
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
-async fn run<R: Runtime, T: Send + Default + 'static>(_app: AppHandle<R>, _f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static) -> Result<T, String> {
+async fn run<R: Runtime, T: Send + Default + 'static>(
+    _app: AppHandle<R>,
+    _f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static,
+) -> Result<T, String> {
     Ok(T::default())
 }

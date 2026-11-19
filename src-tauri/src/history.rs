@@ -59,20 +59,36 @@ pub struct Stamp {
 /// The file's size and modified time (in ns), if it exists.
 pub fn stamp(file: &Path) -> Option<Stamp> {
     let meta = fs::metadata(file).ok()?;
-    let modified = meta.modified().ok()?.duration_since(UNIX_EPOCH).ok()?.as_nanos();
-    Some(Stamp { size: meta.len(), modified })
+    let modified = meta
+        .modified()
+        .ok()?
+        .duration_since(UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(Stamp {
+        size: meta.len(),
+        modified,
+    })
 }
 
 fn root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    Ok(app.path().app_data_dir().map_err(|e| e.to_string())?.join("history"))
+    Ok(app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("history"))
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    Sha256::digest(bytes)
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 fn log_path(root: &Path, file: &str) -> PathBuf {
-    root.join("logs").join(format!("{}.json", sha256_hex(file.as_bytes())))
+    root.join("logs")
+        .join(format!("{}.json", sha256_hex(file.as_bytes())))
 }
 
 fn object_path(root: &Path, hash: &str) -> PathBuf {
@@ -84,7 +100,11 @@ fn read_log(root: &Path, file: &str) -> Log {
         .ok()
         .and_then(|b| serde_json::from_slice::<Log>(&b).ok())
         .filter(|log| log.path == file)
-        .unwrap_or_else(|| Log { path: file.to_string(), versions: Vec::new(), disk: None })
+        .unwrap_or_else(|| Log {
+            path: file.to_string(),
+            versions: Vec::new(),
+            disk: None,
+        })
 }
 
 fn write_log(root: &Path, log: &Log) -> std::io::Result<()> {
@@ -95,7 +115,10 @@ fn write_log(root: &Path, log: &Log) -> std::io::Result<()> {
         return Ok(());
     }
     let tmp = path.with_extension("json.tmp");
-    fs::write(&tmp, serde_json::to_vec(log).map_err(std::io::Error::other)?)?;
+    fs::write(
+        &tmp,
+        serde_json::to_vec(log).map_err(std::io::Error::other)?,
+    )?;
     fs::rename(tmp, path)
 }
 
@@ -112,7 +135,10 @@ fn store_object(root: &Path, bytes: &[u8]) -> std::io::Result<String> {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn new_id(time: u64, hash: &str) -> String {
@@ -135,7 +161,8 @@ fn thin(versions: Vec<Version>, now: u64) -> Vec<Version> {
         } else {
             Some((3, v.time / (7 * DAY)))
         };
-        let keep = v.label.is_some() || v.source != "save" || bucket.is_none() || bucket != last_bucket;
+        let keep =
+            v.label.is_some() || v.source != "save" || bucket.is_none() || bucket != last_bucket;
         if keep {
             if bucket.is_some() {
                 last_bucket = bucket;
@@ -163,7 +190,10 @@ fn collect_garbage(root: &Path, candidates: &[String]) {
     let mut used = std::collections::HashSet::new();
     if let Ok(entries) = fs::read_dir(root.join("logs")) {
         for entry in entries.flatten() {
-            if let Some(log) = fs::read(entry.path()).ok().and_then(|b| serde_json::from_slice::<Log>(&b).ok()) {
+            if let Some(log) = fs::read(entry.path())
+                .ok()
+                .and_then(|b| serde_json::from_slice::<Log>(&b).ok())
+            {
                 used.extend(log.versions.into_iter().map(|v| v.hash));
             }
         }
@@ -199,12 +229,22 @@ pub fn remember_original(root: &Path, file: &Path) {
         return;
     }
     let Ok(bytes) = fs::read(file) else { return };
-    let source = if log.versions.is_empty() { "original" } else { "outside" };
+    let source = if log.versions.is_empty() {
+        "original"
+    } else {
+        "outside"
+    };
     let _ = add_version(root, log, &bytes, source, None, file);
 }
 
 /// A version just saved; `disk` is the file's stamp right after the save.
-pub fn record(root: &Path, file: &Path, bytes: &[u8], label: Option<String>, disk: Option<Stamp>) -> std::io::Result<()> {
+pub fn record(
+    root: &Path,
+    file: &Path,
+    bytes: &[u8],
+    label: Option<String>,
+    disk: Option<Stamp>,
+) -> std::io::Result<()> {
     let key = file.to_string_lossy();
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut log = read_log(root, &key);
@@ -212,7 +252,14 @@ pub fn record(root: &Path, file: &Path, bytes: &[u8], label: Option<String>, dis
     add_version(root, log, bytes, "save", label, file)
 }
 
-fn add_version(root: &Path, mut log: Log, bytes: &[u8], source: &str, label: Option<String>, file: &Path) -> std::io::Result<()> {
+fn add_version(
+    root: &Path,
+    mut log: Log,
+    bytes: &[u8],
+    source: &str,
+    label: Option<String>,
+    file: &Path,
+) -> std::io::Result<()> {
     let hash = store_object(root, bytes)?;
     let time = now_ms();
     if let Some(latest) = log.versions.first_mut() {
@@ -224,7 +271,14 @@ fn add_version(root: &Path, mut log: Log, bytes: &[u8], source: &str, label: Opt
             return write_log(root, &log);
         }
     }
-    let version = Version { id: new_id(time, &hash), hash, time, size: bytes.len() as u64, label, source: source.into() };
+    let version = Version {
+        id: new_id(time, &hash),
+        hash,
+        time,
+        size: bytes.len() as u64,
+        label,
+        source: source.into(),
+    };
     log.path = file.to_string_lossy().into_owned();
     let mut versions = log.versions.clone();
     versions.insert(0, version);
@@ -242,13 +296,21 @@ pub fn history_list<R: Runtime>(app: AppHandle<R>, path: String) -> Result<Vec<V
 
 /// One version's bytes, as a raw response.
 #[tauri::command]
-pub fn history_read<R: Runtime>(app: AppHandle<R>, path: String, id: String) -> Result<Response, String> {
+pub fn history_read<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    id: String,
+) -> Result<Response, String> {
     let root = root(&app)?;
     let log = {
         let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         read_log(&root, &path)
     };
-    let version = log.versions.iter().find(|v| v.id == id).ok_or("That version is gone.")?;
+    let version = log
+        .versions
+        .iter()
+        .find(|v| v.id == id)
+        .ok_or("That version is gone.")?;
     fs::read(object_path(&root, &version.hash))
         .map(Response::new)
         .map_err(|e| format!("Couldn’t read that version: {e}"))
@@ -256,21 +318,41 @@ pub fn history_read<R: Runtime>(app: AppHandle<R>, path: String, id: String) -> 
 
 /// Name a version (or clear its name with null). Named versions are never thinned out.
 #[tauri::command]
-pub fn history_label<R: Runtime>(app: AppHandle<R>, path: String, id: String, label: Option<String>) -> Result<(), String> {
+pub fn history_label<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    id: String,
+    label: Option<String>,
+) -> Result<(), String> {
     let root = root(&app)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut log = read_log(&root, &path);
-    let version = log.versions.iter_mut().find(|v| v.id == id).ok_or("That version is gone.")?;
-    version.label = label.map(|l| l.trim().to_string()).filter(|l| !l.is_empty());
+    let version = log
+        .versions
+        .iter_mut()
+        .find(|v| v.id == id)
+        .ok_or("That version is gone.")?;
+    version.label = label
+        .map(|l| l.trim().to_string())
+        .filter(|l| !l.is_empty());
     write_log(&root, &log).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn history_delete<R: Runtime>(app: AppHandle<R>, path: String, id: String) -> Result<(), String> {
+pub fn history_delete<R: Runtime>(
+    app: AppHandle<R>,
+    path: String,
+    id: String,
+) -> Result<(), String> {
     let root = root(&app)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let log = read_log(&root, &path);
-    let versions = log.versions.iter().filter(|v| v.id != id).cloned().collect();
+    let versions = log
+        .versions
+        .iter()
+        .filter(|v| v.id != id)
+        .cloned()
+        .collect();
     replace_versions(&root, log, versions).map_err(|e| e.to_string())
 }
 
@@ -315,7 +397,14 @@ mod tests {
     use super::*;
 
     fn v(time: u64, label: Option<&str>) -> Version {
-        Version { id: format!("{time}"), hash: format!("{time:064}"), time, size: 1, label: label.map(String::from), source: "save".into() }
+        Version {
+            id: format!("{time}"),
+            hash: format!("{time:064}"),
+            time,
+            size: 1,
+            label: label.map(String::from),
+            source: "save".into(),
+        }
     }
 
     #[test]
@@ -333,7 +422,11 @@ mod tests {
     #[test]
     fn keeps_named_versions() {
         let now = 100 * DAY;
-        let versions = vec![v(now - 2 * DAY, None), v(now - 2 * DAY - MINUTE, Some("Draft 1")), v(now - 2 * DAY - 2 * MINUTE, None)];
+        let versions = vec![
+            v(now - 2 * DAY, None),
+            v(now - 2 * DAY - MINUTE, Some("Draft 1")),
+            v(now - 2 * DAY - 2 * MINUTE, None),
+        ];
         let kept = thin(versions, now);
         assert_eq!(kept.len(), 2);
         assert!(kept.iter().any(|x| x.label.as_deref() == Some("Draft 1")));
@@ -352,13 +445,17 @@ mod tests {
         assert_eq!(log.versions.len(), 2);
         assert_eq!(log.versions[0].label.as_deref(), Some("Named"));
         assert_eq!(log.versions[1].source, "original");
-        assert_eq!(fs::read(object_path(&root, &log.versions[1].hash)).unwrap(), b"first");
+        assert_eq!(
+            fs::read(object_path(&root, &log.versions[1].hash)).unwrap(),
+            b"first"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
     fn keeps_a_change_made_outside_before_saving_over_it() {
-        let root = std::env::temp_dir().join(format!("workspace-history-outside-{}", std::process::id()));
+        let root =
+            std::env::temp_dir().join(format!("workspace-history-outside-{}", std::process::id()));
         let file = root.join("notes.md");
         fs::create_dir_all(&root).unwrap();
         fs::write(&file, b"first").unwrap();
@@ -374,7 +471,10 @@ mod tests {
         let log = read_log(&root, &file.to_string_lossy());
         assert_eq!(log.versions.len(), 3);
         assert_eq!(log.versions[0].source, "outside");
-        assert_eq!(fs::read(object_path(&root, &log.versions[0].hash)).unwrap(), b"theirs, longer");
+        assert_eq!(
+            fs::read(object_path(&root, &log.versions[0].hash)).unwrap(),
+            b"theirs, longer"
+        );
         fs::remove_dir_all(&root).unwrap();
     }
 }

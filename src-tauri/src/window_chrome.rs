@@ -11,13 +11,17 @@ use tauri::{Runtime, Theme, WebviewWindow};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWA_CAPTION_COLOR, DWMWA_TEXT_COLOR};
 use windows::Win32::Graphics::Gdi::{
-    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetWindowDC, MapWindowPoints, OffsetRect, RedrawWindow, ReleaseDC, SetBkMode, SetTextColor, DT_CENTER, DT_HIDEPREFIX,
-    DT_SINGLELINE, DT_VCENTER, HDC, RDW_FRAME, RDW_INVALIDATE, TRANSPARENT,
+    CreateSolidBrush, DeleteObject, DrawTextW, FillRect, GetWindowDC, MapWindowPoints, OffsetRect,
+    RedrawWindow, ReleaseDC, SetBkMode, SetTextColor, DT_CENTER, DT_HIDEPREFIX, DT_SINGLELINE,
+    DT_VCENTER, HDC, RDW_FRAME, RDW_INVALIDATE, TRANSPARENT,
 };
-use windows::Win32::UI::Controls::{DRAWITEMSTRUCT, ODS_DISABLED, ODS_GRAYED, ODS_HOTLIGHT, ODS_NOACCEL, ODS_SELECTED};
+use windows::Win32::UI::Controls::{
+    DRAWITEMSTRUCT, ODS_DISABLED, ODS_GRAYED, ODS_HOTLIGHT, ODS_NOACCEL, ODS_SELECTED,
+};
 use windows::Win32::UI::Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    DrawMenuBar, GetClientRect, GetMenuBarInfo, GetMenuItemInfoW, GetWindowRect, HMENU, MENUBARINFO, MENUITEMINFOW, MIIM_STRING, OBJID_MENU, WM_NCACTIVATE, WM_NCPAINT,
+    DrawMenuBar, GetClientRect, GetMenuBarInfo, GetMenuItemInfoW, GetWindowRect, HMENU,
+    MENUBARINFO, MENUITEMINFOW, MIIM_STRING, OBJID_MENU, WM_NCACTIVATE, WM_NCPAINT,
 };
 
 const WM_UAHDRAWMENU: u32 = 0x0091;
@@ -66,9 +70,21 @@ fn colorref(hex: &str) -> Option<COLORREF> {
 }
 
 /// The page's chrome colors and appearance. `theme` is None when the app follows the system.
-pub fn set<R: Runtime>(window: WebviewWindow<R>, background: String, text: String, hot: String, disabled: String, theme: Option<String>) -> Result<(), String> {
+pub fn set<R: Runtime>(
+    window: WebviewWindow<R>,
+    background: String,
+    text: String,
+    hot: String,
+    disabled: String,
+    theme: Option<String>,
+) -> Result<(), String> {
     let parse = |s: &str| colorref(s).ok_or_else(|| format!("Not a color: {s}"));
-    let next = Colors { background: parse(&background)?, text: parse(&text)?, hot: parse(&hot)?, disabled: parse(&disabled)? };
+    let next = Colors {
+        background: parse(&background)?,
+        text: parse(&text)?,
+        hot: parse(&hot)?,
+        disabled: parse(&disabled)?,
+    };
     *COLORS.lock().unwrap_or_else(|e| e.into_inner()) = Some(next);
 
     // Dark or light caption buttons and popup menus, as the app is.
@@ -80,7 +96,9 @@ pub fn set<R: Runtime>(window: WebviewWindow<R>, background: String, text: Strin
     let _ = window.set_theme(theme);
 
     let hwnd = window.hwnd().map_err(|e| e.to_string())?.0 as isize;
-    window.run_on_main_thread(move || unsafe { repaint(HWND(hwnd as _), next) }).map_err(|e| e.to_string())
+    window
+        .run_on_main_thread(move || unsafe { repaint(HWND(hwnd as _), next) })
+        .map_err(|e| e.to_string())
 }
 
 /// After the menu is replaced (new shortcuts), muda subclasses the window again, ahead of this
@@ -94,8 +112,18 @@ pub fn menu_replaced<R: Runtime>(window: &WebviewWindow<R>) {
 
 unsafe fn repaint(hwnd: HWND, colors: Colors) {
     // Windows 11 colors the caption; Windows 10 ignores these and keeps its own.
-    let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &colors.background as *const _ as _, size_of::<COLORREF>() as u32);
-    let _ = DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &colors.text as *const _ as _, size_of::<COLORREF>() as u32);
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_CAPTION_COLOR,
+        &colors.background as *const _ as _,
+        size_of::<COLORREF>() as u32,
+    );
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        DWMWA_TEXT_COLOR,
+        &colors.text as *const _ as _,
+        size_of::<COLORREF>() as u32,
+    );
     // Subclass procs run newest first: reinstalling puts this one ahead of muda's.
     let _ = RemoveWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID);
     let _ = SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, 0);
@@ -103,7 +131,14 @@ unsafe fn repaint(hwnd: HWND, colors: Colors) {
     let _ = RedrawWindow(Some(hwnd), None, None, RDW_FRAME | RDW_INVALIDATE);
 }
 
-unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM, _id: usize, _data: usize) -> LRESULT {
+unsafe extern "system" fn subclass_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+    _id: usize,
+    _data: usize,
+) -> LRESULT {
     let Some(colors) = colors() else {
         return DefSubclassProc(hwnd, msg, wparam, lparam);
     };
@@ -124,10 +159,25 @@ unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
             // Windows draws a light line under the menu bar; paint it over.
             let mut client = RECT::default();
             let mut window = RECT::default();
-            if GetClientRect(hwnd, &mut client).is_ok() && GetWindowRect(hwnd, &mut window).is_ok() {
-                let mut corners = [windows::Win32::Foundation::POINT { x: client.left, y: client.top }, windows::Win32::Foundation::POINT { x: client.right, y: client.bottom }];
+            if GetClientRect(hwnd, &mut client).is_ok() && GetWindowRect(hwnd, &mut window).is_ok()
+            {
+                let mut corners = [
+                    windows::Win32::Foundation::POINT {
+                        x: client.left,
+                        y: client.top,
+                    },
+                    windows::Win32::Foundation::POINT {
+                        x: client.right,
+                        y: client.bottom,
+                    },
+                ];
                 MapWindowPoints(Some(hwnd), None, &mut corners);
-                let mut line = RECT { left: corners[0].x, top: corners[0].y - 1, right: corners[1].x, bottom: corners[0].y };
+                let mut line = RECT {
+                    left: corners[0].x,
+                    top: corners[0].y - 1,
+                    right: corners[1].x,
+                    bottom: corners[0].y,
+                };
                 let _ = OffsetRect(&mut line, -window.left, -window.top);
                 let hdc = GetWindowDC(Some(hwnd));
                 fill(hdc, &line, colors.background);
@@ -141,7 +191,10 @@ unsafe extern "system" fn subclass_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lp
 
 /// The menu bar, in window coordinates.
 unsafe fn menu_bar_rect(hwnd: HWND) -> RECT {
-    let mut info = MENUBARINFO { cbSize: size_of::<MENUBARINFO>() as u32, ..Default::default() };
+    let mut info = MENUBARINFO {
+        cbSize: size_of::<MENUBARINFO>() as u32,
+        ..Default::default()
+    };
     let _ = GetMenuBarInfo(hwnd, OBJID_MENU, 0, &mut info);
     let mut window = RECT::default();
     let _ = GetWindowRect(hwnd, &mut window);
@@ -157,7 +210,11 @@ unsafe fn fill(hdc: HDC, rect: &RECT, color: COLORREF) {
 }
 
 unsafe fn draw_item(item: &mut UahDrawMenuItem, colors: Colors) {
-    let mut info = MENUITEMINFOW { cbSize: size_of::<MENUITEMINFOW>() as u32, fMask: MIIM_STRING, ..Default::default() };
+    let mut info = MENUITEMINFOW {
+        cbSize: size_of::<MENUITEMINFOW>() as u32,
+        fMask: MIIM_STRING,
+        ..Default::default()
+    };
     if GetMenuItemInfoW(item.um.hmenu, item.position as u32, true, &mut info).is_err() {
         return;
     }
@@ -177,8 +234,19 @@ unsafe fn draw_item(item: &mut UahDrawMenuItem, colors: Colors) {
         format |= DT_HIDEPREFIX;
     }
     let hdc = item.um.hdc;
-    fill(hdc, &item.dis.rcItem, if hot { colors.hot } else { colors.background });
+    fill(
+        hdc,
+        &item.dis.rcItem,
+        if hot { colors.hot } else { colors.background },
+    );
     SetBkMode(hdc, TRANSPARENT);
-    SetTextColor(hdc, if disabled { colors.disabled } else { colors.text });
+    SetTextColor(
+        hdc,
+        if disabled {
+            colors.disabled
+        } else {
+            colors.text
+        },
+    );
     DrawTextW(hdc, &mut label, &mut item.dis.rcItem, format);
 }

@@ -20,9 +20,9 @@ mod window_chrome;
 
 use std::sync::Mutex;
 
-use tauri::{Emitter, Manager};
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 use tauri::RunEvent;
+use tauri::{Emitter, Manager};
 
 /// Paths the OS asked us to open (Finder "Open With", double-click, CLI args)
 /// that the frontend hasn't picked up yet. The frontend drains this on startup
@@ -81,8 +81,12 @@ fn disable_browser_shortcuts(window: &tauri::WebviewWindow) {
     let _ = window.with_webview(|webview| unsafe {
         use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
         use windows_core::Interface;
-        let Ok(core) = webview.controller().CoreWebView2() else { return };
-        let Ok(settings) = core.Settings() else { return };
+        let Ok(core) = webview.controller().CoreWebView2() else {
+            return;
+        };
+        let Ok(settings) = core.Settings() else {
+            return;
+        };
         if let Ok(settings) = settings.cast::<ICoreWebView2Settings3>() {
             let _ = settings.SetAreBrowserAcceleratorKeysEnabled(false);
         }
@@ -92,7 +96,14 @@ fn disable_browser_shortcuts(window: &tauri::WebviewWindow) {
 /// The app's chrome colors, for the parts of the window Windows draws (title and menu bars).
 /// Other systems draw no bars of their own over the page.
 #[tauri::command]
-fn set_window_chrome<R: tauri::Runtime>(window: tauri::WebviewWindow<R>, background: String, text: String, hot: String, disabled: String, theme: Option<String>) -> Result<(), String> {
+fn set_window_chrome<R: tauri::Runtime>(
+    window: tauri::WebviewWindow<R>,
+    background: String,
+    text: String,
+    hot: String,
+    disabled: String,
+    theme: Option<String>,
+) -> Result<(), String> {
     #[cfg(windows)]
     return window_chrome::set(window, background, text, hot, disabled, theme);
     #[cfg(not(windows))]
@@ -110,7 +121,9 @@ pub fn run() {
     #[cfg(target_os = "macos")]
     update::remember_bundle();
 
-    let cwd = std::env::current_dir().map(|d| d.to_string_lossy().into_owned()).unwrap_or_default();
+    let cwd = std::env::current_dir()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
     let cli_paths = cli::paths_from_args(&std::env::args().collect::<Vec<_>>(), &cwd);
 
     let builder = tauri::Builder::default();
@@ -130,7 +143,9 @@ pub fn run() {
         // Reading plugin files is disk I/O: answer off the thread that asked.
         .register_asynchronous_uri_scheme_protocol("wsplugin", |ctx, request, responder| {
             let app = ctx.app_handle().clone();
-            tauri::async_runtime::spawn_blocking(move || responder.respond(plugins::serve(&app, &request)));
+            tauri::async_runtime::spawn_blocking(move || {
+                responder.respond(plugins::serve(&app, &request))
+            });
         })
         .setup(|app| {
             // A second Writan.app (an old install, a target/ build, a mounted
@@ -218,7 +233,10 @@ pub fn run() {
         }
         // Clicking the Dock icon with no visible window brings the window back.
         #[cfg(target_os = "macos")]
-        RunEvent::Reopen { has_visible_windows, .. } => {
+        RunEvent::Reopen {
+            has_visible_windows,
+            ..
+        } => {
             if !has_visible_windows {
                 if let Some(window) = app.get_webview_window("main") {
                     let _ = window.show();

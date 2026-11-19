@@ -1,7 +1,6 @@
 //! The latest GitHub release, and a macOS relaunch that replaces this process
 //! instead of opening a second copy of the app.
 
-
 use serde::Serialize;
 
 const LATEST_RELEASE: &str = "https://api.github.com/repos/elijahroizman/writan/releases/latest";
@@ -34,7 +33,10 @@ fn version_from_tag(tag: &str) -> String {
 
 fn notes_from_release(release: GithubRelease) -> ReleaseNotes {
     let version = version_from_tag(&release.tag_name);
-    let name = release.name.filter(|n| !n.trim().is_empty()).unwrap_or_else(|| format!("Writan {version}"));
+    let name = release
+        .name
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| format!("Writan {version}"));
     ReleaseNotes {
         version,
         name,
@@ -67,7 +69,8 @@ fn fetch_latest_release() -> Result<ReleaseNotes, String> {
         .limit(200 * 1024)
         .read_to_vec()
         .map_err(|_| "Couldn't read the release notes.".to_string())?;
-    let release: GithubRelease = serde_json::from_slice(&bytes).map_err(|_| "Couldn't read the release notes.".to_string())?;
+    let release: GithubRelease = serde_json::from_slice(&bytes)
+        .map_err(|_| "Couldn't read the release notes.".to_string())?;
     Ok(notes_from_release(release))
 }
 
@@ -88,7 +91,11 @@ const DNF_REPO_OLD: &str = "/etc/yum.repos.d/workspace.repo";
 /// Prefer the renamed repository file, while accepting an installation not yet migrated.
 #[cfg(target_os = "linux")]
 fn existing_file<'a>(primary: &'a str, legacy: &'a str) -> &'a str {
-    if std::path::Path::new(primary).is_file() { primary } else { legacy }
+    if std::path::Path::new(primary).is_file() {
+        primary
+    } else {
+        legacy
+    }
 }
 
 /// How this Linux copy was installed: `format` is "deb" or "rpm" (none for a build run from
@@ -104,10 +111,18 @@ pub struct LinuxPackage {
 #[cfg(target_os = "linux")]
 fn query_installed(format: &str, name: &str) -> Option<String> {
     let output = match format {
-        "deb" => std::process::Command::new("dpkg-query").args(["-W", "-f=${Version}", name]).output(),
-        _ => std::process::Command::new("rpm").args(["-q", "--qf", "%{VERSION}-%{RELEASE}", name]).output(),
+        "deb" => std::process::Command::new("dpkg-query")
+            .args(["-W", "-f=${Version}", name])
+            .output(),
+        _ => std::process::Command::new("rpm")
+            .args(["-q", "--qf", "%{VERSION}-%{RELEASE}", name])
+            .output(),
     };
-    output.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|v| !v.is_empty())
+    output
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .filter(|v| !v.is_empty())
 }
 
 /// The installed package version. `writan` is the package name. `workspace` is the previous name,
@@ -144,17 +159,33 @@ fn linux_package_now() -> LinuxPackage {
     // The binary's path says which package put it there: dpkg and rpm both list their files.
     let exe = std::env::current_exe().ok();
     let owned_by = |cmd: &str, args: &[&str]| {
-        exe.as_ref().is_some_and(|exe| std::process::Command::new(cmd).args(args).arg(exe).output().is_ok_and(|o| o.status.success()))
+        exe.as_ref().is_some_and(|exe| {
+            std::process::Command::new(cmd)
+                .args(args)
+                .arg(exe)
+                .output()
+                .is_ok_and(|o| o.status.success())
+        })
     };
     if owned_by("dpkg-query", &["-S"]) {
         let repo = std::fs::read_to_string(existing_file(APT_SOURCES, APT_SOURCES_OLD))
             .is_ok_and(|list| list.lines().any(|l| l.trim_start().starts_with("deb ")));
-        LinuxPackage { format: Some("deb"), repo: repo && Path::new("/usr/bin/apt-get").is_file() }
+        LinuxPackage {
+            format: Some("deb"),
+            repo: repo && Path::new("/usr/bin/apt-get").is_file(),
+        }
     } else if owned_by("rpm", &["-qf"]) {
-        let repo = std::fs::read_to_string(existing_file(DNF_REPO, DNF_REPO_OLD)).is_ok_and(|repo| dnf_repo_enabled(&repo));
-        LinuxPackage { format: Some("rpm"), repo: repo && Path::new("/usr/bin/dnf").is_file() }
+        let repo = std::fs::read_to_string(existing_file(DNF_REPO, DNF_REPO_OLD))
+            .is_ok_and(|repo| dnf_repo_enabled(&repo));
+        LinuxPackage {
+            format: Some("rpm"),
+            repo: repo && Path::new("/usr/bin/dnf").is_file(),
+        }
     } else {
-        LinuxPackage { format: None, repo: false }
+        LinuxPackage {
+            format: None,
+            repo: false,
+        }
     }
 }
 
@@ -163,11 +194,19 @@ fn linux_package_now() -> LinuxPackage {
 pub async fn linux_package() -> LinuxPackage {
     #[cfg(target_os = "linux")]
     {
-        tauri::async_runtime::spawn_blocking(linux_package_now).await.unwrap_or(LinuxPackage { format: None, repo: false })
+        tauri::async_runtime::spawn_blocking(linux_package_now)
+            .await
+            .unwrap_or(LinuxPackage {
+                format: None,
+                repo: false,
+            })
     }
     #[cfg(not(target_os = "linux"))]
     {
-        LinuxPackage { format: None, repo: false }
+        LinuxPackage {
+            format: None,
+            repo: false,
+        }
     }
 }
 
@@ -270,7 +309,8 @@ fn relaunch_macos(app: tauri::AppHandle) -> Result<(), String> {
     // Its own process group, so nothing sent to ours on the way out reaches it.
     // The shell then `exec`s `open`, which asks Launch Services to start the app.
     cmd.process_group(0);
-    cmd.spawn().map_err(|_| "Couldn't reopen Writan.".to_string())?;
+    cmd.spawn()
+        .map_err(|_| "Couldn't reopen Writan.".to_string())?;
     app.exit(0);
     Ok(())
 }
@@ -306,8 +346,14 @@ mod tests {
 
     #[test]
     fn quotes_paths_for_the_shell() {
-        assert_eq!(sh_quote(std::path::Path::new("/Applications/Writan.app")), "'/Applications/Writan.app'");
-        assert_eq!(sh_quote(std::path::Path::new("/tmp/O'Hare.app")), "'/tmp/O'\\''Hare.app'");
+        assert_eq!(
+            sh_quote(std::path::Path::new("/Applications/Writan.app")),
+            "'/Applications/Writan.app'"
+        );
+        assert_eq!(
+            sh_quote(std::path::Path::new("/tmp/O'Hare.app")),
+            "'/tmp/O'\\''Hare.app'"
+        );
     }
 
     #[cfg(target_os = "linux")]
@@ -318,7 +364,9 @@ mod tests {
         assert!(!dnf_repo_enabled(&repo.replace("enabled=1", "enabled=0")));
         assert!(dnf_repo_enabled("[workspace]\nname=Writan\nenabled=1\n"));
         assert!(!dnf_repo_enabled("[other]\nenabled=1\n"));
-        assert!(!dnf_repo_enabled("[workspace]\nenabled=0\n[other]\nenabled=1\n"));
+        assert!(!dnf_repo_enabled(
+            "[workspace]\nenabled=0\n[other]\nenabled=1\n"
+        ));
     }
 
     #[test]
