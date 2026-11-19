@@ -1156,6 +1156,19 @@ fn body_labels(doc: &Document, memo: &mut ListMemo, last: &mut Vec<Option<(Strin
 }
 
 fn read_extras(doc: &Document) -> Extras {
+    let mut out = read_parts_extras(doc);
+    // The document's last section sets note formats too, over the settings.
+    if let Some(sect) = doc.origin.get().and_then(|o| o.path(ns::W, &["body", "sectPr"])) {
+        for (pr, format) in [("footnotePr", &mut out.footnote_format), ("endnotePr", &mut out.endnote_format)] {
+            if let Some(v) = sect.path(ns::W, &[pr, "numFmt"]).and_then(|f| f.attr_ns(ns::W, "val")) {
+                *format = Some(v.to_string());
+            }
+        }
+    }
+    out
+}
+
+fn read_parts_extras(doc: &Document) -> Extras {
     let edited_styles = crate::word(doc).and_then(|w| w.styles_xml.clone());
     let Some(pkg) = &doc.package else { return Extras::read(edited_styles.as_ref(), None, None) };
     let Ok(main) = pkg.main_part() else { return Extras::read(None, None, None) };

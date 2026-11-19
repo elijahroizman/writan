@@ -1091,3 +1091,18 @@ fn huge_note_ids_show_as_written() {
     assert_eq!(extras.note_label(crate::NoteKind::Endnote, "4294967295"), "4294967295");
     assert_eq!(extras.note_label(crate::NoteKind::Endnote, "28"), "bb");
 }
+
+#[test]
+fn the_last_section_sets_the_endnote_format() {
+    let mut host = FixedMeasurer::default();
+    let bytes = noted_doc(&endnote_para("Foo", "1"), "endnote", &[("1", "bar")]);
+    let mut pkg = office_core::opc::Package::read(&bytes).unwrap();
+    let text = String::from_utf8(pkg.part("word/document.xml").unwrap().to_vec()).unwrap();
+    assert!(text.contains("<w:sectPr>"), "{text}");
+    let text = text.replacen("<w:sectPr>", r#"<w:sectPr><w:endnotePr><w:numFmt w:val="decimal"/></w:endnotePr>"#, 1);
+    pkg.replace("word/document.xml", text.into_bytes()).unwrap();
+    let mut v = WordView::open(&pkg.to_bytes().unwrap()).unwrap();
+    v.layout(&mut host);
+    let texts = page_texts(&v.paint(&mut host, 0).items);
+    assert_eq!(texts.iter().filter(|(s, _)| s == "1").count(), 2, "{texts:?}");
+}
