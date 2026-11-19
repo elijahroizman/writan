@@ -42,7 +42,9 @@ fn block_content_control_shows_cached_toc_without_rewriting_xml() {
                <w:r><w:fldChar w:fldCharType="end"/></w:r>
              </w:hyperlink>
            </w:p>
-           <w:sdt><w:sdtContent><w:p><w:r><w:t>Nested control</w:t></w:r></w:p></w:sdtContent></w:sdt>
+           <w:customXml w:element="section">
+             <w:sdt><w:sdtContent><w:p><w:r><w:t>Nested control</w:t></w:r></w:p></w:sdtContent></w:sdt>
+           </w:customXml>
            <w:p><w:r><w:fldChar w:fldCharType="end"/></w:r></w:p>"#,
     );
     let mut host = FixedMeasurer::default();

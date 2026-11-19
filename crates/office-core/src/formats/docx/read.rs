@@ -80,8 +80,8 @@ fn read_block(e: &Element, rels: &PartRels, doc: &mut Document, preview: bool, o
         if !preview {
             let preview = content.map(|c| read_blocks(c, rels, doc, true, |_| false).into()).unwrap_or_default();
             out.push(Block::Raw { xml: e.clone(), preview });
-        } else if let Some(content) = content {
-            // Flatten nested controls into the preview instead of copying their raw subtrees.
+        } else if let Some(content) = content.or_else(|| e.is(ns::W, "customXml").then_some(e)) {
+            // Flatten supported wrappers instead of copying their raw subtrees.
             for child in content.elements() {
                 read_block(child, rels, doc, true, out);
             }
