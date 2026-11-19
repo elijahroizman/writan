@@ -581,6 +581,20 @@ fn a_new_slide_does_not_take_a_deleted_copys_notes() {
 }
 
 #[test]
+fn a_new_slide_saved_under_a_deleted_copys_name_has_no_notes() {
+    let mut v = SlidesView::open(&imported_deck()).unwrap();
+    v.duplicate_slides(&[0]);
+    v.delete_slides(&[1]);
+    v.add_slide(1, None);
+    // The blank slide's copy is unnamed, so saving gives it the first free part name.
+    v.duplicate_slides(&[2]);
+    assert_eq!(v.slide_infos()[3].notes, "");
+    let back = SlidesView::open(&v.save().unwrap()).unwrap();
+    let notes: Vec<String> = back.slide_infos().into_iter().map(|s| s.notes).collect();
+    assert_eq!(notes, vec!["Remember the demo", "", "", ""]);
+}
+
+#[test]
 fn a_duplicated_link_in_notes_points_at_its_url() {
     let mut pkg = office_core::opc::Package::read(&imported_deck()).unwrap();
     let notes_of = |pkg: &office_core::opc::Package, slide: &str| pkg.related(slide, "notesSlide").unwrap()[0].1.clone();

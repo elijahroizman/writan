@@ -86,8 +86,10 @@ impl Layer for Decks {
 
     fn write_parts(&self, doc: &Document, pkg: &mut Package, _to: Kind) -> Result<()> {
         let Some(ppt) = doc.extensions.get::<Ppt>() else { return Ok(()) };
+        // Notes of deleted slides are kept for undo, and a new slide may be written under one's name.
+        let live: Vec<&str> = slides(doc).iter().filter_map(|s| s.part.as_deref()).collect();
         for (part, paragraphs) in &ppt.notes {
-            if ppt.notes_read.iter().any(|(p, n)| p == part && n == paragraphs) || !pkg.has(part) {
+            if ppt.notes_read.iter().any(|(p, n)| p == part && n == paragraphs) || !pkg.has(part) || !live.contains(&part.as_str()) {
                 continue;
             }
             write_notes(pkg, part, paragraphs)?;
