@@ -70,6 +70,10 @@ const CHART_PART: &str = "ppt/charts/chart1.xml";
 const CHART_BOOK: &str = "ppt/embeddings/data.xlsx";
 
 fn chart_deck(groups: &str, external: bool) -> Vec<u8> {
+    chart_deck_with_properties(groups, external, "")
+}
+
+fn chart_deck_with_properties(groups: &str, external: bool, properties: &str) -> Vec<u8> {
     use office_core::opc::Package;
     use office_core::xml::ns;
 
@@ -83,7 +87,7 @@ fn chart_deck(groups: &str, external: bool) -> Vec<u8> {
         let data = pkg.relate(CHART_PART, "package", CHART_BOOK).unwrap();
         let xml = format!(
             r#"<c:chartSpace xmlns:c="{c}" xmlns:a="{a}" xmlns:r="{r}">
-              <c:clrMapOvr bg1="lt1"/><c:chart><c:autoTitleDeleted val="1"/><c:plotArea>{groups}</c:plotArea></c:chart>
+              <c:clrMapOvr bg1="lt1"/><c:chart><c:autoTitleDeleted val="1"/><c:plotArea>{groups}</c:plotArea>{properties}</c:chart>
               <c:externalData r:id="{data}"/>
             </c:chartSpace>"#,
             c = ns::C,
@@ -207,6 +211,24 @@ fn imported_scatter_without_x_values_uses_point_numbers() {
     assert!(xs[1] - xs[0] > 300.0);
     let labels = texts(items);
     assert_eq!(&labels[labels.len() - 2..], ["1", "3"]);
+}
+
+#[test]
+fn imported_line_uses_the_saved_blank_cell_mode() {
+    let group = format!("<c:lineChart>{CHART_SERIES}</c:lineChart>");
+    for (mode, segments) in [("gap", 0), ("span", 1), ("zero", 2)] {
+        let props = format!(r#"<c:dispBlanksAs val="{mode}"/>"#);
+        let mut view = SlidesView::open(&chart_deck_with_properties(&group, false, &props)).unwrap();
+        let p = view.paint(&mut FixedMeasurer::default(), 0);
+        let lines: String = chart_items(&p)
+            .iter()
+            .filter_map(|i| match i {
+                Item::Path { d, stroke: Some(_), .. } => Some(d.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(lines.matches('L').count(), segments, "{mode}: {lines}");
+    }
 }
 
 #[test]

@@ -80,7 +80,8 @@ pub(super) fn draw(ctx: &mut Ctx, doc: &Document, slide: &Slide, part: &str, fra
     if radial {
         rings(&chart, group, &series, bounds, &mut items)?;
     } else {
-        axes(ctx, labels, &chart, &series, &color(&text_color).css(), bounds, &mut items)?;
+        let blanks = root.child(ns::C, "chart").and_then(|c| val(c, "dispBlanksAs"));
+        axes(ctx, labels, &chart, &series, blanks, bounds, &mut items)?;
     }
 
     Some(Item::Group { x: 0.0, y: 0.0, w: r(b.w), h: r(b.h), rot: 0.0, fh: false, fv: false, clip: true, id: None, items })
@@ -300,7 +301,15 @@ fn scatter_x(series: &ChartSeries, i: usize) -> Option<f64> {
     series.cache.categories.get(i)?.trim().parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
-fn axes(ctx: &mut Ctx, style: StyleId, chart: &Chart, colors: &SeriesColors, ink: &str, mut b: Boxed, out: &mut Vec<Item>) -> Option<()> {
+fn axes(
+    ctx: &mut Ctx,
+    style: StyleId,
+    chart: &Chart,
+    colors: &SeriesColors,
+    blanks: Option<&str>,
+    mut b: Boxed,
+    out: &mut Vec<Item>,
+) -> Option<()> {
     let values = chart.series.iter().flat_map(|s| &s.cache.values).flatten().copied().filter(|v| v.is_finite());
     let scale = values.clone().map(f64::abs).fold(0.0, f64::max);
     let scale = if scale > 0.0 { scale } else { 1.0 };
@@ -356,14 +365,16 @@ fn axes(ctx: &mut Ctx, style: StyleId, chart: &Chart, colors: &SeriesColors, ink
     };
     let before = out.len();
     let columns = matches!(chart.kind, ChartKind::Column | ChartKind::Bar);
+    let connected = matches!(chart.kind, ChartKind::Line | ChartKind::Area);
     let bands = (if columns { 0.76 } else { 0.0 }) / n as f64 / chart.series.len() as f64;
     for (i, s) in chart.series.iter().enumerate() {
         let mut run = Vec::new();
         let c = colors.at(i, None);
-        for (j, value) in s.cache.values.iter().chain(std::iter::once(&None)).enumerate() {
+        for (j, value) in s.cache.values.iter().enumerate() {
             let category = if scatter { scatter_position(s, j) } else { Some((j as f64 + 0.5) / n as f64) };
-            let Some((cat, v)) = category.zip(value.filter(|v| v.is_finite()).map(|v| v / scale)) else {
-                if !run.is_empty() {
+            let value = value.filter(|v| v.is_finite()).or((connected && blanks == Some("zero")).then_some(0.0));
+            let Some((cat, v)) = category.zip(value.map(|v| v / scale)) else {
+                if !run.is_empty() && blanks != Some("span") {
                     plot_run(chart.kind, &c, xy(0.0, 0.0).1, &run, out);
                     run.clear();
                 }
@@ -387,6 +398,9 @@ fn axes(ctx: &mut Ctx, style: StyleId, chart: &Chart, colors: &SeriesColors, ink
                 run.push((x, y));
             }
         }
+        if !run.is_empty() {
+            plot_run(chart.kind, &c, xy(0.0, 0.0).1, &run, out);
+        }
     }
     if out.len() == before {
         return None;
@@ -397,8 +411,9 @@ fn axes(ctx: &mut Ctx, style: StyleId, chart: &Chart, colors: &SeriesColors, ink
             out.push(if bar { place(item, x, b.y + b.h + px, 0.5) } else { place(item, x - px / 3.0, y + px * 0.3, 1.0) });
         }
     }
+    let ink = ctx.styles.get(style).color.css();
     for (a, z) in [(xy(0.0, low), xy(0.0, high)), (xy(0.0, 0.0), xy(1.0, 0.0))] {
-        out.push(Item::Line { x1: r(a.0), y1: r(a.1), x2: r(z.0), y2: r(z.1), color: ink.into(), w: 0.65, dash: "solid" });
+        out.push(Item::Line { x1: r(a.0), y1: r(a.1), x2: r(z.0), y2: r(z.1), color: ink.clone(), w: 0.65, dash: "solid" });
     }
     if scatter {
         if let Some((lo, hi)) = x_bounds {
