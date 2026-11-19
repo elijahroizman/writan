@@ -524,7 +524,7 @@ impl WordView {
             (p.top, p.bottom),
             &mut display::Sink { objects: &mut objects, links: &links, out: &mut items },
         );
-        paint_floating(&self.doc, &p, page, blocks, &sf.flow, &mut items);
+        paint_floating(&mut ctx, &self.doc, &p, blocks, &sf.flow, &mut items);
         PagePaint { width: display::r(p.width), height: display::r(p.height), items }
     }
 
@@ -835,7 +835,7 @@ struct PageObjects<'a> {
 }
 
 impl Objects for PageObjects<'_> {
-    fn object(&mut self, para: &Path, inline: u32, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
+    fn object(&mut self, ctx: &mut Ctx, para: &Path, inline: u32, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
         let blocks: &[Block] = match self.story {
             StoryId::Body => match &self.doc.body {
                 Body::Flow { blocks } => blocks,
@@ -847,6 +847,16 @@ impl Objects for PageObjects<'_> {
             },
         };
         let Some(p) = pos::para(blocks, para) else { return };
+        if let Some(Inline::Raw { xml }) = p.content.get(inline as usize) {
+            let part = match self.story {
+                StoryId::Body => self.doc.package.as_ref().and_then(|p| p.main_part().ok()),
+                StoryId::Story(i) => word(self.doc).and_then(|w| w.headers.get(i)).map(|s| s.part.clone()),
+            };
+            if let (Some((data, cx, cy)), Some(part)) = (resolve::inline_diagram(xml), part) {
+                out.push(diagram_item(office_slides::view::paint_diagram(self.doc, ctx, &part, data, (cx, cy), w, h), x, y, w, h));
+            }
+            return;
+        }
         let Some(Inline::Image(img)) = p.content.get(inline as usize) else { return };
         let id = format!("{}:{}", para.0.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."), inline);
         out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: Some(id) });
@@ -857,6 +867,11 @@ impl Objects for PageObjects<'_> {
     }
 }
 
+/// A diagram's drawn shapes, placed at (`x`, `y`).
+fn diagram_item(items: Vec<Item>, x: f64, y: f64, w: f64, h: f64) -> Item {
+    Item::Group { x, y, w: display::r(w), h: display::r(h), rot: 0.0, fh: false, fv: false, clip: false, id: None, items }
+}
+
 /// A picture's crop (`a:srcRect`), as shares of its size cut from each side.
 pub fn image_crop(img: &office_core::model::Image) -> Option<[f64; 4]> {
     let rect = img.origin.get()?.descendant(ns::A, "srcRect")?;
@@ -865,9 +880,10 @@ pub fn image_crop(img: &office_core::model::Image) -> Option<[f64; 4]> {
     c.iter().any(|x| *x != 0.0).then_some(c)
 }
 
-/// Pictures anchored to the page rather than sitting in the text (`wp:anchor`), drawn where they
-/// say, over the text: the layer reads their position; wrapping text around them is not done.
-fn paint_floating(doc: &Document, page: &Page, _index: usize, blocks: &[Block], flow: &FlowLayout, out: &mut Vec<Item>) {
+/// Pictures and SmartArt diagrams anchored to the page rather than sitting in the text
+/// (`wp:anchor`), drawn where they say, over the text: the layer reads their position; wrapping
+/// text around them is not done.
+fn paint_floating(ctx: &mut Ctx, doc: &Document, page: &Page, blocks: &[Block], flow: &FlowLayout, out: &mut Vec<Item>) {
     let Some(pkg) = &doc.package else { return };
     let Ok(main) = pkg.main_part() else { return };
     let Ok(rels) = pkg.rels(&main) else { return };
@@ -881,10 +897,15 @@ fn paint_floating(doc: &Document, page: &Page, _index: usize, blocks: &[Block], 
         for inline in &p.content {
             let Inline::Raw { xml } = inline else { continue };
             let Some(anchor) = xml.descendant(ns::WP, "anchor") else { continue };
-            let Some(blip) = anchor.descendant(ns::A, "blip") else { continue };
-            let Some(rid) = blip.attr_ns(ns::R, "embed") else { continue };
-            let Some(rel) = rels.get(rid) else { continue };
-            let Some(media) = pkg.target(&main, rel) else { continue };
+            let diagram = anchor.path(ns::A, &["graphic", "graphicData"]).filter(|d| office_core::formats::diagram::is_diagram(d));
+            let media = || {
+                let rid = anchor.descendant(ns::A, "blip")?.attr_ns(ns::R, "embed")?;
+                pkg.target(&main, rels.get(rid)?)
+            };
+            let media = if diagram.is_some() { None } else { media() };
+            if diagram.is_none() && media.is_none() {
+                continue;
+            }
             let extent = anchor.child(ns::WP, "extent");
             let size = |k: &str| extent.and_then(|e| e.attr(k)).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) / 9525.0;
             let (w, h) = (size("cx"), size("cy"));
@@ -910,19 +931,18 @@ fn paint_floating(doc: &Document, page: &Page, _index: usize, blocks: &[Block], 
                     None => origin + off.unwrap_or(0.0),
                 }
             };
+            let (x, y) = (display::r(offset("positionH")), display::r(offset("positionV")));
+            if let Some(data) = diagram {
+                let emu = |k: &str| office_core::units::Emu(extent.and_then(|e| e.attr(k)).and_then(|v| v.parse().ok()).unwrap_or(0));
+                out.push(diagram_item(office_slides::view::paint_diagram(doc, ctx, &main, data, (emu("cx"), emu("cy")), w, h), x, y, w, h));
+                continue;
+            }
+            let Some(media) = media else { continue };
             let crop = anchor.descendant(ns::A, "srcRect").map(|rect| {
                 let v = |k: &str| rect.attr(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) / 100_000.0;
                 [v("l"), v("t"), v("r"), v("b")]
             });
-            out.push(Item::Image {
-                x: display::r(offset("positionH")),
-                y: display::r(offset("positionV")),
-                w: display::r(w),
-                h: display::r(h),
-                media,
-                crop,
-                id: None,
-            });
+            out.push(Item::Image { x, y, w: display::r(w), h: display::r(h), media, crop, id: None });
         }
     }
 }

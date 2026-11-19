@@ -263,6 +263,7 @@ version = "0.1.0"
 dependencies = [
  "office-core",
  "office-engine",
+ "office-slides",
  "serde",
  "serde_json",
 ]

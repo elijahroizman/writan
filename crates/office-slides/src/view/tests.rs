@@ -950,3 +950,40 @@ fn pasting_an_imported_shape_keeps_its_outline_and_text_anchor() {
         assert!(!xml.contains("<a:lnRef idx=\"2\" xmlns"), "redeclared namespaces: {xml}");
     }
 }
+
+fn deck_with_diagram(cached: bool) -> Vec<u8> {
+    office_core::formats::diagram::test_diagram(&deck(&[&["Title"]]), "ppt/slides/slide1.xml", cached, |xml, data| {
+        let frame = format!(
+            r#"<p:graphicFrame><p:nvGraphicFramePr><p:cNvPr id="9" name="Diagram 1"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr><p:xfrm><a:off x="914400" y="2286000"/><a:ext cx="6096000" cy="3048000"/></p:xfrm><a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">{data}</a:graphic></p:graphicFrame></p:spTree>"#
+        );
+        xml.replacen("</p:spTree>", &frame, 1)
+    })
+}
+
+#[test]
+fn smartart_draws_its_cached_drawing() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::open(&deck_with_diagram(true)).unwrap();
+    let p = v.paint(&mut host, 0);
+    assert_eq!(texts(&p.items), vec!["Title", "Cached"]);
+    // The diagram's frame holds the cached shape, filled, scaled into the 640 x 320 px frame.
+    let Some(Item::Group { items, x, w, .. }) = p.items.iter().find(|i| matches!(i, Item::Group { id: Some(id), .. } if id == "9")) else {
+        panic!("{:?}", p.items)
+    };
+    assert_eq!((*x, *w), (96.0, 640.0));
+    assert!(
+        matches!(&items[0], Item::Group { w, items, .. } if (*w - 320.0).abs() < 0.01 && items.iter().any(|i| matches!(i, Item::Path { fill: Some(f), .. } if f == "#4472c4"))),
+        "{items:?}"
+    );
+    // Its original parts are saved as they were.
+    let saved = v.save().unwrap();
+    assert!(office_core::opc::Package::read(&saved).unwrap().has("ppt/diagrams/drawing1.xml"));
+}
+
+#[test]
+fn smartart_without_a_cached_drawing_shows_its_text() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::open(&deck_with_diagram(false)).unwrap();
+    let p = v.paint(&mut host, 0);
+    assert_eq!(texts(&p.items), vec!["Title", "Plan", "Scope", "Build"]);
+}

@@ -231,6 +231,18 @@ fn cell_parts(t: &Table, row: usize, col: usize) -> Vec<&'static str> {
     out
 }
 
+/// A run holding a SmartArt diagram in the text (`wp:inline`): its `a:graphicData` and size.
+pub(crate) fn inline_diagram(run: &Element) -> Option<(&Element, Emu, Emu)> {
+    if !run.is(ns::W, "r") {
+        return None;
+    }
+    let inline = run.child(ns::W, "drawing")?.child(ns::WP, "inline")?;
+    let data = inline.child(ns::A, "graphic")?.child(ns::A, "graphicData").filter(|d| office_core::formats::diagram::is_diagram(d))?;
+    let extent = inline.child(ns::WP, "extent")?;
+    let n = |k: &str| extent.attr(k).and_then(|v| v.parse().ok()).map(Emu);
+    Some((data, n("cx")?, n("cy")?))
+}
+
 /// What a raw inline shows, if anything.
 enum RawShow {
     Hidden,
@@ -487,6 +499,10 @@ impl WordResolver<'_> {
                     end,
                     kind: ItemKind::Object { width: emu_px(img.width), height: emu_px(img.height), inline: i as u32 },
                 }),
+                Inline::Raw { xml } if inline_diagram(xml).is_some() => {
+                    let (_, w, h) = inline_diagram(xml).unwrap();
+                    items.push(Item { start, end, kind: ItemKind::Object { width: emu_px(w), height: emu_px(h), inline: i as u32 } });
+                }
                 Inline::Raw { xml } => {
                     let kind = match raw_show(xml) {
                         RawShow::FieldBegin => {

@@ -3,6 +3,7 @@
 /// Helpers the back ends share, for layers that write parts of their own.
 pub mod common;
 pub mod csv;
+pub mod diagram;
 pub mod dml;
 pub mod docx;
 pub mod pptx;
