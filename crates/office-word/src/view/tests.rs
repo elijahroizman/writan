@@ -921,3 +921,105 @@ fn smartart_in_a_block_content_control_is_drawn() {
     walk(&page.items, &mut texts);
     assert_eq!(texts, vec!["Cached", "After"]);
 }
+
+/// A document whose body is `body` (Word markup) with `notes` (footnote bodies, by id) in
+/// `word/footnotes.xml`, as Word saves them: separators first, each note starting with its mark.
+fn footnoted_doc(body: &str, notes: &[(&str, &str)]) -> Vec<u8> {
+    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    let mut pkg = office_core::opc::Package::read(&doc_bytes(&[])).unwrap();
+    let text = String::from_utf8(pkg.part("word/document.xml").unwrap().to_vec()).unwrap();
+    pkg.replace("word/document.xml", text.replacen("<w:body>", &format!("<w:body>{body}"), 1).into_bytes()).unwrap();
+    let mut xml = format!(
+        r#"<w:footnotes xmlns:w="{W}"><w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>"#
+    );
+    for (id, note) in notes {
+        xml += &format!(
+            r#"<w:footnote w:id="{id}"><w:p><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> {note}</w:t></w:r></w:p></w:footnote>"#
+        );
+    }
+    xml += "</w:footnotes>";
+    pkg.put("word/footnotes.xml", xml.into_bytes(), "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml");
+    pkg.relate("word/document.xml", "footnotes", "word/footnotes.xml").unwrap();
+    pkg.to_bytes().unwrap()
+}
+
+fn footnote_para(text: &str, id: &str) -> String {
+    format!(
+        r#"<w:p><w:r><w:t>{text}</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteReference w:id="{id}"/></w:r></w:p>"#
+    )
+}
+
+fn page_texts(items: &[Item]) -> Vec<(String, f64)> {
+    let mut out = Vec::new();
+    for i in items {
+        match i {
+            Item::Text { text, y, .. } => out.push((text.clone(), *y)),
+            Item::Group { items, .. } => out.extend(page_texts(items)),
+            _ => {}
+        }
+    }
+    out
+}
+
+#[test]
+fn footnote_bodies_paint_at_the_bottom_of_their_page() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&footnoted_doc(&footnote_para("Foo", "1"), &[("1", "bar")])).unwrap();
+    v.layout(&mut host);
+    assert_eq!(v.page_count(), 1);
+    let page = v.paint(&mut host, 0);
+    let texts = page_texts(&page.items);
+    let y = |t: &str| texts.iter().find(|(s, _)| s.trim() == t).map(|(_, y)| *y).unwrap_or_else(|| panic!("{t:?} in {texts:?}"));
+    // The body's reference mark, then the note's own mark and its text.
+    assert_eq!(texts.iter().filter(|(s, _)| s == "1").count(), 2, "{texts:?}");
+    let (foo, bar) = (y("Foo"), y("bar"));
+    assert!(bar > page.height * 0.75 && bar < page.height, "the note sits at the bottom of the page: {bar} of {}", page.height);
+    assert!(bar > foo);
+    let separator = page.items.iter().find_map(|i| match i {
+        Item::Line { y1, y2, .. } if y1 == y2 => Some(*y1),
+        _ => None,
+    });
+    assert!(separator.is_some_and(|s| s > foo && s < bar), "a separator line above the note: {separator:?}");
+}
+
+#[test]
+fn footnotes_take_space_from_the_body_and_stay_on_their_page() {
+    let mut host = FixedMeasurer::default();
+    let body: String = (1..=40).map(|i| footnote_para(&format!("Paragraph {i}"), &i.to_string())).collect();
+    let notes: Vec<(String, String)> = (1..=40).map(|i| (i.to_string(), format!("Note {i} text"))).collect();
+    let notes: Vec<(&str, &str)> = notes.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let mut v = WordView::open(&footnoted_doc(&body, &notes)).unwrap();
+    let mut plain = WordView::open(&doc_bytes(
+        &(1..=40).map(|i| format!("Paragraph {i}")).collect::<Vec<_>>().iter().map(|s| s.as_str()).collect::<Vec<_>>(),
+    ))
+    .unwrap();
+    plain.layout(&mut host);
+    v.layout(&mut host);
+    assert!(v.page_count() > plain.page_count(), "{} pages with notes, {} without", v.page_count(), plain.page_count());
+    let mut seen = Vec::new();
+    for p in 0..v.page_count() {
+        let texts = page_texts(&v.paint(&mut host, p).items);
+        let paras: Vec<(u32, f64)> =
+            texts.iter().filter_map(|(t, y)| Some((t.strip_prefix("Paragraph ")?.trim().parse().ok()?, *y))).collect();
+        let notes: Vec<(u32, f64)> =
+            texts.iter().filter_map(|(t, y)| Some((t.trim().strip_prefix("Note ")?.strip_suffix(" text")?.parse().ok()?, *y))).collect();
+        let mut on_page: Vec<u32> = paras.iter().map(|(n, _)| *n).collect();
+        on_page.dedup();
+        assert_eq!(notes.iter().map(|(n, _)| *n).collect::<Vec<_>>(), on_page, "page {p}: each note with its reference");
+        let lowest = paras.iter().map(|(_, y)| *y).fold(f64::MIN, f64::max);
+        assert!(notes.iter().all(|(_, y)| *y > lowest), "page {p}: notes below the body");
+        seen.extend(notes.iter().map(|(n, _)| *n));
+    }
+    assert_eq!(seen, (1..=40).collect::<Vec<_>>());
+}
+
+#[test]
+fn footnotes_referenced_in_content_controls_are_painted() {
+    let mut host = FixedMeasurer::default();
+    let body = format!("<w:sdt><w:sdtContent>{}</w:sdtContent></w:sdt>", footnote_para("Foo", "1"));
+    let mut v = WordView::open(&footnoted_doc(&body, &[("1", "bar")])).unwrap();
+    v.layout(&mut host);
+    let texts = page_texts(&v.paint(&mut host, 0).items);
+    assert!(texts.iter().any(|(t, _)| t.trim() == "Foo"), "{texts:?}");
+    assert!(texts.iter().any(|(t, _)| t.trim() == "bar"), "{texts:?}");
+}

@@ -59,6 +59,8 @@ pub struct WordResolver<'a> {
     /// A preview's layout paths are local; its list labels are still keyed within the story.
     pub label_prefix: &'a [u32],
     pub fields: Option<PageFields>,
+    /// The note being laid out, by id: its own reference mark (`w:footnoteRef`) shows that number.
+    pub note: Option<&'a str>,
     /// Specs worked out before, by what they were worked out from (see [`spec_key`]).
     pub specs: &'a mut SpecCache,
 }
@@ -256,6 +258,8 @@ enum RawShow {
     NoteRef(String),
     /// An equation, as text.
     Math(String),
+    /// A note's own mark, at the start of its text.
+    OwnNoteRef,
 }
 
 fn raw_show(el: &Element) -> RawShow {
@@ -272,6 +276,9 @@ fn raw_show(el: &Element) -> RawShow {
         }
         if let Some(n) = el.child(ns::W, "footnoteReference").or_else(|| el.child(ns::W, "endnoteReference")) {
             return RawShow::NoteRef(n.attr_ns(ns::W, "id").unwrap_or("").to_string());
+        }
+        if el.child(ns::W, "footnoteRef").is_some() || el.child(ns::W, "endnoteRef").is_some() {
+            return RawShow::OwnNoteRef;
         }
         if el.child(ns::W, "vanish").is_some() || el.path(ns::W, &["rPr", "vanish"]).is_some() {
             return RawShow::Hidden;
@@ -359,6 +366,7 @@ impl WordResolver<'_> {
             self.sibling(path, delta).map(|q| (&q.props.style, q.origin.id())).hash(&mut h);
         }
         self.fields.map(|f| (f.page, f.pages)).hash(&mut h);
+        self.note.hash(&mut h);
         if let Some((table_path, _, _)) = path.cell() {
             if let Some(Block::Table(t)) = blocks_at(self.story, table_path.container()).and_then(|b| b.get(table_path.block() as usize)) {
                 (t.rows.len(), t.columns.len(), &t.style, t.origin.id()).hash(&mut h);
@@ -378,6 +386,7 @@ impl Resolver for WordResolver<'_> {
             labels: self.labels,
             label_prefix: &prefix,
             fields: self.fields,
+            note: self.note,
             specs: self.specs,
         };
         flow::layout(ctx, cache, &mut resolver, blocks, &[], width)
@@ -504,7 +513,11 @@ impl WordResolver<'_> {
                     items.push(Item { start, end, kind: ItemKind::Object { width: emu_px(w), height: emu_px(h), inline: i as u32 } });
                 }
                 Inline::Raw { xml } => {
-                    let kind = match raw_show(xml) {
+                    let shown = match raw_show(xml) {
+                        RawShow::OwnNoteRef => self.note.map_or(RawShow::Hidden, |id| RawShow::NoteRef(id.to_string())),
+                        shown => shown,
+                    };
+                    let kind = match shown {
                         RawShow::FieldBegin => {
                             field = Some((String::new(), false, false));
                             ItemKind::Hidden
@@ -538,6 +551,7 @@ impl WordResolver<'_> {
                                 ItemKind::Atomic { text, style: self.style(ctx, &self.run_props(p, &rpr, path), false), inline: i as u32 }
                             }
                         }
+                        RawShow::OwnNoteRef => ItemKind::Hidden,
                         RawShow::NoteRef(id) => {
                             let rpr = xml.child(ns::W, "rPr").map(office_core::formats::docx::read_run_props).unwrap_or_default();
                             let mut props = self.run_props(p, &rpr, path);
