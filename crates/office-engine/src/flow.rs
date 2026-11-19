@@ -71,7 +71,7 @@ pub trait Resolver {
     /// How the table at `path` looks in a column `width` wide.
     fn table(&mut self, path: &Path, t: &Table, width: f64) -> TableLook;
     /// Layout for preserved markup with a read-only preview. Its paths are local to the preview.
-    fn preview(&mut self, _ctx: &mut Ctx, _cache: &mut Cache, _blocks: &[Block], _width: f64) -> FlowLayout {
+    fn preview(&mut self, _ctx: &mut Ctx, _cache: &mut Cache, _path: &Path, _blocks: &[Block], _width: f64) -> FlowLayout {
         FlowLayout::default()
     }
 }
@@ -253,7 +253,8 @@ pub fn layout_block(ctx: &mut Ctx, cache: &mut Cache, resolver: &mut dyn Resolve
             BlockBox::Table(table(ctx, cache, resolver, t, &look, &path, 0.0))
         }
         Block::Raw { preview, .. } if !preview.is_empty() => {
-            BlockBox::Preview { path, y: 0.0, flow: resolver.preview(ctx, cache, preview, width), blocks: preview.clone() }
+            let flow = resolver.preview(ctx, cache, &path, preview, width);
+            BlockBox::Preview { path, y: 0.0, flow, blocks: preview.clone() }
         }
         Block::Raw { .. } => BlockBox::Empty { path },
     }

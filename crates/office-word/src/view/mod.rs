@@ -381,6 +381,7 @@ impl WordView {
                 extras: &self.extras,
                 story: body,
                 labels: &self.labels,
+                label_prefix: &[],
                 fields: None,
                 specs: &mut self.specs,
             };
@@ -451,6 +452,7 @@ impl WordView {
             extras: &self.extras,
             story: &blocks,
             labels: &labels,
+            label_prefix: &[],
             fields: Some(fields),
             specs: &mut self.specs,
         };
@@ -765,7 +767,7 @@ fn relayout(
                 }
                 b
             })
-            .filter(|b| b.path().0.first() == Some(&i) && same_labels(b, labels));
+            .filter(|b| b.path().0.first() == Some(&i) && same_labels(b, labels, &[]));
         let b = match kept {
             Some(b) => b,
             None => flow::layout_block(ctx, cache, r, block, Path::top(i), width),
@@ -777,11 +779,17 @@ fn relayout(
 }
 
 /// Whether a kept box's list labels are still the ones its paragraphs have.
-fn same_labels(b: &BlockBox, labels: &HashMap<Path, String>) -> bool {
+fn same_labels(b: &BlockBox, labels: &HashMap<Path, String>, prefix: &[u32]) -> bool {
     match b {
-        BlockBox::Para(p) => p.spec.label.as_ref().map(|l| &l.text) == labels.get(&p.path).filter(|l| !l.is_empty()),
-        BlockBox::Table(t) => t.cells.iter().all(|c| c.content.blocks.iter().all(|b| same_labels(b, labels))),
-        BlockBox::Preview { .. } | BlockBox::Empty { .. } => true,
+        BlockBox::Para(p) => {
+            p.spec.label.as_ref().map(|l| &l.text) == resolve::list_label(labels, prefix, &p.path).filter(|l| !l.is_empty())
+        }
+        BlockBox::Table(t) => t.cells.iter().all(|c| c.content.blocks.iter().all(|b| same_labels(b, labels, prefix))),
+        BlockBox::Preview { path, flow, .. } => {
+            let prefix = [prefix, &path.0].concat();
+            flow.blocks.iter().all(|b| same_labels(b, labels, &prefix))
+        }
+        BlockBox::Empty { .. } => true,
     }
 }
 
@@ -952,7 +960,7 @@ fn body_labels(doc: &Document, memo: &mut ListMemo, last: &mut Vec<Option<(Strin
             match b {
                 Block::Paragraph(p) => f(p),
                 Block::Table(t) => t.rows.iter().flat_map(|r| &r.cells).filter(|c| !c.covered).for_each(|c| walk(&c.blocks, f)),
-                Block::Raw { .. } => {}
+                Block::Raw { preview, .. } => walk(preview, f),
             }
         }
     }
@@ -997,7 +1005,13 @@ fn body_labels(doc: &Document, memo: &mut ListMemo, last: &mut Vec<Option<(Strin
                         }
                     }
                 }
-                Block::Raw { .. } => {}
+                Block::Raw { preview, .. } => {
+                    if !preview.is_empty() {
+                        prefix.push(k as u32);
+                        paths(preview, prefix, labels, i, out);
+                        prefix.pop();
+                    }
+                }
             }
         }
     }

@@ -120,6 +120,7 @@ fn story_height(view: &mut WordView, host: &mut dyn Measurer, story: Option<usiz
         extras: &view.extras,
         story: &blocks,
         labels: &labels,
+        label_prefix: &[],
         fields: Some(super::resolve::PageFields { page: 1, pages: 1 }),
         specs: &mut view.specs,
     };

@@ -12,8 +12,8 @@ fn doc_bytes(paras: &[&str]) -> Vec<u8> {
     Compiler::new().with_layer(Words).write(&doc, Kind::Word).unwrap()
 }
 
-fn block_control_doc(content: &str) -> office_core::opc::Package {
-    let mut pkg = office_core::opc::Package::read(&doc_bytes(&["Before", "After"])).unwrap();
+fn block_control_doc(bytes: &[u8], content: &str) -> office_core::opc::Package {
+    let mut pkg = office_core::opc::Package::read(bytes).unwrap();
     let xml = String::from_utf8(pkg.part("word/document.xml").unwrap().to_vec()).unwrap();
     let at = xml.find("</w:p>").unwrap() + "</w:p>".len();
     let control = format!(
@@ -28,6 +28,7 @@ fn block_control_doc(content: &str) -> office_core::opc::Package {
 #[test]
 fn block_content_control_shows_cached_toc_without_rewriting_xml() {
     let pkg = block_control_doc(
+        &doc_bytes(&["Before", "After"]),
         r#"<w:p>
              <w:pPr><w:tabs><w:tab w:val="right" w:pos="6000"/></w:tabs></w:pPr>
              <w:r><w:fldChar w:fldCharType="begin"/></w:r>
@@ -77,7 +78,7 @@ fn block_content_control_shows_cached_toc_without_rewriting_xml() {
 #[test]
 fn block_content_control_flows_across_pages() {
     let content: String = (0..140).map(|i| format!("<w:p><w:r><w:t>Entry {i:03}</w:t></w:r></w:p>")).collect();
-    let mut v = WordView::open(&block_control_doc(&content).to_bytes().unwrap()).unwrap();
+    let mut v = WordView::open(&block_control_doc(&doc_bytes(&["Before", "After"]), &content).to_bytes().unwrap()).unwrap();
     let mut host = FixedMeasurer::default();
     v.layout(&mut host);
     assert!(v.page_count() > 1);
@@ -89,6 +90,27 @@ fn block_content_control_flows_across_pages() {
         })
         .collect();
     assert_eq!(entries, (0..140).map(|i| format!("Entry {i:03}")).collect::<Vec<_>>());
+}
+
+#[test]
+fn block_content_control_continues_the_surrounding_list() {
+    let mut original = WordView::open(&doc_bytes(&["Before", "After"])).unwrap();
+    let list = crate::add_list(&mut original.doc, crate::ListKind::Numbers);
+    crate::set_list(&mut original.doc, 0, Some((&list, 0)));
+    crate::set_list(&mut original.doc, 1, Some((&list, 0)));
+    let pkg = block_control_doc(
+        &original.save().unwrap(),
+        &format!(
+            r#"<w:p><w:pPr><w:numPr><w:ilvl w:val="0"/><w:numId w:val="{list}"/></w:numPr></w:pPr>
+                <w:r><w:t>Inside</w:t></w:r></w:p>"#
+        ),
+    );
+    let mut v = WordView::open(&pkg.to_bytes().unwrap()).unwrap();
+    let mut host = FixedMeasurer::default();
+    let page = v.paint(&mut host, 0);
+    let drawn: Vec<_> =
+        page.items.iter().filter_map(|i| if let Item::Text { text, .. } = i { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(drawn, ["1.", "Before", "2.", "Inside", "3.", "After"]);
 }
 
 fn texts(v: &WordView) -> Vec<String> {
