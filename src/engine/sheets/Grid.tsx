@@ -51,6 +51,7 @@ export interface EditorHooks {
 }
 
 type Box = { x: number; y: number; w: number; h: number }
+type ClipboardData = { text: string; spreadsheet: string | null }
 
 export function Grid({
   engine,
@@ -72,6 +73,7 @@ export function Grid({
 }: Props) {
   const scroller = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
+  const keyboardCut = useRef<{ data?: ClipboardData } | null>(null)
   const cellsRef = useRef<HTMLDivElement>(null)
   const [view, setView] = useState({ left: 0, top: 0, w: 800, h: 600 })
   const [, setTick] = useState(0)
@@ -296,6 +298,9 @@ export function Grid({
   })
 
   // ── Keyboard (while not editing a cell)
+  const endCutGesture = () => {
+    keyboardCut.current = null
+  }
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.nativeEvent.isComposing) return
     // Keys typed before the cell editor took focus still belong to it.
@@ -311,6 +316,9 @@ export function Grid({
       return
     }
     const mod = isMac ? e.metaKey : e.ctrlKey
+    if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'x') {
+      if (!e.repeat || !keyboardCut.current) keyboardCut.current = {}
+    } else endCutGesture()
     const [r, c] = st.focus
     const step = (dr: number, dc: number) => {
       // ⌘-arrow goes to the edge of the sheet's used cells, roughly as Excel does.
@@ -398,11 +406,21 @@ export function Grid({
 
   const onCopy = (e: React.ClipboardEvent, cut: boolean) => {
     const rr = engine.range
-    const { text, clipboard } = JSON.parse(engine.doc.copy(sheet, rr.r0, rr.c0, rr.r1, rr.c1, cut)) as { text: string; clipboard: unknown }
+    const gesture = cut ? keyboardCut.current : null
+    const previous = gesture?.data
+    let data = previous
+    if (!data) {
+      const { text, clipboard } = JSON.parse(engine.doc.copy(sheet, rr.r0, rr.c0, rr.r1, rr.c1, cut)) as { text: string; clipboard: unknown }
+      data = { text, spreadsheet: clipboard ? JSON.stringify(clipboard) : null }
+    }
     e.preventDefault()
-    e.clipboardData.setData('text/plain', text)
-    if (clipboard) e.clipboardData.setData(SHEETS_CLIPBOARD, JSON.stringify(clipboard))
-    if (cut) engine.run({ cmd: 'clear', sheet, range: rr })
+    e.clipboardData.setData('text/plain', data.text)
+    if (data.spreadsheet) e.clipboardData.setData(SHEETS_CLIPBOARD, data.spreadsheet)
+    if (cut && !previous) {
+      // WebKit can send two cut events for one keypress. Both must write the pre-cut data.
+      if (gesture) gesture.data = data
+      engine.run({ cmd: 'clear', sheet, range: rr })
+    }
   }
   const onPaste = (e: React.ClipboardEvent) => {
     const text = e.clipboardData.getData('text/plain')
@@ -558,6 +576,8 @@ export function Grid({
           aria-label="Cells"
           style={{ left: curX + HEAD_W, top: curY + HEAD_H }}
           onKeyDown={onKeyDown}
+          onKeyUp={endCutGesture}
+          onBlur={endCutGesture}
           onCompositionEnd={(e) => {
             const v = e.data
             ;(e.target as HTMLTextAreaElement).value = ''

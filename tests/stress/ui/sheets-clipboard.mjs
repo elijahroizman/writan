@@ -26,7 +26,17 @@ try {
   check('copy leaves the source formula intact', (await cell(4, 1)).input === '=SUM(B2:B4)')
 
   await select(4, 1)
-  await key('x')
+  const modifier = process.platform === 'darwin' ? 'Meta' : 'Control'
+  await page.keyboard.down(modifier)
+  await page.keyboard.down('x')
+  const repeatedCut = await grid.evaluate((el) => {
+    const data = new DataTransfer()
+    el.dispatchEvent(new ClipboardEvent('cut', { bubbles: true, cancelable: true, clipboardData: data }))
+    return [data.getData('text/plain'), data.getData('application/x-writan-sheets')]
+  })
+  await page.keyboard.up('x')
+  await page.keyboard.up(modifier)
+  check('a second cut event from one keypress keeps the clipboard payload', repeatedCut[0] === '200\n' && repeatedCut[1].includes('SUM(B2:B4)'))
   await select(4, 3)
   await key('v')
   const moved = await cell(4, 3)
