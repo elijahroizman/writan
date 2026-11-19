@@ -6,12 +6,12 @@ use std::collections::{HashMap, HashSet};
 
 use office_core::drawing::{Color, Rgb};
 use office_core::model::{CellRef, Origin, Range, Sheet, SheetCell, SheetRow, Value};
-use office_core::xml::ns;
+use office_core::xml::{ns, Node};
 use serde::{Deserialize, Serialize};
 
 use super::{CStep, SheetSel, SheetsView};
 use crate::formula::{MovedRange, RefPart, Reference};
-use crate::{format_of, set_format, DateSystem};
+use crate::{format_of, set_format, DateSystem, DefinedName};
 
 /// A change to cells' formatting, from the inspector.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -131,15 +131,70 @@ impl SheetsView {
         self.record(vec![CStep::Sheet { sheet, before: Box::new(before), after: Box::new(after) }], sel);
     }
 
-    /// `change_sheet` for inserting or deleting rows or columns, or `change_book` when another
-    /// sheet has charts whose references may move with it.
-    fn change_for_shift(&mut self, sheet: usize, f: impl FnOnce(&mut SheetsView)) {
+    /// Inserts or deletes rows or columns through `f`, as one step, then moves the references
+    /// to them in other sheets' formulas and in defined names. The step holds the whole book
+    /// when another sheet has charts whose references may move with it.
+    fn change_for_shift(&mut self, sheet: usize, axis: Axis, at: u32, n: i64, f: impl FnOnce(&mut SheetsView)) {
         self.cancel_cut_on_sheet(sheet);
-        if self.sheets().iter().enumerate().any(|(i, s)| i != sheet && !s.charts.is_empty()) {
-            self.change_book(f);
-        } else {
-            self.change_sheet(sheet, f);
+        let Some(name) = self.sheets().get(sheet).map(|s| s.name.clone()) else { return };
+        let book = self.sheets().iter().enumerate().any(|(i, s)| i != sheet && !s.charts.is_empty());
+        let sel = self.sel;
+        let before = if book { self.sheets().to_vec() } else { vec![self.sheets()[sheet].clone()] };
+        f(self);
+        let mut steps = Vec::new();
+        for (i, s) in self.sheets_mut().iter_mut().enumerate() {
+            if i == sheet {
+                continue;
+            }
+            let old = prepare_shift(s, &name, axis, at, n);
+            if !book && !old.is_empty() {
+                let cells = old.into_iter().map(|(at, before)| (at, Some(before), s.cell(at).cloned())).collect();
+                steps.push(CStep::Cells { sheet: i, cells });
+            }
         }
+        let main = if book {
+            CStep::Book { before, after: self.sheets().to_vec() }
+        } else {
+            let before = before.into_iter().next().unwrap();
+            CStep::Sheet { sheet, before: Box::new(before), after: Box::new(self.sheets()[sheet].clone()) }
+        };
+        steps.insert(0, main);
+        steps.extend(self.shift_names(&name, axis, at, n));
+        self.changed(if book || steps.len() > 1 { None } else { Some(sheet) });
+        self.record(steps, sel);
+    }
+
+    /// Moves defined names' references to `target` for a row or column insert or delete, in the
+    /// names the formulas use and in the workbook XML they're saved in.
+    fn shift_names(&mut self, target: &str, axis: Axis, at: u32, n: i64) -> Option<CStep> {
+        let adjust = |name: &str, f: &str| {
+            if name.eq_ignore_ascii_case(crate::SIZE_NAME) {
+                f.to_string()
+            } else {
+                adjust_formula_on(f, target, false, axis, at, n)
+            }
+        };
+        let before = crate::names(&self.doc).to_vec();
+        let after: Vec<DefinedName> = before.iter().map(|d| DefinedName { formula: adjust(&d.name, &d.formula), ..d.clone() }).collect();
+        if after == before {
+            return None;
+        }
+        let old_origin = self.doc.origin.clone();
+        if let Some(workbook) = self.doc.origin.get() {
+            let mut workbook = workbook.clone();
+            if let Some(list) = workbook.child_mut(ns::X, "definedNames") {
+                for e in list.elements_mut().filter(|e| e.is(ns::X, "definedName")) {
+                    let text = e.text();
+                    let next = adjust(e.attr("name").unwrap_or(""), &text);
+                    if next != text {
+                        e.children = vec![Node::Text(next)];
+                    }
+                }
+            }
+            self.doc.origin = Origin::new(workbook);
+        }
+        crate::excel_mut(&mut self.doc).names = after.clone();
+        Some(CStep::Names { before: Box::new((before, old_origin)), after: Box::new((after, self.doc.origin.clone())) })
     }
 
     fn change_book(&mut self, f: impl FnOnce(&mut SheetsView)) {
@@ -196,6 +251,11 @@ impl SheetsView {
                 if let Some(s) = self.sheets_mut().get_mut(*sheet) {
                     s.charts = if undo { before.clone() } else { after.clone() };
                 }
+            }
+            CStep::Names { before, after } => {
+                let (names, origin) = if undo { &**before } else { &**after };
+                self.doc.origin = origin.clone();
+                crate::excel_mut(&mut self.doc).names = names.clone();
             }
         }
     }
@@ -387,13 +447,13 @@ impl SheetsView {
 
     /// Inserts `n` rows above row `at` (or deletes `n` rows from it, for a negative `n`).
     pub fn shift_rows(&mut self, sheet: usize, at: u32, n: i64) {
-        self.change_for_shift(sheet, |v| {
+        self.change_for_shift(sheet, Axis::Row, at, n, |v| {
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
             // Shared followers keep their formula only on the group's origin. Copy every formula in a
             // group that this shift touches before those origins are cleared, and move references the
             // way inserting or deleting rows does.
-            prepare_shift(s, Axis::Row, at, n);
             let name = s.name.clone();
+            prepare_shift(s, &name, Axis::Row, at, n);
             super::charts::shift_charts(s, true, at, n, |f| adjust_formula(f, &name, Axis::Row, at, n));
             super::charts::shift_other_chart_refs(v.sheets_mut(), sheet, |f| adjust_formula(f, &name, Axis::Row, at, n));
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
@@ -427,10 +487,10 @@ impl SheetsView {
 
     /// Inserts `n` columns left of column `at` (or deletes `n` from it, for a negative `n`).
     pub fn shift_cols(&mut self, sheet: usize, at: u32, n: i64) {
-        self.change_for_shift(sheet, |v| {
+        self.change_for_shift(sheet, Axis::Col, at, n, |v| {
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
-            prepare_shift(s, Axis::Col, at, n);
             let name = s.name.clone();
+            prepare_shift(s, &name, Axis::Col, at, n);
             super::charts::shift_charts(s, false, at, n, |f| adjust_formula(f, &name, Axis::Col, at, n));
             super::charts::shift_other_chart_refs(v.sheets_mut(), sheet, |f| adjust_formula(f, &name, Axis::Col, at, n));
             let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
@@ -1016,6 +1076,21 @@ fn shared_mark(origin: &Origin) -> Option<(String, bool)> {
     Some((f.attr("si").unwrap_or("").to_string(), f.attr("ref").is_some()))
 }
 
+/// Puts `text` in the stored `<f>` of an array formula or a shared formula's leader, so the
+/// writer keeps its markup.
+fn set_formula_markup(origin: &mut Origin, text: &str) {
+    let Some(el) = origin.get() else { return };
+    let Some(f) = el.child(ns::X, "f") else { return };
+    if !matches!(f.attr("t"), Some("array" | "shared")) || f.text().is_empty() {
+        return;
+    }
+    let mut el = el.clone();
+    if let Some(f) = el.child_mut(ns::X, "f") {
+        f.children = vec![Node::Text(text.to_string())];
+    }
+    *origin = Origin::new(el);
+}
+
 /// Drops the stored `<f>` so a materialized formula is written as an ordinary formula.
 fn drop_formula_markup(origin: &mut Origin) {
     let Some(el) = origin.get() else { return };
@@ -1028,9 +1103,15 @@ fn drop_formula_markup(origin: &mut Origin) {
 }
 
 /// Copies shared formulas onto every cell of a group this shift will break, then moves every
-/// formula's references. Followers whose leader is deleted keep the formula they had.
-fn prepare_shift(sheet: &mut Sheet, axis: Axis, at: u32, n: i64) {
-    let name = sheet.name.clone();
+/// formula's references to `target`, the sheet that rows or columns were inserted in or deleted
+/// from. Followers whose leader is deleted keep the formula they had. Returns each cell changed,
+/// as it was.
+fn prepare_shift(sheet: &mut Sheet, target: &str, axis: Axis, at: u32, n: i64) -> Vec<(CellRef, SheetCell)> {
+    let shift_at = at;
+    let local = sheet.name.eq_ignore_ascii_case(target);
+    let adjust = |f: &str| adjust_formula_on(f, target, local, axis, at, n);
+    let mut old = Vec::new();
+    let mut seen = HashSet::new();
     let mut order = Vec::new();
     let mut groups: HashMap<String, SharedBuild> = HashMap::new();
     for row in &sheet.rows {
@@ -1055,32 +1136,46 @@ fn prepare_shift(sheet: &mut Sheet, axis: Axis, at: u32, n: i64) {
         // A group breaks when any cell moves or is deleted (its origin is about to go), or when
         // inserting rows inside a copied range would make one cell's formula no longer the
         // leader's formula shifted by the same offset.
-        let structural = g.members.iter().any(|&(r, c)| axis_index(axis, r, c) >= at);
-        let refs_move = g.members.iter().any(|&(r, c)| {
-            crate::formula::shift(&text, r as i64 - mr as i64, c as i64 - mc as i64)
-                .is_ok_and(|f| adjust_formula(&f, &name, axis, at, n) != f)
-        });
+        let structural = local && g.members.iter().any(|&(r, c)| axis_index(axis, r, c) >= at);
+        let refs_move = g
+            .members
+            .iter()
+            .any(|&(r, c)| crate::formula::shift(&text, r as i64 - mr as i64, c as i64 - mc as i64).is_ok_and(|f| adjust(&f) != f));
         if !structural && !refs_move {
             continue;
         }
         for (r, c) in g.members {
+            let at = CellRef::new(r, c);
+            if let Some(cell) = sheet.cell(at).filter(|_| seen.insert(at)) {
+                old.push((at, cell.clone()));
+            }
             let base = crate::formula::shift(&text, r as i64 - mr as i64, c as i64 - mc as i64).unwrap_or_else(|_| text.clone());
-            sheet.cell_mut(CellRef::new(r, c)).formula = Some(base);
-            strip.push((r, c));
+            sheet.cell_mut(at).formula = Some(base);
+            strip.push(at);
         }
     }
+    let stripped: HashSet<CellRef> = strip.iter().copied().collect();
     for row in &mut sheet.rows {
         for c in &mut row.cells {
-            let Some(current) = c.formula.clone() else { continue };
-            let next = adjust_formula(&current, &name, axis, at, n);
+            let Some(current) = c.formula.as_deref() else { continue };
+            let next = adjust(current);
             if next != current {
+                let at = CellRef::new(row.index, c.col);
+                if seen.insert(at) {
+                    old.push((at, c.clone()));
+                }
+                // An array formula or a shared leader that stays put keeps its markup, with the new text.
+                if !stripped.contains(&at) && (!local || axis_index(axis, at.row, at.col) < shift_at) {
+                    set_formula_markup(&mut c.origin, &next);
+                }
                 c.formula = Some(next);
             }
         }
     }
-    for (r, c) in strip {
-        drop_formula_markup(&mut sheet.cell_mut(CellRef::new(r, c)).origin);
+    for at in strip {
+        drop_formula_markup(&mut sheet.cell_mut(at).origin);
     }
+    old
 }
 
 const MAX_ROW: u32 = 1_048_575;
@@ -1238,6 +1333,8 @@ fn write_coords(start: &RefPart, end: Option<&RefPart>) -> String {
 /// The sheet being shifted, and where rows or columns were inserted or deleted.
 struct FormulaShift<'a> {
     sheet_name: &'a str,
+    /// Whether a reference with no sheet name is on the shifted sheet.
+    local: bool,
     axis: Axis,
     at: u32,
     n: i64,
@@ -1248,7 +1345,13 @@ struct FormulaShift<'a> {
 /// Same rules as Excel: a range grows when rows are inserted inside it and shrinks when rows
 /// are deleted from it.
 fn adjust_formula(src: &str, sheet_name: &str, axis: Axis, at: u32, n: i64) -> String {
-    let shift = FormulaShift { sheet_name, axis, at, n };
+    adjust_formula_on(src, sheet_name, true, axis, at, n)
+}
+
+/// [`adjust_formula`] for a formula that may not be on the shifted sheet: unless `local`, only
+/// references naming `sheet_name` move.
+fn adjust_formula_on(src: &str, sheet_name: &str, local: bool, axis: Axis, at: u32, n: i64) -> String {
+    let shift = FormulaShift { sheet_name, local, axis, at, n };
     let b = src.as_bytes();
     let mut out = String::with_capacity(src.len());
     let mut i = 0;
@@ -1299,7 +1402,9 @@ fn adjust_formula(src: &str, sheet_name: &str, axis: Axis, at: u32, n: i64) -> S
             c if c == '$' || c == '_' || c == '\\' || c.is_alphabetic() => {
                 let word_end = scan_word(src, i);
                 if word_end > i && b.get(word_end) == Some(&b'!') {
-                    let sheet = src[i..word_end].to_string();
+                    // A sheet in another workbook (`[1]Data!A1`) is never the shifted one.
+                    let external = i > 0 && b[i - 1] == b']';
+                    let sheet = if external { format!("]{}", &src[i..word_end]) } else { src[i..word_end].to_string() };
                     if let Some((r, len)) = parse_ref(src, word_end + 1, Some(sheet)) {
                         rewrite(&mut out, src, i, word_end + 1, word_end + 1 + len, r, &shift);
                         i = word_end + 1 + len;
@@ -1372,7 +1477,7 @@ fn scan_word(src: &str, i: usize) -> usize {
 }
 
 fn rewrite(out: &mut String, src: &str, start: usize, coord: usize, end: usize, reference: Reference, shift: &FormulaShift<'_>) {
-    let same_sheet = reference.sheet.as_ref().map(|s| s.eq_ignore_ascii_case(shift.sheet_name)).unwrap_or(true);
+    let same_sheet = reference.sheet.as_ref().map(|s| s.eq_ignore_ascii_case(shift.sheet_name)).unwrap_or(shift.local);
     if !same_sheet {
         out.push_str(&src[start..end]);
         return;
