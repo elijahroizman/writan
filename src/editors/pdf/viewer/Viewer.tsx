@@ -88,6 +88,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
     const overscan = el.clientHeight
     const [first, last] = pagesIn(l, Math.max(0, top - overscan), bottom + overscan)
     setRange((r) => (r[0] === first && r[1] === last ? r : [first, last]))
+    if (currentRef.current >= l.tops.length) held.current = false
     const now = held.current ? currentRef.current : mostVisible(l, top, bottom)
     if (now !== currentRef.current) {
       currentRef.current = now
