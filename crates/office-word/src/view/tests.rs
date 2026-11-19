@@ -1106,3 +1106,22 @@ fn the_last_section_sets_the_endnote_format() {
     let texts = page_texts(&v.paint(&mut host, 0).items);
     assert_eq!(texts.iter().filter(|(s, _)| s == "1").count(), 2, "{texts:?}");
 }
+
+#[test]
+fn the_settings_set_the_endnote_format() {
+    const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    let mut host = FixedMeasurer::default();
+    let bytes = noted_doc(&endnote_para("Foo", "1"), "endnote", &[("1", "bar")]);
+    let mut pkg = office_core::opc::Package::read(&bytes).unwrap();
+    let settings = format!(r#"<w:settings xmlns:w="{W}"><w:endnotePr><w:numFmt w:val="upperLetter"/></w:endnotePr></w:settings>"#);
+    if pkg.part("word/settings.xml").is_ok() {
+        pkg.replace("word/settings.xml", settings.into_bytes()).unwrap();
+    } else {
+        pkg.put("word/settings.xml", settings.into_bytes(), "application/vnd.openxmlformats-officedocument.wordprocessingml.settings+xml");
+        pkg.relate("word/document.xml", "settings", "word/settings.xml").unwrap();
+    }
+    let mut v = WordView::open(&pkg.to_bytes().unwrap()).unwrap();
+    v.layout(&mut host);
+    let texts = page_texts(&v.paint(&mut host, 0).items);
+    assert_eq!(texts.iter().filter(|(s, _)| s == "A").count(), 2, "{texts:?}");
+}

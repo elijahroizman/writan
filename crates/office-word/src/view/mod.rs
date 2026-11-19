@@ -1179,7 +1179,7 @@ fn read_parts_extras(doc: &Document) -> Extras {
     use office_core::opc::rels::kind;
     let styles = edited_styles.or_else(|| part(kind::STYLES));
     let numbering = part(kind::NUMBERING);
-    let settings = part("http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings");
+    let settings = part(kind::SETTINGS);
     Extras::read(styles.as_ref(), numbering.as_ref(), settings.as_ref())
 }
 
