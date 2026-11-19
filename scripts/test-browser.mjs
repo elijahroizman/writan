@@ -19,6 +19,7 @@ const scripts = [
   'tests/stress/ui/row-header-menu.mjs',
   'tests/stress/ui/security.mjs',
   'tests/stress/ui/sheet-rename.mjs',
+  'tests/stress/ui/slides-animations.mjs',
   'tests/stress/ui/slides-clipboard.mjs',
   'tests/stress/native/pdf-page-select.mjs',
   'tests/stress/native/pdf-flatten.mjs',

@@ -98,6 +98,9 @@ pub struct SlideInfo {
     pub notes: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub transition: Option<crate::Transition>,
+    /// What the slideshow animates on the slide, one step per click.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub animations: Vec<crate::AnimationStep>,
     pub revision: u64,
     /// Whether it shows its master's and layout's shapes.
     pub show_master_shapes: bool,
@@ -124,6 +127,7 @@ impl SlidesView {
                 layout_name: crate::layouts(&self.doc).into_iter().find(|t| Some(&t.part) == s.layout.as_ref()).map(|t| t.name.clone()),
                 notes: crate::notes(&self.doc, i).iter().map(|p| p.plain_text()).collect::<Vec<_>>().join("\n"),
                 transition: crate::transition(s).filter(|t| !t.kind.is_empty() || !t.on_click || t.after_ms.is_some()),
+                animations: crate::animation_steps(s),
                 revision: self.revisions.get(i).copied().unwrap_or(0),
                 show_master_shapes: s
                     .origin
