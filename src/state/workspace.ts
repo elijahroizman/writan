@@ -495,7 +495,11 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     markDirty: (id, dirty) => {
       const tab = get().tabs.find((t) => t.id === id)
       if (!tab) return
-      if (tab.recovered && !dirty) return
+      if (tab.recovered && !dirty) {
+        // Undone back to what was recovered: the kept copy must lose the undone edits too.
+        recoveryHooks.edited(id)
+        return
+      }
       if (tab.dirty !== dirty) set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, dirty } : t)) })
       if (dirty) {
         edits.set(id, (edits.get(id) ?? 0) + 1)
