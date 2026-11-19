@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use super::{CStep, SheetSel, SheetsView};
 use crate::formula::{MovedRange, RefPart, Reference};
-use crate::{format_of, set_format};
+use crate::{format_of, set_format, DateSystem};
 
 /// A change to cells' formatting, from the inspector.
 #[derive(Clone, Debug, Default, Deserialize)]
@@ -45,6 +45,8 @@ pub struct ClipboardRange {
     cut: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     move_id: Option<String>,
+    #[serde(default)]
+    date_1904: bool,
     cells: Vec<(CellRef, ClipboardCell)>,
 }
 
@@ -591,6 +593,7 @@ impl SheetsView {
             source: range,
             cut: move_id.is_some(),
             move_id: move_id.map(str::to_string),
+            date_1904: move_id.is_some() && crate::excel(&self.doc).is_some_and(|x| x.date_system == DateSystem::From1904),
             cells,
         });
         let mut formulas =
@@ -710,12 +713,24 @@ impl SheetsView {
                 .collect::<Vec<_>>()
         });
         let keep_cut_formula_text = moved.is_some() || (clipboard.cut && clipboard.move_id.is_none());
+        let from_dates = if clipboard.date_1904 { DateSystem::From1904 } else { DateSystem::From1900 };
+        let to_dates = crate::excel(&self.doc).map(|x| x.date_system).unwrap_or_default();
         let paste = |v: &mut SheetsView, dest| match inputs.get(&if single { at.start } else { dest }) {
             Some((_, ClipboardCell::Text(input))) => v.put_input(sheet, dest, input),
             Some((_, ClipboardCell::Value { value, number_format })) => {
                 let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
                 let cell = s.cell_mut(dest);
-                cell.value = value.clone();
+                cell.value = match value {
+                    Value::Number(n)
+                        if from_dates != to_dates && number_format.as_deref().is_some_and(|f| crate::numfmt::has_calendar_date(f, *n)) =>
+                    {
+                        let n = crate::dates::from_serial(n.trunc(), from_dates)
+                            .map(|day| crate::dates::to_serial(day, to_dates) + n.fract())
+                            .unwrap_or(*n);
+                        Value::Number(n)
+                    }
+                    _ => value.clone(),
+                };
                 cell.formula = None;
                 cell.origin = Default::default();
                 v.set_general_format(sheet, dest, number_format.as_deref());

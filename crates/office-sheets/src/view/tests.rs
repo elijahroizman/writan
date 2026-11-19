@@ -255,6 +255,32 @@ fn cutting_values_retargets_formula_dependents_across_sheets_once() {
 }
 
 #[test]
+fn cutting_dates_between_workbooks_preserves_the_calendar_date() {
+    use crate::DateSystem::{From1900, From1904};
+    for (from, to, serial, expected) in [(From1900, From1904, 45_000.5, 43_538.5), (From1904, From1900, 43_538.5, 45_000.5)] {
+        let mut source = SheetsView::blank(Kind::Sheets);
+        let mut target = SheetsView::blank(Kind::Sheets);
+        crate::excel_mut(&mut source.doc).date_system = from;
+        crate::excel_mut(&mut target.doc).date_system = to;
+        let a1 = CellRef::new(0, 0);
+        let a2 = CellRef::new(1, 0);
+        let a3 = CellRef::new(2, 0);
+        for (at, value, format) in [(a1, serial, "yyyy-mm-dd hh:mm"), (a2, 1.5, "[h]:mm"), (a3, 0.5, "hh:mm")] {
+            source.set_input(0, at, &value.to_string());
+            source.format(0, Range { start: at, end: at }, &FormatPatch { number_format: Some(format.into()), ..Default::default() });
+        }
+        let range = Range { start: a1, end: a3 };
+        let (text, clipboard) = source.copy(0, range, Some("cut"));
+        source.cut(0, range, "cut".into());
+        target.paste(0, Range { start: a1, end: a1 }, &text, clipboard);
+        assert_eq!(target.cell_info(0, a1).display, "2023-03-15 12:00");
+        assert_eq!(target.sheets()[0].value(a1), &Value::Number(expected));
+        assert_eq!(target.sheets()[0].value(a2), &Value::Number(1.5));
+        assert_eq!(target.sheets()[0].value(a3), &Value::Number(0.5));
+    }
+}
+
+#[test]
 fn cutting_a_shared_formula_leaves_its_followers_working() {
     let mut v = SheetsView::blank(Kind::Sheets);
     put_shared(&mut v, CellRef::new(0, 1), Value::Number(0.0), Some("A1+1"), "0", Some("B1:B2"));
