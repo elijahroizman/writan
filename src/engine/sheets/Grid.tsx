@@ -542,10 +542,12 @@ export function Grid({
               items={engine.cell.validation.list}
               style={{ left: curX + curW + 1, top: curY }}
               height={curH}
+              cellWidth={curW}
               onPick={(v) => {
                 onCommit(v, 'none')
                 inputRef.current?.focus({ preventScroll: true })
               }}
+              onClose={() => inputRef.current?.focus({ preventScroll: true })}
             />
           )}
           {charts.map((c, i) => {
@@ -681,15 +683,50 @@ function CellEditor({
 }
 
 /** The drop-down arrow beside a cell whose data validation is a list, and the list it opens. */
-function ValidationList({ items, style, height, onPick }: { items: string[]; style: React.CSSProperties; height: number; onPick: (v: string) => void }) {
+function ValidationList({
+  items,
+  style,
+  height,
+  cellWidth,
+  onPick,
+  onClose,
+}: {
+  items: string[]
+  style: React.CSSProperties
+  height: number
+  cellWidth: number
+  onPick: (v: string) => void
+  onClose: () => void
+}) {
   const [open, setOpen] = useState(false)
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const away = (e: MouseEvent) => {
+      if (!box.current?.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', away)
+    return () => document.removeEventListener('mousedown', away)
+  }, [open])
   return (
-    <div className="sg-dropdown" style={style} onMouseDown={(e) => e.stopPropagation()}>
+    <div
+      ref={box}
+      className="sg-dropdown"
+      style={style}
+      onMouseDown={(e) => e.stopPropagation()}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || !open) return
+        e.preventDefault()
+        e.stopPropagation()
+        setOpen(false)
+        onClose()
+      }}
+    >
       <button type="button" className="sg-dropdown-button" aria-label="Choose a value" aria-expanded={open} style={{ height }} onClick={() => setOpen(!open)}>
         ▾
       </button>
       {open && (
-        <ul className="sg-dropdown-list" role="listbox">
+        <ul className="sg-dropdown-list" role="listbox" style={{ left: -cellWidth - 1, minWidth: Math.max(120, cellWidth + 19) }}>
           {items.map((v, i) => (
             <li
               key={i}

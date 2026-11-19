@@ -317,8 +317,6 @@
 .sg-dropdown-list {
   position: absolute;
   top: 100%;
-  right: 0;
-  min-width: 120px;
   max-height: 220px;
   margin: 2px 0 0;
   padding: 2px 0;
