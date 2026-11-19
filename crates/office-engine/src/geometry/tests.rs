@@ -395,3 +395,19 @@ fn malformed_input_returns_none() {
     }
     assert!(custom(&Element::new("", "custGeom"), 100.0, 100.0).is_none());
 }
+
+#[test]
+fn embedded_presets_include_rect() {
+    let rect = preset("rect", 10.0, 5.0, &[]).expect("rect preset");
+    assert!(!rect.paths.is_empty());
+    assert!(preset_names().any(|name| name == "roundRect"));
+}
+
+#[test]
+fn presets_from_a_crlf_checkout_keep_their_names() {
+    let crlf: &'static str = Box::leak(include_str!("presets.dat").replace('\n', "\r\n").into_boxed_str());
+    let definitions = parse_definitions(crlf);
+    assert_eq!(definitions.len(), parse_definitions(include_str!("presets.dat")).len());
+    assert!(definitions.iter().any(|(name, _)| *name == "rect"));
+    assert!(definitions.iter().all(|(name, _)| !name.ends_with('\r')));
+}

@@ -1013,3 +1013,28 @@ fn duplicated_smartart_keeps_its_diagram() {
         assert_eq!(texts(&reopened.paint(&mut host, 0).items), vec!["Title", "Cached"], "notes: {with_notes}");
     }
 }
+
+fn filled_paths(items: &[Item], out: &mut Vec<String>) {
+    for i in items {
+        match i {
+            Item::Path { fill: Some(fill), .. } => out.push(fill.clone()),
+            Item::Group { items, .. } => filled_paths(items, out),
+            _ => {}
+        }
+    }
+}
+
+#[test]
+fn office_smartart_draws_its_cached_shapes() {
+    // Apache POI's SmartArt.pptx: five theme-coloured boxes, and a copy recoloured with srgbClr.
+    for bytes in [
+        &include_bytes!("../../../office-core/src/formats/test_data/poi-SmartArt.pptx")[..],
+        &include_bytes!("../../../office-core/src/formats/test_data/poi-SmartArt-srgb-valid.pptx")[..],
+    ] {
+        let mut host = FixedMeasurer::default();
+        let mut v = SlidesView::open(bytes).unwrap();
+        let mut fills = Vec::new();
+        filled_paths(&v.paint(&mut host, 0).items, &mut fills);
+        assert_eq!(fills, vec!["#4472c4"; 5]);
+    }
+}

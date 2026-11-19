@@ -488,18 +488,23 @@ fn xml_points<const N: usize>(cmd: &Element, guides: &[Guide]) -> Option<[Operan
 
 fn definitions() -> &'static [(&'static str, Definition)] {
     static DEFINITIONS: OnceLock<Vec<(&'static str, Definition)>> = OnceLock::new();
-    DEFINITIONS.get_or_init(|| {
-        let mut definitions: Vec<_> = include_str!("geometry/presets.dat")
-            .split('@')
-            .skip(1)
-            .map(|entry| {
-                let (name, source) = entry.split_once('\n').expect("preset name");
-                (name, Definition::from_table(source).unwrap_or_else(|| panic!("invalid embedded preset {name}")))
-            })
-            .collect();
-        definitions.sort_unstable_by_key(|(name, _)| *name);
-        definitions
-    })
+    DEFINITIONS.get_or_init(|| parse_definitions(include_str!("geometry/presets.dat")))
+}
+
+/// The table's entries by name. A checkout with CRLF line endings (Git's default on Windows)
+/// must still give `rect`, not `rect\r`.
+fn parse_definitions(table: &'static str) -> Vec<(&'static str, Definition)> {
+    let mut definitions: Vec<_> = table
+        .split('@')
+        .skip(1)
+        .map(|entry| {
+            let (name, source) = entry.split_once('\n').expect("preset name");
+            let name = name.trim_end_matches('\r');
+            (name, Definition::from_table(source).unwrap_or_else(|| panic!("invalid embedded preset {name}")))
+        })
+        .collect();
+    definitions.sort_unstable_by_key(|(name, _)| *name);
+    definitions
 }
 
 /// Append a rounded decimal without allocating a temporary string.

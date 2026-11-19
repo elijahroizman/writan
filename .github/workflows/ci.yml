@@ -130,6 +130,25 @@ jobs:
         env:
           OFFICE_SAMPLES: ${{ runner.temp }}/samples
 
+  engine-windows:
+    name: Engine test on Windows
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.engine == 'true'
+    # Windows checkouts use CRLF line endings, which once hid every shape preset in release builds.
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: crates
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: crates
+      - run: cargo test -p office-engine
+
   app:
     name: App lint and test
     needs: changes
@@ -234,7 +253,7 @@ jobs:
 
   ci:
     name: ci
-    needs: [changes, engine, engine-samples, app, app-native, frontend, packaging]
+    needs: [changes, engine, engine-samples, engine-windows, app, app-native, frontend, packaging]
     if: always()
     runs-on: ubuntu-24.04
     steps:
