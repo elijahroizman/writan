@@ -370,7 +370,75 @@ function printable(annot: PdfAnnotationObject): PdfAnnotationObject {
 
 async function createAnnotation(key: number, annot: PdfAnnotationObject, image: ArrayBuffer | null) {
   const p = page(key)
-  return task(engine.createPageAnnotation(doc!, p, printable(clean(annot, p.index)), (image ? { data: image } : undefined) as never))
+  const id = await task(engine.createPageAnnotation(doc!, p, printable(clean(annot, p.index)), (image ? { data: image } : undefined) as never))
+  if (annot.type === PdfAnnotationSubtype.FREETEXT && ((p.rotation % 4) + 4) % 4 !== 0) {
+    rotateFreeTextAppearance(p, annot, id as string)
+  }
+  return id
+}
+
+/**
+ * On a rotated page the FreeText /Rect is stored in unrotated page space, which is
+ * turned on its side (or upside down) relative to what the user sees. PDFium generates
+ * the appearance inside that rect, so the text wraps into short columns and clips.
+ * Fix: briefly give the annotation the display-space rect, let PDFium lay the text out
+ * the way it was typed, restore the correct rect, and rotate the appearance into it
+ * with the form's /Matrix.
+ */
+function rotateFreeTextAppearance(p: PdfPageObject, annot: PdfAnnotationObject, id: string) {
+  const r = ((p.rotation % 4) + 4) % 4
+  const pc = ctx().acquirePage(p.index)
+  try {
+    // Find the new annotation by its /NM (the id createPageAnnotation returned).
+    let a = 0
+    const n = mod.FPDFPage_GetAnnotCount(pc.pagePtr)
+    for (let i = n - 1; i >= 0; i--) {
+      const cand = mod.FPDFPage_GetAnnot(pc.pagePtr, i)
+      const len = mod.FPDFAnnot_GetStringValue(cand, 'NM', 0, 0)
+      const buf = scratch(Math.max(2, len * 2))
+      mod.FPDFAnnot_GetStringValue(cand, 'NM', buf, len * 2)
+      const nm = mod.pdfium.UTF16ToString(buf)
+      free(buf)
+      if (nm === id) {
+        a = cand
+        break
+      }
+    }
+    if (!a) return
+    const rect = scratch(16)
+    mod.FPDFAnnot_GetRect(a, rect)
+    const [l, t, rr, b] = [getF(rect), getF(rect + 4), getF(rect + 8), getF(rect + 12)]
+    const setRect = (left: number, top: number, right: number, bottom: number) => {
+      mod.pdfium.setValue(rect + 0, left, 'float')
+      mod.pdfium.setValue(rect + 4, top, 'float')
+      mod.pdfium.setValue(rect + 8, right, 'float')
+      mod.pdfium.setValue(rect + 12, bottom, 'float')
+      mod.FPDFAnnot_SetRect(a, rect)
+    }
+    const setMatrix = (m: number[]) => {
+      const mp = scratch(24)
+      m.forEach((v, i) => mod.pdfium.setValue(mp + i * 4, v, 'float'))
+      mod.EPDFAnnot_SetAPMatrix(a, 0, mp)
+      free(mp)
+    }
+    const { x, y } = annot.rect.origin
+    const { width: dw, height: dh } = annot.rect.size
+    const DH = p.size.height
+    if (r === 2) {
+      mod.EPDFAnnot_GenerateAppearance(a)
+      setMatrix([-1, 0, 0, -1, l + rr, t + b])
+    } else {
+      setRect(x, DH - y, x + dw, DH - y - dh)
+      mod.EPDFAnnot_GenerateAppearance(a)
+      setRect(l, t, rr, b)
+      if (r === 1) setMatrix([0, 1, -1, 0, l + DH - y, b - x])
+      else setMatrix([0, -1, 1, 0, l - (DH - y - dh), t + x + dw])
+    }
+    mod.FPDFAnnot_UpdateObject(pc.pagePtr, a)
+    free(rect)
+  } finally {
+    pc.release()
+  }
 }
 
 async function updateAnnotation(key: number, annot: PdfAnnotationObject) {
