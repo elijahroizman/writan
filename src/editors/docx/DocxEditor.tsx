@@ -69,6 +69,7 @@ import { isMac, openExternal, shortcut } from '../../lib/platform'
 import { withKeys } from '../../state/shortcuts'
 import { registerEditor, useWorkspace } from '../../state/workspace'
 import { CommentPeek, CommentStore, CommentsSection } from './Comments'
+import { TrackedChangesSection } from './TrackedChanges'
 import { EXTRA_FONTS, useExtraFonts } from '../../state/fonts'
 import './docx.css'
 
@@ -600,6 +601,8 @@ function Inspector({
       <ImageSection onCrop={onCrop} />
 
       <CommentsSection store={comments} editor={host} canAdd={hasSelection} />
+
+      <TrackedChangesSection />
 
       <TableSection />
 
