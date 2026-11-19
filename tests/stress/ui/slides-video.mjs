@@ -55,8 +55,10 @@ try {
   // Picking the video opens its Link section; picking the title then must not focus the link field.
   const slidePoint = (x, y) => onScreen('.sc-slide .slide-surface', x, y)
   await page.mouse.click(...Object.values(await slidePoint(videoCenter.x, videoCenter.y)))
-  check('a picked video offers to play', await page.getByRole('button', { name: 'Play video' }).count() === 1)
+  await page.getByRole('button', { name: 'Play video' }).click()
+  check('the inspector\'s Play video plays it on the slide', await page.locator('.sc-frame-overlay iframe').count() === 1)
   await page.mouse.click(...Object.values(await slidePoint(title.x + 20, title.y + title.height / 2)))
+  check('picking another frame stops it', await page.locator('.sc-frame-overlay').count() === 0)
   check('the title is picked', (await page.evaluate(() => window.__slides.state.frames)).join() === title.id)
   check('the keyboard stays on the slide after picking a frame', await page.evaluate(() => document.activeElement?.hasAttribute('data-engine-input')), await page.evaluate(() => document.activeElement?.outerHTML.slice(0, 120)))
   await page.keyboard.press('Backspace')
@@ -72,9 +74,12 @@ try {
   await page.mouse.click(corner.x, corner.y)
   check('clicking elsewhere stops it', await page.locator('.sc-frame-overlay').count() === 0)
 
-  // In the slideshow a click plays it, over the slide rather than behind it.
+  // In the slideshow, which stops a video playing in the editor a click plays it, over the slide rather than behind it.
+  await page.mouse.dblclick(center.x, center.y)
+  await page.locator('.sc-frame-overlay iframe').waitFor()
   await page.evaluate(() => { const w = window.__workspace; w.getEditor(w.useWorkspace.getState().activeId).actions['pptx.present-start']() })
   await page.locator('.present .slide-surface').first().waitFor()
+  check('starting the slideshow stops the editor\'s player', await page.locator('.sc-frame-overlay').count() === 0)
   await page.waitForTimeout(300)
   const shown = await onScreen('.present .slide-surface', videoCenter.x, videoCenter.y)
   await page.mouse.click(shown.x, shown.y)
@@ -83,6 +88,14 @@ try {
   check('the slideshow player is on top of the slide', await topAt(shown) === 'IFRAME', await topAt(shown))
   await page.getByRole('button', { name: 'Close video' }).click()
   check('the close button stops it and stays on the slide', await page.locator('.present-video').count() === 0 && await page.locator('.present').count() === 1)
+
+  // Removing the link while it plays in the editor stops it.
+  await page.keyboard.press('Escape')
+  await page.locator('.present').waitFor({ state: 'detached' })
+  await page.mouse.dblclick(center.x, center.y)
+  await page.locator('.sc-frame-overlay iframe').waitFor()
+  await page.getByRole('button', { name: 'Remove', exact: true }).click()
+  check('removing the link stops it', await page.locator('.sc-frame-overlay').count() === 0)
 } finally {
   await done(browser, logs)
 }

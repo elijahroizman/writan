@@ -155,17 +155,18 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
   const selectedIds = st.frames
   const selectedElement = selectedIds.length === 1 ? (elements.find((e) => e.id === selectedIds[0]) ?? null) : null
 
-  // ── A video link playing over its poster while editing. It plays while its frame is the one picked.
-  const [playing, setPlaying] = useState<{ slide: string; id: string; embed: string } | null>(null)
+  // ── A video link playing over its poster while editing. It plays while its frame, with that link, is the one picked.
+  const [playing, setPlaying] = useState<{ slide: string; id: string; url: string; embed: string } | null>(null)
   const playVideo = (id: string) => {
     const url = engine.elements.find((x) => x.id === id)?.link?.url
     const video = url ? parseVideoLink(url) : null
     const slide = engine.slides[engine.state.active]?.id
-    if (!video || video.provider === 'other' || !slide) return false
-    setPlaying({ slide, id, embed: video.embedUrl })
+    if (!url || !video || video.provider === 'other' || !slide || engine.state.frames.join() !== id) return false
+    setPlaying({ slide, id, url, embed: video.embedUrl })
     return true
   }
-  const shownVideo = playing && slides[activeIndex]?.id === playing.slide && selectedElement?.id === playing.id ? playing : null
+  const shownVideo =
+    playing && presenting === null && slides[activeIndex]?.id === playing.slide && selectedElement?.id === playing.id && selectedElement.link?.url === playing.url ? playing : null
   useEffect(() => {
     if (playing && !shownVideo) setPlaying(null)
   }, [playing, shownVideo])
