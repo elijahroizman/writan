@@ -66,6 +66,37 @@ fn setting_the_clock_preserves_imported_formula_caches() {
 }
 
 #[test]
+fn setting_the_clock_calculates_formulas_without_cached_results() {
+    // As openpyxl writes them: formulas with no result, or an empty `v`. B1's cached result
+    // is kept even though it is wrong; C1's empty text result is a result.
+    let bytes = SheetsView::blank(Kind::Sheets).save().unwrap();
+    let mut package = Package::read(&bytes).unwrap();
+    let source = format!(
+        r#"<worksheet xmlns="{}"><sheetData><row r="1"><c r="A1"><v>2</v></c><c r="B1"><f>A1*100</f><v>7</v></c><c r="C1" t="str"><f>"x"&amp;NOPE()</f><v></v></c></row><row r="2"><c r="A2"><v>3</v></c><c r="B2"><f>SUM(A1:A2)</f></c><c r="C2"><f>B2+B1</f><v></v></c><c r="D2"><f>NOW()</f></c></row></sheetData></worksheet>"#,
+        ns::X
+    );
+    package.replace("xl/worksheets/sheet1.xml", source.into_bytes()).unwrap();
+    let bytes = package.to_bytes().unwrap();
+    let mut view = SheetsView::open(&bytes, "openpyxl.xlsx").unwrap();
+    let revision = view.revision();
+    view.set_now(46000.5);
+    assert!(!view.is_dirty());
+    assert!(view.revision() > revision, "the grid is drawn again with the new results");
+    assert_eq!(view.cell_info(0, CellRef::new(1, 1)).display, "5");
+    assert_eq!(view.cell_info(0, CellRef::new(1, 2)).display, "12", "uses B1's cached result");
+    assert_eq!(view.sheets()[0].value(CellRef::new(1, 3)), &Value::Number(46000.5));
+    assert_eq!(view.sheets()[0].value(CellRef::new(0, 1)), &Value::Number(7.0));
+    assert_eq!(view.sheets()[0].value(CellRef::new(0, 2)), &Value::Empty);
+
+    // Saved, the results are stored, so they show on the next open before the clock is set.
+    let back = SheetsView::open(&view.save().unwrap(), "openpyxl.xlsx").unwrap();
+    assert_eq!(back.cell_info(0, CellRef::new(1, 1)).input, "=SUM(A1:A2)");
+    assert_eq!(back.cell_info(0, CellRef::new(1, 1)).display, "5");
+    assert_eq!(back.cell_info(0, CellRef::new(1, 2)).display, "12");
+    assert_eq!(back.sheets()[0].value(CellRef::new(0, 1)), &Value::Number(7.0));
+}
+
+#[test]
 fn workbook_formats_columns_and_sheets() {
     let mut host = FixedMeasurer::default();
     let mut v = SheetsView::blank(Kind::Sheets);

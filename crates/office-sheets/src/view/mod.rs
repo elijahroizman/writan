@@ -215,10 +215,14 @@ impl SheetsView {
         self.revision
     }
 
-    /// Sets what NOW() and TODAY() give on the next edit. Opening a file must keep its cached
-    /// results: our evaluator cannot reproduce every formula Excel supports.
+    /// Sets what NOW() and TODAY() give, and works out the formulas that have no result yet.
+    /// Opening a file must keep its cached results: our evaluator cannot reproduce every
+    /// formula Excel supports.
     pub fn set_now(&mut self, serial: f64) {
         self.now = Some(serial);
+        if crate::calculate_uncached(&mut self.doc, self.now) > 0 {
+            self.changed(None);
+        }
     }
 
     pub fn sheets(&self) -> &[Sheet] {
