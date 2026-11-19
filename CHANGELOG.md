@@ -2,6 +2,21 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.11.1 — 2026-11-19
+
+### Word
+- Footnotes and endnotes too long for their page continue onto the next one.
+- Footnote and endnote text can be edited in place.
+
+### PowerPoint
+- Pasted charts, and charts that were moved or resized, are kept when the presentation is saved.
+
+### Spreadsheets
+- Renaming a worksheet keeps formulas, defined names, conditional formatting, data validation, chart series, links and table and pivot sources pointing at the new name.
+
+### Windows
+- Shapes draw again: a packaging detail kept the preset shapes from loading on Windows.
+
 ## 0.11.0 — 2026-11-19
 
 ### Install and updates
