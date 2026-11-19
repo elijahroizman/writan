@@ -120,6 +120,9 @@ docker run --rm \
     grep -qx "#\[writan\]" /etc/pacman.conf
     echo "a commented-out repository stays off"
 
+    # A mirror of its own in place of the GitHub one goes too.
+    sed -i "s|^#Server = https://github.com/elijahroizman/writan/releases/download/arch/\$arch\$|#Server = https://mirror.example.com/writan/\$arch|" /etc/pacman.conf
+    grep -qx "#Server = https://mirror.example.com/writan/\$arch" /etc/pacman.conf
     pacman -R --noconfirm writan > /dev/null
     if [ "$(sha256sum < /tmp/pacman.conf.before)" != "$(sha256sum < /etc/pacman.conf)" ]; then
       tail -n 8 /etc/pacman.conf >&2

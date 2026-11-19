@@ -94,8 +94,8 @@ PKGINFO
 # The repository goes in /etc/pacman.conf, since pacman has no drop-in directory. It is added once:
 # when a [writan] line is there already, even commented out, the file is left alone, so commenting
 # the section out turns updates off until Writan is removed. Removing Writan deletes the lines it
-# added (the marker comment, the blank line before it and the section after it), commented out
-# or not, and nothing else.
+# added (the marker comment, the blank line before it and the section after it, with a mirror
+# the user put in its place), commented out or not, and nothing else.
 cat > "$root/.INSTALL" <<'INSTALL'
 refresh() {
   command -v gtk-update-icon-cache >/dev/null 2>&1 && gtk-update-icon-cache -q -t -f usr/share/icons/hicolor || true
@@ -120,7 +120,7 @@ remove_repo() {
   grep -q '^# Writan updates (https://github.com/elijahroizman/writan)' /etc/pacman.conf || return 0
   tmp="$(mktemp)"
   awk '
-    skip && /^[[:space:]]*#*[[:space:]]*(\[writan\]|SigLevel = Required|Server = https:\/\/github\.com\/elijahroizman\/writan\/)/ { next }
+    skip && /^[[:space:]]*#*[[:space:]]*(\[writan\]|(SigLevel|Server|Include|Usage)[[:space:]]*=)/ { next }
     { skip = 0 }
     /^# Writan updates \(https:\/\/github\.com\/elijahroizman\/writan\)/ { skip = 1; hold = 0; next }
     hold { print held; hold = 0 }
