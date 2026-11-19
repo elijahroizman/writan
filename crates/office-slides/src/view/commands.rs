@@ -1514,9 +1514,18 @@ impl SlidesView {
         // In a table cell, Enter is a new paragraph in the cell, like anywhere else.
         self.history.seal();
         self.edit_text(None, |blocks, sel| {
+            let sel = &typed_bullets(blocks, sel);
             let mut e = delete_text(blocks, sel);
             let at = e.selection.clone().map(|s| s.focus).unwrap_or_else(|| sel.focus.clone());
+            // A slide paragraph's bullet is in its own `a:pPr`, which the model keeps in the
+            // origin; the new paragraph takes it so the list carries on.
+            let origin = pos::para(blocks, &at.path).map(|p| p.origin.clone());
             let s = edit::split_para(blocks, &at, None);
+            if let (Some(origin), Some(next)) = (origin, &s.selection) {
+                if let Some(p) = pos::para_mut(blocks, &next.focus.path) {
+                    p.origin = origin;
+                }
+            }
             e.splices.extend(s.splices);
             e.selection = s.selection;
             e
@@ -2032,8 +2041,46 @@ fn with_frame_blocks(f: &mut Frame, edit: impl FnOnce(&mut Vec<Block>)) {
     }
 }
 
+/// A bullet typed as text at the start of a paragraph, as earlier starter slides made them.
+const TYPED_BULLET: &str = "• ";
+
+/// Whether a paragraph has its own bullet or number (not one it inherits).
+fn has_own_bullet(p: &Paragraph) -> bool {
+    p.origin
+        .get()
+        .and_then(|o| o.child(ns::A, "pPr"))
+        .is_some_and(|pr| pr.child(ns::A, "buChar").is_some() || pr.child(ns::A, "buAutoNum").is_some())
+}
+
+/// When Enter is pressed in a paragraph whose bullet is typed text, that frame's typed bullets
+/// become real ones, so the list carries on and wraps like a list. Returns the selection moved
+/// with the text.
+fn typed_bullets(blocks: &mut [Block], sel: &Selection) -> Selection {
+    let typed = |p: &Paragraph| !has_own_bullet(p) && text::flat(p).text.starts_with(TYPED_BULLET);
+    let top = |path: &Path| path.container().is_empty();
+    if !top(&sel.focus.path) || !pos::para(blocks, &sel.focus.path).is_some_and(typed) {
+        return sel.clone();
+    }
+    let n = TYPED_BULLET.len() as u32;
+    let mut sel = sel.clone();
+    for (i, b) in blocks.iter_mut().enumerate() {
+        let Block::Paragraph(p) = b else { continue };
+        if !typed(p) {
+            continue;
+        }
+        text::delete(p, 0, n);
+        set_bullet(p, Some(false));
+        for at in [&mut sel.anchor, &mut sel.focus] {
+            if top(&at.path) && at.path.block() == i as u32 {
+                at.offset = at.offset.saturating_sub(n);
+            }
+        }
+    }
+    sel
+}
+
 /// Sets a paragraph's bullet: a character, a number, or none.
-fn set_bullet(p: &mut Paragraph, numbered: Option<bool>) {
+pub(super) fn set_bullet(p: &mut Paragraph, numbered: Option<bool>) {
     let mut origin = p.origin.get().cloned().unwrap_or_else(|| Element::new(ns::A, "p"));
     let has_ppr = origin.child(ns::A, "pPr").is_some();
     if !has_ppr {

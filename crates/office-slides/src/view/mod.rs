@@ -149,7 +149,9 @@ impl SlidesView {
         };
         let mut bullets = Vec::new();
         for s in ["First point", "Second point", "Third point"] {
-            bullets.push(text(&format!("• {s}"), 24.0, false, "333333"));
+            let mut p = text(s, 24.0, false, "333333");
+            commands::set_bullet(&mut p, Some(false));
+            bullets.push(p);
         }
         let content = Slide {
             frames: vec![

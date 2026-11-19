@@ -1153,3 +1153,87 @@ fn insert_shape_menu_presets_are_real_ooxml_presets() {
     let slide = String::from_utf8(pkg.part("ppt/slides/slide1.xml").unwrap().to_vec()).unwrap();
     assert!(slide.contains("prst=\"rightArrow\""), "{slide}");
 }
+
+/// Each paragraph's text in a frame, and whether it has its own character bullet.
+fn bulleted(v: &SlidesView, slide: usize, id: u32) -> Vec<(String, bool)> {
+    use office_core::xml::ns;
+    let f = v.slides()[slide].frames.iter().find(|f| f.id == id).expect("the frame is there");
+    let FrameContent::Shape { text: Some(body), .. } = &f.content else { panic!("a text frame") };
+    body.paragraphs
+        .iter()
+        .map(|p| {
+            let bullet = p.origin.get().and_then(|o| o.child(ns::A, "pPr")).is_some_and(|pr| pr.child(ns::A, "buChar").is_some());
+            (office_engine::text::flat(p).text, bullet)
+        })
+        .collect()
+}
+
+#[test]
+fn enter_carries_a_bullet_on() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::open(&deck(&[&["Hello"]])).unwrap();
+    assert!(v.begin_edit(&mut host, 2, None));
+    v.toggle_bullets("bullet");
+    v.move_caret(&mut host, "end", false);
+    v.enter();
+    v.insert_text("Next");
+    assert_eq!(bulleted(&v, 0, 2), [("Hello".to_string(), true), ("Next".to_string(), true)]);
+    let back = SlidesView::open(&v.save().unwrap()).unwrap();
+    assert_eq!(bulleted(&back, 0, 2), [("Hello".to_string(), true), ("Next".to_string(), true)]);
+}
+
+#[test]
+fn starter_bullets_are_real_bullets() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::blank();
+    let starter = bulleted(&v, 1, 3);
+    assert_eq!(starter.len(), 3);
+    assert!(starter.iter().all(|(t, b)| *b && !t.starts_with('•')), "{starter:?}");
+    v.set_active(1);
+    assert!(v.begin_edit(&mut host, 3, None));
+    v.move_caret(&mut host, "end", false);
+    v.enter();
+    v.insert_text("Fourth point");
+    assert_eq!(bulleted(&v, 1, 3)[3], ("Fourth point".to_string(), true));
+
+    v.add_template(1, "titleAndContent");
+    let content = v.slides()[2].frames.iter().find(|f| f.name == "Content").unwrap().id;
+    let points = bulleted(&v, 2, content);
+    assert_eq!(points.len(), 3);
+    assert!(points.iter().all(|(t, b)| *b && !t.starts_with('•')), "{points:?}");
+}
+
+#[test]
+fn enter_turns_typed_bullets_into_real_ones() {
+    let mut host = FixedMeasurer::default();
+    let mut doc = Document::new(Kind::Slides);
+    let paras = ["• Apple will appeal", "• The market is too small", "Not a point"].map(Paragraph::text).to_vec();
+    let xf = Xfrm {
+        x: Emu::from_inches(1.0),
+        y: Emu::from_inches(1.0),
+        width: Emu::from_inches(6.0),
+        height: Emu::from_inches(3.0),
+        ..Default::default()
+    };
+    doc.body = Body::Slides {
+        size: Default::default(),
+        slides: vec![Slide { frames: vec![Frame::text_box(2, xf, paras)], ..Default::default() }],
+    };
+    let mut v = SlidesView::open(&Compiler::new().with_layer(Decks).write(&doc, Kind::Slides).unwrap()).unwrap();
+
+    assert!(v.begin_edit(&mut host, 2, None));
+    v.move_caret(&mut host, "start", false);
+    v.move_caret(&mut host, "down", false);
+    v.move_caret(&mut host, "lineEnd", false);
+    v.enter();
+    v.insert_text("Bad for privacy");
+    let s = |t: &str, b: bool| (t.to_string(), b);
+    assert_eq!(
+        bulleted(&v, 0, 2),
+        [s("Apple will appeal", true), s("The market is too small", true), s("Bad for privacy", true), s("Not a point", false)]
+    );
+    // One undo step puts the typed bullets back.
+    v.undo();
+    v.undo();
+    assert_eq!(bulleted(&v, 0, 2)[0], s("• Apple will appeal", false));
+}
