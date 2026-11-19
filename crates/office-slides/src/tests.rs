@@ -111,6 +111,13 @@ fn placeholders_take_position_and_levels_from_the_layout() {
     assert_eq!(run.size, Some(FontSize(2000)), "the layout's level overrides the master's body style");
     assert_eq!(run.bold, Some(true));
     assert_eq!(run.font.as_deref(), Some("Calibri"), "the master's body style still supplies the font");
+    // An empty paragraph (a new list item) looks like the layout's level too.
+    let mut empty = s.frames[1].clone();
+    if let FrameContent::Shape { text: Some(body), .. } = &mut empty.content {
+        body.paragraphs = vec![Paragraph::default()];
+    }
+    let empty = resolve(&doc, s, &empty);
+    assert_eq!(empty.paragraphs[0].1.first().and_then(|r| r.size), Some(FontSize(2000)));
 
     let l = layout(&doc, "Title and Content").unwrap();
     assert_eq!(layout(&doc, "obj").unwrap().part, l.part);

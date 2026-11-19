@@ -387,8 +387,6 @@ fn para_spec(
         m
     };
     let mark = style_of(ctx, &mark_props, false);
-    // A bullet looks like the first text, or like the mark in an empty paragraph.
-    let label_props = if p.content.is_empty() { &mark_props } else { &first_props };
     let flat = text::flat(p);
     let mut items: Vec<Item> = Vec::with_capacity(p.content.len() + 2);
     let mut run_i = 0;
@@ -440,7 +438,7 @@ fn para_spec(
     let label = if !has_text {
         None
     } else if let Some(ch) = &bullet.char {
-        let mut props = label_props.clone();
+        let mut props = first_props.clone();
         if let Some(f) = &bullet.font {
             if !matches!(f.as_str(), "Wingdings" | "Symbol" | "Webdings") {
                 props.font = Some(f.clone());
@@ -458,7 +456,7 @@ fn para_spec(
     } else if let Some((scheme, start)) = &bullet.auto {
         counters[level] += 1;
         let n = start + counters[level] - 1;
-        let mut props = label_props.clone();
+        let mut props = first_props.clone();
         if let Some(c) = &bullet.color {
             props.color = Some(c.clone());
         }

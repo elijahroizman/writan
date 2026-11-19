@@ -1521,7 +1521,11 @@ impl SlidesView {
             let at = e.selection.clone().map(|s| s.focus).unwrap_or_else(|| sel.focus.clone());
             // A slide paragraph's bullet is in its own `a:pPr`, which the model keeps in the
             // origin; the new paragraph takes it so the list carries on.
-            let origin = pos::para(blocks, &at.path).map(|p| p.origin.clone());
+            let origin = pos::para(blocks, &at.path).and_then(|p| p.origin.get()).map(|o| {
+                let mut o = o.clone();
+                o.remove_children(ns::A, "endParaRPr");
+                Origin::new(o)
+            });
             let s = edit::split_para(blocks, &at, None);
             if let (Some(origin), Some(next)) = (origin, &s.selection) {
                 if let Some(p) = pos::para_mut(blocks, &next.focus.path) {
