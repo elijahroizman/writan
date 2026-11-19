@@ -143,6 +143,7 @@ try {
   await pageNumber.fill('1.5')
   await pageNumber.press('Enter')
   await expectCurrent(1, 'entering a fractional page number')
+  assert.equal(await pageNumber.inputValue(), '1', 'the page number field kept the rejected value')
 
   await thumb(3).click()
   await expectCurrent(3, 'clicking thumbnail 3')
