@@ -1149,10 +1149,7 @@ impl WordView {
             self.exit_header_footer();
         }
         let before = self.body().to_vec();
-        let count = match crate::revisions::resolve_all(&mut self.doc, accept) {
-            Ok(n) => n,
-            Err(_) => 0,
-        };
+        let count = crate::revisions::resolve_all(&mut self.doc, accept).unwrap_or_default();
         if count == 0 {
             self.doc.body = Body::Flow { blocks: before };
             return 0;
