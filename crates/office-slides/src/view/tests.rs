@@ -234,9 +234,13 @@ fn imported_line_uses_the_saved_blank_cell_mode() {
 #[test]
 fn unsupported_or_unavailable_charts_keep_the_placeholder() {
     let malformed = CHART_SERIES.replace(r#"idx="2""#, r#"idx="18446744073709551615""#);
-    for (groups, external) in
-        [("<c:radarChart/>".to_string(), false), (format!("<c:doughnutChart>{malformed}</c:doughnutChart>"), false), (String::new(), true)]
-    {
+    for (groups, external) in [
+        ("<c:radarChart/>".to_string(), false),
+        (format!(r#"<c:lineChart>{CHART_SERIES}</c:lineChart><c:valAx><c:scaling><c:logBase val="10"/></c:scaling></c:valAx>"#), false),
+        (format!(r#"<c:lineChart>{CHART_SERIES}</c:lineChart><c:valAx><c:scaling><c:max val="4"/></c:scaling></c:valAx>"#), false),
+        (format!("<c:doughnutChart>{malformed}</c:doughnutChart>"), false),
+        (String::new(), true),
+    ] {
         let mut view = SlidesView::open(&chart_deck(&groups, external)).unwrap();
         let mut host = FixedMeasurer::default();
         let p = view.paint(&mut host, 0);

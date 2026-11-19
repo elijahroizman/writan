@@ -42,6 +42,7 @@ pub(super) fn draw(ctx: &mut Ctx, doc: &Document, slide: &Slide, part: &str, fra
     let chart = read_chart(root)?;
     let radial = !chart.kind.has_axes();
     if chart.grouping != ChartGrouping::Standard
+        || (!radial && !supports_axis_scaling(plot))
         || chart.series.iter().map(|s| s.cache.values.len()).sum::<usize>() > MAX_POINTS
         || !chart.series.iter().flat_map(|s| &s.cache.values).flatten().any(|v| v.is_finite())
         || (chart.kind == ChartKind::Pie && chart.series.len() != 1)
@@ -100,6 +101,13 @@ fn bounded_cache(el: &Element) -> bool {
 
 fn val<'a>(el: &'a Element, name: &str) -> Option<&'a str> {
     el.child(ns::C, name)?.attr("val")
+}
+
+fn supports_axis_scaling(plot: &Element) -> bool {
+    plot.elements().filter(|e| e.in_ns(ns::C) && e.local.ends_with("Ax")).filter_map(|axis| axis.child(ns::C, "scaling")).all(|scale| {
+        ["logBase", "min", "max"].iter().all(|name| scale.child(ns::C, name).is_none())
+            && val(scale, "orientation").is_none_or(|orientation| orientation == "minMax")
+    })
 }
 
 fn solid(props: Option<&Element>) -> Option<Color> {
