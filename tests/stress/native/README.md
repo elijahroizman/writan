@@ -42,3 +42,11 @@ The scripts use the repository's documented Playwright workflow on bbb. Browser 
 `files::tests::partial_write_failure_keeps_original_and_removes_temp` injects a full-disk error after a partial write. It runs without mounting a filesystem. To test real ENOSPC, provide an isolated tiny filesystem in `WRITAN_FULL_DIR` and run the ignored `full_disk_keeps_the_original_and_no_scraps` test. The `unshare` recipe in its source requires a host that permits user namespace mappings and mounts.
 
 On Linux, `python3 tests/stress/native/desktop-open.py` checks the launcher template through GIO using a harmless argument recorder. It creates two sample Markdown files, including names with spaces and Unicode, and verifies that both are forwarded in one launch. It does not launch or install Writan.
+
+## macOS slide clipboard smoke test
+
+Open the packaged Writan app on macOS and create a blank presentation. Run the steps below twice on fresh slides: first use the system menu bar's **Edit > Copy**, **Cut**, and **Paste**, then use **⌘C**, **⌘X**, and **⌘V**. The browser clipboard test does not exercise the macOS menu.
+
+1. Insert and select a shape. Copy and paste it, then move the selected duplicate to a visibly different position. Cut it: only the moved shape should disappear. Paste: it should reappear at the moved position, not on top of the original.
+2. Enter text in a slide text box and select a word. Copy and paste it at the end of the text. Select a different word and cut it, then paste it back. Check that the cut removes only that word, and paste restores it rather than inserting the previously copied word.
+3. Focus Speaker notes and repeat the text steps with different words. Check that the pasted text stays in the notes and the slide is unchanged.
