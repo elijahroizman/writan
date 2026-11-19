@@ -925,22 +925,34 @@ fn smartart_in_a_block_content_control_is_drawn() {
 /// A document whose body is `body` (Word markup) with `notes` (footnote bodies, by id) in
 /// `word/footnotes.xml`, as Word saves them: separators first, each note starting with its mark.
 fn footnoted_doc(body: &str, notes: &[(&str, &str)]) -> Vec<u8> {
+    noted_doc(body, "footnote", notes)
+}
+
+/// [`footnoted_doc`] for `kind` notes (`footnote` or `endnote`).
+fn noted_doc(body: &str, kind: &str, notes: &[(&str, &str)]) -> Vec<u8> {
     const W: &str = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
     let mut pkg = office_core::opc::Package::read(&doc_bytes(&[])).unwrap();
     let text = String::from_utf8(pkg.part("word/document.xml").unwrap().to_vec()).unwrap();
     pkg.replace("word/document.xml", text.replacen("<w:body>", &format!("<w:body>{body}"), 1).into_bytes()).unwrap();
     let mut xml = format!(
-        r#"<w:footnotes xmlns:w="{W}"><w:footnote w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:footnote><w:footnote w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:footnote>"#
+        r#"<w:{kind}s xmlns:w="{W}"><w:{kind} w:type="separator" w:id="-1"><w:p><w:r><w:separator/></w:r></w:p></w:{kind}><w:{kind} w:type="continuationSeparator" w:id="0"><w:p><w:r><w:continuationSeparator/></w:r></w:p></w:{kind}>"#
     );
     for (id, note) in notes {
         xml += &format!(
-            r#"<w:footnote w:id="{id}"><w:p><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:footnoteRef/></w:r><w:r><w:t xml:space="preserve"> {note}</w:t></w:r></w:p></w:footnote>"#
+            r#"<w:{kind} w:id="{id}"><w:p><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:{kind}Ref/></w:r><w:r><w:t xml:space="preserve"> {note}</w:t></w:r></w:p></w:{kind}>"#
         );
     }
-    xml += "</w:footnotes>";
-    pkg.put("word/footnotes.xml", xml.into_bytes(), "application/vnd.openxmlformats-officedocument.wordprocessingml.footnotes+xml");
-    pkg.relate("word/document.xml", "footnotes", "word/footnotes.xml").unwrap();
+    xml += &format!("</w:{kind}s>");
+    let part = format!("word/{kind}s.xml");
+    pkg.put(&part, xml.into_bytes(), &format!("application/vnd.openxmlformats-officedocument.wordprocessingml.{kind}s+xml"));
+    pkg.relate("word/document.xml", &format!("{kind}s"), &part).unwrap();
     pkg.to_bytes().unwrap()
+}
+
+fn endnote_para(text: &str, id: &str) -> String {
+    format!(
+        r#"<w:p><w:r><w:t>{text}</w:t></w:r><w:r><w:rPr><w:vertAlign w:val="superscript"/></w:rPr><w:endnoteReference w:id="{id}"/></w:r></w:p>"#
+    )
 }
 
 fn footnote_para(text: &str, id: &str) -> String {
@@ -1022,4 +1034,53 @@ fn footnotes_referenced_in_content_controls_are_painted() {
     let texts = page_texts(&v.paint(&mut host, 0).items);
     assert!(texts.iter().any(|(t, _)| t.trim() == "Foo"), "{texts:?}");
     assert!(texts.iter().any(|(t, _)| t.trim() == "bar"), "{texts:?}");
+}
+
+#[test]
+fn endnotes_follow_the_last_line_with_roman_marks() {
+    let mut host = FixedMeasurer::default();
+    let body = format!("{}<w:p><w:r><w:t>Last line</w:t></w:r></w:p>", endnote_para("Foo", "1"));
+    let mut v = WordView::open(&noted_doc(&body, "endnote", &[("1", "bar")])).unwrap();
+    v.layout(&mut host);
+    assert_eq!(v.page_count(), 1);
+    let page = v.paint(&mut host, 0);
+    let texts = page_texts(&page.items);
+    let y = |t: &str| texts.iter().find(|(s, _)| s.trim() == t).map(|(_, y)| *y).unwrap_or_else(|| panic!("{t:?} in {texts:?}"));
+    // Word numbers endnotes i, ii, iii: the body's mark and the note's own.
+    assert_eq!(texts.iter().filter(|(s, _)| s == "i").count(), 2, "{texts:?}");
+    let (last, bar) = (y("Last line"), y("bar"));
+    assert!(bar > last && bar < page.height * 0.5, "the note follows the last line, not the page bottom: {bar}");
+    let separator = page.items.iter().find_map(|i| match i {
+        Item::Line { y1, y2, .. } if y1 == y2 => Some(*y1),
+        _ => None,
+    });
+    assert!(separator.is_some_and(|s| s > last && s < bar), "a separator line above the note: {separator:?}");
+}
+
+#[test]
+fn endnotes_that_dont_fit_go_on_new_pages_in_order() {
+    let mut host = FixedMeasurer::default();
+    let body: String = (1..=20).map(|i| endnote_para(&format!("Paragraph {i}"), &i.to_string())).collect();
+    let long = "word ".repeat(60);
+    let notes: Vec<(String, String)> = (1..=20).map(|i| (i.to_string(), format!("Note {i} {long}"))).collect();
+    let notes: Vec<(&str, &str)> = notes.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    let mut v = WordView::open(&noted_doc(&body, "endnote", &notes)).unwrap();
+    v.layout(&mut host);
+    assert!(v.page_count() > 1, "{} pages", v.page_count());
+    let mut seen = Vec::new();
+    let mut last_body_page = 0;
+    for p in 0..v.page_count() {
+        let texts = page_texts(&v.paint(&mut host, p).items);
+        if texts.iter().any(|(t, _)| t.starts_with("Paragraph ")) {
+            last_body_page = p;
+        }
+        for (t, _) in &texts {
+            if let Some(n) = t.trim().strip_prefix("Note ").and_then(|t| t.split_whitespace().next()).and_then(|n| n.parse::<u32>().ok()) {
+                assert!(p >= last_body_page, "note {n} on page {p}, before the body ends");
+                seen.push(n);
+            }
+        }
+    }
+    assert_eq!(seen, (1..=20).collect::<Vec<_>>());
+    assert!(v.page_count() > last_body_page + 1, "endnotes continue on pages of their own");
 }

@@ -91,6 +91,10 @@ pub struct Page {
     pub notes_bottom: f64,
     /// The bottom of the last line or row on the page, in the flow's coordinates.
     pub content_bottom: f64,
+    /// The endnotes on this page (the document's last, and any pages added for them), by index
+    /// in the layer's `notes`, and where on the page the first one starts.
+    pub endnotes: Vec<usize>,
+    pub endnotes_y: f64,
 }
 
 /// The space above a page's footnotes, with the separator line across its middle.
@@ -473,7 +477,7 @@ impl WordView {
     /// A footnote's or endnote's text laid out at `width`; its own mark shows its number.
     pub(crate) fn note_flow(&mut self, host: &mut dyn Measurer, note: usize, width: f64) -> Option<FlowLayout> {
         let n = word(&self.doc)?.notes.get(note)?;
-        let (blocks, id) = (n.blocks.clone(), n.id.clone());
+        let (blocks, id, kind) = (n.blocks.clone(), n.id.clone(), n.kind);
         let labels = HashMap::new();
         let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
         let mut r = WordResolver {
@@ -483,7 +487,7 @@ impl WordView {
             labels: &labels,
             label_prefix: &[],
             fields: None,
-            note: Some(&id),
+            note: Some((&id, kind)),
             specs: &mut self.specs,
         };
         Some(flow::layout(&mut ctx, &mut self.cache, &mut r, &blocks, &[], width))
@@ -495,10 +499,19 @@ impl WordView {
             return;
         }
         let width = emu_px(self.sections[p.section].section.text_width()).max(24.0);
-        let flows: Vec<(usize, FlowLayout)> = p.footnotes.iter().filter_map(|&n| Some((n, self.note_flow(host, n, width)?))).collect();
-        let total: f64 = flows.iter().map(|(_, f)| f.height).sum();
+        let total: f64 = p.footnotes.iter().filter_map(|&n| self.note_flow(host, n, width)).map(|f| f.height).sum();
         // Below the body even when a page's first line and its notes don't fit together.
-        let mut y = (p.notes_bottom - total).max(p.body_y + p.content_bottom - p.top + NOTE_SEPARATOR);
+        let y = (p.notes_bottom - total).max(p.body_y + p.content_bottom - p.top + NOTE_SEPARATOR);
+        self.paint_notes(host, p, &p.footnotes, y, out);
+    }
+
+    /// Draws `notes` one after another from `y` down, under a short separator line.
+    fn paint_notes(&mut self, host: &mut dyn Measurer, p: &Page, notes: &[usize], mut y: f64, out: &mut Vec<Item>) {
+        if notes.is_empty() {
+            return;
+        }
+        let width = emu_px(self.sections[p.section].section.text_width()).max(24.0);
+        let flows: Vec<(usize, FlowLayout)> = notes.iter().filter_map(|&n| Some((n, self.note_flow(host, n, width)?))).collect();
         let line_y = display::r(y - NOTE_SEPARATOR / 2.0);
         let line_w = (width / 3.0).min(192.0);
         out.push(Item::Line {
@@ -594,6 +607,7 @@ impl WordView {
         );
         paint_floating(&mut ctx, &self.doc, &p, blocks, &sf.flow, &mut items);
         self.paint_footnotes(host, &p, &mut items);
+        self.paint_notes(host, &p, &p.endnotes, p.endnotes_y, &mut items);
         PagePaint { width: display::r(p.width), height: display::r(p.height), items }
     }
 

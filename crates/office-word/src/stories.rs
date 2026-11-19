@@ -25,7 +25,7 @@ pub struct Story {
     pub blocks: Vec<Block>,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum NoteKind {
     Footnote,

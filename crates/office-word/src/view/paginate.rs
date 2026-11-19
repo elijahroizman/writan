@@ -30,27 +30,30 @@ struct Unit {
     notes: Vec<usize>,
 }
 
-/// The footnote ids referenced inside a raw inline.
-fn note_refs(el: &Element, out: &mut Vec<String>) {
-    if el.is(ns::W, "footnoteReference") {
+const FOOTNOTE: &str = "footnoteReference";
+
+/// The note ids referenced inside a raw inline, by `local` (`footnoteReference` or
+/// `endnoteReference`).
+fn note_refs(el: &Element, local: &str, out: &mut Vec<String>) {
+    if el.is(ns::W, local) {
         if let Some(id) = el.attr_ns(ns::W, "id") {
             out.push(id.to_string());
         }
     }
     for c in el.elements() {
-        note_refs(c, out);
+        note_refs(c, local, out);
     }
 }
 
-/// The footnotes referenced in some blocks, at any depth.
-fn block_notes(blocks: &[Block], ids: &HashMap<&str, usize>, out: &mut Vec<usize>) {
+/// The notes referenced in some blocks, at any depth, by `local` as for [`note_refs`].
+fn block_notes(blocks: &[Block], local: &str, ids: &HashMap<&str, usize>, out: &mut Vec<usize>) {
     for b in blocks {
         match b {
             Block::Paragraph(p) => {
                 for inline in &p.content {
                     if let Inline::Raw { xml } = inline {
                         let mut refs = Vec::new();
-                        note_refs(xml, &mut refs);
+                        note_refs(xml, local, &mut refs);
                         out.extend(refs.iter().filter_map(|r| ids.get(r.as_str())));
                     }
                 }
@@ -58,13 +61,13 @@ fn block_notes(blocks: &[Block], ids: &HashMap<&str, usize>, out: &mut Vec<usize
             Block::Table(t) => {
                 for row in &t.rows {
                     for cell in &row.cells {
-                        block_notes(&cell.blocks, ids, out);
+                        block_notes(&cell.blocks, local, ids, out);
                     }
                 }
             }
             Block::Raw { xml, .. } => {
                 let mut refs = Vec::new();
-                note_refs(xml, &mut refs);
+                note_refs(xml, local, &mut refs);
                 out.extend(refs.iter().filter_map(|r| ids.get(r.as_str())));
             }
         }
@@ -83,7 +86,7 @@ fn flow_units(flow: &FlowLayout, y: f64, body: &[Block], ids: &HashMap<&str, usi
                         for inline in &para.content {
                             if let Inline::Raw { xml } = inline {
                                 let mut found = Vec::new();
-                                note_refs(xml, &mut found);
+                                note_refs(xml, FOOTNOTE, &mut found);
                                 refs.extend(found.iter().filter_map(|r| ids.get(r.as_str())).map(|&n| (offset, n)));
                             }
                             offset += office_engine::text::inline_len(inline);
@@ -112,7 +115,7 @@ fn flow_units(flow: &FlowLayout, y: f64, body: &[Block], ids: &HashMap<&str, usi
                     let mut notes = Vec::new();
                     if let Some(Block::Table(table)) = table {
                         for cell in table.rows.get(ri).map(|row| row.cells.as_slice()).unwrap_or(&[]) {
-                            block_notes(&cell.blocks, ids, &mut notes);
+                            block_notes(&cell.blocks, FOOTNOTE, ids, &mut notes);
                         }
                     }
                     out.push(Unit {
@@ -210,22 +213,32 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
     let mut note_height = |view: &mut WordView, host: &mut dyn Measurer, note: usize, w: f64| -> f64 {
         *note_heights.entry((note, w.to_bits())).or_insert_with(|| view.note_flow(host, note, w).map_or(0.0, |f| f.height))
     };
-    let section_units: Vec<Vec<Unit>> = {
-        let ids: HashMap<&str, usize> = word(&view.doc)
-            .map(|w| w.notes.iter().enumerate().filter(|(_, n)| n.kind == NoteKind::Footnote).map(|(i, n)| (n.id.as_str(), i)).collect())
-            .unwrap_or_default();
+    // Each section's lines and rows, and the endnotes in the order the body references them.
+    let (section_units, endnotes): (Vec<Vec<Unit>>, Vec<usize>) = {
+        let ids = |kind: NoteKind| -> HashMap<&str, usize> {
+            word(&view.doc)
+                .map(|w| w.notes.iter().enumerate().filter(|(_, n)| n.kind == kind).map(|(i, n)| (n.id.as_str(), i)).collect())
+                .unwrap_or_default()
+        };
         let body: &[Block] = match &view.doc.body {
             Body::Flow { blocks } => blocks,
             _ => &[],
         };
-        view.sections
+        let footnotes = ids(NoteKind::Footnote);
+        let units = view
+            .sections
             .iter()
             .map(|s| {
                 let mut units = Vec::new();
-                flow_units(&s.flow, 0.0, body, &ids, &mut units);
+                flow_units(&s.flow, 0.0, body, &footnotes, &mut units);
                 units
             })
-            .collect()
+            .collect();
+        let mut endnotes = Vec::new();
+        block_notes(body, "endnoteReference", &ids(NoteKind::Endnote), &mut endnotes);
+        let mut seen = std::collections::HashSet::new();
+        endnotes.retain(|n| seen.insert(*n));
+        (units, endnotes)
     };
     let mut pages: Vec<Page> = Vec::new();
     let mut inherited: [Vec<(String, usize)>; 2] = [Vec::new(), Vec::new()];
@@ -302,6 +315,8 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
                     footnotes: notes_in(on_page),
                     notes_bottom: h - bottom_margin,
                     content_bottom: on_page.last().map_or(top, |u| u.bottom),
+                    endnotes: Vec::new(),
+                    endnotes_y: 0.0,
                 });
             };
         // The height taken by the footnotes on the page so far, separator included.
@@ -347,6 +362,32 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
         }
         if index_in_section == 0 || page_top < flow_height - 0.01 || units.last().is_some_and(|u| u.break_after) {
             make_page(view, host, page_top, flow_height.max(page_top), index_in_section, &units[first_unit..], &mut pages);
+            index_in_section += 1;
+        }
+        // Endnotes follow the document's last line, each whole, on new pages when they run out of
+        // room above that page's footnotes.
+        if si + 1 == view.sections.len() && !endnotes.is_empty() {
+            let mut y = pages.last().map_or(0.0, |p| p.body_y + p.content_bottom - p.top + NOTE_SEPARATOR);
+            for &n in &endnotes {
+                let nh = note_height(view, host, n, text_w);
+                let footnotes = pages.last().map(|p| p.footnotes.clone()).unwrap_or_default();
+                let mut below: f64 = footnotes.iter().map(|&f| note_height(view, host, f, text_w)).sum();
+                if !footnotes.is_empty() {
+                    below += NOTE_SEPARATOR;
+                }
+                let bottom = pages.last().map_or(h, |p| p.notes_bottom) - below;
+                if y + nh > bottom + 0.01 {
+                    make_page(view, host, flow_height, flow_height, index_in_section, &[], &mut pages);
+                    index_in_section += 1;
+                    y = pages.last().map_or(0.0, |p| p.body_y + NOTE_SEPARATOR);
+                }
+                let Some(p) = pages.last_mut() else { break };
+                if p.endnotes.is_empty() {
+                    p.endnotes_y = y;
+                }
+                p.endnotes.push(n);
+                y += nh;
+            }
         }
     }
     if pages.is_empty() {
@@ -365,6 +406,8 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
             footnotes: Vec::new(),
             notes_bottom: emu_px(s.page_height - s.margin_bottom),
             content_bottom: 0.0,
+            endnotes: Vec::new(),
+            endnotes_y: 0.0,
         });
     }
     pages
