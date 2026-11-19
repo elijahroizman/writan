@@ -119,6 +119,8 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
   const draft = useRef<{ text: string; original: string; sheet: number; row: number; col: number } | null>(null)
   const [zoom, setZoom] = useState(1)
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null)
+  const [renamingSheet, setRenamingSheet] = useState<number | null>(null)
+  const restoreSheetFocus = useRef<number | null>(null)
   const [findOpen, setFindOpen] = useState<false | 'find' | 'replace'>(false)
   const [matches, setMatches] = useState<{ sheet: number; row: number; col: number }[]>([])
   const [matchIndex, setMatchIndex] = useState(0)
@@ -423,18 +425,19 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
     [tab.id, engine, markDirty],
   )
 
+  const finishSheetRename = (index: number, name?: string) => {
+    setRenamingSheet(null)
+    if (name?.trim() && name !== engine.sheets[index]?.name) {
+      run({ cmd: 'renameSheet', sheet: index, name })
+    }
+  }
+
   const sheetMenu = (index: number, x: number, y: number) =>
     setMenu({
       x,
       y,
       items: [
-        {
-          label: 'Rename…',
-          onSelect: () => {
-            const name = window.prompt('Sheet name', engine.sheets[index]?.name ?? '')
-            if (name) run({ cmd: 'renameSheet', sheet: index, name })
-          },
-        },
+        { label: 'Rename…', onSelect: () => setRenamingSheet(index) },
         ...(index > 0 ? [{ label: 'Move up', onSelect: () => run({ cmd: 'moveSheet', from: index, to: index - 1 }) }] : []),
         ...(index < engine.sheets.length - 1 ? [{ label: 'Move down', onSelect: () => run({ cmd: 'moveSheet', from: index, to: index + 1 }) }] : []),
         { label: 'Delete sheet', icon: <Trash2 size={14} />, danger: true, separatorBefore: true, disabled: engine.sheets.length <= 1, onSelect: () => run({ cmd: 'deleteSheet', sheet: index }) },
@@ -462,16 +465,35 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
 
   const left = (
     <nav className="list" aria-label="Sheets">
-      {engine.sheets.map((s, i) => !s.hidden && (
+      {engine.sheets.map((s, i) => !s.hidden && (renamingSheet === i ? (
+        <TextField
+          key={`${i}-${s.name}`}
+          aria-label="Sheet name"
+          autoFocus
+          defaultValue={s.name}
+          onFocus={(e) => e.currentTarget.select()}
+          onBlur={(e) => finishSheetRename(i, e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.nativeEvent.isComposing || (e.key !== 'Enter' && e.key !== 'Escape')) return
+            e.preventDefault()
+            e.stopPropagation()
+            restoreSheetFocus.current = i
+            finishSheetRename(i, e.key === 'Enter' ? e.currentTarget.value : undefined)
+          }}
+        />
+      ) : (
         <button
           key={`${i}-${s.name}`}
           type="button"
           className={`list-item ${i === sheet ? 'active' : ''}`}
-          onClick={() => openSheet(i)}
-          onDoubleClick={() => {
-            const name = window.prompt('Sheet name', s.name)
-            if (name) run({ cmd: 'renameSheet', sheet: i, name })
+          ref={(el) => {
+            if (el && restoreSheetFocus.current === i) {
+              restoreSheetFocus.current = null
+              el.focus()
+            }
           }}
+          onClick={() => openSheet(i)}
+          onDoubleClick={() => setRenamingSheet(i)}
           onContextMenu={(e) => {
             e.preventDefault()
             sheetMenu(i, e.clientX, e.clientY)
@@ -479,7 +501,7 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
         >
           <span className="label">{s.name}</span>
         </button>
-      ))}
+      )))}
       {!st.csv && (
         <button type="button" className="list-item add-sheet" onClick={() => run({ cmd: 'addSheet' })}>
           <Plus size={13} /> <span className="label">Add sheet</span>
