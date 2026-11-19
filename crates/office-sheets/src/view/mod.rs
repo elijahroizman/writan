@@ -224,9 +224,9 @@ impl SheetsView {
     /// formula Excel supports.
     pub fn set_now(&mut self, serial: f64) {
         self.now = Some(serial);
-        let worked_out = crate::calculate_uncached(&mut self.doc, self.now) > 0;
         // A circular reference's cached result is whatever the app that saved it got to round
-        // the loop, so it is 0 instead. Without the clock, NOW() would make some look circular.
+        // the loop, so it is 0 instead, before the formulas that read it are worked out.
+        // Without the clock, NOW() would make some look circular.
         self.circular = crate::circular_references(&self.doc, self.now);
         let mut zeroed = false;
         if let Body::Workbook { sheets } = &mut self.doc.body {
@@ -238,6 +238,7 @@ impl SheetsView {
                 }
             }
         }
+        let worked_out = crate::calculate_uncached(&mut self.doc, self.now) > 0;
         if worked_out || zeroed {
             self.changed(None);
         }
