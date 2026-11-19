@@ -427,8 +427,15 @@ fn evaluate(doc: &Document, now: Option<f64>) -> Evaluated {
     // A formula is in a circular reference when, through the formulas it reads, it comes back
     // to itself. What the loop got to depends on where it was entered, so the loop's formulas
     // come to 0, as in Excel, and everything is worked out again with that.
-    let circular = loops(&book.reads);
-    if !circular.is_empty() {
+    // A loop at 0 can send a formula down another branch (an IF) into a loop of its own, so
+    // this goes on until no new one turns up.
+    let mut circular = HashSet::new();
+    loop {
+        let found = loops(&book.reads);
+        if found.is_subset(&circular) {
+            break;
+        }
+        circular.extend(found);
         book.done = circular.iter().map(|&k| (k, V::Num(0.0))).collect();
         book.reads.clear();
         book.work_out();

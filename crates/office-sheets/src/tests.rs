@@ -112,6 +112,16 @@ fn circular_references_found_however_they_are_entered() {
 }
 
 #[test]
+fn circular_references_found_once_another_loop_comes_to_zero() {
+    // B1 only refers to itself once A1, a loop, has come to 0.
+    let rows = r#"<row r="1"><c r="A1"><f>A1+1</f></c><c r="B1"><f>IF(A1=0,B1+1,5)</f></c></row>"#;
+    let mut doc = workbook_with(cell_xml(rows));
+    let report = recalculate_with_report(&mut doc, None);
+    assert_eq!(report.circular, vec![(0, at("A1")), (0, at("B1"))]);
+    assert_eq!(value(&doc, 0, "B1"), Value::Number(0.0));
+}
+
+#[test]
 fn recalculating_long_formulas_does_not_clone_their_recursive_trees() {
     std::thread::Builder::new()
         .stack_size(1024 * 1024)
