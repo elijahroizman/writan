@@ -56,6 +56,7 @@ pub fn write(doc: &Document) -> Result<Package> {
         let wanted = slide.layout.clone().filter(|l| same && out.pkg.has(l));
         // A slide copied in the model has its original's part too; the first one keeps it.
         let copy_of = slide.part.as_deref().filter(|p| same && written.iter().any(|w| w == p));
+        let mut removed_jumps = std::collections::HashSet::new();
         let part = match slide.part.as_deref().filter(|p| same && out.pkg.has(p) && copy_of.is_none()) {
             Some(p) => {
                 let current = out.pkg.related(p, kind::SLIDE_LAYOUT)?.into_iter().next();
@@ -92,15 +93,25 @@ pub fn write(doc: &Document) -> Result<Package> {
                     Some((original, input)) => {
                         let mut rels = input.rels(original)?;
                         rels.0.retain(|r| {
-                            !r.is(kind::NOTES_SLIDE)
-                                && !r.is("comments")
-                                && (!r.is(kind::SLIDE)
-                                    || input.target(original, r).is_some_and(|target| kept.iter().any(|p| p.eq_ignore_ascii_case(&target))))
+                            if r.is(kind::SLIDE)
+                                && !input
+                                    .target(original, r)
+                                    .is_some_and(|target| input.has(&target) && kept.iter().any(|p| p.eq_ignore_ascii_case(&target)))
+                            {
+                                removed_jumps.insert(r.id.clone());
+                                return false;
+                            }
+                            !r.is(kind::NOTES_SLIDE) && !r.is("comments")
                         });
                         for r in rels.0.iter_mut() {
-                            if let Some(target) = input.target(original, r) {
-                                let target = if r.is(kind::SLIDE_LAYOUT) { wanted.as_deref().unwrap_or(&target) } else { &target };
-                                r.target = crate::opc::names::relative(&p, target);
+                            use crate::opc::names::{folder, relative};
+                            if let Some(w) = wanted.as_deref().filter(|_| r.is(kind::SLIDE_LAYOUT)) {
+                                r.target = relative(&p, w);
+                            } else if folder(original) != folder(&p) {
+                                if let Some(target) = input.target(original, r) {
+                                    let suffix = &r.target[r.target.find(['#', '?']).unwrap_or(r.target.len())..];
+                                    r.target = relative(&p, &target) + suffix;
+                                }
                             }
                         }
                         out.pkg.put_rels(&p, &rels);
@@ -113,7 +124,7 @@ pub fn write(doc: &Document) -> Result<Package> {
                 p
             }
         };
-        write_slide(slide, &part, &mut out)?;
+        write_slide(slide, &part, &mut out, &removed_jumps)?;
         let rid = pres_ctx.relate(kind::SLIDE, &part);
         written.push(part);
         let existing =
@@ -183,7 +194,7 @@ fn first_layout(pkg: &Package, main: &str) -> Result<Option<String>> {
     Ok(None)
 }
 
-fn write_slide(slide: &Slide, part: &str, out: &mut Out) -> Result<()> {
+fn write_slide(slide: &Slide, part: &str, out: &mut Out, removed_jumps: &std::collections::HashSet<String>) -> Result<()> {
     let mut ctx = PartCtx::load(&out.pkg, part)?;
     let mut root = origin_as(&slide.origin, ns::P, "sld").unwrap_or_else(new_slide);
     if slide.hidden {
@@ -223,9 +234,22 @@ fn write_slide(slide: &Slide, part: &str, out: &mut Out) -> Result<()> {
         .position(|n| matches!(n, crate::xml::Node::Element(e) if e.is(ns::P, "extLst")))
         .unwrap_or(tree.children.len());
     tree.children.splice(at..at, shapes.into_iter().map(crate::xml::Node::Element));
+    if !removed_jumps.is_empty() {
+        remove_jumps(&mut root, removed_jumps);
+    }
     let doc = XmlDoc::new(root);
     ctx.finish(&mut out.pkg);
     put_if_changed(&mut out.pkg, part, doc, types::PPTX_SLIDE)
+}
+
+fn remove_jumps(el: &mut Element, ids: &std::collections::HashSet<String>) {
+    el.children.retain(|child| {
+        !matches!(child, crate::xml::Node::Element(e)
+        if (e.is(ns::A, "hlinkClick") || e.is(ns::A, "hlinkMouseOver"))
+            && e.attr("action").is_some_and(|action| action.eq_ignore_ascii_case("ppaction://hlinksldjump"))
+            && rel_attr(e, "id").is_some_and(|id| ids.contains(id)))
+    });
+    el.elements_mut().for_each(|e| remove_jumps(e, ids));
 }
 
 /// Frame ids, unique within a slide: a frame's own, or the next free one for frames without.

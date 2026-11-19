@@ -195,6 +195,7 @@ fn duplicated_chart_slides_keep_their_relationships() {
 #[test]
 fn duplicating_a_slide_does_not_reuse_its_link_to_a_deleted_slide() {
     use office_core::opc::Package;
+    use office_core::xml::{ns, Element};
 
     let source = "ppt/slides/slide1.xml";
     let deleted = "ppt/slides/slide2.xml";
@@ -203,18 +204,43 @@ fn duplicating_a_slide_does_not_reuse_its_link_to_a_deleted_slide() {
     let removed_id = pkg.relate(source, "slide", deleted).unwrap();
     let jump = kept.to_ascii_uppercase();
     let kept_id = pkg.relate(source, "slide", &jump).unwrap();
+    let missing_id = pkg.relate(source, "slide", "PPT/SLIDES/SLIDE4.XML").unwrap();
+    let mut xml = pkg.xml(source).unwrap();
+    let nv = xml
+        .root
+        .child_mut(ns::P, "cSld")
+        .unwrap()
+        .child_mut(ns::P, "spTree")
+        .unwrap()
+        .child_mut(ns::P, "sp")
+        .unwrap()
+        .child_mut(ns::P, "nvSpPr")
+        .unwrap()
+        .child_mut(ns::P, "cNvPr")
+        .unwrap();
+    for (name, rid) in [("hlinkClick", &removed_id), ("hlinkMouseOver", &kept_id)] {
+        nv.push(Element::new(ns::A, name).with_attr(ns::R, "id", rid).with_attr("", "action", "ppaction://hlinksldjump"));
+    }
+    pkg.replace(source, xml.to_bytes()).unwrap();
     let mut view = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
     view.duplicate_slides(&[0]);
     view.delete_slides(&[2]);
+    view.add_slide(2, None);
+    crate::set_notes(&mut view.doc, 3, vec![Paragraph::text("New slide notes")]);
     let bytes = view.save().unwrap();
     let saved = Package::read(&bytes).unwrap();
     let reopened = SlidesView::open(&bytes).unwrap();
     let duplicate = reopened.slides()[1].part.as_deref().unwrap();
     let links = saved.rels(duplicate).unwrap();
     assert!(links.get(&removed_id).is_none());
+    assert_eq!(reopened.slides()[3].part.as_deref(), Some("ppt/slides/slide4.xml"));
+    assert!(links.get(&missing_id).is_none());
     let target = saved.target(duplicate, links.get(&kept_id).unwrap()).unwrap();
     assert_eq!(target, jump);
     assert_eq!(saved.part(&target).unwrap(), saved.part(kept).unwrap());
+    let xml = saved.xml(duplicate).unwrap();
+    assert!(xml.root.descendant(ns::A, "hlinkClick").is_none());
+    assert_eq!(xml.root.descendant(ns::A, "hlinkMouseOver").unwrap().attr_ns(ns::R, "id"), Some(kept_id.as_str()));
 }
 
 #[test]
