@@ -129,18 +129,18 @@ impl Drawer<'_, '_, '_> {
         if show_master {
             if let Some(m) = master {
                 for f in &m.frames {
-                    self.frame(slide, f, Map::IDENTITY, None, &mut art_items);
+                    self.frame(slide, layout.and_then(|l| l.master.as_deref()), f, Map::IDENTITY, None, &mut art_items);
                 }
             }
         }
         if let Some(l) = layout {
             for f in &l.frames {
-                self.frame(slide, f, Map::IDENTITY, None, &mut art_items);
+                self.frame(slide, slide.layout.as_deref(), f, Map::IDENTITY, None, &mut art_items);
             }
         }
         out.extend(art_items);
         for f in &slide.frames {
-            self.frame(slide, f, Map::IDENTITY, Some(f.id), out);
+            self.frame(slide, slide.part.as_deref(), f, Map::IDENTITY, Some(f.id), out);
         }
     }
 
@@ -201,7 +201,7 @@ impl Drawer<'_, '_, '_> {
     }
 
     /// Draws a frame. `id` is the top-level frame it belongs to (for selecting it), if any.
-    pub fn frame(&mut self, slide: &Slide, f: &Frame, map: Map, id: Option<u32>, out: &mut Vec<Item>) {
+    fn frame(&mut self, slide: &Slide, part: Option<&str>, f: &Frame, map: Map, id: Option<u32>, out: &mut Vec<Item>) {
         if f.hidden {
             return;
         }
@@ -214,7 +214,7 @@ impl Drawer<'_, '_, '_> {
                 // The children are placed in slide coordinates; the group item only rotates.
                 let mut kids = Vec::new();
                 for c in frames {
-                    self.frame(slide, c, child, None, &mut kids);
+                    self.frame(slide, part, c, child, None, &mut kids);
                 }
                 for k in &mut kids {
                     shift(k, -b.x, -b.y);
@@ -248,7 +248,13 @@ impl Drawer<'_, '_, '_> {
                 }
             }
             FrameContent::Table { table } => self.table(slide, table, &b, &mut items),
-            FrameContent::Raw { xml } => self.raw(slide, xml, &b, &mut items),
+            FrameContent::Raw { xml } => {
+                if let Some(chart) = part.and_then(|p| super::chart::draw(self.ctx, self.doc, slide, p, xml, b)) {
+                    items.push(chart);
+                } else {
+                    self.raw(part, xml, &b, &mut items);
+                }
+            }
         }
         out.push(Item::Group {
             x: r(b.x),
@@ -390,9 +396,9 @@ impl Drawer<'_, '_, '_> {
 
     /// Objects the model keeps whole (charts, diagrams, embedded objects): their fallback
     /// picture if they have one, else a quiet box where they are.
-    fn raw(&self, slide: &Slide, xml: &Element, b: &Boxed, out: &mut Vec<Item>) {
+    fn raw(&self, part: Option<&str>, xml: &Element, b: &Boxed, out: &mut Vec<Item>) {
         let blip = xml.descendant(ns::A, "blip").and_then(|bl| bl.attr_ns(ns::R, "embed"));
-        if let (Some(rid), Some(pkg), Some(part)) = (blip, self.doc.package.as_ref(), slide.part.as_deref()) {
+        if let (Some(rid), Some(pkg), Some(part)) = (blip, self.doc.package.as_ref(), part) {
             if let Some(media) = pkg.rels(part).ok().and_then(|rels| rels.get(rid).and_then(|rel| pkg.target(part, rel))) {
                 out.push(Item::Image { x: 0.0, y: 0.0, w: r(b.w), h: r(b.h), media, crop: None, id: None });
                 return;

@@ -257,6 +257,10 @@ pub fn resolve(doc: &Document, slide: &Slide, frame: &Frame) -> Resolved {
 /// layout's and slide's overrides of it), so `tx1` is the theme's dark or light color as the
 /// master says.
 pub fn color(doc: &Document, slide: &Slide, c: &Color) -> Rgba {
+    color_with_override(doc, slide, c, None)
+}
+
+fn color_with_override(doc: &Document, slide: &Slide, c: &Color, override_map: Option<&Element>) -> Rgba {
     let layout = template(doc, slide.layout.as_deref());
     let master = template(doc, layout.and_then(|l| l.master.as_deref()));
     let slide_map: Vec<(String, String)> = slide
@@ -278,7 +282,10 @@ pub fn color(doc: &Document, slide: &Slide, c: &Color) -> Rgba {
     .collect();
     let theme = master.and_then(|m| m.theme.as_ref()).or(doc.theme.as_ref());
     c.resolve(&|name| {
-        let mapped = maps.iter().find_map(|m| m.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())).unwrap_or(name);
+        let mapped = override_map
+            .and_then(|m| m.attr(name))
+            .or_else(|| maps.iter().find_map(|m| m.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())))
+            .unwrap_or(name);
         theme?.scheme_color(mapped)
     })
 }

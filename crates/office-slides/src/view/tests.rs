@@ -66,6 +66,141 @@ fn draws_slides() {
     assert_eq!(v.slide_infos().len(), 2);
 }
 
+const CHART_PART: &str = "ppt/charts/chart1.xml";
+const CHART_BOOK: &str = "ppt/embeddings/data.xlsx";
+
+fn chart_deck(groups: &str, external: bool) -> Vec<u8> {
+    use office_core::opc::Package;
+    use office_core::xml::ns;
+
+    let part = "ppt/slides/slide1.xml";
+    let mut pkg = Package::read(&deck(&[&["Editable title"]])).unwrap();
+    let rid = if external {
+        pkg.relate_external(part, "chart", "https://example.com/chart.xml").unwrap()
+    } else {
+        let xlsx = office_core::write(&Document::new(Kind::Sheets), Kind::Sheets).unwrap();
+        pkg.put(CHART_BOOK, xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+        let data = pkg.relate(CHART_PART, "package", CHART_BOOK).unwrap();
+        let xml = format!(
+            r#"<c:chartSpace xmlns:c="{c}" xmlns:a="{a}" xmlns:r="{r}">
+              <c:clrMapOvr bg1="lt1"/><c:chart><c:autoTitleDeleted val="1"/><c:plotArea>{groups}</c:plotArea></c:chart>
+              <c:externalData r:id="{data}"/>
+            </c:chartSpace>"#,
+            c = ns::C,
+            a = ns::A,
+            r = ns::R,
+        );
+        pkg.put(CHART_PART, xml.into_bytes(), office_core::formats::xlsx::chart::CHART_TYPE);
+        pkg.relate(part, "chart", CHART_PART).unwrap()
+    };
+    let frame = format!(
+        r#"<p:graphicFrame xmlns:c="{c}" xmlns:r="{r}">
+          <p:nvGraphicFramePr><p:cNvPr id="20" name="Imported chart"/><p:cNvGraphicFramePr/><p:nvPr/></p:nvGraphicFramePr>
+          <p:xfrm><a:off x="952500" y="1905000"/><a:ext cx="3810000" cy="2857500"/></p:xfrm>
+          <a:graphic><a:graphicData uri="{c}"><c:chart r:id="{rid}"/></a:graphicData></a:graphic>
+        </p:graphicFrame>"#,
+        c = ns::C,
+        r = ns::R,
+    );
+    let slide = String::from_utf8(pkg.part(part).unwrap().to_vec()).unwrap();
+    let slide = slide
+        .replace("</p:spTree>", &format!("{frame}</p:spTree>"))
+        .replace("</p:sld>", r#"<p:clrMapOvr><a:overrideClrMapping bg1="dk1"/></p:clrMapOvr></p:sld>"#);
+    pkg.replace(part, slide.into_bytes()).unwrap();
+    pkg.to_bytes().unwrap()
+}
+
+const CHART_SERIES: &str = r#"<c:ser>
+    <c:idx val="0"/><c:order val="0"/>
+    <c:spPr><a:solidFill><a:srgbClr val="4472C4"/></a:solidFill></c:spPr>
+    <c:dPt><c:idx val="2"/><c:spPr><a:solidFill><a:schemeClr val="bg1"><a:lumMod val="85000"/></a:schemeClr></a:solidFill></c:spPr></c:dPt>
+    <c:cat><c:strRef><c:f>Data!$A$2:$A$4</c:f><c:strCache><c:ptCount val="3"/>
+      <c:pt idx="0"><c:v>April</c:v></c:pt><c:pt idx="1"><c:v>May</c:v></c:pt><c:pt idx="2"><c:v>June</c:v></c:pt>
+    </c:strCache></c:strRef></c:cat>
+    <c:val><c:numRef><c:f>Data!$B$2:$B$4</c:f><c:numCache><c:ptCount val="3"/>
+      <c:pt idx="2"><c:v>5</c:v></c:pt><c:pt idx="0"><c:v>95</c:v></c:pt>
+    </c:numCache></c:numRef></c:val>
+  </c:ser>"#;
+
+fn chart_items(paint: &SlidePaint) -> &[Item] {
+    let frame = paint
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Group { id: Some(id), x, y, w, h, items, .. } if id == "20" => {
+                assert_eq!((*x, *y, *w, *h), (100.0, 200.0, 400.0, 300.0));
+                Some(items)
+            }
+            _ => None,
+        })
+        .unwrap();
+    match frame.as_slice() {
+        [Item::Group { clip: true, items, .. }] => items,
+        _ => frame,
+    }
+}
+
+#[test]
+fn imported_doughnut_paints_cached_slices_and_preserves_chart_parts() {
+    use office_core::opc::Package;
+
+    let groups = format!(r#"<c:doughnutChart><c:varyColors val="1"/>{CHART_SERIES}<c:holeSize val="60"/></c:doughnutChart>"#);
+    let bytes = chart_deck(&groups, false);
+    let original = Package::read(&bytes).unwrap();
+    let mut view = SlidesView::open(&bytes).unwrap();
+    let mut host = FixedMeasurer::default();
+    let p = view.paint(&mut host, 0);
+    let items = chart_items(&p);
+    assert_eq!(items.len(), 2, "missing values aren't plotted");
+    for (item, color) in items.iter().zip(["#4472c4", "#d9d9d9"]) {
+        let Item::Path { d, fill: Some(fill), dash: "solid", .. } = item else { panic!("{item:?}") };
+        assert_eq!(fill.to_ascii_lowercase(), color);
+        assert_eq!(d.matches('A').count(), 2, "both arcs of the doughnut slice: {d}");
+    }
+    view.set_link(2, Some("https://example.com/"));
+    let saved = view.save().unwrap();
+    let after = Package::read(&saved).unwrap();
+    for part in [CHART_PART, "ppt/charts/_rels/chart1.xml.rels", CHART_BOOK] {
+        assert_eq!(after.part(part).unwrap(), original.part(part).unwrap());
+    }
+    let mut reopened = SlidesView::open(&saved).unwrap();
+    assert_eq!(chart_items(&reopened.paint(&mut host, 0)), items);
+}
+
+#[test]
+fn imported_columns_show_cached_values_and_categories() {
+    let groups = format!(r#"<c:barChart><c:barDir val="col"/><c:grouping val="clustered"/>{CHART_SERIES}</c:barChart>"#);
+    let mut view = SlidesView::open(&chart_deck(&groups, false)).unwrap();
+    let mut host = FixedMeasurer::default();
+    let p = view.paint(&mut host, 0);
+    let items = chart_items(&p);
+    let bars: Vec<_> = items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Rect { h, .. } => Some(*h),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(bars.len(), 2);
+    assert!((bars[0] / bars[1] - 19.0).abs() < 0.05);
+    let labels = texts(items);
+    assert!(labels.contains(&"April".to_string()));
+    assert!(labels.contains(&"June".to_string()));
+}
+
+#[test]
+fn unsupported_or_unavailable_charts_keep_the_placeholder() {
+    let malformed = CHART_SERIES.replace(r#"idx="2""#, r#"idx="18446744073709551615""#);
+    for (groups, external) in
+        [("<c:radarChart/>".to_string(), false), (format!("<c:doughnutChart>{malformed}</c:doughnutChart>"), false), (String::new(), true)]
+    {
+        let mut view = SlidesView::open(&chart_deck(&groups, external)).unwrap();
+        let mut host = FixedMeasurer::default();
+        let p = view.paint(&mut host, 0);
+        assert!(matches!(chart_items(&p), [Item::Path { dash: "dash", .. }]));
+    }
+}
+
 #[test]
 fn blank_deck() {
     let mut host = FixedMeasurer::default();
