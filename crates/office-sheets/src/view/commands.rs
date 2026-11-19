@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use office_core::drawing::{Color, Rgb};
 use office_core::model::{CellRef, Origin, Range, Sheet, SheetCell, SheetRow, Value};
 use office_core::xml::ns;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use super::{CStep, SheetSel, SheetsView};
 use crate::formula::{RefPart, Reference};
@@ -36,6 +36,21 @@ pub struct FormatPatch {
     pub number_format: Option<String>,
     /// `all`, `outside`, `bottom`, `none`.
     pub borders: Option<String>,
+}
+
+/// The spreadsheet-only clipboard format, alongside the plain-text values for other apps.
+#[derive(Deserialize, Serialize)]
+pub struct ClipboardRange {
+    source: Range,
+    cut: bool,
+    cells: Vec<(CellRef, ClipboardCell)>,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(untagged)]
+enum ClipboardCell {
+    Text(String),
+    Formula { formula: String },
 }
 
 impl SheetsView {
@@ -503,43 +518,109 @@ impl SheetsView {
 
     // ---- clipboard ----
 
-    /// A range as tab-separated text, as Excel copies it.
-    pub fn copy(&self, sheet: usize, range: Range) -> String {
-        let mut out = String::new();
-        for r in range.start.row..=range.end.row.min(range.start.row + 100_000) {
-            let cells: Vec<String> =
-                (range.start.col..=range.end.col).map(|c| crate::display(&self.doc, sheet, CellRef::new(r, c))).collect();
-            out.push_str(&cells.join("\t"));
-            out.push('\n');
-        }
-        out
-    }
-
-    /// Pastes tab-separated text with its top left at `at`; a single value fills a picked range.
-    pub fn paste(&mut self, sheet: usize, at: Range, text: &str) {
-        let rows: Vec<Vec<String>> = text
-            .trim_end_matches(['\n', '\r'])
-            .split('\n')
-            .map(|l| l.trim_end_matches('\r').split('\t').map(str::to_string).collect())
-            .collect();
-        let single = rows.len() == 1 && rows[0].len() == 1;
-        let mut cells = Vec::new();
-        let mut inputs = Vec::new();
-        if single {
-            for c in all_cells(at, 20_000) {
-                cells.push(c);
-                inputs.push(rows[0][0].clone());
-            }
-        } else {
-            for (i, row) in rows.iter().enumerate() {
-                for (j, v) in row.iter().enumerate() {
-                    cells.push(CellRef::new(at.start.row + i as u32, at.start.col + j as u32));
-                    inputs.push(v.clone());
+    /// A range as tab-separated displayed values, plus spreadsheet data when it contains formulas.
+    pub fn copy(&self, sheet: usize, mut range: Range, cut: bool) -> (String, Option<ClipboardRange>) {
+        range.end.row = range.end.row.min(range.start.row.saturating_add(100_000));
+        let mut formulas = HashMap::new();
+        if let Some(s) = self.sheets().get(sheet) {
+            let mut reader = crate::SheetFormulas::new(s);
+            for row in s.rows.iter().filter(|r| (range.start.row..=range.end.row).contains(&r.index)) {
+                for cell in row.cells.iter().filter(|c| (range.start.col..=range.end.col).contains(&c.col)) {
+                    let at = CellRef::new(row.index, cell.col);
+                    if let Some(formula) = reader.read(at, cell) {
+                        formulas.insert(at, formula);
+                    }
                 }
             }
         }
-        let map: std::collections::HashMap<CellRef, String> = cells.iter().copied().zip(inputs).collect();
-        self.change_cells(sheet, &cells, |v, c| v.put_input(sheet, c, &map[&c]));
+        let mut clipboard = (!formulas.is_empty()).then(|| ClipboardRange { source: range, cut, cells: Vec::new() });
+        let mut text = String::new();
+        for r in range.start.row..=range.end.row {
+            for c in range.start.col..=range.end.col {
+                let at = CellRef::new(r, c);
+                let display = crate::display(&self.doc, sheet, at);
+                if c > range.start.col {
+                    text.push('\t');
+                }
+                text.push_str(&display);
+                if let Some(clipboard) = &mut clipboard {
+                    if let Some(formula) = formulas.remove(&at) {
+                        clipboard.cells.push((at, ClipboardCell::Formula { formula }));
+                    } else if !display.is_empty() {
+                        clipboard.cells.push((at, ClipboardCell::Text(display)));
+                    }
+                }
+            }
+            text.push('\n');
+        }
+        (text, clipboard)
+    }
+
+    /// Pastes a range at `at`; a single cell fills the selection.
+    pub fn paste(&mut self, sheet: usize, at: Range, text: &str, clipboard: Option<ClipboardRange>) {
+        if let Some(clipboard) = clipboard {
+            self.paste_clipboard(sheet, at, clipboard);
+            return;
+        }
+        let rows: Vec<Vec<&str>> =
+            text.trim_end_matches(['\n', '\r']).split('\n').map(|l| l.trim_end_matches('\r').split('\t').collect()).collect();
+        let single = rows.len() == 1 && rows[0].len() == 1;
+        let cells = if single {
+            all_cells(at, 20_000)
+        } else {
+            rows.iter()
+                .enumerate()
+                .flat_map(|(r, row)| (0..row.len()).map(move |c| CellRef::new(at.start.row + r as u32, at.start.col + c as u32)))
+                .collect()
+        };
+        self.change_cells(sheet, &cells, |v, dest| {
+            let (r, c) = if single { (0, 0) } else { (dest.row - at.start.row, dest.col - at.start.col) };
+            v.put_input(sheet, dest, rows[r as usize][c as usize]);
+        });
+    }
+
+    fn paste_clipboard(&mut self, sheet: usize, at: Range, clipboard: ClipboardRange) {
+        let source = clipboard.source;
+        let single = source.start == source.end;
+        let inputs: HashMap<_, _> = clipboard
+            .cells
+            .into_iter()
+            .filter(|(src, _)| source.contains(*src))
+            .filter_map(|(src, cell)| {
+                let row = at.start.row.checked_add(src.row - source.start.row)?;
+                let col = at.start.col.checked_add(src.col - source.start.col)?;
+                Some((CellRef::new(row, col), (src, cell)))
+            })
+            .collect();
+        let cells = if single {
+            all_cells(at, 20_000)
+        } else {
+            let end = CellRef::new(
+                at.start.row.saturating_add(source.end.row - source.start.row),
+                at.start.col.saturating_add(source.end.col - source.start.col),
+            );
+            let mut cells = existing_cells(self.sheets().get(sheet), Range { start: at.start, end });
+            cells.extend(inputs.keys().copied());
+            cells.sort_unstable();
+            cells.dedup();
+            cells
+        };
+        self.change_cells(sheet, &cells, |v, dest| match inputs.get(&if single { at.start } else { dest }) {
+            Some((_, ClipboardCell::Text(input))) => v.put_input(sheet, dest, input),
+            Some((src, ClipboardCell::Formula { formula })) => {
+                let Some(s) = v.sheets_mut().get_mut(sheet) else { return };
+                let cell = s.cell_mut(dest);
+                cell.value = Value::Empty;
+                cell.formula = Some(if clipboard.cut {
+                    formula.clone()
+                } else {
+                    crate::formula::shift(formula, i64::from(dest.row) - i64::from(src.row), i64::from(dest.col) - i64::from(src.col))
+                        .unwrap_or_else(|_| formula.clone())
+                });
+                cell.origin = Default::default();
+            }
+            None => v.put_input(sheet, dest, ""),
+        });
     }
 
     /// Copies the top row of a range down through it (⌘D), formulas shifted as Excel does.

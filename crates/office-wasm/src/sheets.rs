@@ -50,7 +50,7 @@ enum Cmd {
     RenameSheet { sheet: usize, name: String },
     DeleteSheet { sheet: usize },
     MoveSheet { from: usize, to: usize },
-    Paste { sheet: usize, range: R, text: String },
+    Paste { sheet: usize, range: R, text: String, clipboard: Option<String> },
     FillDown { sheet: usize, range: R },
     Undo,
     Redo,
@@ -129,9 +129,10 @@ impl SheetsDoc {
         self.view.revision() as f64
     }
 
-    /// A range as tab-separated text.
-    pub fn copy(&self, sheet: usize, r0: u32, c0: u32, r1: u32, c1: u32) -> String {
-        self.view.copy(sheet, R { r0, c0, r1, c1 }.range())
+    /// A range as clipboard data: `{ text, clipboard }`.
+    pub fn copy(&self, sheet: usize, r0: u32, c0: u32, r1: u32, c1: u32, cut: bool) -> String {
+        let (text, clipboard) = self.view.copy(sheet, R { r0, c0, r1, c1 }.range(), cut);
+        json(&serde_json::json!({ "text": text, "clipboard": clipboard }))
     }
 
     /// What NOW() and TODAY() give, as a serial number (days since 1900, with the time as a fraction).
@@ -206,8 +207,11 @@ impl SheetsDoc {
                 v.move_sheet(from, to);
                 null
             }
-            Cmd::Paste { sheet, range, text } => {
-                v.paste(sheet, range.range(), &text);
+            Cmd::Paste { sheet, range, text, clipboard } => {
+                let clipboard = clipboard.as_deref().and_then(|data| serde_json::from_str(data).ok());
+                if clipboard.is_some() || !text.is_empty() {
+                    v.paste(sheet, range.range(), &text, clipboard);
+                }
                 null
             }
             Cmd::FillDown { sheet, range } => {
