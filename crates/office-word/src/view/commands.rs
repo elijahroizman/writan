@@ -214,7 +214,7 @@ impl WordView {
                 flow.find(path).map(|(p, x, y)| (p.clone(), x, y))
             }
             StoryId::Note(i) => {
-                let width = self.pages.get(self.story_page).map(|p| self.note_width(p))?;
+                let width = self.pages.get(self.story_page).or(self.pages.first()).map(|p| self.note_width(p))?;
                 let flow = self.note_flow(host, i, width)?;
                 flow.find(path).map(|(p, x, y)| (p.clone(), x, y))
             }
