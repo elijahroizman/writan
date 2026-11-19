@@ -225,7 +225,15 @@ export function Pages({ engine, zoom, scroller }: Props) {
     }
     const at = pagePoint(e.clientX, e.clientY)
     const area = engine.doc.headerFooterAt(at.page, at.y)
-    if (engine.state.headerFooter && !area) run({ cmd: 'exitHeaderFooter' }, false)
+    const note = engine.doc.noteAt(at.page, at.y) ?? null
+    const editingNote = engine.state.note
+    if (note != null && note !== editingNote) {
+      run({ cmd: 'editNote', page: at.page, x: at.x, y: at.y }, false)
+      drag.current = { page: at.page }
+      return
+    }
+    if (editingNote != null && note == null) run({ cmd: 'exitHeaderFooter' }, false)
+    else if (engine.state.headerFooter && !area) run({ cmd: 'exitHeaderFooter' }, false)
     else if (!engine.state.headerFooter && area && e.detail === 2 && engine.doc.hasHeaderFooter(at.page, area)) {
       run({ cmd: 'editHeaderFooter', page: at.page, which: area }, false)
       return
@@ -348,7 +356,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
         run({ cmd: 'tab', shift: e.shiftKey })
         break
       case 'Escape':
-        if (!engine.state.headerFooter) return
+        if (!engine.state.headerFooter && engine.state.note == null) return
         run({ cmd: 'exitHeaderFooter' })
         break
       default: {

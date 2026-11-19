@@ -530,7 +530,7 @@ export function slotCommand(engine: WordEngine | null, slot: Slot) {
   const run = (cmd: Record<string, unknown> & { cmd: string }) => () => {
     engine?.run(cmd)
   }
-  const inBody = !s?.headerFooter
+  const inBody = !s?.headerFooter && s?.note == null
   switch (slot) {
     case 'history.undo':
       return { isActive: false, isEnabled: !!s?.canUndo, execute: run({ cmd: 'undo' }) }

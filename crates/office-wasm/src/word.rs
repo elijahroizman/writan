@@ -150,6 +150,11 @@ enum Cmd {
         left: Option<i64>,
         right: Option<i64>,
     },
+    EditNote {
+        page: usize,
+        x: f64,
+        y: f64,
+    },
     EditHeaderFooter {
         page: usize,
         which: String,
@@ -294,6 +299,12 @@ impl WordDoc {
             .map(|(text, depth, path)| serde_json::json!({ "text": text, "depth": depth, "path": path.0 }))
             .collect();
         json(&items)
+    }
+
+    /// The footnote or endnote painted at a point on a page, by index.
+    #[wasm_bindgen(js_name = noteAt)]
+    pub fn note_at(&self, page: usize, y: f64) -> Option<usize> {
+        self.view.note_at(page, y)
     }
 
     /// Whether a point on a page is in its header (`header`) or footer (`footer`) area.
@@ -625,6 +636,7 @@ impl WordDoc {
                 });
                 serde_json::Value::Null
             }
+            Cmd::EditNote { page, x, y } => serde_json::json!(v.edit_note(&mut m, page, x, y)),
             Cmd::EditHeaderFooter { page, which } => {
                 let kind = if which == "footer" { StoryKind::Footer } else { StoryKind::Header };
                 serde_json::json!(v.edit_header_footer(page, kind))

@@ -40,6 +40,8 @@ export interface WordState {
     media: string
   } | null
   headerFooter: 'header' | 'footer' | null
+  /** The footnote or endnote being edited, by index. */
+  note: number | null
   link: string | null
   page: { current: number; total: number }
 }
@@ -85,6 +87,7 @@ const EMPTY_STATE: WordState = {
   table: null,
   image: null,
   headerFooter: null,
+  note: null,
   link: null,
   page: { current: 1, total: 1 },
 }
