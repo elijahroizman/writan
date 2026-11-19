@@ -591,6 +591,160 @@ fn shared_follower_range_expands_when_the_leader_does_not() {
     assert_eq!(back.cell_info(0, CellRef::new(1, 0)).display, "11110");
 }
 
+fn other_formula(v: &SheetsView, sheet: usize, at: &str) -> Option<String> {
+    v.sheets()[sheet].cell(CellRef::parse(at).unwrap()).and_then(|c| c.formula.clone())
+}
+
+fn name_formulas(v: &SheetsView) -> Vec<String> {
+    crate::names(&v.doc).iter().map(|n| n.formula.clone()).collect()
+}
+
+#[test]
+fn shifting_rows_and_columns_moves_references_on_other_sheets_and_in_names() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.rename_sheet(0, "Data");
+    v.add_sheet();
+    v.rename_sheet(1, "Summary");
+    let mut pkg = Package::read(&v.save().unwrap()).unwrap();
+    let workbook = String::from_utf8(pkg.part("xl/workbook.xml").unwrap().to_vec()).unwrap();
+    assert!(workbook.contains("</sheets>"), "{workbook}");
+    let workbook = workbook.replace(
+        "</sheets>",
+        r#"</sheets><definedNames><definedName name="Rate">Data!$B$2</definedName><definedName name="Inputs">'Data'!$A$1:$A$3</definedName></definedNames>"#,
+    );
+    pkg.replace("xl/workbook.xml", workbook.into_bytes()).unwrap();
+    let mut v = SheetsView::open(&pkg.to_bytes().unwrap(), "Book.xlsx").unwrap();
+    for (at, input) in [("A1", "1"), ("A2", "2"), ("A3", "3"), ("B2", "0.5")] {
+        v.set_input(0, CellRef::parse(at).unwrap(), input);
+    }
+    for (at, input) in [("A1", "=SUM(Data!A1:A3)"), ("A2", "=Rate*10"), ("A3", "=SUM(Inputs)"), ("A4", "=A1"), ("B1", "=Data!B2*2")] {
+        v.set_input(1, CellRef::parse(at).unwrap(), input);
+    }
+    // A shared group on Summary whose references to Data move.
+    for (row, text, range) in [(0, Some("Data!A1*100"), Some("C1:C2")), (1, None, None)] {
+        let cell = v.sheets_mut()[1].cell_mut(CellRef::new(row, 2));
+        cell.formula = text.map(str::to_string);
+        let mut f = Element::new(ns::X, "f").with_attr("", "t", "shared").with_attr("", "si", "0");
+        if let Some(range) = range {
+            f.set_attr("", "ref", range);
+        }
+        if let Some(text) = text {
+            f = f.with_text(text);
+        }
+        cell.origin = Origin::new(Element::new(ns::X, "c").with_child(f));
+    }
+
+    // A row inserted above Data's row 2.
+    v.shift_rows(0, 1, 1);
+
+    assert_eq!(other_formula(&v, 1, "A1").as_deref(), Some("SUM(Data!A1:A4)"));
+    assert_eq!(other_formula(&v, 1, "A4").as_deref(), Some("A1"), "a reference on its own sheet stays");
+    assert_eq!(other_formula(&v, 1, "B1").as_deref(), Some("Data!B3*2"));
+    assert_eq!(other_formula(&v, 1, "C1").as_deref(), Some("Data!A1*100"));
+    assert_eq!(other_formula(&v, 1, "C2").as_deref(), Some("Data!A3*100"));
+    assert_eq!(name_formulas(&v), ["Data!$B$3", "'Data'!$A$1:$A$4"]);
+    for (at, shown) in [("A1", "6"), ("A2", "5"), ("A3", "6"), ("A4", "6"), ("B1", "1"), ("C1", "100"), ("C2", "200")] {
+        assert_eq!(v.cell_info(1, CellRef::parse(at).unwrap()).display, shown, "Summary!{at}");
+    }
+
+    let bytes = v.save().unwrap();
+    let workbook = sheet_xml(&bytes, "xl/workbook.xml");
+    assert!(workbook.contains(r#"<definedName name="Rate">Data!$B$3</definedName>"#), "{workbook}");
+    assert!(workbook.contains(r#"<definedName name="Inputs">'Data'!$A$1:$A$4</definedName>"#), "{workbook}");
+    let part = v.sheets()[1].part.clone().unwrap();
+    let xml = sheet_xml(&bytes, &part);
+    assert!(xml.contains("<f>SUM(Data!A1:A4)</f>"), "{xml}");
+    assert!(xml.contains("<f>Data!A3*100</f>"), "{xml}");
+    let mut back = SheetsView::open(&bytes, "Book.xlsx").unwrap();
+    crate::recalculate(&mut back.doc, None);
+    assert_eq!(name_formulas(&back), ["Data!$B$3", "'Data'!$A$1:$A$4"]);
+    for (at, shown) in [("A1", "6"), ("A2", "5"), ("A3", "6"), ("B1", "1"), ("C2", "200")] {
+        assert_eq!(back.cell_info(1, CellRef::parse(at).unwrap()).display, shown, "reopened Summary!{at}");
+    }
+
+    v.undo();
+    assert_eq!(other_formula(&v, 1, "A1").as_deref(), Some("SUM(Data!A1:A3)"));
+    assert_eq!(other_formula(&v, 1, "B1").as_deref(), Some("Data!B2*2"));
+    assert_eq!(other_formula(&v, 1, "C2"), None, "the shared follower is back");
+    assert_eq!(v.cell_info(1, CellRef::parse("C2").unwrap()).display, "200");
+    assert_eq!(name_formulas(&v), ["Data!$B$2", "'Data'!$A$1:$A$3"]);
+    let workbook = sheet_xml(&v.save().unwrap(), "xl/workbook.xml");
+    assert!(workbook.contains(r#"<definedName name="Rate">Data!$B$2</definedName>"#), "{workbook}");
+    v.redo();
+    assert_eq!(other_formula(&v, 1, "A1").as_deref(), Some("SUM(Data!A1:A4)"));
+    assert_eq!(name_formulas(&v), ["Data!$B$3", "'Data'!$A$1:$A$4"]);
+    v.undo();
+
+    // Deleting Data's first row, and inserting a column before its first.
+    v.shift_rows(0, 0, -1);
+    assert_eq!(other_formula(&v, 1, "A1").as_deref(), Some("SUM(Data!A1:A2)"));
+    assert_eq!(other_formula(&v, 1, "B1").as_deref(), Some("Data!B1*2"));
+    assert_eq!(other_formula(&v, 1, "C1").as_deref(), Some("#REF!*100"));
+    assert_eq!(name_formulas(&v), ["Data!$B$1", "'Data'!$A$1:$A$2"]);
+    assert_eq!(v.cell_info(1, CellRef::parse("A3").unwrap()).display, "5");
+    v.shift_cols(0, 0, 1);
+    assert_eq!(other_formula(&v, 1, "A1").as_deref(), Some("SUM(Data!B1:B2)"));
+    assert_eq!(other_formula(&v, 1, "B1").as_deref(), Some("Data!C1*2"));
+    assert_eq!(other_formula(&v, 1, "A4").as_deref(), Some("A1"));
+    assert_eq!(name_formulas(&v), ["Data!$C$1", "'Data'!$B$1:$B$2"]);
+    assert_eq!(v.cell_info(1, CellRef::parse("A2").unwrap()).display, "5");
+
+    // Shifting Summary leaves Data's references and the names alone.
+    v.shift_rows(1, 0, 1);
+    assert_eq!(other_formula(&v, 1, "B2").as_deref(), Some("Data!C1*2"));
+    assert_eq!(other_formula(&v, 1, "A5").as_deref(), Some("A2"));
+    assert_eq!(name_formulas(&v), ["Data!$C$1", "'Data'!$B$1:$B$2"]);
+}
+
+#[test]
+fn shifting_rows_keeps_other_sheets_array_shared_and_external_formulas() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.rename_sheet(0, "Data");
+    v.add_sheet();
+    v.rename_sheet(1, "Summary");
+    let mut v = SheetsView::open(&v.save().unwrap(), "Book.xlsx").unwrap();
+    let markup = |t: &str, range: Option<&str>, si: Option<&str>, text: Option<&str>| {
+        let mut f = Element::new(ns::X, "f").with_attr("", "t", t);
+        if let Some(range) = range {
+            f.set_attr("", "ref", range);
+        }
+        if let Some(si) = si {
+            f.set_attr("", "si", si);
+        }
+        if let Some(text) = text {
+            f = f.with_text(text);
+        }
+        Origin::new(Element::new(ns::X, "c").with_child(f))
+    };
+    let s = &mut v.sheets_mut()[1];
+    let cell = s.cell_mut(CellRef::parse("D1").unwrap());
+    cell.formula = Some("Data!A1:A3*2".into());
+    cell.origin = markup("array", Some("D1:D3"), None, Some("Data!A1:A3*2"));
+    let cell = s.cell_mut(CellRef::parse("E1").unwrap());
+    cell.formula = Some("[1]Data!A1".into());
+    let cell = s.cell_mut(CellRef::parse("F1").unwrap());
+    cell.formula = Some("Data!A2+Table1[Col]".into());
+    cell.origin = markup("shared", Some("F1:F2"), Some("0"), Some("Data!A2+Table1[Col]"));
+    s.cell_mut(CellRef::parse("F2").unwrap()).origin = markup("shared", None, Some("0"), None);
+
+    v.shift_rows(0, 1, 1);
+
+    assert_eq!(other_formula(&v, 1, "D1").as_deref(), Some("Data!A1:A4*2"));
+    assert_eq!(other_formula(&v, 1, "E1").as_deref(), Some("[1]Data!A1"), "another workbook's Data stays");
+    assert_eq!(other_formula(&v, 1, "F1").as_deref(), Some("Data!A3+Table1[Col]"));
+    let bytes = v.save().unwrap();
+    let part = v.sheets()[1].part.clone().unwrap();
+    let xml = sheet_xml(&bytes, &part);
+    assert!(xml.contains(r#"<f t="array" ref="D1:D3">Data!A1:A4*2</f>"#), "{xml}");
+    assert!(xml.contains("[1]Data!A1"), "{xml}");
+    assert!(xml.contains(r#"<f t="shared" ref="F1:F2" si="0">Data!A3+Table1[Col]</f>"#), "the shared leader stays: {xml}");
+
+    v.undo();
+    assert_eq!(other_formula(&v, 1, "D1").as_deref(), Some("Data!A1:A3*2"));
+    let xml = sheet_xml(&v.save().unwrap(), &part);
+    assert!(xml.contains(r#"<f t="array" ref="D1:D3">Data!A1:A3*2</f>"#), "{xml}");
+}
+
 #[test]
 fn sheet_size_is_kept_in_a_hidden_name_and_follows_the_sheet() {
     let mut v = SheetsView::blank(Kind::Sheets);
