@@ -101,19 +101,9 @@ jobs:
       - name: Refresh package index
         run: sudo apt-get update
       - name: LibreOffice packages
-        id: libreoffice
-        uses: awalsh128/cache-apt-pkgs-action@v1.6.3
-        with:
-          packages: libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui
-          # Bump only when the package list changes.
-          version: ubuntu-24.04-libreoffice-2
-      - name: Restore LibreOffice registry
-        if: steps.libreoffice.outputs.cache-hit == 'true'
-        # These files are normally created by the packages' postinst scripts.
-        run: |
-          sudo mkdir -p /etc/libreoffice/registry
-          sudo cp -a /usr/lib/libreoffice/share/.registry/. /etc/libreoffice/registry/
-          sudo ldconfig
+        # A plain install, not a cache of the .debs: a cache only holds the packages that were
+        # missing from the runner image it was made on, so it breaks when the image drops one.
+        run: sudo apt-get install -y --no-install-recommends libreoffice-writer-nogui libreoffice-impress-nogui libreoffice-calc-nogui
       - name: Python libraries
         run: python3 -m pip install --user --break-system-packages python-docx python-pptx openpyxl
       - name: Generate samples with headless LibreOffice
