@@ -1234,13 +1234,13 @@ impl WordView {
                 };
                 // Inside a cell spanning down, the new row is covered there and the span grows.
                 if at > 0 && at < t.rows.len() {
-                    for c in 0..cols {
+                    for (c, cell) in new.cells.iter_mut().enumerate() {
                         if t.rows[at].cells.get(c).is_some_and(|x| x.covered) {
                             if let Some((r0, c0)) = t.owner(at, c) {
                                 if r0 < at && c0 == c {
                                     t.rows[r0].cells[c0].row_span += 1;
                                 }
-                                new.cells[c] = Cell { covered: true, ..Default::default() };
+                                *cell = Cell { covered: true, ..Default::default() };
                             }
                         }
                     }
@@ -1387,9 +1387,11 @@ impl WordView {
         let (r0, r1) = (row.min(other.0) as usize, row.max(other.0) as usize);
         let (c0, c1) = (col.min(other.1) as usize, col.max(other.1) as usize);
         let mut out = Vec::new();
-        for r in r0..=r1.min(t.rows.len() - 1) {
-            for c in c0..=c1.min(t.rows[r].cells.len() - 1) {
-                if !t.rows[r].cells[c].covered {
+        let row_end = r1.min(t.rows.len() - 1) + 1;
+        for (r, row) in t.rows.iter().enumerate().take(row_end).skip(r0) {
+            let col_end = c1.min(row.cells.len() - 1) + 1;
+            for (c, cell) in row.cells.iter().enumerate().take(col_end).skip(c0) {
+                if !cell.covered {
                     out.push((r, c));
                 }
             }
