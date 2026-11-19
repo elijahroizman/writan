@@ -109,6 +109,9 @@ fn format_number_with(n: f64, sections: &[String], system: DateSystem) -> Format
     let (tokens, value) = number_section(&parsed, n);
     let mut out = if tokens.iter().any(|t| matches!(t, Token::General)) {
         Formatted { text: general(value), color: None }
+    } else if tokens.iter().any(|t| matches!(t, Token::Text)) && !tokens.iter().any(|t| matches!(t, Token::Digit(_))) {
+        // A text-only section (`@`) on a number shows the number itself.
+        render_text(tokens, &general(value))
     } else if tokens.iter().any(|t| matches!(t, Token::Date(_) | Token::Elapsed(..))) {
         render_date(tokens, value, system)
     } else {
@@ -862,5 +865,14 @@ mod tests {
         assert_eq!(t("abc", "\"Name: \"@"), "Name: abc");
         assert_eq!(t("abc", "0;0;0;\"[\"@\"]\""), "[abc]");
         assert_eq!(t("abc", "0.00"), "abc");
+    }
+
+    #[test]
+    fn text_format_on_numbers() {
+        assert_eq!(f(5.0, "@"), "5");
+        assert_eq!(f(-12.5, "@"), "-12.5");
+        assert_eq!(f(1234.567, "@"), "1234.567");
+        assert_eq!(f(5.0, "\"total: \"@"), "total: 5");
+        assert_eq!(f(-5.0, "0;\"neg:\"@"), "neg:5");
     }
 }
