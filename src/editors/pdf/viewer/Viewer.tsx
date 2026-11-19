@@ -283,7 +283,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
       goTo(index, y) {
         const el = scrollRef.current
         const l = layoutRef.current
-        if (!el || index < 0 || index >= l.tops.length) return
+        if (!el || !Number.isInteger(index) || index < 0 || index >= l.tops.length) return
         // The scroll alone may not change the current page: it may not move at all (the page is
         // already at the top), may stop short (near the end), or a held page would win.
         select(index)
