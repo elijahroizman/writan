@@ -384,17 +384,9 @@ pub fn calculate_uncached(doc: &mut Document, now: Option<f64>) -> usize {
 
 /// Whether a formula cell has no stored result. An empty `v` under `t="str"` may be a real
 /// empty text result, but writers that do not evaluate formulas (report generators such as
-/// ClosedXML or POI) write it for a result never worked out, so it is worked out too;
-/// [`calculate`] keeps the claimed empty when the evaluator can only offer an error.
+/// ClosedXML or POI) write it for a result never worked out, so it is worked out too.
 fn uncached(cell: &SheetCell) -> bool {
     cell.value.is_empty()
-}
-
-/// Whether the file claims the cell's formula result is empty text: `t="str"` with an
-/// empty `v`.
-fn claimed_empty_text(cell: &SheetCell) -> bool {
-    cell.value.is_empty()
-        && cell.origin.get().is_some_and(|c| c.attr("t") == Some("str") && c.child(ns::X, "v").is_some_and(|v| v.text().is_empty()))
 }
 
 fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Recalculation {
@@ -403,12 +395,6 @@ fn calculate(doc: &mut Document, now: Option<f64>, include: impl Fn(&SheetCell) 
     if let Body::Workbook { sheets } = &mut doc.body {
         for ((s, r, c), value) in results {
             let cell = sheets[s].cell_mut(CellRef::new(r, c));
-            // A result the file claims is empty text stands against an error the evaluator
-            // invents for a formula it cannot reproduce: the blank it saved beats an error
-            // nothing ever showed.
-            if matches!(value, Value::Error(_)) && claimed_empty_text(cell) {
-                continue;
-            }
             if cell.value != value {
                 cell.value = value;
             }
