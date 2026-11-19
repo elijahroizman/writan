@@ -53,6 +53,11 @@ pub enum CStep {
     Book { before: Vec<Sheet>, after: Vec<Sheet> },
     /// A sheet's charts.
     Charts { sheet: usize, before: Vec<office_core::model::Chart>, after: Vec<office_core::model::Chart> },
+    /// The workbook's defined names, with the workbook XML they're saved in.
+    Names {
+        before: Box<(Vec<crate::DefinedName>, office_core::model::Origin)>,
+        after: Box<(Vec<crate::DefinedName>, office_core::model::Origin)>,
+    },
 }
 
 impl Step for CStep {}

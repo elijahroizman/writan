@@ -6,7 +6,6 @@
 - **LaTeX:** needs TeX on the computer. A new, unsaved document can't use other files. Clicking in the PDF doesn't jump to the source (no SyncTeX yet). On Windows, installing and removing TeX are still being tested.
 - **Spelling:** Excel workbooks, PDF form fields, LaTeX source, and text in grouped shapes on a slide aren't spell checked. On Linux, Markdown and text files aren't either, and Word and PowerPoint need a Hunspell dictionary (`hunspell-en-us` or your language's).
 - **Excel:** pictures, conditional formatting and data validation aren't shown, but they're kept when the file is saved. Charts show and can be edited; radar, stock, bubble and surface charts show as a placeholder and are kept as they are unless you change them, and a chart you change is saved with Excel's default styling. A CSV file can't hold charts. About 140 of the common functions are worked out, including SUMIFS, XLOOKUP, IFS and the statistics and date functions; a formula using another one shows `#NAME?` until Excel recalculates it. A CSV file is saved with its values only, so formatting made in Writan is lost when it's closed.
-- Inserting or deleting rows and columns updates formulas in the edited sheet and charts on every sheet. Formulas on other sheets that refer to those cells, and defined names, need manual updates.
 
 - Session restore remembers saved file paths. It does not recover unsaved edits or untitled documents after a crash. Autosave and version history protect only changes that were successfully saved.
 
