@@ -210,7 +210,8 @@ interface WorkspaceState {
    * tab is gone, or saved or edited (it's the user's now, so a rebuild must not overwrite it).
    */
   refreshUnsaved(id: string, bytes: Uint8Array): boolean
-  newDocument(kind: DocKind): void
+  /** A new, untitled document: blank, or holding `bytes` (a starter deck). */
+  newDocument(kind: DocKind, bytes?: Uint8Array): void
   markDirty(id: string, dirty: boolean): void
   /**
    * Save a tab. `to` saves to that path without asking. `quiet` throws on failure instead of
@@ -487,13 +488,13 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       return true
     },
 
-    newDocument: (kind) => {
+    newDocument: (kind, bytes) => {
       // The first free name among the open tabs, so closing or saving an untitled one frees its number.
       const taken = new Set(get().tabs.filter((t) => t.kind === kind).map((t) => t.title))
       let n = 1
       while (taken.has(n === 1 ? KINDS[kind].untitled : `${KINDS[kind].untitled} ${n}`)) n++
       const title = n === 1 ? KINDS[kind].untitled : `${KINDS[kind].untitled} ${n}`
-      addTab({ id: newId(), kind, title, path: null, bytes: null, loadId: 0, dirty: false })
+      addTab({ id: newId(), kind, title, path: null, bytes: bytes ?? null, loadId: 0, dirty: false })
     },
 
     markDirty: (id, dirty) => {

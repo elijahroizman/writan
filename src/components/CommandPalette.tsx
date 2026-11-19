@@ -66,6 +66,7 @@ import { commandAvailable, runCommand } from '../App'
 import { KINDS } from '../lib/kinds'
 import { basename, dirname, tildify } from '../lib/platform'
 import { enabledKinds, usePlugins } from '../state/plugins'
+import { createNew } from '../state/starters'
 import type { SettingsPage } from '../state/settings'
 import { useSettings } from '../state/settings'
 import type { Scope } from '../state/shortcuts'
@@ -244,7 +245,7 @@ function commandItems(): PaletteItem[] {
       group: 'Commands',
       icon: <KindIcon kind={kind.id} />,
       keywords: `new create ${kind.label}`,
-      run: () => ws.newDocument(kind.id),
+      run: () => createNew(kind.id),
     })
   }
 

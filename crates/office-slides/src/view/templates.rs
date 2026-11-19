@@ -91,20 +91,65 @@ impl Builder {
         f.origin = Origin::default();
     }
 
+    /// Sets the last text in the theme's heading font.
+    fn heading(&mut self) {
+        if let Some(FrameContent::Shape { text: Some(body), .. }) = self.frames.last_mut().map(|f| &mut f.content) {
+            for p in &mut body.paragraphs {
+                for r in p.runs_mut() {
+                    r.props.font = Some("+mj-lt".into());
+                }
+                if let Some(mark) = &mut p.mark {
+                    mark.font = Some("+mj-lt".into());
+                }
+            }
+        }
+    }
+
     fn title(&mut self) {
         self.text((MARGIN, 420_000.0, CONTENT, 900_000.0), "Title", "Slide Title", 32.0, "tx1", true, Align::Left, "b");
+        self.heading();
         self.shape((MARGIN, 1_420_000.0, 1_600_000.0, 60_000.0), "Title Rule", "accent1", false);
     }
 }
 
+/// Relative luminance (WCAG), 0 for black to 1 for white.
+fn luminance(c: office_core::drawing::Rgb) -> f64 {
+    let lin = |v: u8| {
+        let v = f64::from(v) / 255.0;
+        if v <= 0.03928 {
+            v / 12.92
+        } else {
+            ((v + 0.055) / 1.055).powf(2.4)
+        }
+    };
+    0.2126 * lin(c.0) + 0.7152 * lin(c.1) + 0.0722 * lin(c.2)
+}
+
 impl SlidesView {
+    /// The theme's light or dark color, whichever reads better on `fill` (white on a dark
+    /// accent, near-black on a yellow one), as the slide at `at` shows them.
+    fn ink_on(&self, at: usize, fill: &str) -> &'static str {
+        let slides = self.slides();
+        let Some(slide) = slides.get(at.min(slides.len().saturating_sub(1))) else { return "lt1" };
+        let lum = |name: &str| luminance(crate::color(&self.doc, slide, &Color::scheme(name)).rgb);
+        let f = lum(fill);
+        let contrast = |l: f64| (f.max(l) + 0.05) / (f.min(l) + 0.05);
+        if contrast(lum("lt1")) >= contrast(lum("dk1")) {
+            "lt1"
+        } else {
+            "dk1"
+        }
+    }
+
     /// Adds a starter slide on the blank layout (or the first layout), in one undo step.
     pub fn add_template(&mut self, after: usize, template: &str) {
         let (w, h) = self.size();
         let mut b = Builder { sx: w * 9525.0 / 12_192_000.0, sy: h * 9525.0 / 6_858_000.0, frames: Vec::new() };
+        let on_accent1 = self.ink_on(after, "accent1");
         match template {
             "title" => {
                 b.text((MARGIN, 2_300_000.0, CONTENT, 1_300_000.0), "Title", "Presentation Title", 44.0, "tx1", true, Align::Left, "b");
+                b.heading();
                 b.shape((MARGIN, 3_760_000.0, 2_200_000.0, 80_000.0), "Accent Bar", "accent1", false);
                 b.text(
                     (MARGIN, 3_980_000.0, CONTENT, 640_000.0),
@@ -138,7 +183,16 @@ impl SlidesView {
             }
             "sectionHeader" => {
                 b.shape((0.0, 0.0, 4_000_000.0, 6_858_000.0), "Section Panel", "accent1", false);
-                b.text((500_000.0, 2_650_000.0, 3_000_000.0, 1_500_000.0), "Section Number", "01", 60.0, "lt1", true, Align::Left, "ctr");
+                b.text(
+                    (500_000.0, 2_650_000.0, 3_000_000.0, 1_500_000.0),
+                    "Section Number",
+                    "01",
+                    60.0,
+                    on_accent1,
+                    true,
+                    Align::Left,
+                    "ctr",
+                );
                 b.text(
                     (4_500_000.0, 2_750_000.0, 12_192_000.0 - 4_500_000.0 - MARGIN, 1_100_000.0),
                     "Section Title",
@@ -149,6 +203,7 @@ impl SlidesView {
                     Align::Left,
                     "b",
                 );
+                b.heading();
                 b.text(
                     (4_500_000.0, 3_980_000.0, 12_192_000.0 - 4_500_000.0 - MARGIN, 700_000.0),
                     "Section Caption",
@@ -171,7 +226,15 @@ impl SlidesView {
                     (MARGIN, "Left", "Option A", "accent1", "First content area"),
                     (RIGHT, "Right", "Option B", "accent2", "Second content area"),
                 ] {
-                    b.panel((x, 1_720_000.0, HALF, 700_000.0), &format!("{side} Header"), option, accent, 18.0, "lt1", true);
+                    b.panel(
+                        (x, 1_720_000.0, HALF, 700_000.0),
+                        &format!("{side} Header"),
+                        option,
+                        accent,
+                        18.0,
+                        self.ink_on(after, accent),
+                        true,
+                    );
                     b.panel((x, 2_540_000.0, HALF, 3_580_000.0), &format!("{side} Body"), text, "bg2", 16.0, "tx2", false);
                 }
             }
@@ -188,6 +251,7 @@ impl SlidesView {
                     Align::Center,
                     "ctr",
                 );
+                b.heading();
                 if let FrameContent::Shape { text: Some(body), .. } = &mut b.frames.last_mut().unwrap().content {
                     for p in &mut body.paragraphs {
                         p.props.line_spacing = Some(LineSpacing::Multiple(office_core::units::Percent(130_000)));
@@ -209,6 +273,7 @@ impl SlidesView {
             }
             "closing" => {
                 b.text((MARGIN, 2_450_000.0, CONTENT, 1_300_000.0), "Closing Title", "Thank You", 44.0, "tx1", true, Align::Center, "b");
+                b.heading();
                 b.shape((12_192_000.0 / 2.0 - 1_100_000.0, 3_900_000.0, 2_200_000.0, 80_000.0), "Accent Bar", "accent1", false);
                 b.text(
                     (MARGIN, 4_150_000.0, CONTENT, 640_000.0),

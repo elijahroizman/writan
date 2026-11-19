@@ -11,6 +11,10 @@ Every file opens as a tab across the top. Each kind of document gets its own sid
 | Markdown | Heading outline | Hidden by default. Read / Edit with preview / Edit source switch at the bottom (⌘E). Front matter, such as an Agent Skill's name and description, shows as a table |
 | Text | None | None |
 
+## New presentations
+
+**New presentation** opens a gallery of starter decks: Plain, Harbor, Graphite, Signal, Lagoon and Blank. Each sets the presentation's theme colors and fonts and starts with six slides to fill in or delete (Blank has one empty slide). The layouts in **New slide** take on the same colors and fonts. Use the arrow keys and return, or press a deck's number. The gallery starts on the deck you used last.
+
 ## Find and replace
 
 ⌘F finds text in the document in front of you. ⌃H (Ctrl+H on Windows and Linux) opens find with a **Replace with** field, or click the arrow at the left of the find box. **Replace** changes the highlighted match and moves to the next; **All** (⌘↩) changes every one. This works in Word documents, PowerPoint presentations, Markdown and text files. PDFs can be searched but not replaced.
