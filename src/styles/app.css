@@ -1588,6 +1588,21 @@ button.section-title:hover {
   outline-color: #fff;
 }
 
+/* Red can't sit on the accent, so a destructive item hovers with the neutral fill and stays red
+   (5:1 or better), icon included, keeping the accent focus ring. */
+.menu-item.danger:not(:disabled):hover {
+  background: var(--hover);
+  color: var(--menu-danger, var(--danger));
+}
+
+.menu-item.danger:not(:disabled):hover svg {
+  color: inherit;
+}
+
+.menu-item.danger:not(:disabled):hover:focus-visible {
+  outline-color: var(--accent);
+}
+
 .menu-item:disabled {
   opacity: 0.4;
 }
@@ -1817,6 +1832,12 @@ button.section-title:hover {
 
 .home-open .action-card-text strong {
   font-size: 14px;
+}
+
+/* Out of a card and on the canvas, the light theme's muted grey drops under 4.5:1; this one stays
+   above it on the canvas, the hover fill and the drag fill. */
+:root[data-theme='light'] .home-open .action-card-text .muted {
+  color: #5c5c61;
 }
 
 .home-open .kbd {

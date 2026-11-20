@@ -121,7 +121,7 @@ export function Home() {
                   onContextMenu={(e) => {
                     e.preventDefault()
                     const opener = (e.target as HTMLElement).closest('button')
-                    if (opener) setMenu({ x: e.clientX, y: e.clientY, file: r, opener })
+                    if (opener) setMenu({ x: e.clientX, y: e.clientY, file: r, opener, fromMore: opener.classList.contains('recent-more') })
                   }}
                   onKeyDown={(e) => {
                     // WebKit doesn't turn the menu key or ⇧F10 into a contextmenu event; Chromium does,
@@ -131,7 +131,7 @@ export function Home() {
                     if (!opener) return
                     e.preventDefault()
                     const rect = opener.getBoundingClientRect()
-                    setMenu({ x: rect.left + 8, y: rect.bottom + 4, file: r, opener })
+                    setMenu({ x: rect.left + 8, y: rect.bottom + 4, file: r, opener, fromMore: opener.classList.contains('recent-more') })
                   }}
                 >
                   <button type="button" className="recent-row" title={r.path} onClick={() => open(r)}>
