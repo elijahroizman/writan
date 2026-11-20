@@ -20,6 +20,36 @@ const KEEP = 3
 
 export const WORD_CLIPBOARD = 'application/x-workspace-word'
 
+/** The 0-based page with the largest visible vertical slice in `[top, bottom]`. */
+export function visiblePageIndex(tops: readonly number[], sizes: readonly [number, number][], zoom: number, top: number, bottom: number): number {
+  if (!sizes.length) return 0
+  let best = -1
+  let bestVisible = 0
+  for (let i = 0; i < sizes.length; i++) {
+    const pt = tops[i]
+    const pb = pt + sizes[i][1] * zoom
+    const visible = Math.min(bottom, pb) - Math.max(top, pt)
+    if (visible > bestVisible + 1 || (best < 0 && visible > 0)) {
+      best = i
+      bestVisible = visible
+    }
+  }
+  if (best >= 0) return best
+  const mid = (top + bottom) / 2
+  let nearest = 0
+  let nearestDist = Infinity
+  for (let i = 0; i < sizes.length; i++) {
+    const pt = tops[i]
+    const pb = pt + sizes[i][1] * zoom
+    const dist = mid < pt ? pt - mid : mid > pb ? mid - pb : 0
+    if (dist < nearestDist) {
+      nearest = i
+      nearestDist = dist
+    }
+  }
+  return nearest
+}
+
 interface Props {
   engine: WordEngine
   zoom: number
@@ -65,6 +95,9 @@ export function Pages({ engine, zoom, scroller }: Props) {
     const { top: scrollTop, height: viewHeight } = view.current
     const top = scrollTop
     const bottom = top + (viewHeight || 1200)
+    if (viewHeight > 0 && sizes.length > 0) {
+      engine.setVisiblePage(visiblePageIndex(tops, sizes, zoom, top, bottom) + 1)
+    }
     const sc = { clientHeight: viewHeight || 1200 }
     let first = -1
     let last = -1
@@ -131,8 +164,12 @@ export function Pages({ engine, zoom, scroller }: Props) {
     measure()
     const onScroll = () => {
       measure()
-      cancelAnimationFrame(frame)
-      frame = requestAnimationFrame(draw)
+      if (!frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0
+          draw()
+        })
+      }
     }
     sc.addEventListener('scroll', onScroll, { passive: true })
     const ro = new ResizeObserver(onScroll)

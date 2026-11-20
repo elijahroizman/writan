@@ -464,6 +464,19 @@ button {
   color: var(--danger);
 }
 
+button.autosave-chip {
+  cursor: pointer;
+}
+
+button.autosave-chip:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+button.autosave-chip:active {
+  background: var(--press);
+}
+
 /* ───────────────────────── Generic controls ───────────────────────── */
 
 .icon-btn {
