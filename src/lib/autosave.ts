@@ -3,6 +3,7 @@
 
 import { create } from 'zustand'
 import { KINDS } from './kinds'
+import { isTauri } from './platform'
 import type { AutosaveSettings } from '../state/settings'
 import { useSettings } from '../state/settings'
 import type { DocTab } from '../state/workspace'
@@ -27,16 +28,32 @@ const setStatus = (tabId: string, status: AutosaveStatus | null) =>
     return next
   })
 
+export type AutosaveBlockReason = 'disabled' | 'kind-disabled' | 'unsaved' | 'browser' | 'legacy-ppt' | 'duplicate-tab'
+
+export interface AutosaveBlock {
+  reason: AutosaveBlockReason
+  message: string
+  /** Whether saving this tab now can enable autosave. */
+  canSaveToEnable: boolean
+}
+
+/** Why a tab isn't autosaved, with a reason for UI messaging, or null if it is. */
+export function autosaveBlock(tab: DocTab, s: AutosaveSettings = useSettings.getState().autosave): AutosaveBlock | null {
+  if (!s.enabled) return { reason: 'disabled', message: 'Autosave is off.', canSaveToEnable: false }
+  if (s.kinds[tab.kind] === false) return { reason: 'kind-disabled', message: `Autosave is off for ${KINDS[tab.kind].short.toLowerCase()} files.`, canSaveToEnable: false }
+  if (!tab.path) return { reason: 'unsaved', message: 'Save this file once. After that, changes autosave.', canSaveToEnable: isTauri }
+  if (tab.path.startsWith('browser:')) return { reason: 'browser', message: 'Only files saved on this computer can autosave.', canSaveToEnable: false }
+  if (tab.kind === 'pptx' && tab.path.toLowerCase().endsWith('.ppt')) return { reason: 'legacy-ppt', message: 'Save this PowerPoint file as .pptx first.', canSaveToEnable: true }
+  // Two tabs writing the same file would overwrite each other's changes.
+  if (useWorkspace.getState().tabs.some((t) => t.id !== tab.id && t.path === tab.path)) {
+    return { reason: 'duplicate-tab', message: 'This file is open in another tab too.', canSaveToEnable: false }
+  }
+  return null
+}
+
 /** Why a tab isn't autosaved, or null if it is. */
 export function autosaveBlocker(tab: DocTab, s: AutosaveSettings = useSettings.getState().autosave): string | null {
-  if (!s.enabled) return 'Autosave is off.'
-  if (s.kinds[tab.kind] === false) return `Autosave is off for ${KINDS[tab.kind].short.toLowerCase()} files.`
-  if (!tab.path) return 'Save this file once. After that, changes autosave.'
-  if (tab.path.startsWith('browser:')) return 'Only files saved on this computer can autosave.'
-  if (tab.kind === 'pptx' && tab.path.toLowerCase().endsWith('.ppt')) return 'Save this PowerPoint file as .pptx first.'
-  // Two tabs writing the same file would overwrite each other's changes.
-  if (useWorkspace.getState().tabs.some((t) => t.id !== tab.id && t.path === tab.path)) return 'This file is open in another tab too.'
-  return null
+  return autosaveBlock(tab, s)?.message ?? null
 }
 
 const timers = new Map<string, { timer: number; since: number }>()

@@ -402,6 +402,7 @@ export function useDocxEditor(): WordEngine | null {
 }
 
 const NO_SUB = () => () => {}
+const FIRST_PAGE = () => 1
 
 /** Equal, or objects whose own values are all equal (one level deep). */
 function shallowEqual(a: unknown, b: unknown) {
@@ -443,6 +444,12 @@ export function useWordState(): WordState | null {
 
 export function useEditorState<T>(pick: (s: { page: WordState['page'] | null; selection: number; image: WordState['image']; table: WordState['table'] }) => T): T {
   return useWordSelector((e) => pick({ page: e.state.page, selection: e.tick, image: e.state.image, table: e.state.table }), pick({ page: null, selection: 0, image: null, table: null }))
+}
+
+/** The 1-based page currently most visible in the viewport. */
+export function useVisiblePage(): number {
+  const { engine } = useCtx()
+  return useSyncExternalStore(engine?.subscribeVisiblePage ?? NO_SUB, engine?.getVisiblePage ?? FIRST_PAGE)
 }
 
 /** Runs `f` after each change to the document (not caret moves). */

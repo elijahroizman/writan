@@ -136,11 +136,75 @@ async fn run<R: Runtime, T: Send + Default + 'static>(
     .map_err(|e| e.to_string())
 }
 
+/// Ordered BCP-47 language tags to try with Windows' `ISpellCheckerFactory`.
+///
+/// Considers the user's Windows Preferred languages (`User Profile\Languages`), preferred UI
+/// languages, and regional format (`GetUserDefaultLocaleName`). When a non-US English variant
+/// such as `en-AU` has no installed Windows spelling dictionary, tries `en-GB` before falling
+/// back to `en-US` so Commonwealth spellings (`liveability`, `urbanisation`, `neighbourhoods`)
+/// aren't needlessly checked against US English.
+#[cfg(any(windows, test))]
+fn windows_language_candidates(
+    profile: &[String],
+    ui: &[String],
+    locale: Option<&str>,
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut push = |tag: &str| {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        if !out
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(trimmed))
+        {
+            out.push(trimmed.to_string());
+        }
+    };
+    let mut push_with_english_fallback = |tag: &str| {
+        let trimmed = tag.trim();
+        push(trimmed);
+        let lower = trimmed.to_ascii_lowercase();
+        if let Some(region) = lower.strip_prefix("en-") {
+            if region != "us" && region != "gb" {
+                push("en-GB");
+            }
+            // An English user's next choice is still English, not their next language.
+            push("en-US");
+        }
+    };
+
+    let primary_profile_is_us = profile
+        .first()
+        .is_some_and(|first| first.trim().eq_ignore_ascii_case("en-US"));
+
+    if let Some(loc) = locale {
+        // OEM Windows installs outside the US often leave Preferred languages at en-US while
+        // Regional format is en-AU or en-GB; honor the regional format first in that case.
+        if profile.is_empty() || primary_profile_is_us {
+            push_with_english_fallback(loc);
+        }
+    }
+    for tag in profile {
+        push_with_english_fallback(tag);
+    }
+    for tag in ui {
+        push_with_english_fallback(tag);
+    }
+    if let Some(loc) = locale {
+        push_with_english_fallback(loc);
+    }
+    push("en-US");
+    out
+}
+
 #[cfg(windows)]
 mod win {
     use windows::core::{HSTRING, PWSTR};
     use windows::Win32::Globalization::{
-        GetUserDefaultLocaleName, ISpellChecker, ISpellCheckerFactory, SpellCheckerFactory,
+        GetUserDefaultLocaleName, GetUserPreferredUILanguages, ISpellChecker, ISpellCheckerFactory,
+        SpellCheckerFactory, MUI_LANGUAGE_NAME,
     };
     use windows::Win32::System::Com::{
         CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
@@ -148,6 +212,42 @@ mod win {
 
     /// The checker, and its language's tag.
     pub struct Win(ISpellChecker, String);
+
+    fn user_profile_languages() -> Vec<String> {
+        windows_registry::CURRENT_USER
+            .open(r"Control Panel\International\User Profile")
+            .and_then(|key| key.get_multi_string("Languages"))
+            .unwrap_or_default()
+    }
+
+    fn user_preferred_ui_languages() -> Vec<String> {
+        unsafe {
+            let mut count = 0u32;
+            let mut len = 0u32;
+            if GetUserPreferredUILanguages(MUI_LANGUAGE_NAME, &mut count, None, &mut len).is_err()
+                || len == 0
+            {
+                return Vec::new();
+            }
+            let mut buf = vec![0u16; len as usize];
+            if GetUserPreferredUILanguages(
+                MUI_LANGUAGE_NAME,
+                &mut count,
+                Some(PWSTR(buf.as_mut_ptr())),
+                &mut len,
+            )
+            .is_err()
+            {
+                return Vec::new();
+            }
+            let used = (len as usize).min(buf.len());
+            buf[..used]
+                .split(|&c| c == 0)
+                .filter(|s| !s.is_empty())
+                .map(String::from_utf16_lossy)
+                .collect()
+        }
+    }
 
     impl Win {
         /// A checker for the user's language, or English when Windows has none for it.
@@ -159,23 +259,24 @@ mod win {
                     CoCreateInstance(&SpellCheckerFactory, None, CLSCTX_INPROC_SERVER).ok()?;
                 let mut name = [0u16; 85];
                 let n = GetUserDefaultLocaleName(&mut name);
-                let user = if n > 1 {
-                    String::from_utf16_lossy(&name[..n as usize - 1])
+                let locale = if n > 1 {
+                    Some(String::from_utf16_lossy(&name[..n as usize - 1]))
                 } else {
-                    String::new()
+                    None
                 };
-                for tag in [user.as_str(), "en-US"] {
-                    if tag.is_empty() {
-                        continue;
-                    }
-                    let name = HSTRING::from(tag);
+                let profile = user_profile_languages();
+                let ui = user_preferred_ui_languages();
+                let candidates =
+                    super::windows_language_candidates(&profile, &ui, locale.as_deref());
+                for tag in candidates {
+                    let name = HSTRING::from(tag.as_str());
                     if factory
                         .IsSupported(&name)
                         .map(|b| b.as_bool())
                         .unwrap_or(false)
                     {
                         if let Ok(checker) = factory.CreateSpellChecker(&name) {
-                            return Some(Win(checker, tag.to_string()));
+                            return Some(Win(checker, tag));
                         }
                     }
                 }
@@ -473,4 +574,58 @@ async fn run<R: Runtime, T: Send + Default + 'static>(
     _f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static,
 ) -> Result<T, String> {
     Ok(T::default())
+}
+
+#[cfg(test)]
+mod windows_language_tests {
+    use super::windows_language_candidates;
+
+    fn s(items: &[&str]) -> Vec<String> {
+        items.iter().map(|t| (*t).to_string()).collect()
+    }
+
+    #[test]
+    fn australian_profile_prefers_en_au_then_en_gb_before_en_us() {
+        assert_eq!(
+            windows_language_candidates(&s(&["en-AU", "en-US"]), &s(&["en-US"]), Some("en-US")),
+            s(&["en-AU", "en-GB", "en-US"])
+        );
+    }
+
+    #[test]
+    fn australian_regional_format_overrides_default_us_profile() {
+        assert_eq!(
+            windows_language_candidates(&s(&["en-US"]), &s(&["en-US"]), Some("en-AU")),
+            s(&["en-AU", "en-GB", "en-US"])
+        );
+    }
+
+    #[test]
+    fn english_variants_fall_back_to_english_before_other_languages() {
+        assert_eq!(
+            windows_language_candidates(&s(&["en-AU", "fr-FR"]), &s(&["en-AU"]), Some("en-AU")),
+            s(&["en-AU", "en-GB", "en-US", "fr-FR"])
+        );
+    }
+
+    #[test]
+    fn us_english_stays_en_us_only() {
+        assert_eq!(
+            windows_language_candidates(&s(&["en-US"]), &s(&["en-US"]), Some("en-US")),
+            s(&["en-US"])
+        );
+    }
+
+    #[test]
+    fn non_english_falls_back_to_en_us_without_injecting_en_gb() {
+        assert_eq!(
+            windows_language_candidates(&s(&["de-DE"]), &s(&["de-DE"]), Some("de-DE")),
+            s(&["de-DE", "en-US"])
+        );
+    }
+
+    #[test]
+    fn empty_inputs_fall_back_to_en_us() {
+        assert_eq!(windows_language_candidates(&[], &[], None), s(&["en-US"]));
+    }
 }

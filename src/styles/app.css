@@ -464,6 +464,19 @@ button {
   color: var(--danger);
 }
 
+button.autosave-chip {
+  cursor: pointer;
+}
+
+button.autosave-chip:hover {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+button.autosave-chip:active {
+  background: var(--press);
+}
+
 /* ───────────────────────── Generic controls ───────────────────────── */
 
 .icon-btn {
@@ -1996,6 +2009,10 @@ kbd.kbd {
   line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.settings-hint.error {
+  color: var(--danger);
 }
 
 .settings-intro + .settings-row {

@@ -126,7 +126,10 @@ export class WordEngine {
   toClient: ((page: number, x: number, y: number) => { x: number; y: number }) | null = null
   /** Colors for each set of marks (find's matches, comments), or a wavy underline (spelling). */
   markStyles: Record<string, { color: string; activeColor?: string; activeId?: string; squiggle?: boolean }> = { search: { color: 'rgba(255, 210, 63, 0.55)' } }
+  /** The 1-based page most visible in the viewport (updated by the page view on scroll). */
+  visiblePage = 1
   private listeners = new Set<() => void>()
+  private visiblePageListeners = new Set<() => void>()
   private revisionList: { revision: number; list: Revision[] } | null = null
   private stopFonts: () => void
   private disposed = false
@@ -172,7 +175,26 @@ export class WordEngine {
     }
   }
 
+  subscribeVisiblePage = (f: () => void) => {
+    this.visiblePageListeners.add(f)
+    return () => {
+      this.visiblePageListeners.delete(f)
+    }
+  }
+
   getTick = () => this.tick
+
+  getVisiblePage = () => this.visiblePage
+
+  /** Updates the 1-based viewport-visible page without triggering full editor state listeners. */
+  setVisiblePage(page: number) {
+    if (this.disposed) return
+    const total = Math.max(1, this.state.page.total)
+    const next = Math.max(1, Math.min(page, total))
+    if (next === this.visiblePage) return
+    this.visiblePage = next
+    for (const f of this.visiblePageListeners) f()
+  }
 
   /** Runs a command; returns its result. */
   run<T = unknown>(cmd: Record<string, unknown> & { cmd: string }): T {
@@ -208,6 +230,11 @@ export class WordEngine {
     const page = this.overlay.caret?.[0] ?? this.overlay.image?.[0] ?? this.overlay.rects[0]?.[0] ?? this.state.page.current - 1
     state.page = { current: Math.min(page, state.pages - 1) + 1, total: state.pages }
     this.state = state
+    const maxPage = Math.max(1, state.pages)
+    if (this.visiblePage > maxPage) {
+      this.visiblePage = maxPage
+      for (const f of this.visiblePageListeners) f()
+    }
     this.tick++
     for (const f of this.listeners) f()
   }
@@ -235,6 +262,7 @@ export class WordEngine {
     this.styles.dispose()
     this.media.dispose()
     this.listeners.clear()
+    this.visiblePageListeners.clear()
     this.doc.free()
   }
 }

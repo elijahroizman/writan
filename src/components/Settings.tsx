@@ -1,9 +1,9 @@
 import { ArrowLeft, Blocks, Keyboard, Monitor, Moon, Palette, Pencil, Plus, RotateCcw, Save, Search, Settings2, Sun, Trash2, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
-import { canSetDefaults, defaultStatus, makeDefault } from '../lib/defaults'
+import { canSetDefaults, defaultStatus, makeDefault, openDefaultAppsSettings } from '../lib/defaults'
 import type { CliStatus } from '../lib/platform'
-import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isLinux, isMac, isTauri, openExternal, setCliInstalled, shortcut, showError } from '../lib/platform'
+import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isLinux, isMac, isTauri, isWindows, openExternal, setCliInstalled, shortcut, showError } from '../lib/platform'
 import type { ExtraFont } from '../state/fonts'
 import { EXTRA_FONTS, useExtraFonts } from '../state/fonts'
 import type { Appearance, ThemeDef } from '../lib/themes'
@@ -218,15 +218,42 @@ function DefaultAppsRow() {
   const plugins = usePlugins((s) => s.enabled)
   const kinds = enabledKinds(plugins)
   const [status, setStatus] = useState<Record<string, boolean | null>>({})
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const requestId = useRef(0)
+  const loaded = useRef(false)
   const key = kinds.map((k) => k.id).join()
 
-  const refresh = () => void defaultStatus(kinds.map((k) => k.id)).then(setStatus, () => {})
+  const refresh = () => {
+    const id = ++requestId.current
+    if (!loaded.current) setLoading(true)
+    void defaultStatus(kinds.map((k) => k.id)).then(
+      (next) => {
+        if (requestId.current !== id) return
+        loaded.current = true
+        setStatus(next)
+        setError(null)
+        setLoading(false)
+      },
+      (err) => {
+        if (requestId.current !== id) return
+        loaded.current = true
+        setError(err instanceof Error ? err.message : String(err))
+        setLoading(false)
+      },
+    )
+  }
+
   useEffect(() => {
+    if (!canSetDefaults) return
     refresh()
     // Windows: the user picks in Settings, then comes back.
     window.addEventListener('focus', refresh)
-    return () => window.removeEventListener('focus', refresh)
+    return () => {
+      requestId.current++
+      window.removeEventListener('focus', refresh)
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key])
 
@@ -242,8 +269,22 @@ function DefaultAppsRow() {
     }
   }
 
+  const openWindowsSettings = async () => {
+    setBusy(true)
+    try {
+      await openDefaultAppsSettings()
+    } catch (err) {
+      await showError(String(err))
+    } finally {
+      setBusy(false)
+      refresh()
+    }
+  }
+
   if (!canSetDefaults) return null
   const missing = kinds.filter((k) => status[k.id] === false).map((k) => k.id)
+  const hasUnknown = !loading && kinds.some((k) => status[k.id] == null)
+  const detectionFailed = !loading && (error !== null || hasUnknown)
   return (
     <SettingsRow
       column
@@ -251,6 +292,21 @@ function DefaultAppsRow() {
       label="Default apps"
       hint={isMac ? 'Double-clicking these files in Finder opens them in Writan.' : 'Windows asks you to confirm each one in Settings › Default apps.'}
     >
+      {loading && (
+        <p className="settings-hint" role="status">
+          Checking default apps…
+        </p>
+      )}
+      {!loading && error && (
+        <p className="settings-hint error" role="alert">
+          Couldn’t check current default apps ({error}).{isWindows ? ' You can still open Windows Default Apps to choose Writan.' : ''}
+        </p>
+      )}
+      {!loading && !error && hasUnknown && (
+        <p className="settings-hint" role="status">
+          Couldn’t detect the current default app for {kinds.every((k) => status[k.id] == null) ? 'these' : 'some'} file types.{isWindows ? ' You can still open Windows Default Apps to choose Writan.' : ''}
+        </p>
+      )}
       <div className="default-apps">
         {kinds.map((k) => (
           <div key={k.id} className="default-app">
@@ -258,22 +314,30 @@ function DefaultAppsRow() {
             <span className="default-app-name">
               {k.label} <span className="faint">{k.extensions.map((e) => `.${e}`).join(' ')}</span>
             </span>
-            {status[k.id] ? (
+            {status[k.id] === true ? (
               <span className="faint">Opens in Writan</span>
             ) : (
-              <Button disabled={busy || status[k.id] == null} onClick={() => void set([k.id])}>
+              <Button disabled={busy || loading} onClick={() => void set([k.id])}>
                 Make default
               </Button>
             )}
           </div>
         ))}
       </div>
-      {missing.length > 1 && (
-        <div>
-          <Button disabled={busy} onClick={() => void set(missing)}>
-            Make Writan the default for all
+      {isWindows && detectionFailed ? (
+        <div className="settings-inline">
+          <Button disabled={busy} onClick={() => void openWindowsSettings()}>
+            Open Windows Default Apps
           </Button>
         </div>
+      ) : (
+        missing.length > 1 && (
+          <div>
+            <Button disabled={busy} onClick={() => void set(missing)}>
+              Make Writan the default for all
+            </Button>
+          </div>
+        )
       )}
     </SettingsRow>
   )

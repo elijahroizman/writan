@@ -23,22 +23,35 @@ pub struct SetDefaults {
     opened_settings: bool,
 }
 
-/// The installer's name for each extension (Tauri uses the association's `name` as the
-/// Windows file class).
-#[cfg_attr(not(windows), allow(dead_code))]
-fn file_class<R: Runtime>(app: &AppHandle<R>, ext: &str) -> Option<String> {
-    app.config()
-        .bundle
-        .file_associations
-        .as_ref()?
+/// Windows file classes (ProgIDs) for each extension. Tauri's `generate_context!` strips
+/// `bundle.file_associations` to `None` at runtime (`tauri-utils` `ToTokens for BundleConfig`),
+/// so runtime lookups and registration cannot rely on `app.config().bundle.file_associations`.
+/// Keep in sync with `src-tauri/tauri.conf.json` (verified by unit test below).
+#[cfg(any(windows, test))]
+const WINDOWS_FILE_ASSOCIATIONS: &[(&str, &str)] = &[
+    ("docx", "Word Document"),
+    ("pptx", "PowerPoint Presentation"),
+    ("ppt", "PowerPoint Presentation"),
+    ("xlsx", "Excel Workbook"),
+    ("csv", "CSV File"),
+    ("pdf", "PDF Document"),
+    ("md", "Markdown Document"),
+    ("markdown", "Markdown Document"),
+    ("txt", "Plain Text Document"),
+    ("tex", "LaTeX Document"),
+    ("png", "PNG Image"),
+    ("jpg", "JPEG Image"),
+    ("jpeg", "JPEG Image"),
+    ("heic", "HEIC Image"),
+    ("heif", "HEIC Image"),
+];
+
+/// The installer's Windows file class (ProgID) for `ext`.
+#[cfg(any(windows, test))]
+fn file_class(ext: &str) -> Option<&'static str> {
+    WINDOWS_FILE_ASSOCIATIONS
         .iter()
-        .find_map(|assoc| {
-            assoc
-                .ext
-                .iter()
-                .any(|e| e.0.eq_ignore_ascii_case(ext))
-                .then(|| assoc.name.clone().unwrap_or_else(|| ext.to_string()))
-        })
+        .find_map(|&(e, class)| e.eq_ignore_ascii_case(ext).then_some(class))
 }
 
 #[tauri::command]
@@ -196,24 +209,33 @@ mod mac {
 const CAPABILITIES: &str = r"Software\Writan\Capabilities";
 
 #[cfg(windows)]
-fn is_default<R: Runtime>(app: &AppHandle<R>, ext: &str) -> Option<bool> {
+fn is_default<R: Runtime>(_app: &AppHandle<R>, ext: &str) -> Option<bool> {
     use windows_registry::{CLASSES_ROOT, CURRENT_USER};
-    let ours = file_class(app, ext)?;
+    let ours = file_class(ext)?;
     let dotted = format!(".{ext}");
-    // The user's choice in Explorer wins; without one, the class registered for the extension.
+    // The user's choice in Explorer/Settings wins (Windows 11 24H2+ writes UserChoiceLatest\ProgId,
+    // older builds write UserChoice); without one, fall back to the class registered for the extension.
     let chosen = CURRENT_USER
         .open(format!(
-            r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{dotted}\UserChoice"
+            r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{dotted}\UserChoiceLatest\ProgId"
         ))
         .and_then(|key| key.get_string("ProgId"))
         .ok()
+        .or_else(|| {
+            CURRENT_USER
+                .open(format!(
+                    r"Software\Microsoft\Windows\CurrentVersion\Explorer\FileExts\{dotted}\UserChoice"
+                ))
+                .and_then(|key| key.get_string("ProgId"))
+                .ok()
+        })
         .or_else(|| {
             CLASSES_ROOT
                 .open(&dotted)
                 .and_then(|key| key.get_string(""))
                 .ok()
         });
-    Some(chosen.is_some_and(|class| class.eq_ignore_ascii_case(&ours)))
+    Some(chosen.is_some_and(|class| class.eq_ignore_ascii_case(ours)))
 }
 
 #[cfg(windows)]
@@ -235,13 +257,8 @@ fn set_defaults<R: Runtime>(app: &AppHandle<R>, _exts: &[String]) -> Result<SetD
     let assoc = CURRENT_USER
         .create(format!(r"{CAPABILITIES}\FileAssociations"))
         .map_err(fail)?;
-    for association in app.config().bundle.file_associations.iter().flatten() {
-        for ext in &association.ext {
-            let class = association.name.clone().unwrap_or_else(|| ext.0.clone());
-            assoc
-                .set_string(format!(".{}", ext.0), &class)
-                .map_err(fail)?;
-        }
+    for &(ext, class) in WINDOWS_FILE_ASSOCIATIONS {
+        assoc.set_string(format!(".{ext}"), class).map_err(fail)?;
     }
     CURRENT_USER
         .create(r"Software\RegisteredApplications")
@@ -257,11 +274,13 @@ fn set_defaults<R: Runtime>(app: &AppHandle<R>, _exts: &[String]) -> Result<SetD
             let _ = CURRENT_USER.remove_tree(r"Software\Workspace\Capabilities");
         }
     }
-    app.opener()
+    let opener = app.opener();
+    opener
         .open_url(
             "ms-settings:defaultapps?registeredAppUser=Writan",
             None::<&str>,
         )
+        .or_else(|_| opener.open_url("ms-settings:defaultapps", None::<&str>))
         .map_err(|e| format!("Couldn't open Default Apps: {e}"))?;
     Ok(SetDefaults {
         opened_settings: true,
@@ -278,4 +297,28 @@ fn is_default<R: Runtime>(_app: &AppHandle<R>, _ext: &str) -> Option<bool> {
 #[cfg(not(any(target_os = "macos", windows)))]
 fn set_defaults<R: Runtime>(_app: &AppHandle<R>, _exts: &[String]) -> Result<SetDefaults, String> {
     Err("Setting default apps isn't supported on this system.".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_file_associations_match_tauri_config() {
+        let conf: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
+        let associations = conf["bundle"]["fileAssociations"].as_array().unwrap();
+        let mut expected = Vec::new();
+        for assoc in associations {
+            let name = assoc["name"].as_str();
+            for ext in assoc["ext"].as_array().unwrap() {
+                let ext = ext.as_str().unwrap();
+                let class = name.unwrap_or(ext);
+                expected.push((ext.to_string(), class.to_string()));
+                assert_eq!(file_class(ext), Some(class));
+                assert_eq!(file_class(&ext.to_uppercase()), Some(class));
+            }
+        }
+        assert_eq!(WINDOWS_FILE_ASSOCIATIONS.len(), expected.len());
+    }
 }
