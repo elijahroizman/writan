@@ -68,10 +68,12 @@
   --fg-faint: #8b8b90;
   --accent-soft: rgba(79, 140, 255, 0.14);
   --menu-danger: #c4282d;
-  /* Home's Open… hint sits on the bare canvas, where --fg-muted is a little too light. */
-  --home-hint: #5c5c61;
-  /* --accent is under 3:1 as a focus ring on the canvas and on light fills; this one isn't. */
-  --focus-strong: #2f66d8;
+  /* Home's Open… hint sits on the bare canvas, where --fg-muted is a little too light. Mixed from
+     the theme's own colours, so it keeps a tinted theme's tone. */
+  --home-hint: color-mix(in srgb, var(--fg-muted) 75%, var(--fg));
+  /* --accent is under 3:1 as a focus ring on the canvas and on light fills. A darker shade of it
+     clears 3:1 in every built-in theme and keeps the theme's hue. */
+  --focus-strong: color-mix(in srgb, var(--accent) 75%, #000);
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.08);
   --page-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 6px 22px rgba(0, 0, 0, 0.1);
   --scrollbar: rgba(0, 0, 0, 0.2);
