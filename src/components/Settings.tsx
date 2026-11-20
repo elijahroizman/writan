@@ -298,13 +298,13 @@ function DefaultAppsRow() {
         </p>
       )}
       {!loading && error && (
-        <p className="settings-hint" role="alert">
+        <p className="settings-hint error" role="alert">
           Couldn’t check current default apps ({error}).{isWindows ? ' You can still open Windows Default Apps to choose Writan.' : ''}
         </p>
       )}
       {!loading && !error && hasUnknown && (
         <p className="settings-hint" role="status">
-          Couldn’t detect the current default app for some file types.{isWindows ? ' You can still open Windows Default Apps to choose Writan.' : ''}
+          Couldn’t detect the current default app for {kinds.every((k) => status[k.id] == null) ? 'these' : 'some'} file types.{isWindows ? ' You can still open Windows Default Apps to choose Writan.' : ''}
         </p>
       )}
       <div className="default-apps">

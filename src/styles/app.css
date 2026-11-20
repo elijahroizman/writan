@@ -2011,6 +2011,10 @@ kbd.kbd {
   text-overflow: ellipsis;
 }
 
+.settings-hint.error {
+  color: var(--danger);
+}
+
 .settings-intro + .settings-row {
   border-top: 0;
   padding-top: 0;
