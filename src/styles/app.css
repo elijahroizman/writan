@@ -43,6 +43,8 @@
   --fg-faint: #7c7c7c;
   --accent-soft: rgba(79, 140, 255, 0.18);
   --menu-danger: #ff6b6f;
+  --home-hint: var(--fg-muted);
+  --home-focus: var(--accent);
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.07);
   --page-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 8px 28px rgba(0, 0, 0, 0.35);
   --scrollbar: rgba(255, 255, 255, 0.14);
@@ -66,6 +68,9 @@
   --fg-faint: #8b8b90;
   --accent-soft: rgba(79, 140, 255, 0.14);
   --menu-danger: #c4282d;
+  /* Open… on Home sits on the bare canvas, where --fg-muted and --accent are a little too light. */
+  --home-hint: #5c5c61;
+  --home-focus: #2f66d8;
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.08);
   --page-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 6px 22px rgba(0, 0, 0, 0.1);
   --scrollbar: rgba(0, 0, 0, 0.2);
@@ -1564,7 +1569,7 @@ button.section-title:hover {
    --menu-danger (set per theme above) clears 4.8:1 on the menu with or without it. A plain class
    rule, so the hover rule below still turns the label white on the accent. */
 .menu-item.danger {
-  color: var(--menu-danger, var(--danger));
+  color: var(--menu-danger);
 }
 
 /* Keyboard focus: a neutral fill under the accent ring, so every label (red ones included) keeps its
@@ -1584,24 +1589,21 @@ button.section-title:hover {
 }
 
 /* Focused and hovered: a white ring inside the accent fill, so focus still shows. */
-.menu-item:not(:disabled):hover:focus-visible {
+.menu-item:not(.danger):not(:disabled):hover:focus-visible {
   outline-color: #fff;
 }
 
 /* Red can't sit on the accent, so a destructive item hovers with the neutral fill and stays red
-   (5:1 or better), icon included, keeping the accent focus ring. */
+   (4.8:1 or better), icon included, under the usual accent focus ring. */
 .menu-item.danger:not(:disabled):hover {
   background: var(--hover);
-  color: var(--menu-danger, var(--danger));
+  color: var(--menu-danger);
 }
 
 .menu-item.danger:not(:disabled):hover svg {
   color: inherit;
 }
 
-.menu-item.danger:not(:disabled):hover:focus-visible {
-  outline-color: var(--accent);
-}
 
 .menu-item:disabled {
   opacity: 0.4;
@@ -1834,10 +1836,14 @@ button.section-title:hover {
   font-size: 14px;
 }
 
-/* Out of a card and on the canvas, the light theme's muted grey drops under 4.5:1; this one stays
-   above it on the canvas, the hover fill and the drag fill. */
-:root[data-theme='light'] .home-open .action-card-text .muted {
-  color: #5c5c61;
+/* Out of a card and on the canvas: --home-hint keeps 4.5:1 and --home-focus 3:1 on the canvas,
+   the hover fill and the drag fill. */
+.home-open .action-card-text .muted {
+  color: var(--home-hint);
+}
+
+.home-open:focus-visible {
+  outline-color: var(--home-focus);
 }
 
 .home-open .kbd {
@@ -1963,12 +1969,12 @@ button.section-title:hover {
   height: 26px;
   padding: 0;
   transform: translateY(-50%);
-  color: var(--fg-faint);
+  color: var(--fg-muted);
 }
 
 .recent-item:hover .recent-more,
 .recent-item:focus-within .recent-more {
-  color: var(--fg-muted);
+  color: var(--fg);
 }
 
 .recent-more.icon-btn:hover,
