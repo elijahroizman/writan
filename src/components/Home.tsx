@@ -113,17 +113,28 @@ export function Home() {
           ) : (
             <ul className="recent-list" ref={list}>
               {shown.map((r) => (
-                <li key={r.path} className="recent-item">
-                  <button
-                    type="button"
-                    className="recent-row"
-                    title={r.path}
-                    onClick={() => open(r)}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      setMenu({ x: e.clientX, y: e.clientY, file: r, opener: e.currentTarget })
-                    }}
-                  >
+                <li
+                  key={r.path}
+                  className="recent-item"
+                  // On the item, so the row and its More button both open the menu, and focus goes
+                  // back to whichever had it.
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    const opener = (e.target as HTMLElement).closest('button')
+                    if (opener) setMenu({ x: e.clientX, y: e.clientY, file: r, opener })
+                  }}
+                  onKeyDown={(e) => {
+                    // WebKit doesn't turn the menu key or ⇧F10 into a contextmenu event; Chromium does,
+                    // and preventing the key stops it, so the menu opens once either way.
+                    if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return
+                    const opener = (e.target as HTMLElement).closest('button')
+                    if (!opener) return
+                    e.preventDefault()
+                    const rect = opener.getBoundingClientRect()
+                    setMenu({ x: rect.left + 8, y: rect.bottom + 4, file: r, opener })
+                  }}
+                >
+                  <button type="button" className="recent-row" title={r.path} onClick={() => open(r)}>
                     {r.kind === 'folder' ? (
                       <span className="recent-icon faint">
                         <Folder size={16} strokeWidth={1.75} />

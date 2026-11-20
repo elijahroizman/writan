@@ -1558,10 +1558,24 @@ button.section-title:hover {
   text-align: left;
 }
 
-/* Keyboard focus: a soft fill under the accent ring, so every label (red ones included) keeps its colour.
-   Before the hover rule, so a hovered item still shows the hover fill. */
+/* --danger is a fill colour; as menu text it falls under 4.5:1 once an item has the focus fill. These
+   reds clear 4.8:1 on the menu with or without it. */
+.menu-item.danger {
+  color: var(--danger);
+}
+
+:root[data-theme='light'] .menu-item.danger {
+  color: #c4282d;
+}
+
+:root[data-theme='dark'] .menu-item.danger {
+  color: #ff6b6f;
+}
+
+/* Keyboard focus: a neutral fill under the accent ring, so every label (red ones included) keeps its
+   contrast. Before the hover rule, so an item under the pointer still shows the hover fill. */
 .menu-item:not(:disabled):focus-visible {
-  background: var(--accent-soft);
+  background: var(--hover);
 }
 
 .menu-item:not(:disabled):hover {
@@ -1572,6 +1586,11 @@ button.section-title:hover {
 .menu-item:not(:disabled):hover .kbd,
 .menu-item:not(:disabled):hover svg {
   color: #fff;
+}
+
+/* Focused and hovered: a white ring inside the accent fill, so focus still shows. */
+.menu-item:not(:disabled):hover:focus-visible {
+  outline-color: #fff;
 }
 
 .menu-item:disabled {

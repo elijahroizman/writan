@@ -504,9 +504,8 @@ export function PopoverMenu({
             <button
               type="button"
               role="menuitem"
-              className="menu-item"
+              className={`menu-item ${item.danger ? 'danger' : ''}`}
               disabled={item.disabled}
-              style={item.danger ? { color: 'var(--danger)' } : undefined}
               onClick={() => {
                 onClose()
                 item.onSelect()
