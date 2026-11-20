@@ -115,9 +115,6 @@ import { launch, start, tabs, check, done } from './harness.mjs'
   await start(page)
 
   // Open Settings -> General
-  await page.evaluate(() => {
-    window.__workspace.useWorkspace.getState()
-  })
   await page.keyboard.press('Control+,')
   await page.waitForSelector('.settings .default-apps')
 

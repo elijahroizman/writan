@@ -3,6 +3,7 @@
 
 import { create } from 'zustand'
 import { KINDS } from './kinds'
+import { isTauri } from './platform'
 import type { AutosaveSettings } from '../state/settings'
 import { useSettings } from '../state/settings'
 import type { DocTab } from '../state/workspace'
@@ -40,7 +41,7 @@ export interface AutosaveBlock {
 export function autosaveBlock(tab: DocTab, s: AutosaveSettings = useSettings.getState().autosave): AutosaveBlock | null {
   if (!s.enabled) return { reason: 'disabled', message: 'Autosave is off.', canSaveToEnable: false }
   if (s.kinds[tab.kind] === false) return { reason: 'kind-disabled', message: `Autosave is off for ${KINDS[tab.kind].short.toLowerCase()} files.`, canSaveToEnable: false }
-  if (!tab.path) return { reason: 'unsaved', message: 'Save this file once. After that, changes autosave.', canSaveToEnable: true }
+  if (!tab.path) return { reason: 'unsaved', message: 'Save this file once. After that, changes autosave.', canSaveToEnable: isTauri }
   if (tab.path.startsWith('browser:')) return { reason: 'browser', message: 'Only files saved on this computer can autosave.', canSaveToEnable: false }
   if (tab.kind === 'pptx' && tab.path.toLowerCase().endsWith('.ppt')) return { reason: 'legacy-ppt', message: 'Save this PowerPoint file as .pptx first.', canSaveToEnable: true }
   // Two tabs writing the same file would overwrite each other's changes.

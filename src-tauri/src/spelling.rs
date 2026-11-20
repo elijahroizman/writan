@@ -170,6 +170,8 @@ fn windows_language_candidates(
             if region != "us" && region != "gb" {
                 push("en-GB");
             }
+            // An English user's next choice is still English, not their next language.
+            push("en-US");
         }
     };
 
@@ -595,6 +597,14 @@ mod windows_language_tests {
         assert_eq!(
             windows_language_candidates(&s(&["en-US"]), &s(&["en-US"]), Some("en-AU")),
             s(&["en-AU", "en-GB", "en-US"])
+        );
+    }
+
+    #[test]
+    fn english_variants_fall_back_to_english_before_other_languages() {
+        assert_eq!(
+            windows_language_candidates(&s(&["en-AU", "fr-FR"]), &s(&["en-AU"]), Some("en-AU")),
+            s(&["en-AU", "en-GB", "en-US", "fr-FR"])
         );
     }
 
