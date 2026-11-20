@@ -1,4 +1,4 @@
-import { Rocket } from 'lucide-react'
+import { CircleArrowUp } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isLinux, isMac, openExternal } from '../lib/platform'
@@ -149,7 +149,7 @@ export function UpdateButton() {
         title={phase === 'ready' && version ? `Writan ${version} is ready to install` : 'Check for updates'}
         onClick={() => toggleUpdatePanel()}
       >
-        {busy ? <Spinner size={13} /> : <Rocket size={13} />}
+        {busy ? <Spinner size={14} /> : <CircleArrowUp size={14} />}
         {label}
       </button>
       {open &&

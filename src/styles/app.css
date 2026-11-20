@@ -1,7 +1,9 @@
 /* ───────────────────────── Tokens ───────────────────────── */
 
 :root {
-  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', system-ui, sans-serif;
+  /* San Francisco on a Mac. Elsewhere Inter, bundled (main.tsx), which is close to it and reads
+     better than Segoe UI or a Linux desktop's default. Its optical-size axis tightens it at small sizes. */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter Variable', 'Inter', 'Segoe UI', system-ui, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 
   --titlebar-h: 44px;
