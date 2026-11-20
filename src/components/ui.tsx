@@ -430,7 +430,7 @@ export interface MenuEntry {
  * A small popover menu anchored to a point or element. With `align: 'end'` its right edge sits at `x`.
  * Pass `opener`, the control that opened it, and the menu takes focus: the first item is focused,
  * Tab closes it, and closing hands focus back to `opener`. Without it focus stays where it was, as
- * the editors' context menus need. Arrow keys, Home and End move between items in either case.
+ * the editors' context menus need. Arrow keys, Home and End move between items whenever focus is in the menu.
  */
 export function PopoverMenu({
   anchor,

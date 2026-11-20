@@ -28,8 +28,9 @@ export function Home() {
   const dropHover = useWorkspace((s) => s.dropHover)
   const { openDialog, openPaths, removeRecent, setTheme } = useWorkspace.getState()
   const [filter, setFilter] = useState<RecentGroup | 'all'>('all')
-  const [menu, setMenu] = useState<{ x: number; y: number; align?: 'end'; file: Recent; opener: HTMLElement } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; align?: 'end'; file: Recent; opener: HTMLElement; fromMore?: boolean } | null>(null)
   const list = useRef<HTMLUListElement>(null)
+  const recentHeader = useRef<HTMLDivElement>(null)
   const plugins = usePlugins((s) => s.enabled)
   const kinds = enabledKinds(plugins)
   const folders = useFolder((s) => s.recent)
@@ -95,7 +96,7 @@ export function Home() {
         </div>
 
         <section className="home-recents">
-          <div className="home-recents-header">
+          <div className="home-recents-header" ref={recentHeader}>
             <h2>Recent</h2>
             <PillTabs
               label="Show"
@@ -145,10 +146,10 @@ export function Home() {
                     // The name says which file; the tooltip doesn't need to repeat it.
                     title="More"
                     aria-haspopup="menu"
-                    aria-expanded={menu?.file.path === r.path}
+                    aria-expanded={menu?.file.path === r.path && !!menu.fromMore}
                     onClick={(e) => {
                       const rect = e.currentTarget.getBoundingClientRect()
-                      setMenu({ x: rect.right, y: rect.bottom + 4, align: 'end', file: r, opener: e.currentTarget })
+                      setMenu({ x: rect.right, y: rect.bottom + 4, align: 'end', file: r, opener: e.currentTarget, fromMore: true })
                     }}
                   >
                     <MoreHorizontal size={16} />
@@ -171,14 +172,14 @@ export function Home() {
               label: 'Remove from Recent',
               separatorBefore: true,
               onSelect: () => {
-                const at = shown.indexOf(menu.file)
+                const at = shown.findIndex((x) => x.path === menu.file.path)
                 if (menu.file.kind === 'folder') useFolder.getState().forgetRecent(menu.file.path)
                 else removeRecent(menu.file.path)
                 // Keep the user's place: the next row's More (or the previous one, or the filters
                 // once the list is empty) takes the focus the removed row had.
                 requestAnimationFrame(() => {
                   const more = list.current?.querySelectorAll<HTMLElement>('.recent-more')
-                  const target = more?.[at] ?? more?.[at - 1] ?? document.querySelector<HTMLElement>('.home-recents-header .pill-tabs button.on')
+                  const target = more?.[at] ?? more?.[at - 1] ?? recentHeader.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
                   target?.focus()
                 })
               },
