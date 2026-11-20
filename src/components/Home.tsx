@@ -28,7 +28,7 @@ export function Home() {
   const dropHover = useWorkspace((s) => s.dropHover)
   const { openDialog, openPaths, removeRecent, setTheme } = useWorkspace.getState()
   const [filter, setFilter] = useState<RecentGroup | 'all'>('all')
-  const [menu, setMenu] = useState<{ x: number; y: number; align?: 'end'; file: Recent } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; align?: 'end'; file: Recent; keyboard?: boolean } | null>(null)
   const plugins = usePlugins((s) => s.enabled)
   const kinds = enabledKinds(plugins)
   const folders = useFolder((s) => s.recent)
@@ -141,10 +141,14 @@ export function Home() {
                   <IconButton
                     label={`More for ${r.kind === 'folder' ? folderName(r.path) : basename(r.path)}`}
                     className="recent-more"
+                    // The name says which file; the tooltip doesn't need to repeat it.
+                    title="More"
                     aria-haspopup="menu"
+                    aria-expanded={menu?.file.path === r.path}
                     onClick={(e) => {
                       const rect = e.currentTarget.getBoundingClientRect()
-                      setMenu({ x: rect.right, y: rect.bottom + 4, align: 'end', file: r })
+                      // detail is 0 when Enter or Space pressed the button: then the menu takes focus.
+                      setMenu({ x: rect.right, y: rect.bottom + 4, align: 'end', file: r, keyboard: e.detail === 0 })
                     }}
                   >
                     <MoreHorizontal size={16} />
@@ -158,6 +162,7 @@ export function Home() {
       {menu && (
         <PopoverMenu
           anchor={menu}
+          autoFocus={menu.keyboard}
           onClose={() => setMenu(null)}
           items={[
             { label: 'Open', onSelect: () => open(menu.file) },

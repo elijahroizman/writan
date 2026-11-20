@@ -1430,13 +1430,14 @@ button.section-title:hover {
   color: var(--fg);
 }
 
-.tool-btn:hover:not(:disabled) {
+/* The selected tool (.on, below) keeps its accent border and fill under the pointer. */
+.tool-btn:not(.on):hover:not(:disabled) {
   color: var(--fg);
   background: var(--hover);
   border-color: color-mix(in srgb, var(--fg) 18%, transparent);
 }
 
-.tool-btn:active:not(:disabled) {
+.tool-btn:not(.on):active:not(:disabled) {
   background: var(--press);
 }
 
@@ -1557,13 +1558,17 @@ button.section-title:hover {
   text-align: left;
 }
 
-.menu-item:not(:disabled):hover {
+.menu-item:not(:disabled):hover,
+.menu-item:not(:disabled):focus-visible {
   background: var(--accent);
   color: #fff;
+  outline: none;
 }
 
 .menu-item:not(:disabled):hover .kbd,
-.menu-item:not(:disabled):hover svg {
+.menu-item:not(:disabled):hover svg,
+.menu-item:not(:disabled):focus-visible .kbd,
+.menu-item:not(:disabled):focus-visible svg {
   color: #fff;
 }
 
@@ -1764,19 +1769,21 @@ button.section-title:hover {
   gap: 12px;
   padding: 20px 18px;
   border-style: dashed;
-  border-color: color-mix(in srgb, var(--fg) 20%, transparent);
+  border-color: color-mix(in srgb, var(--fg) 32%, transparent);
   background: transparent;
   text-align: center;
 }
 
-.home-open:hover,
-.home-open.drop {
-  border-color: var(--accent);
-  background: color-mix(in srgb, var(--accent) 6%, transparent);
+/* Hover stays neutral; the accent is kept for files actually being dragged over. */
+.home-open:hover {
+  border-color: color-mix(in srgb, var(--fg) 48%, transparent);
+  background: var(--hover);
 }
 
 .home-open.drop {
   border-style: solid;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
 }
 
 .home-open .action-card-icon {
@@ -1910,6 +1917,7 @@ button.section-title:hover {
   font-variant-numeric: tabular-nums;
 }
 
+/* Centred over the row's last column: 8px row padding, then 26px in the 28px column. */
 .recent-more.icon-btn {
   position: absolute;
   top: 50%;

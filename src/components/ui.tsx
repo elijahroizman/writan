@@ -4,7 +4,7 @@
 // light and dark palettes), which themes override.
 
 import { ChevronDown, FileText } from 'lucide-react'
-import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNode } from 'react'
+import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { DocKind } from '../lib/kinds'
@@ -426,18 +426,56 @@ export interface MenuEntry {
   disabled?: boolean
 }
 
-/** A small popover menu anchored to a point or element. With `align: 'end'` its right edge sits at `x`. */
+/**
+ * A small popover menu anchored to a point or element. With `align: 'end'` its right edge sits at `x`.
+ * `autoFocus` (for a menu opened from the keyboard) focuses the first item and, on closing, hands
+ * focus back to whatever had it. It's opt-in: the editors' context menus leave focus in the document.
+ * Arrow keys, Home and End move between items whenever focus is in the menu.
+ */
 export function PopoverMenu({
   anchor,
   items,
   onClose,
+  autoFocus = false,
 }: {
   anchor: { x: number; y: number; align?: 'start' | 'end' }
   items: MenuEntry[]
   onClose: () => void
+  autoFocus?: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState(anchor)
+
+  useEffect(() => {
+    if (!autoFocus) return
+    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const menu = ref.current
+    menu?.querySelector<HTMLButtonElement>('.menu-item:not(:disabled)')?.focus()
+    return () => {
+      // Only take focus back if it's still in the menu (or lost with it), not if an item moved it on.
+      const now = document.activeElement
+      if (opener?.isConnected && (!now || now === document.body || menu?.contains(now))) opener.focus()
+    }
+  }, [autoFocus])
+
+  const onMenuKey = (e: ReactKeyboardEvent) => {
+    const enabled = [...(ref.current?.querySelectorAll<HTMLButtonElement>('.menu-item:not(:disabled)') ?? [])]
+    if (!enabled.length) return
+    const at = enabled.indexOf(document.activeElement as HTMLButtonElement)
+    const to =
+      e.key === 'ArrowDown' ? (at + 1) % enabled.length
+      : e.key === 'ArrowUp' ? (at <= 0 ? enabled.length - 1 : at - 1)
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? enabled.length - 1
+      : null
+    if (to != null) {
+      e.preventDefault()
+      enabled[to].focus()
+    } else if (e.key === 'Tab') {
+      e.preventDefault()
+      onClose()
+    }
+  }
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -459,7 +497,7 @@ export function PopoverMenu({
   return createPortal(
     <>
       <div className="menu-backdrop" onMouseDown={onClose} onContextMenu={(e) => (e.preventDefault(), onClose())} />
-      <div className="menu" ref={ref} style={{ left: pos.x, top: pos.y }} role="menu">
+      <div className="menu" ref={ref} style={{ left: pos.x, top: pos.y }} role="menu" onKeyDown={onMenuKey}>
         {items.map((item, i) => (
           <div key={i}>
             {item.separatorBefore && <div className="menu-sep" />}
