@@ -5,6 +5,7 @@ import { basename, dirname, revealInFinder, revealLabel, isTauri, shortcut, tild
 import { folderName, useFolder } from '../state/folder'
 import { keysFor, withKeys } from '../state/shortcuts'
 import { enabledKinds, usePlugins } from '../state/plugins'
+import { createNew } from '../state/starters'
 import { useSettings } from '../state/settings'
 import type { RecentFile } from '../state/workspace'
 import { useWorkspace } from '../state/workspace'
@@ -24,7 +25,7 @@ type RecentGroup = (typeof RECENT_GROUPS)[number]['id']
 export function Home() {
   const recents = useWorkspace((s) => s.recents)
   const theme = useWorkspace((s) => s.theme)
-  const { newDocument, openDialog, openPaths, removeRecent, setTheme } = useWorkspace.getState()
+  const { openDialog, openPaths, removeRecent, setTheme } = useWorkspace.getState()
   const [filter, setFilter] = useState<RecentGroup | 'all'>('all')
   const [menu, setMenu] = useState<{ x: number; y: number; file: Recent } | null>(null)
   const plugins = usePlugins((s) => s.enabled)
@@ -83,7 +84,7 @@ export function Home() {
                     title={newName(k.create!.title)}
                     hint={k.create!.hint}
                     label={k.create!.title}
-                    onClick={() => newDocument(k.id)}
+                    onClick={() => createNew(k.id)}
                   />
                 ))}
             </div>

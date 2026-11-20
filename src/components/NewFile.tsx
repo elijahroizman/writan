@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import { enabledKinds, usePlugins } from '../state/plugins'
-import { useWorkspace } from '../state/workspace'
+import { createNew } from '../state/starters'
 import { DocBadge, Kbd, Modal } from './ui'
 
 export const useNewFile = create<{ open: boolean; setOpen(open: boolean): void }>((set) => ({
@@ -18,7 +18,7 @@ export function NewFilePicker() {
   const close = () => useNewFile.getState().setOpen(false)
   const pick = (kind: string) => {
     close()
-    useWorkspace.getState().newDocument(kind)
+    createNew(kind)
   }
 
   useEffect(() => {
