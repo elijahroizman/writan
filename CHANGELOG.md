@@ -2,6 +2,28 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.11.4 — 2026-11-20
+
+### Look and feel
+- On Windows and Linux the interface uses Inter, a typeface close to the Mac's San Francisco, instead of Segoe UI or the desktop's default font.
+- The inspector beside Word, PowerPoint and Excel documents is calmer: section headings sit a step below the panel's title, collapsible sections line up with the rest, and Insert tiles are outlined.
+- On Home, Open… is a drop zone you can drag files onto, Recent's dividers show in the light theme, and each recent file's More menu works from the keyboard.
+- Menus keep red items such as Delete slide readable when hovered or focused, and focus rings are easier to see in every theme.
+- Check for updates has a new icon.
+
+### Fonts on Linux
+- Setup and Settings › Plugins › Fonts offer Microsoft's core fonts (Arial, Times New Roman, Courier New, Georgia, Verdana and more) once you accept Microsoft's license, so documents use the real fonts instead of look-alikes. Calibri and Cambria can't be downloaded, so they keep their look-alikes, Carlito and Caladea.
+
+### Word
+- The page counter follows the page you've scrolled to, not the page the cursor is on.
+
+### Windows
+- Settings › Default apps works again: the Make default buttons are no longer greyed out, Writan reads where Windows 11 24H2 keeps your choice, and a button opens Windows' Default Apps.
+- Spell check uses Australian or British English where that's your region before falling back to US English.
+
+### Saving
+- An untitled document's title bar offers Save to enable autosave instead of only saying it isn't autosaved.
+
 ## 0.11.3 — 2026-11-20
 
 ### Word
