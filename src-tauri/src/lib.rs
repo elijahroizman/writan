@@ -214,6 +214,7 @@ pub fn run() {
             fonts::install_font,
             fonts::remove_font,
             fonts::font_file,
+            fonts::system_has_core_fonts,
             defaults::default_apps,
             defaults::set_default_apps,
         ])

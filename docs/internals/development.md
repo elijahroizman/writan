@@ -1,6 +1,6 @@
 # Development
 
-Setup for each system is in the [README](../../README.md#run-it-locally). This page covers the rest.
+Setup for each system is in the [README](../../README.md#run-it-locally). This page covers the rest. AI agents: also read [AGENTS.md](../../AGENTS.md), which says to accept Microsoft's core fonts on Linux before judging how documents look.
 
 ## Commands
 

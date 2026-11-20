@@ -3287,6 +3287,55 @@ button.section-title:hover {
   flex: 1;
 }
 
+/* Microsoft's core fonts (components/CoreFonts.tsx): the license to accept, then the download. */
+.core-fonts-offer {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 4px;
+  align-self: stretch;
+}
+
+.core-fonts-license {
+  align-self: stretch;
+  max-height: 150px;
+  margin: 0;
+}
+
+.core-fonts-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.core-fonts-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.core-fonts-done svg {
+  flex: none;
+  color: var(--accent);
+}
+
+.core-fonts-specimen {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 28px 32px;
+  font-size: 26px;
+  line-height: 1.15;
+  color: var(--fg);
+}
+
+.tour-text .hint {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* The tour's pictures: screenshots of the app, in the theme's mode. */
 .tour-shot {
   display: block;

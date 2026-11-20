@@ -3,12 +3,21 @@
 // Michelangelo's handwriting; its license forbids passing it on, so it comes from Microsoft. The
 // others are open-source and come from Google Fonts or their maker. Once one is there, Word
 // documents (through the engine's customFonts) and slides (a page-wide FontFace) can use it.
+//
+// On Linux, Writan also offers Microsoft's core fonts (Arial, Times New Roman, Courier New…),
+// which Mac and Windows already have. Without them, documents use the bundled look-alikes with
+// the same measurements (src/engine/fonts). They download only after the person accepts
+// Microsoft's license; the engine asks for a document's own font first, so once they're
+// registered here they replace the look-alikes.
 
 import { create } from 'zustand'
-import { isTauri } from '../lib/platform'
+import { isLinux, isTauri } from '../lib/platform'
+import MICROSOFT_FONTS_EULA from './microsoft-fonts-eula.txt?raw'
 
 export interface ExtraFace {
   file: string
+  /** For a download with several families (Microsoft's core fonts); otherwise the font's. */
+  family?: string
   weight: number
   style: 'normal' | 'italic'
   hash: string
@@ -134,6 +143,59 @@ export const EXTRA_FONTS: ExtraFont[] = [
   },
 ]
 
+const coreFace = (family: string, file: string, weight: number, style: 'normal' | 'italic', hash: string): ExtraFace => ({ family, file, weight, style, hash })
+
+/**
+ * Microsoft's core fonts for the web, unpacked from its original installers. Keep in step with
+ * "ms-core-fonts" in src-tauri/src/fonts.rs. Not in EXTRA_FONTS: it is one download of many
+ * families, offered on Linux only, behind Microsoft's license.
+ */
+export const CORE_FONTS: ExtraFont & { license: string; families: string[] } = {
+  id: 'ms-core-fonts',
+  family: 'Arial',
+  maker: 'Microsoft',
+  fallback: 'sans-serif',
+  about: 'Arial, Times New Roman, Courier New, Georgia, Verdana, Trebuchet MS, Comic Sans MS, Impact, Arial Black, Andale Mono and Webdings.',
+  size: 3_934_864,
+  licenseUrl: 'https://sourceforge.net/projects/corefonts/',
+  license: MICROSOFT_FONTS_EULA,
+  families: ['Arial', 'Times New Roman', 'Courier New', 'Georgia', 'Verdana', 'Trebuchet MS', 'Comic Sans MS', 'Impact', 'Arial Black', 'Andale Mono', 'Webdings'],
+  faces: [
+    coreFace('Andale Mono', 'andalemo.ttf', 400, 'normal', '48d9bc613917709d3b0e0f4a6d4fe33a5c544c5035dffe9e90bc11e50e822071'),
+    coreFace('Arial', 'arial.ttf', 400, 'normal', '35c0f3559d8db569e36c31095b8a60d441643d95f59139de40e23fada819b833'),
+    coreFace('Arial', 'arialbd.ttf', 700, 'normal', '4044aa6b5bebbc36980206b45b0aaaaa5681552a48bcadb41746d5d1d71fd7b4'),
+    coreFace('Arial', 'ariali.ttf', 400, 'italic', '70ade233175a6a6675e4501461af9326e6f78b1ffdf787ca0da5ab0fc8c9cfd6'),
+    coreFace('Arial', 'arialbi.ttf', 700, 'italic', '2f371cd9d96b3ac544519d85c16dc43ceacdfcea35090ee8ddf3ec5857c50328'),
+    coreFace('Arial Black', 'ariblk.ttf', 400, 'normal', 'dad7c04acb26e23dfe4780e79375ca193ddaf68409317e81577a30674668830e'),
+    coreFace('Comic Sans MS', 'comic.ttf', 400, 'normal', 'b82c53776058f291382ff7e008d4675839d2dc21eb295c66391f6fb0655d8fc0'),
+    coreFace('Comic Sans MS', 'comicbd.ttf', 700, 'normal', '873361465d994994762d0b9845c99fc7baa2a600442ea8db713a7dd19f8b0172'),
+    coreFace('Courier New', 'cour.ttf', 400, 'normal', '6715838c52f813f3821549d3f645db9a768bd6f3a43d8f85a89cb6875a546c61'),
+    coreFace('Courier New', 'courbd.ttf', 700, 'normal', 'edf8a7c5bfcac2e1fe507faab417137cbddc9071637ef4648238d0768c921e02'),
+    coreFace('Courier New', 'couri.ttf', 400, 'italic', 'f3f6b09855b6700977e214aab5eb9e5be6813976a24f894bd7766e92c732fbe1'),
+    coreFace('Courier New', 'courbi.ttf', 700, 'italic', '66dbfa20b534fba0e203da140fec7276a45a1069e424b1b9c35547538128bbe8'),
+    coreFace('Georgia', 'georgia.ttf', 400, 'normal', '7d0bb20c632bb59e81a0885f573bd2173f71f73204de9058feb68ce032227072'),
+    coreFace('Georgia', 'georgiab.ttf', 700, 'normal', '82d2fbadb88a8632d7f2e8ad50420c9fd2e7d3cbc0e90b04890213a711b34b93'),
+    coreFace('Georgia', 'georgiai.ttf', 400, 'italic', '1523f19bda6acca42c47c50da719a12dd34f85cc2606e6a5af15a7728b377b60'),
+    coreFace('Georgia', 'georgiaz.ttf', 700, 'italic', 'c983e037d8e4e694dd0fb0ba2e625bca317d67a41da2dc81e46a374e53d0ec8a'),
+    coreFace('Impact', 'impact.ttf', 400, 'normal', '00f1fc230ac99f9b97ba1a7c214eb5b909a78660cb3826fca7d64c3af5a14848'),
+    coreFace('Times New Roman', 'times.ttf', 400, 'normal', '4e98adeff8ccc8ef4e3ece8d4547e288ff85fdc9c7ca711a4599c234874bbe86'),
+    coreFace('Times New Roman', 'timesbd.ttf', 700, 'normal', '4357b63cef20c01661a53c5dae70ffd20cb4765503aaed6d38b17a57c5a90bff'),
+    coreFace('Times New Roman', 'timesi.ttf', 400, 'italic', 'c25ae529b4cecdbca148b6ccb862ee0abad770af8b1fd29c8dba619d1b8da78a'),
+    coreFace('Times New Roman', 'timesbi.ttf', 700, 'italic', '192e1b0d18e90334e999a99f8c32808d6a2e74b3698b8cd90c943c2249a46549'),
+    coreFace('Trebuchet MS', 'trebuc.ttf', 400, 'normal', 'ec3ffb302488251e1b67fb09dd578b364c5339e27c1cfb26eb627666236453d0'),
+    coreFace('Trebuchet MS', 'trebucbd.ttf', 700, 'normal', 'f65941f9487c0a0a3b7445996ecbbd24466d7ae76ea2a597ced55f438fa63838'),
+    coreFace('Trebuchet MS', 'trebucit.ttf', 400, 'italic', 'db56fdac7d3ba20b7aededcb6ee86c46687489d17b759e1708ea4e2d21e38410'),
+    coreFace('Trebuchet MS', 'trebucbi.ttf', 700, 'italic', 'c0a6bdf31f9f2953b2f08a0c1734c892bc825f0fb17c604d420f7acf203a213b'),
+    coreFace('Verdana', 'verdana.ttf', 400, 'normal', '96ed14949ca4b7392cff235b9c41d55c125382abbe0c0d3c2b9dd66897cae0cb'),
+    coreFace('Verdana', 'verdanab.ttf', 700, 'normal', 'c8f5065ba91680f596af3b0378e2c3e713b95a523be3d56ae185ca2b8f5f0b23'),
+    coreFace('Verdana', 'verdanai.ttf', 400, 'italic', '91b59186656f52972531a11433c866fd56e62ec4e61e2621a2dba70c8f19a828'),
+    coreFace('Verdana', 'verdanaz.ttf', 700, 'italic', '698e220f48f4a40e77af7eb34958c8fd02f1e18c3ba3f365d93bfa2ed4474c80'),
+    coreFace('Webdings', 'webdings.ttf', 400, 'normal', '10d099c88521b1b9e380b7690cbe47b54bb19396ca515358cfdc15ac249e2f5d'),
+  ],
+}
+
+const ALL_FONTS = [...EXTRA_FONTS, CORE_FONTS]
+
 const invoke = async <T>(cmd: string, args?: Record<string, unknown>) => (await import('@tauri-apps/api/core')).invoke<T>(cmd, args)
 
 // The Word engine caches font bytes by URL; these never leave the app (docx/extraFonts.ts answers them).
@@ -144,8 +206,11 @@ interface FontsState {
   installed: Record<string, boolean>
   busy: Record<string, boolean>
   errors: Record<string, string>
+  /** Whether the system has Microsoft's core fonts itself; null until asked (Linux only). */
+  coreOnSystem: boolean | null
   refresh(): Promise<void>
-  install(id: string): Promise<void>
+  /** `acceptedLicense`: the person accepted the font's license (Microsoft's core fonts). */
+  install(id: string, acceptedLicense?: boolean): Promise<void>
   remove(id: string): Promise<void>
 }
 
@@ -153,19 +218,21 @@ export const useExtraFonts = create<FontsState>((set, get) => ({
   installed: {},
   busy: {},
   errors: {},
+  coreOnSystem: null,
 
   refresh: async () => {
     if (!isTauri) return
+    if (isLinux) void invoke<boolean>('system_has_core_fonts').then((has) => set({ coreOnSystem: has }), () => set({ coreOnSystem: false }))
     const ids = await invoke<string[]>('installed_fonts').catch(() => [])
     set({ installed: Object.fromEntries(ids.map((id) => [id, true])) })
     for (const id of ids) void registerPageFont(id)
   },
 
-  install: async (id) => {
+  install: async (id, acceptedLicense) => {
     if (get().busy[id]) return
     set({ busy: { ...get().busy, [id]: true }, errors: { ...get().errors, [id]: '' } })
     try {
-      await invoke('install_font', { id })
+      await invoke('install_font', { id, acceptedLicense: !!acceptedLicense })
       set({ installed: { ...get().installed, [id]: true } })
       await registerPageFont(id)
     } catch (err) {
@@ -189,7 +256,12 @@ export const useExtraFonts = create<FontsState>((set, get) => ({
 
 /** Families the slide editor's font menus should offer. */
 export function extraFamilies(installed: Record<string, boolean>): string[] {
-  return EXTRA_FONTS.filter((f) => installed[f.id]).map((f) => f.family)
+  return ALL_FONTS.filter((f) => installed[f.id]).flatMap((f) => [...new Set(f.faces.map((face) => face.family ?? f.family))])
+}
+
+/** Whether to offer Microsoft's core fonts: in the Linux app, when the system lacks them. */
+export function offerCoreFonts(s: Pick<FontsState, 'coreOnSystem' | 'installed'>): boolean {
+  return isTauri && isLinux && (s.coreOnSystem === false || !!s.installed[CORE_FONTS.id])
 }
 
 export async function faceBytes(id: string, file: string): Promise<ArrayBuffer> {
@@ -201,19 +273,21 @@ const registered = new Map<string, FontFace[]>()
 
 /** Slides draw text with the page's own fonts, so the faces are added to document.fonts. */
 async function registerPageFont(id: string) {
-  const font = EXTRA_FONTS.find((f) => f.id === id)
+  const font = ALL_FONTS.find((f) => f.id === id)
   if (!font || registered.has(id)) return
   const faces: FontFace[] = []
   // Claimed while loading so a second refresh doesn't load them twice; a failure frees it to retry.
   registered.set(id, faces)
   try {
     for (const face of font.faces) {
-      const loaded = await new FontFace(font.family, await faceBytes(id, face.file), { weight: String(face.weight), style: face.style }).load()
+      const loaded = await new FontFace(face.family ?? font.family, await faceBytes(id, face.file), { weight: String(face.weight), style: face.style }).load()
       // Removed while this was loading.
       if (registered.get(id) !== faces) return
       document.fonts.add(loaded)
       faces.push(loaded)
     }
+    // Documents already open measured with the look-alikes (or nothing): lay them out again.
+    if (faces.length) void import('../engine/host').then((h) => h.fontsChanged())
   } catch (err) {
     console.warn(`Couldn't load ${font.family}`, err)
     unregisterPageFont(id)
@@ -221,6 +295,8 @@ async function registerPageFont(id: string) {
 }
 
 function unregisterPageFont(id: string) {
-  for (const face of registered.get(id) ?? []) document.fonts.delete(face)
+  const faces = registered.get(id) ?? []
+  for (const face of faces) document.fonts.delete(face)
   registered.delete(id)
+  if (faces.length) void import('../engine/host').then((h) => h.fontsChanged())
 }

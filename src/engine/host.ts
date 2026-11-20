@@ -47,10 +47,7 @@ function setFont(font: string) {
   if (!requested.has(usable)) {
     requested.add(usable)
     void requestFont(usable).then((faces) => {
-      if (!faces.length) return
-      metricsCache.clear()
-      window.clearTimeout(notifyTimer)
-      notifyTimer = window.setTimeout(() => listeners.forEach((f) => f()), 30)
+      if (faces.length) fontsChanged()
     })
   }
 }
@@ -73,6 +70,13 @@ export const host = {
     metricsCache.set(font, v)
     return v
   },
+}
+
+/** A font arrived or went (one finished loading, or a downloaded font was added or removed): measure again. */
+export function fontsChanged() {
+  metricsCache.clear()
+  window.clearTimeout(notifyTimer)
+  notifyTimer = window.setTimeout(() => listeners.forEach((f) => f()), 30)
 }
 
 /** Called when a font the engine measured with finishes loading: lay out again. */

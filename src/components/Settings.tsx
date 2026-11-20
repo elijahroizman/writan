@@ -5,7 +5,7 @@ import { canSetDefaults, defaultStatus, makeDefault, openDefaultAppsSettings } f
 import type { CliStatus } from '../lib/platform'
 import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isLinux, isMac, isTauri, isWindows, openExternal, setCliInstalled, shortcut, showError } from '../lib/platform'
 import type { ExtraFont } from '../state/fonts'
-import { EXTRA_FONTS, useExtraFonts } from '../state/fonts'
+import { CORE_FONTS, EXTRA_FONTS, offerCoreFonts, useExtraFonts } from '../state/fonts'
 import type { Appearance, ThemeDef } from '../lib/themes'
 import { isHex, orbBackground } from '../lib/themes'
 import type { LinuxPackage } from '../lib/updater'
@@ -21,6 +21,7 @@ import type { ShortcutDef } from '../state/shortcuts'
 import { SHORTCUTS, isValidKeys, keysFor, keysFromEvent, syncMenu, useShortcuts } from '../state/shortcuts'
 import { useFolder } from '../state/folder'
 import { useWorkspace } from '../state/workspace'
+import { CoreFontsOffer, NO_CALIBRI } from './CoreFonts'
 import { PluginRow } from './PluginList'
 import { formatSize as formatVersionSize } from './VersionHistory'
 import { Button, Checkbox, ChoiceTiles, DocBadge, IconButton, LinkButton, Logo, Modal, Segmented, SettingsRow, Spinner, Switch, TextField } from './ui'
@@ -348,6 +349,7 @@ function PluginsPage() {
   const enabled = usePlugins((s) => s.enabled)
   const progress = usePlugins((s) => s.progress)
   const fonts = useExtraFonts((s) => s.installed)
+  const showCoreFonts = useExtraFonts(offerCoreFonts)
   const { enable, disable } = usePlugins.getState()
   const optional = PLUGINS.filter((p) => !isBuiltIn(p))
   const count = (on: number, all: number) => <span className="plugin-count">{`${on} of ${all} on`}</span>
@@ -388,6 +390,7 @@ function PluginsPage() {
         <p className="settings-hint plugin-group-hint">
           {isTauri ? 'Downloaded when you turn one on, then in the font menus for Word and PowerPoint.' : 'Fonts download in the app, not in the browser version.'}
         </p>
+        {showCoreFonts && <CoreFontsRow />}
         {EXTRA_FONTS.map((f) => (
           <FontRow key={f.id} font={f} />
         ))}
@@ -425,6 +428,54 @@ function FontRow({ font }: { font: ExtraFont }) {
           <Spinner size={16} />
         ) : (
           <Switch label={`Use the ${font.family} font`} checked={installed} disabled={!isTauri} onChange={(on) => void (on ? install(font.id) : remove(font.id))} />
+        )}
+      </span>
+    </div>
+  )
+}
+
+/**
+ * Microsoft's core fonts, on Linux (components/CoreFonts.tsx). Turning it on shows the license to
+ * accept before anything downloads; off removes the fonts, and documents go back to the look-alikes.
+ */
+function CoreFontsRow() {
+  const installed = useExtraFonts((s) => !!s.installed[CORE_FONTS.id])
+  const busy = useExtraFonts((s) => !!s.busy[CORE_FONTS.id])
+  const error = useExtraFonts((s) => s.errors[CORE_FONTS.id])
+  const [asking, setAsking] = useState(false)
+  const face = installed ? `'${CORE_FONTS.family}', ${CORE_FONTS.fallback}` : undefined
+  return (
+    <div className="plugin-row">
+      <span className="font-badge" style={{ fontFamily: face }} aria-hidden="true">
+        Aa
+      </span>
+      <span className="plugin-text">
+        <span className="settings-label">Microsoft’s core fonts</span>
+        <span className="settings-hint">
+          {installed
+            ? 'Word and PowerPoint files set in these fonts use them in place of the look-alikes. You accepted Microsoft’s license to download them.'
+            : `${CORE_FONTS.about} Documents use look-alikes with the same measurements until you download them.`}
+        </span>
+        <span className="settings-hint">{NO_CALIBRI}</span>
+        <span className="settings-hint plugin-meta">
+          {CORE_FONTS.maker} · {formatSize(CORE_FONTS.size)} download
+        </span>
+        {asking && !installed && (
+          <div className="plugin-extra">
+            <CoreFontsOffer />
+          </div>
+        )}
+        {error && !asking && <span className="plugin-error">{error}</span>}
+      </span>
+      <span className="plugin-control">
+        {busy ? (
+          <Spinner size={16} />
+        ) : (
+          <Switch
+            label="Use Microsoft’s core fonts"
+            checked={installed || asking}
+            onChange={(on) => (installed && !on ? (setAsking(false), void useExtraFonts.getState().remove(CORE_FONTS.id)) : setAsking(on))}
+          />
         )}
       </span>
     </div>
