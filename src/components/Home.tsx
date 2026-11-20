@@ -25,9 +25,10 @@ type RecentGroup = (typeof RECENT_GROUPS)[number]['id']
 export function Home() {
   const recents = useWorkspace((s) => s.recents)
   const theme = useWorkspace((s) => s.theme)
+  const dropHover = useWorkspace((s) => s.dropHover)
   const { openDialog, openPaths, removeRecent, setTheme } = useWorkspace.getState()
   const [filter, setFilter] = useState<RecentGroup | 'all'>('all')
-  const [menu, setMenu] = useState<{ x: number; y: number; file: Recent } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; align?: 'end'; file: Recent } | null>(null)
   const plugins = usePlugins((s) => s.enabled)
   const kinds = enabledKinds(plugins)
   const folders = useFolder((s) => s.recent)
@@ -62,9 +63,10 @@ export function Home() {
 
         <div className="home-actions">
           <ActionCard
+            className={`home-open ${dropHover ? 'drop' : ''}`}
             icon={
               <span className="action-card-icon">
-                <FolderOpen size={20} strokeWidth={1.75} />
+                <FolderOpen size={22} strokeWidth={1.75} />
               </span>
             }
             title="Open…"
@@ -109,7 +111,7 @@ export function Home() {
           ) : (
             <ul className="recent-list">
               {shown.map((r) => (
-                <li key={r.path}>
+                <li key={r.path} className="recent-item">
                   <button
                     type="button"
                     className="recent-row"
@@ -134,19 +136,19 @@ export function Home() {
                       <bdi>{prettyDir(r.path)}</bdi>
                     </span>
                     <span className="recent-time">{relativeTime(r.openedAt)}</span>
-                    <span
-                      className="recent-more"
-                      role="button"
-                      aria-label="More"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                        setMenu({ x: rect.right - 200, y: rect.bottom + 4, file: r })
-                      }}
-                    >
-                      <MoreHorizontal size={16} />
-                    </span>
                   </button>
+                  {/* A sibling of the row, not inside it, so it's a real button that Tab reaches. */}
+                  <IconButton
+                    label={`More for ${r.kind === 'folder' ? folderName(r.path) : basename(r.path)}`}
+                    className="recent-more"
+                    aria-haspopup="menu"
+                    onClick={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      setMenu({ x: rect.right, y: rect.bottom + 4, align: 'end', file: r })
+                    }}
+                  >
+                    <MoreHorizontal size={16} />
+                  </IconButton>
                 </li>
               ))}
             </ul>

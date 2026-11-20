@@ -1128,14 +1128,18 @@ kbd.kbd {
   border-bottom: 0;
 }
 
+/* Section titles are a step below the inspector's own title ("Document", "Workbook"), so the
+   panel reads as one heading over labelled groups rather than a stack of equal headings. */
 .section-header {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 38px;
+  height: 36px;
   padding: 0 10px 0 16px;
+  color: var(--fg-muted);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--fg);
+  letter-spacing: 0.01em;
 }
 
 .section-header .section-title {
@@ -1143,19 +1147,33 @@ kbd.kbd {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  height: 100%;
   border: 0;
   background: transparent;
   padding: 0;
-  font-weight: 600;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
   text-align: left;
 }
 
-.section-header .section-title svg {
+button.section-title:hover {
+  color: var(--fg);
+}
+
+.section-chevron {
+  flex: none;
   color: var(--fg-faint);
+  transition: transform 0.12s;
+}
+
+.section.collapsed .section-chevron {
+  transform: rotate(-90deg);
 }
 
 .section.collapsed {
-  padding-bottom: 4px;
+  padding-bottom: 0;
 }
 
 .section-body {
@@ -1388,6 +1406,8 @@ kbd.kbd {
   gap: 6px;
 }
 
+/* Insert and annotate tiles: outlined rather than filled, so a grid of six doesn't outweigh the
+   fields around it. The fill arrives on hover, as with the other quiet controls. */
 .tool-btn {
   display: flex;
   text-align: center;
@@ -1396,18 +1416,28 @@ kbd.kbd {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 5px;
   height: 54px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--field);
+  background: transparent;
   color: var(--fg-muted);
   font-size: 12px;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
+}
+
+.tool-btn > svg {
+  color: var(--fg);
 }
 
 .tool-btn:hover:not(:disabled) {
   color: var(--fg);
-  background: var(--field-hover);
+  background: var(--hover);
+  border-color: color-mix(in srgb, var(--fg) 18%, transparent);
+}
+
+.tool-btn:active:not(:disabled) {
+  background: var(--press);
 }
 
 .tool-btn.on {
@@ -1726,9 +1756,53 @@ kbd.kbd {
   margin-bottom: 40px;
 }
 
-.home-actions > .action-card {
-  justify-content: space-between;
-  padding: 18px;
+/* Open… is also where files can be dropped, so it reads as a drop zone: dashed, with its icon,
+   name, hint and shortcut stacked in the middle. It lights up while files are dragged over. */
+.home-open {
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 20px 18px;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--fg) 20%, transparent);
+  background: transparent;
+  text-align: center;
+}
+
+.home-open:hover,
+.home-open.drop {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.home-open.drop {
+  border-style: solid;
+}
+
+.home-open .action-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.home-open .action-card-text {
+  align-items: center;
+  gap: 3px;
+}
+
+.home-open .action-card-text strong {
+  font-size: 14px;
+}
+
+.home-open .kbd {
+  position: static;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--fg-muted);
 }
 
 .home-new {
@@ -1770,11 +1844,20 @@ kbd.kbd {
   font-weight: 600;
 }
 
+/* Dividers mix from the text colour: the light theme's --line-soft matches its canvas exactly,
+   which hid them. */
 .recent-list {
+  --recent-line: color-mix(in srgb, var(--fg) 9%, transparent);
   list-style: none;
   margin: 0;
   padding: 0;
-  border-top: 1px solid var(--line-soft);
+  border-top: 1px solid var(--recent-line);
+}
+
+/* The row button spans the item; More sits over its last column as a separate button. */
+.recent-item {
+  position: relative;
+  border-bottom: 1px solid var(--recent-line);
 }
 
 .recent-row {
@@ -1786,12 +1869,17 @@ kbd.kbd {
   height: 42px;
   padding: 0 8px;
   border: 0;
-  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
   background: transparent;
   text-align: left;
 }
 
-.recent-row:hover {
+/* The empty fifth column keeps the time clear of the More button laid over it. */
+.recent-row::after {
+  content: '';
+}
+
+.recent-item:hover .recent-row {
   background: var(--hover);
 }
 
@@ -1822,21 +1910,23 @@ kbd.kbd {
   font-variant-numeric: tabular-nums;
 }
 
-.recent-more {
-  display: grid;
-  place-items: center;
-  width: 26px;
+.recent-more.icon-btn {
+  position: absolute;
+  top: 50%;
+  right: 9px;
+  min-width: 26px;
   height: 26px;
-  border-radius: 6px;
+  padding: 0;
+  transform: translateY(-50%);
   color: var(--fg-faint);
 }
 
-.recent-row:hover .recent-more,
-.recent-row:focus-visible .recent-more {
+.recent-item:hover .recent-more,
+.recent-item:focus-within .recent-more {
   color: var(--fg-muted);
 }
 
-.recent-more:hover {
+.recent-more.icon-btn:hover {
   background: var(--press);
   color: var(--fg);
 }

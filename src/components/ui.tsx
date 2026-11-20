@@ -3,7 +3,7 @@
 // Colours, radii and type come from the tokens at the top of styles/app.css (the brand board's
 // light and dark palettes), which themes override.
 
-import { ChevronDown, ChevronRight, FileText } from 'lucide-react'
+import { ChevronDown, FileText } from 'lucide-react'
 import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNode } from 'react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
@@ -166,9 +166,10 @@ export function Section({
     <section className={`section ${open ? '' : 'collapsed'}`}>
       <header className="section-header">
         {collapsible ? (
+          // The chevron follows the title, so collapsible titles line up with the others.
           <button type="button" className="section-title" onClick={() => setOpen(!open)} aria-expanded={open}>
-            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             {title}
+            <ChevronDown size={14} className="section-chevron" aria-hidden />
           </button>
         ) : (
           <span className="section-title">{title}</span>
@@ -613,9 +614,23 @@ export function Card({ className = '', children, style }: { className?: string; 
 }
 
 /** A big clickable card with an icon, a title and a hint: Home's Open… and New … cards. */
-export function ActionCard({ icon, title, hint, keys, onClick }: { icon: ReactNode; title: ReactNode; hint?: ReactNode; keys?: string | null; onClick: () => void }) {
+export function ActionCard({
+  icon,
+  title,
+  hint,
+  keys,
+  className = '',
+  onClick,
+}: {
+  icon: ReactNode
+  title: ReactNode
+  hint?: ReactNode
+  keys?: string | null
+  className?: string
+  onClick: () => void
+}) {
   return (
-    <button type="button" className="action-card" onClick={onClick}>
+    <button type="button" className={`action-card ${className}`} onClick={onClick}>
       {icon}
       <span className="action-card-text">
         <strong>{title}</strong>
