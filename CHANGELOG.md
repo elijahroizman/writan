@@ -2,6 +2,18 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.11.3 — 2026-11-20
+
+### Word
+- New bulleted and numbered lists are indented as Word indents them, so the text no longer jumps half an inch past the bullet or number.
+
+### PowerPoint
+- New presentation offers five starter decks (Plain, Harbor, Graphite, Signal and Lagoon) beside Blank.
+- New slide layouts set titles in the theme's heading font, and text on accent panels is dark or light, whichever reads better.
+- Pressing Enter in a bulleted list on a slide keeps the list going, and the new empty line shows its bullet.
+- Linked videos play in front of the slide in the slideshow, and double-clicking a video, or Play video in the Link section, plays it while editing.
+- Delete and Backspace remove a selected video frame instead of typing into the empty link field.
+
 ## 0.11.2 — 2026-11-20
 
 ### Word
