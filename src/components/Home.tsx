@@ -1,5 +1,5 @@
 import { Folder, FolderOpen, MoreHorizontal, Moon, Settings, Sun } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { KINDS } from '../lib/kinds'
 import { basename, dirname, revealInFinder, revealLabel, isTauri, shortcut, tildify } from '../lib/platform'
 import { folderName, useFolder } from '../state/folder'
@@ -25,9 +25,12 @@ type RecentGroup = (typeof RECENT_GROUPS)[number]['id']
 export function Home() {
   const recents = useWorkspace((s) => s.recents)
   const theme = useWorkspace((s) => s.theme)
+  const dropHover = useWorkspace((s) => s.dropHover)
   const { openDialog, openPaths, removeRecent, setTheme } = useWorkspace.getState()
   const [filter, setFilter] = useState<RecentGroup | 'all'>('all')
-  const [menu, setMenu] = useState<{ x: number; y: number; file: Recent } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; align?: 'end'; file: Recent; opener: HTMLElement; fromMore?: boolean } | null>(null)
+  const list = useRef<HTMLUListElement>(null)
+  const recentHeader = useRef<HTMLDivElement>(null)
   const plugins = usePlugins((s) => s.enabled)
   const kinds = enabledKinds(plugins)
   const folders = useFolder((s) => s.recent)
@@ -62,9 +65,10 @@ export function Home() {
 
         <div className="home-actions">
           <ActionCard
+            className={`home-open ${dropHover ? 'drop' : ''}`}
             icon={
               <span className="action-card-icon">
-                <FolderOpen size={20} strokeWidth={1.75} />
+                <FolderOpen size={22} strokeWidth={1.75} />
               </span>
             }
             title="Open…"
@@ -92,7 +96,7 @@ export function Home() {
         </div>
 
         <section className="home-recents">
-          <div className="home-recents-header">
+          <div className="home-recents-header" ref={recentHeader}>
             <h2>Recent</h2>
             <PillTabs
               label="Show"
@@ -107,19 +111,30 @@ export function Home() {
               {recents.length + folders.length === 0 ? 'Files and folders you open will show up here.' : `No recent ${group?.none ?? 'files'}.`}
             </EmptyState>
           ) : (
-            <ul className="recent-list">
+            <ul className="recent-list" ref={list}>
               {shown.map((r) => (
-                <li key={r.path}>
-                  <button
-                    type="button"
-                    className="recent-row"
-                    title={r.path}
-                    onClick={() => open(r)}
-                    onContextMenu={(e) => {
-                      e.preventDefault()
-                      setMenu({ x: e.clientX, y: e.clientY, file: r })
-                    }}
-                  >
+                <li
+                  key={r.path}
+                  className="recent-item"
+                  // On the item, so the row and its More button both open the menu, and focus goes
+                  // back to whichever had it.
+                  onContextMenu={(e) => {
+                    e.preventDefault()
+                    const opener = (e.target as HTMLElement).closest('button')
+                    if (opener) setMenu({ x: e.clientX, y: e.clientY, file: r, opener, fromMore: opener.classList.contains('recent-more') })
+                  }}
+                  onKeyDown={(e) => {
+                    // WebKit doesn't turn the menu key or ⇧F10 into a contextmenu event; Chromium does,
+                    // and preventing the key stops it, so the menu opens once either way.
+                    if (e.key !== 'ContextMenu' && !(e.shiftKey && e.key === 'F10')) return
+                    const opener = (e.target as HTMLElement).closest('button')
+                    if (!opener) return
+                    e.preventDefault()
+                    const rect = opener.getBoundingClientRect()
+                    setMenu({ x: rect.left + 8, y: rect.bottom + 4, file: r, opener, fromMore: opener.classList.contains('recent-more') })
+                  }}
+                >
+                  <button type="button" className="recent-row" title={r.path} onClick={() => open(r)}>
                     {r.kind === 'folder' ? (
                       <span className="recent-icon faint">
                         <Folder size={16} strokeWidth={1.75} />
@@ -134,19 +149,23 @@ export function Home() {
                       <bdi>{prettyDir(r.path)}</bdi>
                     </span>
                     <span className="recent-time">{relativeTime(r.openedAt)}</span>
-                    <span
-                      className="recent-more"
-                      role="button"
-                      aria-label="More"
-                      onClick={(e) => {
-                        e.stopPropagation()
-                        const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-                        setMenu({ x: rect.right - 200, y: rect.bottom + 4, file: r })
-                      }}
-                    >
-                      <MoreHorizontal size={16} />
-                    </span>
                   </button>
+                  {/* A sibling of the row, not inside it, so it's a real button that Tab reaches. */}
+                  <IconButton
+                    label="More"
+                    // The accessible name says which file. Set directly, so a file name never goes
+                    // through the label's shortcut-symbol rewriting.
+                    aria-label={`More for ${r.kind === 'folder' ? folderName(r.path) : basename(r.path)}`}
+                    className="recent-more"
+                    aria-haspopup="menu"
+                    aria-expanded={menu?.file.path === r.path && !!menu.fromMore}
+                    onClick={(e) => {
+                      const rect = e.currentTarget.getBoundingClientRect()
+                      setMenu({ x: rect.right, y: rect.bottom + 4, align: 'end', file: r, opener: e.currentTarget, fromMore: true })
+                    }}
+                  >
+                    <MoreHorizontal size={16} />
+                  </IconButton>
                 </li>
               ))}
             </ul>
@@ -156,6 +175,7 @@ export function Home() {
       {menu && (
         <PopoverMenu
           anchor={menu}
+          opener={menu.opener}
           onClose={() => setMenu(null)}
           items={[
             { label: 'Open', onSelect: () => open(menu.file) },
@@ -163,7 +183,18 @@ export function Home() {
             {
               label: 'Remove from Recent',
               separatorBefore: true,
-              onSelect: () => (menu.file.kind === 'folder' ? useFolder.getState().forgetRecent(menu.file.path) : removeRecent(menu.file.path)),
+              onSelect: () => {
+                const at = shown.findIndex((x) => x.path === menu.file.path)
+                if (menu.file.kind === 'folder') useFolder.getState().forgetRecent(menu.file.path)
+                else removeRecent(menu.file.path)
+                // Keep the user's place: the next row's More (or the previous one, or the filters
+                // once the list is empty) takes the focus the removed row had.
+                requestAnimationFrame(() => {
+                  const more = list.current?.querySelectorAll<HTMLElement>('.recent-more')
+                  const target = more?.[at] ?? more?.[at - 1] ?? recentHeader.current?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"]')
+                  target?.focus()
+                })
+              },
             },
           ]}
         />

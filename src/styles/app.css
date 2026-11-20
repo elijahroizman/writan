@@ -1,7 +1,9 @@
 /* ───────────────────────── Tokens ───────────────────────── */
 
 :root {
-  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter', 'Segoe UI', system-ui, sans-serif;
+  /* San Francisco on a Mac. Elsewhere Inter, bundled (main.tsx), which is close to it and reads
+     better than Segoe UI or a Linux desktop's default. Its optical-size axis tightens it at small sizes. */
+  --font-ui: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Inter Variable', 'Inter', 'Segoe UI', system-ui, sans-serif;
   --font-mono: ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 
   --titlebar-h: 44px;
@@ -42,6 +44,10 @@
   --fg-muted: #a3a3a3;
   --fg-faint: #7c7c7c;
   --accent-soft: rgba(79, 140, 255, 0.18);
+  --menu-danger: #ff6b6f;
+  --home-hint: var(--fg-muted);
+  /* A lighter shade of the theme's accent, so a focus ring keeps 4.5:1 on the menu's focus fill. */
+  --focus-strong: color-mix(in srgb, var(--accent) 75%, #fff);
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.07);
   --page-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 8px 28px rgba(0, 0, 0, 0.35);
   --scrollbar: rgba(255, 255, 255, 0.14);
@@ -64,6 +70,13 @@
   --fg-muted: #6b6b70;
   --fg-faint: #8b8b90;
   --accent-soft: rgba(79, 140, 255, 0.14);
+  --menu-danger: #c4282d;
+  /* Home's Open… hint sits on the bare canvas, where --fg-muted is a little too light. Mixed from
+     the theme's own colours, so it keeps a tinted theme's tone. */
+  --home-hint: color-mix(in srgb, var(--fg-muted) 65%, var(--fg));
+  /* --accent is under 3:1 as a focus ring on the canvas and on light fills. A darker shade of it
+     clears 4:1 in every built-in theme and keeps the theme's hue. */
+  --focus-strong: color-mix(in srgb, var(--accent) 75%, #000);
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.08);
   --page-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 6px 22px rgba(0, 0, 0, 0.1);
   --scrollbar: rgba(0, 0, 0, 0.2);
@@ -1141,14 +1154,18 @@ kbd.kbd {
   border-bottom: 0;
 }
 
+/* Section titles are a step below the inspector's own title ("Document", "Workbook"), so the
+   panel reads as one heading over labelled groups rather than a stack of equal headings. */
 .section-header {
   display: flex;
   align-items: center;
   gap: 4px;
-  height: 38px;
+  height: 36px;
   padding: 0 10px 0 16px;
+  color: var(--fg-muted);
+  font-size: 12px;
   font-weight: 600;
-  color: var(--fg);
+  letter-spacing: 0.01em;
 }
 
 .section-header .section-title {
@@ -1156,19 +1173,33 @@ kbd.kbd {
   display: flex;
   align-items: center;
   gap: 4px;
+  min-width: 0;
+  height: 100%;
   border: 0;
   background: transparent;
   padding: 0;
-  font-weight: 600;
+  color: inherit;
+  font: inherit;
+  letter-spacing: inherit;
   text-align: left;
 }
 
-.section-header .section-title svg {
+button.section-title:hover {
+  color: var(--fg);
+}
+
+.section-chevron {
+  flex: none;
   color: var(--fg-faint);
+  transition: transform 0.12s;
+}
+
+.section.collapsed .section-chevron {
+  transform: rotate(-90deg);
 }
 
 .section.collapsed {
-  padding-bottom: 4px;
+  padding-bottom: 0;
 }
 
 .section-body {
@@ -1401,6 +1432,8 @@ kbd.kbd {
   gap: 6px;
 }
 
+/* Insert and annotate tiles: outlined rather than filled, so a grid of six doesn't outweigh the
+   fields around it. The fill arrives on hover, as with the other quiet controls. */
 .tool-btn {
   display: flex;
   text-align: center;
@@ -1409,18 +1442,29 @@ kbd.kbd {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 5px;
   height: 54px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
-  background: var(--field);
+  background: transparent;
   color: var(--fg-muted);
   font-size: 12px;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
-.tool-btn:hover:not(:disabled) {
+.tool-btn > svg {
   color: var(--fg);
-  background: var(--field-hover);
+}
+
+/* The selected tool (.on, below) keeps its accent border and fill under the pointer. */
+.tool-btn:not(.on):hover:not(:disabled) {
+  color: var(--fg);
+  background: var(--hover);
+  border-color: color-mix(in srgb, var(--fg) 18%, transparent);
+}
+
+.tool-btn:not(.on):active:not(:disabled) {
+  background: var(--press);
 }
 
 .tool-btn.on {
@@ -1540,14 +1584,42 @@ kbd.kbd {
   text-align: left;
 }
 
-.menu-item:not(:disabled):hover {
+/* --danger is a fill colour; as menu text it falls under 4.5:1 once an item has the focus fill.
+   --menu-danger (set per theme above) clears 4.8:1 on the menu with or without it. */
+.menu-item.danger {
+  color: var(--menu-danger);
+}
+
+/* Keyboard focus: a neutral fill under a --focus-strong ring (3:1 or better on it), which it keeps
+   under the pointer, so every label, red ones included, keeps its contrast. */
+.menu-item:not(:disabled):focus-visible {
+  background: var(--hover);
+  outline-color: var(--focus-strong);
+}
+
+/* The focus fill dims the faint shortcut text; muted keeps it readable. */
+.menu-item:not(:disabled):focus-visible .kbd {
+  color: var(--fg-muted);
+}
+
+.menu-item:not(:disabled):not(:focus-visible):hover {
   background: var(--accent);
   color: #fff;
 }
 
-.menu-item:not(:disabled):hover .kbd,
-.menu-item:not(:disabled):hover svg {
+.menu-item:not(:disabled):not(:focus-visible):hover .kbd,
+.menu-item:not(:disabled):not(:focus-visible):hover svg {
   color: #fff;
+}
+
+/* Red can't sit on the accent, so a destructive item hovers with the neutral fill and stays red. */
+.menu-item.danger:not(:disabled):not(:focus-visible):hover {
+  background: var(--hover);
+  color: var(--menu-danger);
+}
+
+.menu-item.danger:not(:disabled):not(:focus-visible):hover svg {
+  color: inherit;
 }
 
 .menu-item:disabled {
@@ -1739,9 +1811,65 @@ kbd.kbd {
   margin-bottom: 40px;
 }
 
-.home-actions > .action-card {
-  justify-content: space-between;
-  padding: 18px;
+/* Open… is also where files can be dropped, so it reads as a drop zone: dashed, with its icon,
+   name, hint and shortcut stacked in the middle. It lights up while files are dragged over. */
+.home-open {
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 20px 18px;
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--fg) 32%, transparent);
+  background: transparent;
+  text-align: center;
+}
+
+/* Hover stays neutral; the accent is kept for files actually being dragged over. */
+.home-open:hover {
+  border-color: color-mix(in srgb, var(--fg) 48%, transparent);
+  background: var(--hover);
+}
+
+.home-open.drop {
+  border-style: solid;
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 6%, transparent);
+}
+
+.home-open .action-card-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.home-open .action-card-text {
+  align-items: center;
+  gap: 3px;
+}
+
+.home-open .action-card-text strong {
+  font-size: 14px;
+}
+
+/* Out of a card and on the canvas: --home-hint keeps 4.5:1 and --focus-strong 3:1 there and on
+   the hover fill. */
+.home-open .action-card-text .muted {
+  color: var(--home-hint);
+}
+
+.home-open:focus-visible {
+  outline-color: var(--focus-strong);
+}
+
+.home-open .kbd {
+  position: static;
+  padding: 2px 7px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--fg-muted);
 }
 
 .home-new {
@@ -1783,29 +1911,54 @@ kbd.kbd {
   font-weight: 600;
 }
 
+/* Dividers mix from the text colour: the light theme's --line-soft matches its canvas exactly,
+   which hid them. */
 .recent-list {
+  --recent-line: color-mix(in srgb, var(--fg) 9%, transparent);
   list-style: none;
   margin: 0;
   padding: 0;
-  border-top: 1px solid var(--line-soft);
+  border-top: 1px solid var(--recent-line);
 }
 
+/* Each item is a grid of the row button and its More button, so More has its own column and can
+   never cover the time, however narrow Home gets. The hover fill sits behind both. */
+.recent-item {
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  column-gap: 12px;
+  padding-right: 8px;
+  border-bottom: 1px solid var(--recent-line);
+}
+
+.recent-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: var(--radius-sm);
+}
+
+.recent-item:hover::before {
+  background: var(--hover);
+}
+
+/* The name gives way before the time: it truncates rather than pushing the row wider than Home. */
 .recent-row {
   display: grid;
-  grid-template-columns: 24px minmax(120px, 1.2fr) minmax(0, 1.5fr) 100px 28px;
+  grid-template-columns: 24px minmax(0, 1.2fr) minmax(0, 1.5fr) 100px;
   align-items: center;
   gap: 12px;
-  width: 100%;
+  min-width: 0;
   height: 42px;
-  padding: 0 8px;
+  padding: 0 0 0 8px;
   border: 0;
-  border-bottom: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
   background: transparent;
   text-align: left;
-}
-
-.recent-row:hover {
-  background: var(--hover);
 }
 
 .recent-icon {
@@ -1835,21 +1988,25 @@ kbd.kbd {
   font-variant-numeric: tabular-nums;
 }
 
-.recent-more {
-  display: grid;
-  place-items: center;
-  width: 26px;
+.recent-more.icon-btn {
+  justify-self: center;
+  min-width: 26px;
   height: 26px;
-  border-radius: 6px;
-  color: var(--fg-faint);
-}
-
-.recent-row:hover .recent-more,
-.recent-row:focus-visible .recent-more {
+  padding: 0;
   color: var(--fg-muted);
 }
 
-.recent-more:hover {
+.recent-item:hover .recent-more,
+.recent-item:focus-within .recent-more {
+  color: var(--fg);
+}
+
+.recent-more.icon-btn:focus-visible {
+  outline-color: var(--focus-strong);
+}
+
+.recent-more.icon-btn:hover,
+.recent-more.icon-btn[aria-expanded='true'] {
   background: var(--press);
   color: var(--fg);
 }

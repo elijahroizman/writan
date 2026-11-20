@@ -4,6 +4,9 @@ import App from './App'
 import { startAppIcon } from './lib/app-icon'
 import { startAppearance } from './state/appearance'
 import { getEditor, useWorkspace } from './state/workspace'
+// Inter, the UI font where the system has no San Francisco (Windows, Linux). Only declares the
+// faces; the files load only where the font stack reaches Inter, so never on a Mac.
+import '@fontsource-variable/inter/opsz.css'
 import './styles/app.css'
 
 startAppearance()

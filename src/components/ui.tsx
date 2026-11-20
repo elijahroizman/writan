@@ -3,8 +3,8 @@
 // Colours, radii and type come from the tokens at the top of styles/app.css (the brand board's
 // light and dark palettes), which themes override.
 
-import { ChevronDown, ChevronRight, FileText } from 'lucide-react'
-import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNode } from 'react'
+import { ChevronDown, FileText } from 'lucide-react'
+import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { useEffect, useId, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import type { DocKind } from '../lib/kinds'
@@ -166,9 +166,10 @@ export function Section({
     <section className={`section ${open ? '' : 'collapsed'}`}>
       <header className="section-header">
         {collapsible ? (
+          // The chevron follows the title, so collapsible titles line up with the others.
           <button type="button" className="section-title" onClick={() => setOpen(!open)} aria-expanded={open}>
-            {open ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
             {title}
+            <ChevronDown size={14} className="section-chevron" aria-hidden />
           </button>
         ) : (
           <span className="section-title">{title}</span>
@@ -425,18 +426,56 @@ export interface MenuEntry {
   disabled?: boolean
 }
 
-/** A small popover menu anchored to a point or element. With `align: 'end'` its right edge sits at `x`. */
+/**
+ * A small popover menu anchored to a point or element. With `align: 'end'` its right edge sits at `x`.
+ * Pass `opener`, the control that opened it, and the menu takes focus: the first item is focused,
+ * Tab closes it, and closing hands focus back to `opener`. Without it focus stays where it was, as
+ * the editors' context menus need. Arrow keys, Home and End move between items whenever focus is in the menu.
+ */
 export function PopoverMenu({
   anchor,
   items,
   onClose,
+  opener,
 }: {
   anchor: { x: number; y: number; align?: 'start' | 'end' }
   items: MenuEntry[]
   onClose: () => void
+  opener?: HTMLElement | null
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState(anchor)
+  const managesFocus = opener != null
+
+  useEffect(() => {
+    if (!opener) return
+    const menu = ref.current
+    menu?.querySelector<HTMLButtonElement>('.menu-item:not(:disabled)')?.focus()
+    return () => {
+      // Only take focus back if it's still in the menu (or lost with it), not if an item moved it on.
+      const now = document.activeElement
+      if (opener.isConnected && (!now || now === document.body || menu?.contains(now))) opener.focus()
+    }
+  }, [opener])
+
+  const onMenuKey = (e: ReactKeyboardEvent) => {
+    const enabled = [...(ref.current?.querySelectorAll<HTMLButtonElement>('.menu-item:not(:disabled)') ?? [])]
+    if (!enabled.length) return
+    const at = enabled.indexOf(document.activeElement as HTMLButtonElement)
+    const to =
+      e.key === 'ArrowDown' ? (at + 1) % enabled.length
+      : e.key === 'ArrowUp' ? (at <= 0 ? enabled.length - 1 : at - 1)
+      : e.key === 'Home' ? 0
+      : e.key === 'End' ? enabled.length - 1
+      : null
+    if (to != null) {
+      e.preventDefault()
+      enabled[to].focus()
+    } else if (e.key === 'Tab' && managesFocus) {
+      e.preventDefault()
+      onClose()
+    }
+  }
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -458,16 +497,15 @@ export function PopoverMenu({
   return createPortal(
     <>
       <div className="menu-backdrop" onMouseDown={onClose} onContextMenu={(e) => (e.preventDefault(), onClose())} />
-      <div className="menu" ref={ref} style={{ left: pos.x, top: pos.y }} role="menu">
+      <div className="menu" ref={ref} style={{ left: pos.x, top: pos.y }} role="menu" onKeyDown={onMenuKey}>
         {items.map((item, i) => (
           <div key={i}>
             {item.separatorBefore && <div className="menu-sep" />}
             <button
               type="button"
               role="menuitem"
-              className="menu-item"
+              className={`menu-item ${item.danger ? 'danger' : ''}`}
               disabled={item.disabled}
-              style={item.danger ? { color: 'var(--danger)' } : undefined}
               onClick={() => {
                 onClose()
                 item.onSelect()
@@ -613,9 +651,23 @@ export function Card({ className = '', children, style }: { className?: string; 
 }
 
 /** A big clickable card with an icon, a title and a hint: Home's Open… and New … cards. */
-export function ActionCard({ icon, title, hint, keys, onClick }: { icon: ReactNode; title: ReactNode; hint?: ReactNode; keys?: string | null; onClick: () => void }) {
+export function ActionCard({
+  icon,
+  title,
+  hint,
+  keys,
+  className = '',
+  onClick,
+}: {
+  icon: ReactNode
+  title: ReactNode
+  hint?: ReactNode
+  keys?: string | null
+  className?: string
+  onClick: () => void
+}) {
   return (
-    <button type="button" className="action-card" onClick={onClick}>
+    <button type="button" className={`action-card ${className}`} onClick={onClick}>
       {icon}
       <span className="action-card-text">
         <strong>{title}</strong>

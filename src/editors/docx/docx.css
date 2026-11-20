@@ -39,28 +39,6 @@
   gap: 5px;
 }
 
-/* The image trigger carries the editor's own toolbar class; ours wins. */
-.insert-grid .tool-btn.docx-toolbar__button {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  width: auto;
-  height: 54px;
-  padding: 0 4px;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-  background: var(--field);
-  color: var(--fg-muted);
-  font-size: 12px;
-}
-
-.insert-grid .tool-btn.docx-toolbar__button:hover {
-  color: var(--fg);
-  background: var(--field-hover);
-}
-
 /* The engine paints a page break as a form feed, which WebKit draws as a "?" box. */
 .docx-break-mark {
   visibility: hidden;
