@@ -1908,33 +1908,44 @@ button.section-title:hover {
   border-top: 1px solid var(--recent-line);
 }
 
-/* The row button spans the item; More sits over its last column as a separate button. */
+/* Each item is a grid of the row button and its More button, so More has its own column and can
+   never cover the time, however narrow Home gets. The hover fill sits behind both. */
 .recent-item {
   position: relative;
+  isolation: isolate;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  align-items: center;
+  column-gap: 12px;
+  padding-right: 8px;
   border-bottom: 1px solid var(--recent-line);
 }
 
+.recent-item::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: var(--radius-sm);
+}
+
+.recent-item:hover::before {
+  background: var(--hover);
+}
+
+/* The name gives way before the time: it truncates rather than pushing the row wider than Home. */
 .recent-row {
   display: grid;
-  grid-template-columns: 24px minmax(120px, 1.2fr) minmax(0, 1.5fr) 100px 28px;
+  grid-template-columns: 24px minmax(0, 1.2fr) minmax(0, 1.5fr) 100px;
   align-items: center;
   gap: 12px;
-  width: 100%;
+  min-width: 0;
   height: 42px;
-  padding: 0 8px;
+  padding: 0 0 0 8px;
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
   text-align: left;
-}
-
-/* The empty fifth column keeps the time clear of the More button laid over it. */
-.recent-row::after {
-  content: '';
-}
-
-.recent-item:hover .recent-row {
-  background: var(--hover);
 }
 
 .recent-icon {
@@ -1964,15 +1975,11 @@ button.section-title:hover {
   font-variant-numeric: tabular-nums;
 }
 
-/* Centred over the row's last column: 8px row padding, then 26px in the 28px column. */
 .recent-more.icon-btn {
-  position: absolute;
-  top: 50%;
-  right: 9px;
+  justify-self: center;
   min-width: 26px;
   height: 26px;
   padding: 0;
-  transform: translateY(-50%);
   color: var(--fg-muted);
 }
 
