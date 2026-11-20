@@ -152,10 +152,11 @@ export function Home() {
                   </button>
                   {/* A sibling of the row, not inside it, so it's a real button that Tab reaches. */}
                   <IconButton
-                    label={`More for ${r.kind === 'folder' ? folderName(r.path) : basename(r.path)}`}
+                    label="More"
+                    // The accessible name says which file. Set directly, so a file name never goes
+                    // through the label's shortcut-symbol rewriting.
+                    aria-label={`More for ${r.kind === 'folder' ? folderName(r.path) : basename(r.path)}`}
                     className="recent-more"
-                    // The name says which file; the tooltip doesn't need to repeat it.
-                    title="More"
                     aria-haspopup="menu"
                     aria-expanded={menu?.file.path === r.path && !!menu.fromMore}
                     onClick={(e) => {
