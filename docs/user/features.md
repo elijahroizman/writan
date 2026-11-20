@@ -90,7 +90,7 @@ Every save from the last hour is kept, then one per ten minutes for a day, one p
 
 ## Fonts
 
-Word documents use open-licensed stand-ins for Calibri, Cambria, Arial, Times New Roman and Courier New, with the same widths, so lines break where Word breaks them.
+Word documents use open-licensed stand-ins for Calibri, Cambria, Arial, Times New Roman and Courier New, with the same widths, so lines break where Word breaks them. Where the computer has the real font, documents use it. On Linux, which lacks Microsoft's fonts, Writan offers to download Arial, Times New Roman, Courier New, Georgia, Verdana and the rest of Microsoft's core fonts once you accept Microsoft's license; Calibri and Cambria can't be downloaded. See [Plugins › Microsoft's core fonts](plugins.md#microsofts-core-fonts-linux).
 
 **Settings › Plugins** can add more: Michelangelus, Ubuntu, JetBrains Mono, Atkinson Hyperlegible, Courier Prime, Instrument Serif and Comic Neue. Each downloads when you turn it on and appears in the Word and PowerPoint font menus. See [Plugins › Fonts](plugins.md#fonts).
 

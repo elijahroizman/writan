@@ -53,3 +53,11 @@ LaTeX on Windows is still being tested. If installing or removing TeX fails, the
 | Comic Neue | Posters, worksheets, invitations | Google Fonts |
 
 Documents keep the font's name, so Word shows the same font wherever it's installed.
+
+### Microsoft's core fonts (Linux)
+
+Mac and Windows come with Arial, Times New Roman and Courier New, the fonts most Word and PowerPoint files are set in. Linux doesn't, so Writan draws them with look-alikes that take the same space (Liberation Sans, Serif and Mono). On Linux, the welcome tour and **Settings › Plugins › Fonts** offer Microsoft's own: Arial, Arial Black, Times New Roman, Courier New, Georgia, Verdana, Trebuchet MS, Comic Sans MS, Impact, Andale Mono and Webdings (about 4 MB).
+
+Microsoft lets anyone install these under its End-User License Agreement, but only from its original installers. Writan shows the agreement and downloads nothing until you tick **I accept Microsoft's license agreement**. It then fetches the installers from the [corefonts project](https://sourceforge.net/projects/corefonts/) on SourceForge, checks each against the copy Debian's ttf-mscorefonts-installer checks, and unpacks the fonts into its own data folder with a dated copy of the agreement. Documents then use them in place of the look-alikes. Turning them off removes them, and documents go back to the look-alikes. If the system already has them (from ttf-mscorefonts-installer, say), Writan doesn't offer them.
+
+Calibri and Cambria, Office's newer defaults, can't be downloaded anywhere: Writan always draws them with Carlito and Caladea, which take the same space.

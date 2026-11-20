@@ -4,22 +4,35 @@ import { useEffect, useState } from 'react'
 import { canSetDefaults, defaultStatus, makeDefault } from '../lib/defaults'
 import { isMac, showError } from '../lib/platform'
 import { PLUGINS, isBuiltIn } from '../plugins/catalog'
+import { CORE_FONTS, offerCoreFonts, useExtraFonts } from '../state/fonts'
 import { enabledKinds, usePlugins } from '../state/plugins'
 import { useSetup } from '../state/setup'
 import { useWorkspace } from '../state/workspace'
 import { keysFor } from '../state/shortcuts'
+import { CoreFontsOffer, CoreFontsSpecimen, NO_CALIBRI } from './CoreFonts'
 import { PluginRow } from './PluginList'
-import { Button, Checkbox, DocBadge, Kbd, LinkButton, Logo, Modal, Spinner, StepDots, Switch } from './ui'
+import { Button, Checkbox, DocBadge, Hint, Kbd, LinkButton, Logo, Modal, Spinner, StepDots, Switch } from './ui'
 
-type Step = 'welcome' | 'palette' | 'word' | 'slides' | 'pdf' | 'extras' | 'split' | 'defaults' | 'windows'
+type Step = 'welcome' | 'palette' | 'word' | 'slides' | 'pdf' | 'extras' | 'fonts' | 'split' | 'defaults' | 'windows'
 
 /**
  * The first-launch screen (and Settings › General › Show the tour again): a short tour of what
- * Writan does, the optional extensions, and on a Mac or Windows which file types it should open.
- * Every step can be skipped.
+ * Writan does, the optional extensions, Microsoft's fonts on Linux, and on a Mac or Windows which
+ * file types it should open. Every step can be skipped.
  */
 export default function SetupScreen() {
-  const steps: Step[] = ['welcome', 'palette', 'word', 'slides', 'pdf', 'extras', 'split', ...(canSetDefaults ? (['defaults'] as const) : [])]
+  const coreFonts = useExtraFonts(offerCoreFonts)
+  const steps: Step[] = [
+    'welcome',
+    'palette',
+    'word',
+    'slides',
+    'pdf',
+    'extras',
+    ...(coreFonts ? (['fonts'] as const) : []),
+    'split',
+    ...(canSetDefaults ? (['defaults'] as const) : []),
+  ]
   const [step, setStep] = useState<Step>('welcome')
   const at = steps.indexOf(step)
   const finish = () => useSetup.getState().finish()
@@ -148,7 +161,7 @@ interface TourPage {
   extra?: ReactNode
 }
 
-const TOUR: Record<'palette' | 'word' | 'slides' | 'pdf' | 'extras' | 'split', TourPage> = {
+const TOUR: Record<'palette' | 'word' | 'slides' | 'pdf' | 'extras' | 'fonts' | 'split', TourPage> = {
   palette: {
     eyebrow: 'Command palette',
     title: 'Everything is one search away',
@@ -208,6 +221,22 @@ const TOUR: Record<'palette' | 'word' | 'slides' | 'pdf' | 'extras' | 'split', T
     keys: null,
     art: <Shot name="extras" />,
     extra: <ExtensionsList />,
+  },
+  // Linux only (offerCoreFonts): Mac and Windows come with these fonts.
+  fonts: {
+    eyebrow: 'Fonts for Office files',
+    title: 'Use Microsoft’s own fonts',
+    body: 'Most Word and PowerPoint files are set in Arial, Times New Roman or Courier New. Linux doesn’t include them, so Writan draws them with look-alikes that take the same space. Microsoft lets you download the originals if you accept its license.',
+    keys: null,
+    art: <CoreFontsSpecimen />,
+    extra: (
+      <>
+        <CoreFontsOffer />
+        <Hint tone="faint" as="p">
+          {`${CORE_FONTS.about} From Microsoft’s original installers, which Writan checks before unpacking. ${NO_CALIBRI} You can add or remove them later in Settings › Plugins.`}
+        </Hint>
+      </>
+    ),
   },
   split: {
     eyebrow: 'Split view',
