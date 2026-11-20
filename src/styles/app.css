@@ -44,7 +44,7 @@
   --accent-soft: rgba(79, 140, 255, 0.18);
   --menu-danger: #ff6b6f;
   --home-hint: var(--fg-muted);
-  --home-focus: var(--accent);
+  --focus-strong: var(--accent);
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.07);
   --page-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 8px 28px rgba(0, 0, 0, 0.35);
   --scrollbar: rgba(255, 255, 255, 0.14);
@@ -68,9 +68,10 @@
   --fg-faint: #8b8b90;
   --accent-soft: rgba(79, 140, 255, 0.14);
   --menu-danger: #c4282d;
-  /* Open… on Home sits on the bare canvas, where --fg-muted and --accent are a little too light. */
+  /* Home's Open… hint sits on the bare canvas, where --fg-muted is a little too light. */
   --home-hint: #5c5c61;
-  --home-focus: #2f66d8;
+  /* --accent is under 3:1 as a focus ring on the canvas and on light fills; this one isn't. */
+  --focus-strong: #2f66d8;
   --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.16), 0 0 0 1px rgba(0, 0, 0, 0.08);
   --page-shadow: 0 1px 2px rgba(0, 0, 0, 0.1), 0 6px 22px rgba(0, 0, 0, 0.1);
   --scrollbar: rgba(0, 0, 0, 0.2);
@@ -1566,44 +1567,37 @@ button.section-title:hover {
 }
 
 /* --danger is a fill colour; as menu text it falls under 4.5:1 once an item has the focus fill.
-   --menu-danger (set per theme above) clears 4.8:1 on the menu with or without it. A plain class
-   rule, so the hover rule below still turns the label white on the accent. */
+   --menu-danger (set per theme above) clears 4.8:1 on the menu with or without it. */
 .menu-item.danger {
   color: var(--menu-danger);
 }
 
-/* Keyboard focus: a neutral fill under the accent ring, so every label (red ones included) keeps its
-   contrast. Before the hover rule, so an item under the pointer still shows the hover fill. */
+/* Keyboard focus: a neutral fill under a --focus-strong ring (3:1 or better on it), which it keeps
+   under the pointer, so every label, red ones included, keeps its contrast. */
 .menu-item:not(:disabled):focus-visible {
   background: var(--hover);
+  outline-color: var(--focus-strong);
 }
 
-.menu-item:not(:disabled):hover {
+.menu-item:not(:disabled):not(:focus-visible):hover {
   background: var(--accent);
   color: #fff;
 }
 
-.menu-item:not(:disabled):hover .kbd,
-.menu-item:not(:disabled):hover svg {
+.menu-item:not(:disabled):not(:focus-visible):hover .kbd,
+.menu-item:not(:disabled):not(:focus-visible):hover svg {
   color: #fff;
 }
 
-/* Focused and hovered: a white ring inside the accent fill, so focus still shows. */
-.menu-item:not(.danger):not(:disabled):hover:focus-visible {
-  outline-color: #fff;
-}
-
-/* Red can't sit on the accent, so a destructive item hovers with the neutral fill and stays red
-   (4.8:1 or better), icon included, under the usual accent focus ring. */
-.menu-item.danger:not(:disabled):hover {
+/* Red can't sit on the accent, so a destructive item hovers with the neutral fill and stays red. */
+.menu-item.danger:not(:disabled):not(:focus-visible):hover {
   background: var(--hover);
   color: var(--menu-danger);
 }
 
-.menu-item.danger:not(:disabled):hover svg {
+.menu-item.danger:not(:disabled):not(:focus-visible):hover svg {
   color: inherit;
 }
-
 
 .menu-item:disabled {
   opacity: 0.4;
@@ -1836,14 +1830,14 @@ button.section-title:hover {
   font-size: 14px;
 }
 
-/* Out of a card and on the canvas: --home-hint keeps 4.5:1 and --home-focus 3:1 on the canvas,
-   the hover fill and the drag fill. */
+/* Out of a card and on the canvas: --home-hint keeps 4.5:1 and --focus-strong 3:1 there and on
+   the hover fill. */
 .home-open .action-card-text .muted {
   color: var(--home-hint);
 }
 
 .home-open:focus-visible {
-  outline-color: var(--home-focus);
+  outline-color: var(--focus-strong);
 }
 
 .home-open .kbd {
@@ -1975,6 +1969,10 @@ button.section-title:hover {
 .recent-item:hover .recent-more,
 .recent-item:focus-within .recent-more {
   color: var(--fg);
+}
+
+.recent-more.icon-btn:focus-visible {
+  outline-color: var(--focus-strong);
 }
 
 .recent-more.icon-btn:hover,
