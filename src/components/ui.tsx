@@ -428,35 +428,35 @@ export interface MenuEntry {
 
 /**
  * A small popover menu anchored to a point or element. With `align: 'end'` its right edge sits at `x`.
- * `autoFocus` (for a menu opened from the keyboard) focuses the first item and, on closing, hands
- * focus back to whatever had it. It's opt-in: the editors' context menus leave focus in the document.
- * Arrow keys, Home and End move between items whenever focus is in the menu.
+ * Pass `opener`, the control that opened it, and the menu takes focus: the first item is focused,
+ * Tab closes it, and closing hands focus back to `opener`. Without it focus stays where it was, as
+ * the editors' context menus need. Arrow keys, Home and End move between items in either case.
  */
 export function PopoverMenu({
   anchor,
   items,
   onClose,
-  autoFocus = false,
+  opener,
 }: {
   anchor: { x: number; y: number; align?: 'start' | 'end' }
   items: MenuEntry[]
   onClose: () => void
-  autoFocus?: boolean
+  opener?: HTMLElement | null
 }) {
   const ref = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState(anchor)
+  const managesFocus = opener != null
 
   useEffect(() => {
-    if (!autoFocus) return
-    const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    if (!opener) return
     const menu = ref.current
     menu?.querySelector<HTMLButtonElement>('.menu-item:not(:disabled)')?.focus()
     return () => {
       // Only take focus back if it's still in the menu (or lost with it), not if an item moved it on.
       const now = document.activeElement
-      if (opener?.isConnected && (!now || now === document.body || menu?.contains(now))) opener.focus()
+      if (opener.isConnected && (!now || now === document.body || menu?.contains(now))) opener.focus()
     }
-  }, [autoFocus])
+  }, [opener])
 
   const onMenuKey = (e: ReactKeyboardEvent) => {
     const enabled = [...(ref.current?.querySelectorAll<HTMLButtonElement>('.menu-item:not(:disabled)') ?? [])]
@@ -471,7 +471,7 @@ export function PopoverMenu({
     if (to != null) {
       e.preventDefault()
       enabled[to].focus()
-    } else if (e.key === 'Tab') {
+    } else if (e.key === 'Tab' && managesFocus) {
       e.preventDefault()
       onClose()
     }

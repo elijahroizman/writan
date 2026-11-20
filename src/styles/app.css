@@ -1558,17 +1558,19 @@ button.section-title:hover {
   text-align: left;
 }
 
-.menu-item:not(:disabled):hover,
+/* Keyboard focus: a soft fill under the accent ring, so every label (red ones included) keeps its colour.
+   Before the hover rule, so a hovered item still shows the hover fill. */
 .menu-item:not(:disabled):focus-visible {
+  background: var(--accent-soft);
+}
+
+.menu-item:not(:disabled):hover {
   background: var(--accent);
   color: #fff;
-  outline: none;
 }
 
 .menu-item:not(:disabled):hover .kbd,
-.menu-item:not(:disabled):hover svg,
-.menu-item:not(:disabled):focus-visible .kbd,
-.menu-item:not(:disabled):focus-visible svg {
+.menu-item:not(:disabled):hover svg {
   color: #fff;
 }
 

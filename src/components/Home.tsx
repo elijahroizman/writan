@@ -1,5 +1,5 @@
 import { Folder, FolderOpen, MoreHorizontal, Moon, Settings, Sun } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { KINDS } from '../lib/kinds'
 import { basename, dirname, revealInFinder, revealLabel, isTauri, shortcut, tildify } from '../lib/platform'
 import { folderName, useFolder } from '../state/folder'
@@ -28,7 +28,8 @@ export function Home() {
   const dropHover = useWorkspace((s) => s.dropHover)
   const { openDialog, openPaths, removeRecent, setTheme } = useWorkspace.getState()
   const [filter, setFilter] = useState<RecentGroup | 'all'>('all')
-  const [menu, setMenu] = useState<{ x: number; y: number; align?: 'end'; file: Recent; keyboard?: boolean } | null>(null)
+  const [menu, setMenu] = useState<{ x: number; y: number; align?: 'end'; file: Recent; opener: HTMLElement } | null>(null)
+  const list = useRef<HTMLUListElement>(null)
   const plugins = usePlugins((s) => s.enabled)
   const kinds = enabledKinds(plugins)
   const folders = useFolder((s) => s.recent)
@@ -109,7 +110,7 @@ export function Home() {
               {recents.length + folders.length === 0 ? 'Files and folders you open will show up here.' : `No recent ${group?.none ?? 'files'}.`}
             </EmptyState>
           ) : (
-            <ul className="recent-list">
+            <ul className="recent-list" ref={list}>
               {shown.map((r) => (
                 <li key={r.path} className="recent-item">
                   <button
@@ -119,7 +120,7 @@ export function Home() {
                     onClick={() => open(r)}
                     onContextMenu={(e) => {
                       e.preventDefault()
-                      setMenu({ x: e.clientX, y: e.clientY, file: r })
+                      setMenu({ x: e.clientX, y: e.clientY, file: r, opener: e.currentTarget })
                     }}
                   >
                     {r.kind === 'folder' ? (
@@ -147,8 +148,7 @@ export function Home() {
                     aria-expanded={menu?.file.path === r.path}
                     onClick={(e) => {
                       const rect = e.currentTarget.getBoundingClientRect()
-                      // detail is 0 when Enter or Space pressed the button: then the menu takes focus.
-                      setMenu({ x: rect.right, y: rect.bottom + 4, align: 'end', file: r, keyboard: e.detail === 0 })
+                      setMenu({ x: rect.right, y: rect.bottom + 4, align: 'end', file: r, opener: e.currentTarget })
                     }}
                   >
                     <MoreHorizontal size={16} />
@@ -162,7 +162,7 @@ export function Home() {
       {menu && (
         <PopoverMenu
           anchor={menu}
-          autoFocus={menu.keyboard}
+          opener={menu.opener}
           onClose={() => setMenu(null)}
           items={[
             { label: 'Open', onSelect: () => open(menu.file) },
@@ -170,7 +170,18 @@ export function Home() {
             {
               label: 'Remove from Recent',
               separatorBefore: true,
-              onSelect: () => (menu.file.kind === 'folder' ? useFolder.getState().forgetRecent(menu.file.path) : removeRecent(menu.file.path)),
+              onSelect: () => {
+                const at = shown.indexOf(menu.file)
+                if (menu.file.kind === 'folder') useFolder.getState().forgetRecent(menu.file.path)
+                else removeRecent(menu.file.path)
+                // Keep the user's place: the next row's More (or the previous one, or the filters
+                // once the list is empty) takes the focus the removed row had.
+                requestAnimationFrame(() => {
+                  const more = list.current?.querySelectorAll<HTMLElement>('.recent-more')
+                  const target = more?.[at] ?? more?.[at - 1] ?? document.querySelector<HTMLElement>('.home-recents-header .pill-tabs button.on')
+                  target?.focus()
+                })
+              },
             },
           ]}
         />
