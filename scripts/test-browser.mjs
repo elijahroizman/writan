@@ -25,6 +25,7 @@ const scripts = [
   'tests/stress/ui/slides-clipboard.mjs',
   'tests/stress/ui/slides-video.mjs',
   'tests/stress/ui/tracked-changes.mjs',
+  'tests/stress/ui/ux-regressions.mjs',
   'tests/stress/native/pdf-page-select.mjs',
   'tests/stress/native/pdf-flatten.mjs',
   'tests/stress/native/save-conflict.mjs',

@@ -1,6 +1,6 @@
 import { Check, CircleAlert, Columns2, Copy, FolderOpen, History, LayoutGrid, Plus, Save, SaveOff, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { autosaveBlocker, useAutosaveStatus } from '../lib/autosave'
+import { autosaveBlock, useAutosaveStatus } from '../lib/autosave'
 import { isMac, isTauri, revealInFinder, revealLabel, shortcut, tildify } from '../lib/platform'
 import { enabledKinds, usePlugins } from '../state/plugins'
 import { useSettings } from '../state/settings'
@@ -211,7 +211,7 @@ async function openBeside(id: string) {
   pickSplit(id)
 }
 
-/** Where the active tab autosaves to, and how the last autosave went. Just a status: clicking it does nothing. */
+/** Where the active tab autosaves to, and how the last autosave went; clickable when saving enables autosave. */
 function AutosaveChip() {
   const tabs = useWorkspace((s) => s.tabs)
   const activeId = useWorkspace((s) => s.activeId)
@@ -220,15 +220,31 @@ function AutosaveChip() {
   const tab = tabs.find((t) => t.id === activeId)
   if (!tab) return null
 
-  const blocker = autosaveBlocker(tab, autosave)
+  const block = autosaveBlock(tab, autosave)
   let icon = <Save size={14} />
   let text = ''
   let tone = ''
   let title = tab.path ? `Autosaves to ${tildify(tab.path)}` : 'This file has not been saved yet.'
-  if (blocker) {
+  if (block) {
+    if (block.canSaveToEnable) {
+      icon = <Save size={14} />
+      text = block.reason === 'legacy-ppt' ? 'Save as .pptx to autosave' : 'Save to enable autosave'
+      title = `${block.message} ${shortcut('Click or press ⌘S to save.')}`
+      return (
+        <button
+          type="button"
+          className="autosave-chip"
+          title={title}
+          onClick={() => void useWorkspace.getState().save(tab.id)}
+        >
+          {icon}
+          <span>{text}</span>
+        </button>
+      )
+    }
     icon = <SaveOff size={14} />
     text = 'Not autosaved'
-    title = `${blocker} ${shortcut('Save with ⌘S.')}`
+    title = `${block.message} ${shortcut('Save with ⌘S.')}`
   } else if (status?.state === 'error') {
     icon = <CircleAlert size={14} />
     text = 'Couldn’t autosave'

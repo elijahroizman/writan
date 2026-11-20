@@ -61,6 +61,7 @@ import {
   useHyperlinkPopup,
   usePageSetup,
   useParagraphStyle,
+  useVisiblePage,
   useWordSelector,
   useZoom,
 } from '../../engine/word/react'
@@ -112,7 +113,7 @@ export default function DocxTab({ tab, active }: EditorProps) {
 
 function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps & { comments: CommentStore; commentsChanged: React.MutableRefObject<boolean> }) {
   const editor = useDocxEditor()
-  const page = useEditorState((s) => s.page)
+  const totalPages = useEditorState((s) => s.page?.total ?? 0)
   const zoom = useZoom()
   const search = useDocumentSearch()
   const [findOpen, setFindOpen] = useState<false | 'find' | 'replace'>(false)
@@ -235,7 +236,7 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
   useEffect(() => () => window.clearTimeout(peekTimer.current), [])
 
   const words = useWordCount(editor)
-  const footer = [page && (page.total === 1 ? '1 page' : `${page.total} pages`), words != null && (words === 1 ? '1 word' : `${words.toLocaleString()} words`)].filter(Boolean).join(' · ')
+  const footer = [totalPages > 0 && (totalPages === 1 ? '1 page' : `${totalPages} pages`), words != null && (words === 1 ? '1 word' : `${words.toLocaleString()} words`)].filter(Boolean).join(' · ')
 
   return (
     <Workbench
@@ -285,14 +286,7 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
       <div className="canvas-bar">
         <UndoRedo />
         <span className="sep" />
-        {page && page.total > 0 && (
-          <>
-            <span className="readout">
-              {page.current} / {page.total}
-            </span>
-            <span className="sep" />
-          </>
-        )}
+        <PageReadout total={totalPages} />
         <IconButton label="Zoom out (⌘−)" size="sm" onClick={zoom.zoomOut} disabled={!zoom.canZoomOut}>
           <Minus size={14} />
         </IconButton>
@@ -304,6 +298,19 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
         </IconButton>
       </div>
     </Workbench>
+  )
+}
+
+function PageReadout({ total }: { total: number }) {
+  const current = useVisiblePage()
+  if (total <= 0) return null
+  return (
+    <>
+      <span className="readout">
+        {Math.min(current, total)} / {total}
+      </span>
+      <span className="sep" />
+    </>
   )
 }
 
