@@ -105,11 +105,12 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
 
   // ── Unsaved changes follow the engine's history.
   useEffect(() => {
-    // Notes and transitions can change without invalidating a slide's drawing revision.
-    let revision = JSON.stringify(engine.slides)
+    // Notes and transitions can change without invalidating a slide's drawing revision, so this
+    // follows the whole slide list's version.
+    let revision = engine.slidesVersion
     let dirty = engine.state.dirty
     return engine.subscribe(() => {
-      const next = JSON.stringify(engine.slides)
+      const next = engine.slidesVersion
       if (next !== revision || engine.state.dirty !== dirty) {
         revision = next
         dirty = engine.state.dirty
@@ -458,7 +459,7 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
   useEffect(
     () =>
       registerEditor(tab.id, {
-        getRevision: () => JSON.stringify(engine.slides),
+        getRevision: () => engine.slidesVersion,
         getBytes: async () => engine.save(),
         markSaved: () => {
           engine.run({ cmd: 'markSaved' })
@@ -489,16 +490,29 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
     [tab.id, markDirty, engine],
   )
 
+  // The strip's handlers stay the same functions across renders and call the latest ones, so
+  // the memoized strip only renders again when the slides or the picked ones change.
+  const stripRef = useRef({ pickSlide, slideMenu, deleteSelected: () => deleteSlides(selectedSlides) })
+  stripRef.current = { pickSlide, slideMenu, deleteSelected: () => deleteSlides(selectedSlides) }
+  const strip = useMemo(
+    () => ({
+      onSelect: (index: number, mode: PickMode) => stripRef.current.pickSlide(index, mode),
+      onMove: (from: number, to: number) => engine.run({ cmd: 'moveSlide', from, to }),
+      onMenu: (index: number, x: number, y: number) => stripRef.current.slideMenu(index, x, y),
+      onDelete: () => stripRef.current.deleteSelected(),
+    }),
+    [engine],
+  )
   const left = (
     <SlideStrip
       engine={engine}
       slides={slides}
       activeIndex={activeIndex}
       selected={selectedSlides}
-      onSelect={pickSlide}
-      onMove={(from, to) => engine.run({ cmd: 'moveSlide', from, to })}
-      onMenu={slideMenu}
-      onDelete={() => deleteSlides(selectedSlides)}
+      onSelect={strip.onSelect}
+      onMove={strip.onMove}
+      onMenu={strip.onMenu}
+      onDelete={strip.onDelete}
     />
   )
 
