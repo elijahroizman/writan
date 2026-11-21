@@ -324,7 +324,7 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
     };
     let mut pages: Vec<Page> = Vec::new();
     let mut inherited: [Vec<(String, usize)>; 2] = [Vec::new(), Vec::new()];
-    for si in 0..view.sections.len() {
+    for (si, units) in section_units.iter().enumerate() {
         let section = view.sections[si].section.clone();
         let (w, h) = (emu_px(section.page_width), emu_px(section.page_height));
         // A section without its own headers uses the previous section's (Word's "link to previous").
@@ -351,7 +351,6 @@ pub(super) fn paginate(view: &mut WordView, host: &mut dyn Measurer) -> Vec<Page
             find("default")
         };
         let text_w = emu_px(section.text_width()).max(24.0);
-        let units = &section_units[si];
         let flow_height = view.sections[si].flow.height;
         let mut page_top = units.first().map(|u| u.top).unwrap_or(0.0);
         let mut first_unit = 0;
