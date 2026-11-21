@@ -173,11 +173,16 @@ pub fn take<V: Shared>(v: &mut V) -> Option<Value> {
         if p.sent.is_some() {
             break;
         }
-        // Changes that stopped fitting when others' arrived are dropped here, never sent.
-        let Some(steps) = &p.applied else {
-            r.pending.pop_front();
-            continue;
-        };
+        // Changes that stopped fitting when others' arrived are dropped here, never sent. What
+        // they added to the layer's own tables stays here, so it still goes, on its own.
+        if p.applied.is_none() {
+            if p.extra.is_null() {
+                r.pending.pop_front();
+                continue;
+            }
+            p.applied = Some(Vec::new());
+        }
+        let steps = p.applied.as_deref().unwrap_or_default();
         let steps: Vec<Value> = steps.iter().map(|s| v.send_step(s)).collect();
         let media = send_media(v.doc(), &mut r.media);
         r.count += 1;
@@ -241,9 +246,13 @@ pub fn receive<V: Shared>(v: &mut V, op: &Value) -> bool {
         // The change out with the relay goes back on past what arrived since its base. Those
         // waiting were made after it, as it was before this arrival: they go past the arrival
         // moved past those earlier changes of this copy's (`true` in `since`).
+        // A change made after one that no longer fits was made on what's gone: it goes too, so
+        // it can't land on something that only looks like what it changed.
         let mut earlier: Vec<V::Step> = Vec::new();
+        let mut lost = false;
         for (p, old) in r.pending.iter_mut().zip(before) {
             p.applied = match &p.sent {
+                _ if lost => None,
                 Some(sent) => {
                     let others: Vec<(bool, &V::Step)> = since(&r.recent, p.base, &r.client);
                     apply(v, sent, &mut r.media, Some(&others))
@@ -254,6 +263,7 @@ pub fn receive<V: Shared>(v: &mut V, op: &Value) -> bool {
                     apply(v, &body, &mut r.media, Some(&past))
                 }),
             };
+            lost |= p.applied.is_none();
             earlier.extend(old.into_iter().flatten());
         }
         v.restore(mark, &moved);

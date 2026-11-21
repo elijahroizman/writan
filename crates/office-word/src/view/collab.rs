@@ -411,6 +411,17 @@ mod tests {
             }
         }
 
+        /// Puts the last change sent first, as the relay would if it had arrived first.
+        fn reorder(&mut self) {
+            if let Some(last) = self.queue.pop() {
+                self.queue.insert(0, last);
+            }
+            let first = self.seq + 1 - self.queue.len() as u64;
+            for (n, op) in self.queue.iter_mut().enumerate() {
+                op["seq"] = json!(first + n as u64);
+            }
+        }
+
         /// Delivers what's queued, then sends and delivers until no copy has anything left.
         fn sync(&mut self) {
             loop {
@@ -673,5 +684,42 @@ mod tests {
         room.sync();
         let texts = room.agree();
         assert_eq!(texts[texts.len() - 2..], ["Same!", "Same"]);
+    }
+
+    #[test]
+    fn typing_queued_after_a_lost_edit_goes_with_it() {
+        let mut room = Room::new(&["Same", "Same"], 2);
+        // Copy 0's edit to the first paragraph is out; its typing in the second waits.
+        caret(&mut room.views[0], 0, 4);
+        room.views[0].insert_text("a");
+        room.send(0);
+        caret(&mut room.views[0], 1, 4);
+        room.views[0].insert_text("b");
+        // Copy 1 splits the first paragraph at its start, and the relay puts that first.
+        caret(&mut room.views[1], 0, 0);
+        room.views[1].enter();
+        room.send(1);
+        room.reorder();
+        room.sync();
+        // Copy 0's edits are dropped, not put on the paragraph that looks like the first.
+        assert_eq!(room.agree(), ["", "Same", "Same"]);
+    }
+
+    #[test]
+    fn a_dropped_changes_new_style_still_reaches_the_others() {
+        let mut room = Room::new(&["One", "Two"], 2);
+        caret(&mut room.views[0], 0, 3);
+        room.views[0].insert_text("a");
+        room.send(0);
+        // Waiting behind it: a style used for the first time, on the same paragraph.
+        room.views[0].set_style("Title");
+        // Copy 1's edit to that paragraph is ordered first, so both of copy 0's are dropped.
+        caret(&mut room.views[1], 0, 0);
+        room.views[1].insert_text(">");
+        room.send(1);
+        room.reorder();
+        room.sync();
+        room.agree();
+        assert!(word(&room.views[1].doc).unwrap().styles.get("Title").is_some());
     }
 }
