@@ -295,6 +295,17 @@ export function slideIndex(e: SlidesEngine, n: number | undefined): number {
   return n - 1
 }
 
+/**
+ * Where a slide is now, by the id it had before a wait. A slide made here has no part yet, and
+ * its id follows its revision, so one still at the same place counts as the same slide.
+ */
+function slideNow(e: SlidesEngine, id: string, was: number): number {
+  const i = e.slides.findIndex((x) => x.id === id)
+  if (i >= 0) return i
+  if (id.startsWith('new-') && e.slides[was]?.id.startsWith('new-')) return was
+  throw new ToolError('That slide was deleted or moved meanwhile. Read the document again.')
+}
+
 /** A shape on a slide, anywhere in its groups, and the group it's in. */
 function findShape(e: SlidesEngine, i: number, id: string): { el: Element; group: Element | null } {
   const walk = (els: Element[], group: Element | null): { el: Element; group: Element | null } | null => {
@@ -583,11 +594,10 @@ async function cropPicture(e: SlidesEngine, args: Args): Promise<Answer> {
     const size = await naturalSize(e.media, el.media)
     if (!size) throw new ToolError('Writan can’t read that picture’s size, so it can’t fit it. Give left, top, right and bottom instead.')
     // Someone may have moved the slide, or another call made another slide active, meanwhile.
-    i = e.slides.findIndex((x) => x.id === slideId)
-    if (i < 0) throw new ToolError('That slide was deleted meanwhile.')
+    i = slideNow(e, slideId, i)
     e.run({ cmd: 'setActive', index: i })
-    const now = findHit(e, i, id)
-    if (!now || now.x !== x || now.y !== y || now.width !== w || now.height !== h) throw new ToolError('Someone changed that picture meanwhile. Read the slide again.')
+    const now = topShape(e, i, id, 'crop')
+    if (now.x !== x || now.y !== y || now.width !== w || now.height !== h) throw new ToolError('Someone changed that picture meanwhile. Read the slide again.')
     const A = size.width / size.height
     const F = w / h
     if (fit === 'fill') {
@@ -638,7 +648,10 @@ function moveShape(e: SlidesEngine, args: Args): Answer {
   const layer = str(args, 'layer')
   if (layer && !['front', 'forward', 'backward', 'back'].includes(layer)) throw new ToolError('layer is front, forward, backward or back.')
   grouped(e, () => {
-    if (b.x !== el.x || b.y !== el.y || b.w !== el.width || b.h !== el.height || rot !== el.rotation) e.run({ cmd: 'setBox', id: Number(id), x: b.x, y: b.y, w: b.w, h: b.h, rot })
+    // Moving alone keeps the size as it is: a line's box has no height, which a new box can't have.
+    if (b.w === el.width && b.h === el.height && rot === el.rotation) {
+      if (b.x !== el.x || b.y !== el.y) e.run({ cmd: 'moveFrames', ids: [Number(id)], dx: b.x - el.x, dy: b.y - el.y })
+    } else e.run({ cmd: 'setBox', id: Number(id), x: b.x, y: b.y, w: b.w, h: b.h, rot })
     pick(e, [id])
     const fh = bool(args, 'flip_horizontal')
     const fv = bool(args, 'flip_vertical')
@@ -692,7 +705,7 @@ function addShape(e: SlidesEngine, args: Args): Answer {
       if (rows < 1 || rows > 50 || cols < 1 || cols > 20) throw new ToolError('A table has 1 to 50 rows and 1 to 20 columns.')
       id = e.run<string>({ cmd: 'insertTable', rows, cols })
     } else {
-      const preset = SHAPES[kind]
+      const preset = Object.hasOwn(SHAPES, kind) ? SHAPES[kind] : undefined
       if (!preset) throw new ToolError(`Writan has no shape “${kind}”. Kinds: text box, ${Object.keys(SHAPES).join(', ')}, table.`)
       id = e.run<string>({ cmd: 'insertShape', preset })
     }
@@ -716,15 +729,15 @@ function addShape(e: SlidesEngine, args: Args): Answer {
 }
 
 async function addPicture(e: SlidesEngine, args: Args, local: boolean): Promise<Answer> {
-  const slideId = e.slides[slideIndex(e, int(args, 'slide'))].id
+  const was = slideIndex(e, int(args, 'slide'))
+  const slideId = e.slides[was].id
   checkSize(args)
   const got = await pictureBytes(args, local)
   const type = pictureType(got.bytes)
   if (!type) throw new ToolError('That isn’t a picture Writan can put on a slide. Give a PNG, JPEG, GIF, WebP or SVG.')
   const pic = await scaledPicture(got.bytes, type, e.width * 2, e.height * 2)
   // The slide by what it is, not where it was: someone may have moved it meanwhile.
-  const i = e.slides.findIndex((x) => x.id === slideId)
-  if (i < 0) throw new ToolError('That slide was deleted meanwhile.')
+  const i = slideNow(e, slideId, was)
   e.run({ cmd: 'setActive', index: i })
   const id = grouped(e, () => {
     const id = e.doc.insertImage(pic.bytes, pic.type, pic.width, pic.height, str(args, 'name') ?? got.name)
@@ -953,7 +966,12 @@ export function snapshotSlides(e: SlidesEngine): SlidesSnapshot {
 /** What's different between two snapshots, slide by slide and shape by shape. */
 export function slidesChanges(a: SlidesSnapshot, b: SlidesSnapshot): string {
   const out: string[] = []
-  const before = new Map(a.slides.map((s, i) => [s.id, { s, i }]))
+  // A slide made here has an id that follows its revision: one at the same place is the same slide.
+  const ids = new Set(b.slides.map((s) => s.id))
+  const key = (s: { id: string }, i: number, other: { id: string }[], has: Set<string>) =>
+    !has.has(s.id) && s.id.startsWith('new-') && other[i]?.id.startsWith('new-') ? other[i].id : s.id
+  const olds = a.slides.map((s, i) => ({ ...s, id: key(s, i, b.slides, ids) }))
+  const before = new Map(olds.map((s, i) => [s.id, { s, i }]))
   const after = new Set(b.slides.map((s) => s.id))
   for (const [id, { i }] of before) if (!after.has(id)) out.push(`Slide ${i + 1} (as it was numbered) was deleted.`)
   b.slides.forEach((s, i) => {

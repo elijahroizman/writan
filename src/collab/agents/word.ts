@@ -183,8 +183,8 @@ function toggleTo(e: WordEngine, what: 'bold' | 'italic' | 'underline' | 'strike
 
 const HIGHLIGHTS = ['yellow', 'green', 'cyan', 'magenta', 'blue', 'red', 'darkBlue', 'darkCyan', 'darkGreen', 'darkMagenta', 'darkRed', 'darkYellow', 'darkGray', 'lightGray', 'black', 'none']
 
-/** Applies text and paragraph formatting to the selection. */
-function applyFormat(e: WordEngine, args: Args) {
+/** Applies text and paragraph formatting to the selection; `toggles: false` leaves bold and the like. */
+function applyFormat(e: WordEngine, args: Args, toggles = true) {
   const font = str(args, 'font')
   if (font) e.run({ cmd: 'font', family: font })
   const size = num(args, 'size')
@@ -196,7 +196,7 @@ function applyFormat(e: WordEngine, args: Args) {
     ['strikethrough', 'strike'],
   ] as const) {
     const v = bool(args, k)
-    if (v !== undefined) toggleTo(e, what, v)
+    if (v !== undefined && toggles) toggleTo(e, what, v)
   }
   const color = str(args, 'color')
   if (color) e.run({ cmd: 'color', hex: hexColor(color, 'The color') })
@@ -236,8 +236,18 @@ function formatWord(e: WordEngine, args: Args): Answer {
   if (toN < fromN) throw new ToolError('to comes before from.')
   const find = str(args, 'find')
   if (!find) {
-    select(e, [from.path, 0], [to.path, to.text.length])
-    grouped(e, () => applyFormat(e, args))
+    grouped(e, () => {
+      select(e, [from.path, 0], [to.path, to.text.length])
+      applyFormat(e, args, false)
+      // Bold and the like a paragraph at a time: turning one off across paragraphs of different
+      // styles would follow only the first one's style.
+      for (let n = fromN; n <= toN; n++) {
+        const p = paras[n - 1]
+        select(e, [p.path, 0], [p.path, p.text.length])
+        applyFormat(e, { bold: args.bold, italic: args.italic, underline: args.underline, strikethrough: args.strikethrough })
+      }
+      select(e, [from.path, 0], [to.path, to.text.length])
+    })
     return { text: `Formatted ${fromN === toN ? `paragraph ${fromN}` : `paragraphs ${fromN}–${toN}`}: ${looks(e)}.`, after: afterParas(e, fromN, toN) }
   }
   // Only the text found, each time it's there: paragraph formatting (align, lists) goes to its paragraph.
@@ -435,7 +445,10 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
           }
           e.run({ cmd: 'resetImageSize' })
         })
-        return { text: 'Uncropped, and back to its own size.', after: () => pictureNow(e, n, which) }
+        const now = e.state.image
+        const sized = now && (Math.abs(now.widthEmu - img.widthEmu) > 1 || Math.abs(now.heightEmu - img.heightEmu) > 1)
+        const text = sized || !(c.left || c.top || c.right || c.bottom) ? 'Uncropped, at its own size.' : 'Uncropped. Writan can’t read this picture’s own size, so it keeps the size it had; give width or height to change it.'
+        return { text, after: () => pictureNow(e, n, which) }
       }
       const w0 = num(args, 'width')
       const h0 = num(args, 'height')

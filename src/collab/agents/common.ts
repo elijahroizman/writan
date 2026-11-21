@@ -80,7 +80,7 @@ export function hexColor(v: string, what: string): string {
     gray: '808080',
     grey: '808080',
   }
-  if (named[s]) return named[s]
+  if (Object.hasOwn(named, s)) return named[s]
   const m = /^#?([0-9a-f]{3}|[0-9a-f]{6})$/.exec(s)
   if (!m) throw new ToolError(`${what} “${v}” isn’t a color. Give one like "#1F4E79".`)
   return m[1].length === 3 ? [...m[1]].map((c) => c + c).join('') : m[1]
