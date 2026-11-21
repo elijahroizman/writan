@@ -96,9 +96,7 @@ try {
 
   // ── PowerPoint
   await a.page.getByRole('tab', { name: 'Home' }).click()
-  await a.page.getByRole('button', { name: 'New presentation' }).first().click()
-  await a.page.getByRole('dialog', { name: 'New presentation' }).waitFor()
-  await a.page.keyboard.press('Enter')
+  await a.page.getByRole('button', { name: 'New presentation', exact: true }).first().click()
   await a.page.waitForFunction(() => window.__slides?.slides?.length >= 1)
   const deckInvite = await shareActive(a.page, 'Ada')
   await closePanel(a.page)

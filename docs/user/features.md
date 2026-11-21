@@ -13,7 +13,9 @@ Every file opens as a tab across the top. Each kind of document gets its own sid
 
 ## New presentations
 
-**New presentation** opens a gallery of starter decks: Plain, Harbor, Graphite, Signal, Lagoon and Blank. Each sets the presentation's theme colors and fonts and starts with six slides to fill in or delete (Blank has one empty slide). The layouts in **New slide** take on the same colors and fonts. Use the arrow keys and return, or press a deck's number. The gallery starts on the deck you used last.
+**New presentation** starts from your default starter deck, Plain unless you change it. To pick another, use **Templates** beside Presentation on Home, **New presentation from a template** in the + menu, ⌘N or the command palette. The gallery has Plain, Harbor, Graphite, Signal, Lagoon and Blank. Each sets the presentation's theme colors and fonts and starts with six slides to fill in or delete (Blank has one empty slide). The layouts in **New slide** take on the same colors and fonts.
+
+Type to search the gallery by name or by what a deck is like (dark, serif, pitch). The arrow keys move through the decks, and the preview shows every slide of the selected one. Press return, double-click a deck or click **Create** to make it. **Make default** makes the selected deck the one **New presentation** uses.
 
 ## Find and replace
 

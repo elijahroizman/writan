@@ -10,8 +10,9 @@ import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
 export const BASE = process.env.WRITAN_URL ?? 'http://localhost:1420/'
 export const ENGINE = process.env.ENGINE ?? 'chromium'
 
-export async function launch({ scale = 1, viewport = { width: 1400, height: 900 }, tauri = true, init } = {}) {
-  const browser = await (ENGINE === 'webkit' ? webkit : chromium).launch(ENGINE === 'webkit' ? {} : { args: ['--no-sandbox', '--enable-precise-memory-info'] })
+// `scrollbars` shows classic scrollbars, which take room as on a Mac with a mouse or on Windows.
+export async function launch({ scale = 1, viewport = { width: 1400, height: 900 }, tauri = true, init, scrollbars = false } = {}) {
+  const browser = await (ENGINE === 'webkit' ? webkit : chromium).launch(ENGINE === 'webkit' ? {} : { args: ['--no-sandbox', '--enable-precise-memory-info'], ignoreDefaultArgs: scrollbars ? ['--hide-scrollbars'] : [] })
   mkdirSync('/tmp/writan-stress', { recursive: true })
   const context = await browser.newContext({ viewport, deviceScaleFactor: scale })
   const page = await context.newPage()
