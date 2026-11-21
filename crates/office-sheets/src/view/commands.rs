@@ -88,10 +88,13 @@ impl SheetsView {
     }
 
     fn record(&mut self, steps: Vec<CStep>, before: SheetSel) {
+        let recalculate = steps.iter().any(step_changes_values);
         let after = self.sel;
         self.shared_made(&steps);
         self.history.record(steps, before, after, None);
-        self.recalculate();
+        if recalculate {
+            self.recalculate();
+        }
     }
 
     /// Changes cells through `f`, recording each cell's before and after.
@@ -234,6 +237,8 @@ impl SheetsView {
             }
         }
         self.sel = e.before;
+        // Always worked out again: the history keeps cells with the results they had then, which a
+        // volatile formula (RAND, NOW) has since changed.
         self.recalculate();
         self.changed(None);
         true
@@ -252,6 +257,8 @@ impl SheetsView {
             }
         }
         self.sel = e.after;
+        // Always worked out again: the history keeps cells with the results they had then, which a
+        // volatile formula (RAND, NOW) has since changed.
         self.recalculate();
         self.changed(None);
         true
@@ -956,6 +963,61 @@ impl SheetsView {
             });
         }
         self.history.end_group();
+    }
+}
+
+/// Whether a recorded step can change what a formula comes to: a cell's value or formula (a
+/// cell's origin can carry the markup of a shared formula the `formula` field doesn't hold), a
+/// sheet's name, merges or tables, or the sheets, defined names and imported parts the formulas
+/// read. Steps that only change presentation — styles, number formats, column widths, row
+/// heights, a sheet's shown size, charts — leave every calculated value as it was, so the
+/// workbook isn't worked out again.
+fn step_changes_values(step: &CStep) -> bool {
+    match step {
+        CStep::Cells { cells, .. } => cells.iter().any(|(_, old, new)| cell_changes_values(old.as_ref(), new.as_ref())),
+        CStep::Sheet { before, after, .. } => sheet_changes_values(before, after),
+        CStep::Book { .. } | CStep::Names { .. } | CStep::Part { .. } => true,
+        CStep::Charts { .. } => false,
+    }
+}
+
+fn cell_changes_values(old: Option<&SheetCell>, new: Option<&SheetCell>) -> bool {
+    match (old, new) {
+        (Some(a), Some(b)) => a.value != b.value || a.formula != b.formula || a.origin.id() != b.origin.id(),
+        // A cell added or removed, even an empty one, can move the used range that whole-column
+        // and whole-row references (A:A) read.
+        (None, None) => false,
+        _ => true,
+    }
+}
+
+fn table_parts(s: &Sheet) -> Option<&Element> {
+    s.origin.get()?.child(ns::X, "tableParts")
+}
+
+fn sheet_changes_values(before: &Sheet, after: &Sheet) -> bool {
+    if before.name != after.name || before.part != after.part || before.merges != after.merges || table_parts(before) != table_parts(after)
+    {
+        return true;
+    }
+    // Rows and their cells are in (row, column) order on both sides. A cell only one side has
+    // has to read as empty; one they share has to hold the same value, formula and origin.
+    let mut a = before.rows.iter().flat_map(|r| r.cells.iter().map(move |c| (r.index, c))).peekable();
+    let mut b = after.rows.iter().flat_map(|r| r.cells.iter().map(move |c| (r.index, c))).peekable();
+    loop {
+        let (old, new) = match (a.peek(), b.peek()) {
+            (Some(&(ra, ca)), Some(&(rb, cb))) => match (ra, ca.col).cmp(&(rb, cb.col)) {
+                std::cmp::Ordering::Equal => (a.next().map(|x| x.1), b.next().map(|x| x.1)),
+                std::cmp::Ordering::Less => (a.next().map(|x| x.1), None),
+                std::cmp::Ordering::Greater => (None, b.next().map(|x| x.1)),
+            },
+            (Some(_), None) => (a.next().map(|x| x.1), None),
+            (None, Some(_)) => (None, b.next().map(|x| x.1)),
+            (None, None) => return false,
+        };
+        if cell_changes_values(old, new) {
+            return true;
+        }
     }
 }
 
