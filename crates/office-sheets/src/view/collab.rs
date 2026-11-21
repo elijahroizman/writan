@@ -447,8 +447,10 @@ impl Shared for SheetsView {
         }
     }
 
-    fn take_step(&mut self, step: &Value, since: Option<&[&CStep]>) -> Option<CStep> {
-        let since = since.unwrap_or(&[]);
+    fn take_step(&mut self, step: &Value, since: Option<&[(bool, &CStep)]>) -> Option<CStep> {
+        // Sheets moved by other copies; the sender's own moves are already where it made this.
+        let since: Vec<&CStep> = since.unwrap_or(&[]).iter().filter(|(own, _)| !own).map(|(_, s)| *s).collect();
+        let since = since.as_slice();
         let s = match step["k"].as_str()? {
             "cells" => self.take_cells(step, since),
             "sheet" => self.take_sheet(step, since),
@@ -518,9 +520,9 @@ mod tests {
             Room { views, seq: 0, queue: Vec::new() }
         }
 
-        /// Sends what copy `i` changed.
+        /// Sends everything copy `i` has to send.
         fn send(&mut self, i: usize) {
-            if let Some(op) = self.views[i].collab_take() {
+            while let Some(op) = self.views[i].collab_take() {
                 self.seq += 1;
                 self.queue
                     .push(json!({ "seq": self.seq, "client": format!("c{i}"), "id": op["id"], "base": op["base"], "steps": op["steps"] }));

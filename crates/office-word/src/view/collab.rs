@@ -131,7 +131,7 @@ impl WordView {
         }
     }
 
-    fn take_text(&mut self, step: &Value, since: Option<&[&WStep]>) -> Option<WStep> {
+    fn take_text(&mut self, step: &Value, since: Option<&[(bool, &WStep)]>) -> Option<WStep> {
         let story = story_from(step["story"].as_str()?)?;
         if !self.has_story(story) {
             return None;
@@ -140,23 +140,31 @@ impl WordView {
         let mut index = step["index"].as_u64()? as i64;
         let n = step["n"].as_u64()? as usize;
         let before = step["before"].as_str()?;
-        // Past what others changed before it, in the same list or a list above. Then what it
-        // replaced must be exactly there: if someone changed those blocks first, it's dropped.
-        for s in since.unwrap_or(&[]) {
+        // Past what others changed before it, in the same list or a list above. Their splices
+        // are where they applied them; the sender made this one after its own later splices, so
+        // each is first moved past those. A splice over the same blocks, or over a table they're
+        // in, means this one comes second and is dropped.
+        let known = since.is_some();
+        let since = since.unwrap_or(&[]);
+        for (i, (own, s)) in since.iter().enumerate() {
             let WStep::Text(st, s) = s else { continue };
-            if *st != story {
+            if *own || *st != story {
                 continue;
             }
+            let Some((start, end)) = sender_frame(s, story, &since[i + 1..]) else { continue };
             let delta = s.inserted.len() as i64 - s.removed.len() as i64;
-            let end = (s.index as usize + s.removed.len()) as i64;
             if s.container == container {
                 if end <= index {
                     index += delta;
+                } else if start < index + n as i64 || (n == 0 && start < index) {
+                    return None;
                 }
             } else if container.len() > s.container.len() && container[..s.container.len()] == s.container[..] {
                 let at = &mut container[s.container.len()];
                 if end <= *at as i64 {
                     *at = (*at as i64 + delta).max(0) as u32;
+                } else if start <= *at as i64 {
+                    return None;
                 }
             }
         }
@@ -164,7 +172,7 @@ impl WordView {
         let fits = |i: i64| i >= 0 && (i as usize) + n <= list.len() && fingerprint(&list[i as usize..i as usize + n]) == before;
         let index = if n == 0 {
             index.clamp(0, list.len() as i64)
-        } else if since.is_some() {
+        } else if known {
             Some(index).filter(|&i| fits(i))?
         } else {
             // Undo: other copies may have moved it since, by an unknown amount.
@@ -232,7 +240,7 @@ impl Shared for WordView {
         }
     }
 
-    fn take_step(&mut self, step: &Value, since: Option<&[&WStep]>) -> Option<WStep> {
+    fn take_step(&mut self, step: &Value, since: Option<&[(bool, &WStep)]>) -> Option<WStep> {
         let s = match step["k"].as_str()? {
             "text" => self.take_text(step, since),
             "origin" => self.take_origin(step),
@@ -307,6 +315,32 @@ impl Shared for WordView {
     }
 }
 
+/// Where another copy's splice `s` replaced blocks (`start..end`), as the sender saw the list:
+/// moved past the sender's own splices applied after it (`later`), which the sender had made
+/// before this step. `None` when one of those changed the same blocks, so `s` is already part of
+/// what the sender built on.
+fn sender_frame(s: &Splice, story: StoryId, later: &[(bool, &WStep)]) -> Option<(i64, i64)> {
+    let (mut start, mut end) = (s.index as i64, s.index as i64 + s.removed.len() as i64);
+    let mut inserted_end = s.index as i64 + s.inserted.len() as i64;
+    for (own, p) in later {
+        let WStep::Text(st, p) = p else { continue };
+        if !*own || *st != story || p.container != s.container {
+            continue;
+        }
+        let delta = p.inserted.len() as i64 - p.removed.len() as i64;
+        if p.index as i64 + p.removed.len() as i64 <= start {
+            start += delta;
+            end += delta;
+            inserted_end += delta;
+        } else if p.index as i64 >= inserted_end {
+            continue;
+        } else {
+            return None;
+        }
+    }
+    Some((start, end))
+}
+
 /// Moves a position past a splice: down when blocks were added above it, along when text was
 /// typed before it in its own paragraph.
 fn map_pos(p: &mut Pos, s: &Splice) {
@@ -365,9 +399,9 @@ mod tests {
             Room { views, seq: 0, queue: Vec::new() }
         }
 
-        /// Sends what copy `i` changed.
+        /// Sends everything copy `i` has to send.
         fn send(&mut self, i: usize) {
-            if let Some(op) = self.views[i].collab_take() {
+            while let Some(op) = self.views[i].collab_take() {
                 self.seq += 1;
                 self.queue
                     .push(json!({ "seq": self.seq, "client": format!("c{i}"), "id": op["id"], "base": op["base"], "steps": op["steps"] }));
@@ -552,5 +586,68 @@ mod tests {
         room.sync();
         room.views[0].collab_stop();
         assert!(room.views[0].is_dirty());
+    }
+
+    #[test]
+    fn typing_in_a_paragraph_someone_joined_is_dropped() {
+        let mut room = Room::new(&["One", "Same", "Same"], 2);
+        // Copy 0 joins the first "Same" onto "One" while copy 1 types in it.
+        caret(&mut room.views[0], 1, 0);
+        room.views[0].backspace(false);
+        caret(&mut room.views[1], 1, 4);
+        room.views[1].insert_text("!");
+        room.sync();
+        assert_eq!(room.agree(), ["OneSame", "Same"]);
+    }
+
+    /// Three copies typing, splitting and joining paragraphs at random, sending and receiving
+    /// in a random order: they always end up the same.
+    #[test]
+    fn random_edits_converge() {
+        let mut seed = 0x2545_f491_4f6c_dd1du64;
+        let mut next = |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n.max(1)
+        };
+        for _ in 0..40 {
+            let mut room = Room::new(&["Alpha", "", "Beta", "", "Gamma"], 3);
+            for _ in 0..60 {
+                let i = next(3) as usize;
+                match next(6) {
+                    0..=2 => {
+                        let v = &mut room.views[i];
+                        let paras = v.blocks(StoryId::Body).len() as u64;
+                        let p = next(paras) as u32;
+                        let len = match &v.blocks(StoryId::Body)[p as usize] {
+                            Block::Paragraph(para) => text::len(para) as u64,
+                            _ => 0,
+                        };
+                        caret(v, p, next(len + 1) as u32);
+                        match next(4) {
+                            0 => v.enter(),
+                            1 => v.backspace(false),
+                            _ => v.insert_text(["a", "b", "c"][next(3) as usize]),
+                        }
+                    }
+                    3 => room.send(i),
+                    4 => {
+                        if !room.queue.is_empty() {
+                            let op = room.queue.remove(0);
+                            for v in &mut room.views {
+                                v.collab_receive(&op);
+                            }
+                        }
+                    }
+                    _ => {
+                        let _ = room.views[i].undo();
+                    }
+                }
+            }
+            room.sync();
+            room.sync();
+            room.agree();
+        }
     }
 }

@@ -199,7 +199,7 @@ impl Shared for SlidesView {
         }
     }
 
-    fn take_step(&mut self, step: &Value, _since: Option<&[&SStep]>) -> Option<SStep> {
+    fn take_step(&mut self, step: &Value, _since: Option<&[(bool, &SStep)]>) -> Option<SStep> {
         match step["k"].as_str()? {
             "slide" => self.take_slide(step),
             "deck" => self.take_deck(step),
@@ -322,9 +322,9 @@ mod tests {
             Room { views, seq: 0, queue: Vec::new() }
         }
 
-        /// Sends what copy `i` changed.
+        /// Sends everything copy `i` has to send.
         fn send(&mut self, i: usize) {
-            if let Some(op) = self.views[i].collab_take() {
+            while let Some(op) = self.views[i].collab_take() {
                 self.seq += 1;
                 self.queue
                     .push(json!({ "seq": self.seq, "client": format!("c{i}"), "id": op["id"], "base": op["base"], "steps": op["steps"] }));
