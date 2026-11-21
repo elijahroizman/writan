@@ -3,11 +3,9 @@ import type { ReactNode } from 'react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canSetDefaults, defaultStatus, makeDefault, openDefaultAppsSettings } from '../lib/defaults'
 import type { CliStatus } from '../lib/platform'
-import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isLinux, isMac, isTauri, isWindows, openExternal, setCliInstalled, shortcut, showError } from '../lib/platform'
+import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isMac, isTauri, isWindows, openExternal, setCliInstalled, shortcut, showError } from '../lib/platform'
 import type { Appearance, ThemeDef } from '../lib/themes'
 import { isHex, orbBackground } from '../lib/themes'
-import type { LinuxPackage } from '../lib/updater'
-import { linuxPackage, openUpdatePanel, packageManager, updatesInstallable } from '../lib/updater'
 import { PLUGINS, isBuiltIn } from '../plugins/catalog'
 import { allThemes, useAppearance } from '../state/appearance'
 import { enabledKinds, usePlugins } from '../state/plugins'
@@ -112,24 +110,11 @@ export default function SettingsPanel() {
   )
 }
 
-/** How new versions arrive: by themselves, through the system's package manager, or by hand. */
-function updateHint(linux: LinuxPackage | null): string {
-  if (!isLinux) return updatesInstallable ? 'Updates download by themselves and install when you quit.' : 'Check for updates shows the latest release.'
-  if (linux?.format && linux.repo) return `New versions come through ${packageManager(linux.format)} with your system’s other updates.`
-  return 'Check for updates tells you when a new version is out.'
-}
-
 function GeneralPage() {
   const setOpen = useSettings((s) => s.setOpen)
   const setPage = useSettings((s) => s.setPage)
-  const [linux, setLinux] = useState<LinuxPackage | null>(null)
-  useEffect(() => void linuxPackage().then(setLinux), [])
   return (
     <>
-      <SettingsRow label={`Writan ${__APP_VERSION__}`} hint={updateHint(linux)}>
-        <Button onClick={() => (setOpen(false), openUpdatePanel())}>Check for updates</Button>
-      </SettingsRow>
-
       <DefaultAppsRow />
 
       <OptionalPlugins />

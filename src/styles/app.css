@@ -2466,7 +2466,8 @@ button.section-title:hover {
   gap: 8px;
 }
 
-.settings-scroll > .settings-row:first-child {
+.settings-scroll > .settings-row:first-child,
+.settings-scroll > .plugin-row:first-child {
   border-top: 0;
   padding-top: 0;
 }
