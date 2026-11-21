@@ -403,8 +403,11 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
   const overFrame = frameOverlay && engine.elements.find((x) => x.id === frameOverlay.id)
   // Everyone else on this slide. People who picked the same frame share its outline.
   const remote = places.map((place) => ({ place, o: engine.remoteOverlay(place.at) }))
-  const peerBoxes = together(
-    remote.flatMap(({ place, o }) => o.boxes.map((b) => ({ place, key: [b.id, b.x, b.y, b.w, b.h, b.rot].join(), item: { b, named: !o.text?.caret } }))),
+  const peerBoxes = together(remote.flatMap(({ place, o }) => o.boxes.map((b) => ({ place, key: [b.id, b.x, b.y, b.w, b.h, b.rot].join(), item: b }))))
+  // Someone typing in a frame is named at their caret, not on the frame too.
+  const typing = new Set(remote.filter(({ o }) => o.text?.caret).map(({ place }) => place.peer.client))
+  const peerCarets = together(
+    remote.flatMap(({ place, o: { text: t } }) => (t?.caret ? [{ place, key: [t.frame, t.x, t.y, t.rot, ...t.caret].join(), item: { t, caret: t.caret } }] : [])),
   )
 
   // The input sits at the caret, so an input method's window opens there.
@@ -465,19 +468,30 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
               {caret && <div key={engine.tick} className="sc-caret" style={{ left: caret[0], top: caret[1], height: caret[2], width: 1.5 / px }} />}
             </div>
           )}
-          {peerBoxes.map(({ peers, moves, item: { b, named } }) => (
-            <PeerBox key={`${peers[0].client}:${b.id}`} peers={peers} moves={moves} scale={1 / px} named={named} style={{ left: b.x, top: b.y, width: b.w, height: b.h, rotate: `${b.rot}deg` }} />
+          {peerBoxes.map(({ peers, moves, item: b }) => (
+            <PeerBox
+              key={`${peers[0].client}:${b.id}`}
+              peers={peers}
+              moves={moves}
+              scale={1 / px}
+              named={peers.filter((p) => !typing.has(p.client))}
+              style={{ left: b.x, top: b.y, width: b.w, height: b.h, rotate: `${b.rot}deg` }}
+            />
           ))}
-          {remote.map(({ place: { peer, moves }, o: { text: t } }) =>
-            t ? (
+          {remote.map(({ place: { peer }, o: { text: t } }) =>
+            t?.rects.length ? (
               <div key={peer.client} style={{ position: 'absolute', left: t.x, top: t.y, width: t.w, height: t.h, rotate: `${t.rot}deg`, transformOrigin: '50% 50%' }}>
                 {t.rects.map((r, i) => (
                   <PeerSelection key={i} peer={peer} style={{ left: r[0], top: r[1], width: r[2], height: r[3] }} />
                 ))}
-                {t.caret && <PeerCaret peers={[peer]} moves={moves} scale={1 / px} style={{ left: t.caret[0], top: t.caret[1], height: t.caret[2] }} />}
               </div>
             ) : null,
           )}
+          {peerCarets.map(({ peers, moves, item: { t, caret } }) => (
+            <div key={peers[0].client} style={{ position: 'absolute', left: t.x, top: t.y, width: t.w, height: t.h, rotate: `${t.rot}deg`, transformOrigin: '50% 50%' }}>
+              <PeerCaret peers={peers} moves={moves} scale={1 / px} style={{ left: caret[0], top: caret[1], height: caret[2] }} />
+            </div>
+          ))}
           {drag?.kind === 'marquee' && (
             <div className="sc-marquee" style={{ left: Math.min(drag.x0, drag.x1), top: Math.min(drag.y0, drag.y1), width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0) }} />
           )}

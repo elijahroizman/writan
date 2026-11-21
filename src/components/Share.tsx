@@ -276,10 +276,11 @@ export function JoinDialog() {
     setError(null)
     try {
       await askForNetwork()
+      const cancelled = () => !useSharePanel.getState().joining
       const joined = await whileNetworkAllowed(
-        () => join(link, who).then(() => true),
+        () => join(link, who, cancelled).then(() => true),
         (on) => setNetwork(on ? 'waiting' : null),
-        () => !useSharePanel.getState().joining,
+        cancelled,
       )
       if (!joined) {
         if (useSharePanel.getState().joining) setNetwork('denied')
@@ -289,6 +290,7 @@ export function JoinDialog() {
       setLink('')
       useSharePanel.setState({ joining: false })
     } catch (err) {
+      setNetwork(null)
       setError(String((err as Error)?.message ?? err))
     } finally {
       setBusy(false)

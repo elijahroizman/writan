@@ -417,9 +417,12 @@ async function confirmDiscardAll(): Promise<boolean> {
   sessionFrozen = true
   // Autosaved tabs just save; only the rest need asking about.
   await flushAutosave()
-  for (const tab of useWorkspace.getState().tabs.filter((t) => t.dirty)) {
-    // Someone else's shared document: theirs to save, once they have what was done here.
-    if (await collabHooks.settled(tab.id)) continue
+  for (const tab of useWorkspace.getState().tabs) {
+    // Someone else's shared document: theirs to save, once they have what was done here, even
+    // when nothing looks unsaved (an undo back to the start can still be on its way).
+    const guest = collabHooks.keeper(tab.id) !== null
+    if (guest && (await collabHooks.settled(tab.id))) continue
+    if (!guest && !useWorkspace.getState().tabs.find((t) => t.id === tab.id)?.dirty) continue
     useWorkspace.getState().activate(tab.id)
     const choice = await platform.askSaveChanges(tab.title)
     if (choice === 'cancel' || (choice === 'save' && (!(await useWorkspace.getState().save(tab.id)) || useWorkspace.getState().tabs.find((t) => t.id === tab.id)?.dirty))) {

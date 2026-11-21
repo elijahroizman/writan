@@ -339,6 +339,12 @@ export async function share(tabId: string, name: string): Promise<void> {
       const editor = getEditor(tabId)
       if (link.closed || !editor) throw new Error('The tab closed before sharing started.')
       if (tries === 5) throw new Error('The document kept changing. Try sharing again.')
+      // What the others start from is what's saved: anything done since the panel saved it
+      // (while the relay started) is saved first.
+      const now = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+      if (now?.path && now.dirty && !((await useWorkspace.getState().save(tabId)) && !useWorkspace.getState().tabs.find((t) => t.id === tabId)?.dirty)) {
+        throw new Error('Save the document to share it. Everyone edits the saved file with you.')
+      }
       editor.prepareSave?.()
       const revision = editor.getRevision?.()
       const written = await editor.getBytes()
@@ -365,7 +371,7 @@ export async function share(tabId: string, name: string): Promise<void> {
 }
 
 /** Joins a document someone shared: opens it in a new tab once it arrives. */
-export async function join(inviteText: string, name: string): Promise<void> {
+export async function join(inviteText: string, name: string, cancelled: () => boolean = () => false): Promise<void> {
   const invite = parseInvite(inviteText)
   if (!invite) throw new Error('That isn’t an invite link. It starts with ws:// and has a token in it.')
   const link = newLink(name)
@@ -373,6 +379,11 @@ export async function join(inviteText: string, name: string): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     const opened = ({ bytes, name: fileName, kind }: { bytes: Uint8Array; name: string; kind: string }) => {
       first = false
+      // Given up on (the dialog closed) while connecting: leave without opening anything.
+      if (cancelled()) {
+        reject(new Error('Cancelled.'))
+        return null
+      }
       const file = fileName.endsWith(`.${kind}`) ? fileName : `${stripExtension(fileName)}.${kind}`
       const id = SHAREABLE.has(kind) ? useWorkspace.getState().openUnsaved(bytes, file) : null
       if (id) resolve()
@@ -466,6 +477,8 @@ collabHooks.keeper = keeperOf
 async function settled(tabId: string): Promise<boolean> {
   const link = links.get(tabId)
   if (!link || link.role !== 'guest' || keeperOf(tabId) === null) return false
+  // What's being typed in a cell counts too: commit it, so it goes.
+  getEditor(tabId)?.prepareSave?.()
   const until = Date.now() + 3000
   while (!link.closed && link.engine?.doc.collabPending()) {
     if (Date.now() > until) return false

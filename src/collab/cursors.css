@@ -89,6 +89,8 @@
 .peer-box > .peer-tags {
   left: calc(-2px * var(--peer-scale, 1));
   margin-bottom: 0;
+  /* An outline takes no clicks, so its names can't be brought back by pointing: they stay. */
+  animation: none;
 }
 
 .peer-box > .peer-tags.below {

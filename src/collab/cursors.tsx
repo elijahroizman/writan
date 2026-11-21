@@ -59,7 +59,7 @@ export function PeerBox({
   moves,
   style,
   scale = 1,
-  named = true,
+  named = peers,
   below = false,
   children,
 }: {
@@ -67,14 +67,15 @@ export function PeerBox({
   moves: number
   style: CSSProperties
   scale?: number
-  named?: boolean
+  /** Whose names the box shows: everyone's, unless some are named by their caret inside it. */
+  named?: Peer[]
   /** The tags go under the box, for one at the top edge of what's shown. */
   below?: boolean
   children?: ReactNode
 }) {
   return (
     <div className="peer-box" data-peer={peers[0].client} style={{ ...style, '--peer': peers[0].color, '--peer-scale': scale } as CSSProperties}>
-      {named && <PeerTags peers={peers} moves={moves} scale={scale} below={below} />}
+      {named.length > 0 && <PeerTags peers={named} moves={moves} scale={scale} below={below} />}
       {children}
     </div>
   )
