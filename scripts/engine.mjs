@@ -30,5 +30,7 @@ if (!process.argv.includes('--force') && existsSync(built) && statSync(built).mt
 const env = { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? join(crates, 'target') }
 execFileSync('cargo', ['build', '--release', '--target', 'wasm32-unknown-unknown', '-p', 'office-wasm'], { cwd: crates, stdio: 'inherit', env })
 const wasm = join(env.CARGO_TARGET_DIR, 'wasm32-unknown-unknown/release/office_wasm.wasm')
-execFileSync('wasm-bindgen', ['--target', 'web', '--out-dir', out, wasm], { stdio: 'inherit' })
+// Without the name section (function names for debuggers, about 1.1 MB of the 8 MB), the app
+// has less to load and compile on each launch.
+execFileSync('wasm-bindgen', ['--target', 'web', '--remove-name-section', '--out-dir', out, wasm], { stdio: 'inherit' })
 console.log('Built the document engine into src/engine/wasm')
