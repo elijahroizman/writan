@@ -28,6 +28,7 @@ const scripts = [
   'tests/stress/ui/starters.mjs',
   'tests/stress/ui/tracked-changes.mjs',
   'tests/stress/ui/ux-regressions.mjs',
+  'tests/stress/ui/version-history.mjs',
   'tests/stress/native/pdf-page-select.mjs',
   'tests/stress/native/pdf-flatten.mjs',
   'tests/stress/native/save-conflict.mjs',

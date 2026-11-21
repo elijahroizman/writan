@@ -3792,12 +3792,12 @@ button.section-title:hover {
   background: var(--line);
 }
 
-/* Version history (components/VersionHistory.tsx): the document's changes as a page on the
-   left, the versions down the right. */
+/* Version history (components/VersionHistory.tsx): a slim header, the version as a page with its
+   changes marked, and a timeline along the bottom to scrub through the versions. */
 .vh {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 300px;
-  width: min(1180px, 100%);
+  display: flex;
+  flex-direction: column;
+  width: min(1040px, 100%);
   height: 100%;
   max-height: 900px;
   border-radius: 14px;
@@ -3806,42 +3806,25 @@ button.section-title:hover {
   overflow: hidden;
 }
 
-.vh-main {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  min-height: 0;
-}
-
 .vh-head {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 18px 16px 12px 28px;
+  padding: 14px 14px 14px 24px;
+  border-bottom: 1px solid var(--line);
 }
 
-.vh-head-title {
+.vh-title {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   min-width: 0;
-}
-
-.vh-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--fg-muted);
-  font-size: 12px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .vh h2 {
   margin: 0;
-  font-size: 18px;
+  font-size: 16px;
   font-weight: 650;
   letter-spacing: -0.01em;
   overflow: hidden;
@@ -3873,8 +3856,47 @@ button.section-title:hover {
 }
 
 .vh-rename {
-  width: min(360px, 100%);
+  width: min(380px, 100%);
   border-color: var(--accent);
+}
+
+.vh-sub {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 18px;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.vh-stats {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.vh-sub > span + .vh-stats {
+  padding-left: 10px;
+  border-left: 1px solid var(--line);
+}
+
+.vh-stat::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  margin: 0 5px 1px 0;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--fg) 35%, transparent);
+}
+
+.vh-stat.add::before {
+  background: var(--success);
+}
+
+.vh-stat.del::before {
+  background: var(--danger);
 }
 
 .vh-actions {
@@ -3884,39 +3906,8 @@ button.section-title:hover {
   gap: 6px;
 }
 
-.vh-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 0 28px 12px;
-  border-bottom: 1px solid var(--line);
-}
-
-.vh-legend {
-  display: flex;
-  gap: 12px;
-  color: var(--fg-muted);
-  font-size: 12px;
-  white-space: nowrap;
-}
-
-.vh-legend span::before {
-  content: '';
-  display: inline-block;
-  width: 8px;
-  height: 8px;
+.vh-actions .segmented {
   margin-right: 6px;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--fg) 30%, transparent);
-}
-
-.vh-legend .vh-legend-add::before {
-  background: var(--success);
-}
-
-.vh-legend .vh-legend-del::before {
-  background: var(--danger);
 }
 
 .vh-canvas {
@@ -3924,6 +3915,11 @@ button.section-title:hover {
   min-height: 0;
   overflow: auto;
   background: var(--canvas);
+}
+
+.vh-canvas[data-loading] .vh-page {
+  opacity: 0.6;
+  transition: opacity 0.15s 0.12s;
 }
 
 .vh-center {
@@ -3963,11 +3959,11 @@ button.section-title:hover {
   color: var(--fg);
 }
 
-/* The changes, drawn as a page of the document. */
+/* The version, drawn as a page of the document. */
 .vh-page {
-  max-width: 760px;
+  max-width: 720px;
   margin: 28px auto 40px;
-  padding: 40px 56px;
+  padding: 44px 60px;
   background: var(--raised);
   border-radius: 4px;
   box-shadow: var(--page-shadow);
@@ -3987,7 +3983,33 @@ button.section-title:hover {
   margin: 0 0 0.6em;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: var(--fg-muted);
+  color: color-mix(in srgb, var(--fg) 72%, transparent);
+}
+
+/* Word headings and table rows. */
+.vh-p.heading {
+  margin: 1.2em 0 0.4em;
+  font-size: 1.2em;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.vh-p.heading:first-child {
+  margin-top: 0;
+  font-size: 1.5em;
+}
+
+.vh-p.cells {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+  padding: 5px 0;
+  border-bottom: 1px solid var(--line);
+  font-variant-numeric: tabular-nums;
+}
+
+.vh-p.cells + .vh-p:not(.cells) {
+  margin-top: 0.8em;
 }
 
 /* Markdown, text and LaTeX compare line by line: blank lines are the paragraph breaks. */
@@ -4012,7 +4034,7 @@ button.section-title:hover {
 }
 
 .vh-p.add {
-  background: color-mix(in srgb, var(--success) 14%, transparent);
+  background: color-mix(in srgb, var(--success) 12%, transparent);
 }
 
 .vh-p.add::before {
@@ -4020,9 +4042,10 @@ button.section-title:hover {
 }
 
 .vh-p.del {
+  color: var(--fg-muted);
   text-decoration: line-through;
   text-decoration-color: color-mix(in srgb, var(--danger) 70%, transparent);
-  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
 
 .vh-p.del::before {
@@ -4030,21 +4053,26 @@ button.section-title:hover {
 }
 
 .vh-p.change::before {
-  background: color-mix(in srgb, var(--fg) 30%, transparent);
+  background: color-mix(in srgb, var(--fg) 25%, transparent);
 }
 
 .vh-p ins {
   text-decoration: none;
-  border-radius: 3px;
-  background: color-mix(in srgb, var(--success) 26%, transparent);
-  box-shadow: 0 1.5px 0 var(--success);
+  border-radius: 2px;
+  background: color-mix(in srgb, var(--success) 22%, transparent);
+  box-decoration-break: clone;
 }
 
 .vh-p del {
-  border-radius: 3px;
-  color: color-mix(in srgb, var(--danger) 80%, var(--fg));
+  border-radius: 2px;
+  color: color-mix(in srgb, var(--danger) 75%, var(--fg));
   text-decoration-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  box-decoration-break: clone;
+}
+
+.vh-p del + ins {
+  margin-left: 3px;
 }
 
 .vh-slide {
@@ -4062,217 +4090,154 @@ button.section-title:hover {
   margin-top: 0;
 }
 
-.vh-skip {
+/* The timeline. */
+.vh-foot {
   display: flex;
   align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: calc(100% + 40px);
-  height: 26px;
-  margin: 4px -20px 0.8em;
-  border: 0;
-  border-block: 1px dashed var(--line);
-  background: transparent;
-  color: var(--fg-faint);
-  font-family: var(--font-ui);
-  font-size: 11.5px;
+  gap: 12px;
+  padding: 10px 16px 12px;
+  border-top: 1px solid var(--line);
 }
 
-.vh-skip:hover {
-  background: var(--hover);
-  color: var(--fg-muted);
-}
-
-/* The versions. */
-.vh-side {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-left: 1px solid var(--line);
-  background: var(--chrome);
-}
-
-.vh-save {
-  display: flex;
-  gap: 6px;
-  padding: 16px 14px 14px;
-  border-bottom: 1px solid var(--line);
-}
-
-.vh-save .field {
+.vh-time {
   flex: 1;
   min-width: 0;
-  background: var(--panel);
-  border-color: var(--line);
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
-.vh-save .field:focus-within {
-  border-color: var(--accent);
-}
-
-.vh-list {
+.vh-track {
+  position: relative;
   flex: 1;
-  min-height: 0;
-  padding: 4px 8px 12px;
-  overflow-y: auto;
+  min-width: 0;
+  display: flex;
+  padding: 0 6px;
+  border-radius: 8px;
+  cursor: pointer;
+  touch-action: none;
+  user-select: none;
 }
 
-.vh-day {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  padding: 12px 10px 6px;
-  background: var(--chrome);
-  color: var(--fg-muted);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+.vh-track:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
-.vh-row {
+.vh-dayrun {
+  container-type: inline-size;
+  flex-basis: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* A rail through each day's versions, with a break between days. */
+.vh-ticks {
   position: relative;
   display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  width: 100%;
-  padding: 8px 8px 8px 12px;
-  border: 0;
-  border-radius: 8px;
-  background: transparent;
-  text-align: left;
+  height: 26px;
 }
 
-/* The timeline: a line through the dots of one day. */
-.vh-row::before {
+.vh-ticks::before {
   content: '';
   position: absolute;
-  left: 16px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
+  left: 2px;
+  right: 2px;
+  top: 50%;
+  height: 2px;
+  margin-top: -1px;
+  border-radius: 1px;
   background: var(--line);
 }
 
-.vh-day + .vh-row::before {
-  top: 14px;
-}
-
-.vh-list > div:has(+ div > .vh-day) .vh-row::before,
-.vh-list > div:last-child .vh-row::before {
-  bottom: calc(100% - 14px);
-}
-
-.vh-row:hover {
-  background: var(--hover);
-}
-
-.vh-row.on {
-  background: var(--accent-soft);
-}
-
-.vh-dot {
+.vh-tick {
   position: relative;
-  z-index: 1;
-  flex: none;
-  width: 9px;
-  height: 9px;
-  margin-top: 5px;
-  border: 2px solid var(--fg-faint);
-  border-radius: 50%;
-  background: var(--chrome);
-}
-
-.vh-dot[data-named] {
-  border-color: var(--fg);
-}
-
-.vh-dot[data-latest] {
-  border-color: var(--accent);
-  background: var(--accent);
-}
-
-.vh-row-text {
   flex: 1;
   min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
 }
 
-.vh-row-top {
-  display: flex;
-  align-items: center;
-  gap: 6px;
+.vh-tick::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  transform: translate(-50%, -50%);
+  transition: width 0.1s, height 0.1s;
 }
 
-.vh-row-top strong {
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
+.vh-tick[data-named]::after {
+  width: 8px;
+  height: 8px;
+  background: var(--fg);
 }
 
-.vh-badge {
-  padding: 0 6px;
-  border-radius: 999px;
+.vh-tick[data-on]::after {
+  z-index: 1;
+  width: 14px;
+  height: 14px;
   background: var(--accent);
-  color: var(--accent-fg);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 16px;
+  box-shadow: 0 0 0 3px var(--panel), 0 0 0 4px color-mix(in srgb, var(--accent) 40%, transparent);
 }
 
-.vh-row-title {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--fg-muted);
+.vh-daylabel {
   overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 11px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.vh-row-title.named {
-  color: var(--fg);
-  font-weight: 500;
+/* A narrow day shows only its date ("14"); one too narrow even for that goes without. */
+@container (max-width: 44px) {
+  .vh-daylabel > span {
+    display: none;
+  }
+
+  .vh-daylabel::after {
+    content: attr(data-short);
+  }
 }
 
-.vh-row-title svg {
-  flex: none;
+@container (max-width: 22px) {
+  .vh-daylabel {
+    visibility: hidden;
+  }
 }
 
-.vh-row-meta {
-  color: var(--fg-faint);
-  font-size: 11.5px;
-}
-
-.vh-row-more {
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
+.vh-tip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 4px 8px;
   border-radius: 6px;
-  color: var(--fg-faint);
-  opacity: 0;
+  background: var(--fg);
+  color: var(--panel);
+  font-size: 11.5px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
 }
 
-.vh-row:hover .vh-row-more,
-.vh-row.on .vh-row-more,
-.vh-row:focus-visible .vh-row-more {
-  opacity: 1;
-}
-
-.vh-row-more:hover {
-  background: var(--press);
-  color: var(--fg);
-}
-
-.vh-footnote {
-  margin: 0;
-  padding: 10px 16px 14px;
-  border-top: 1px solid var(--line);
+.vh-count {
+  min-width: 56px;
   color: var(--fg-faint);
   font-size: 11.5px;
-  line-height: 1.45;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.vh-save {
+  flex: none;
 }
 
 /* Open folder: a file tree beside the tabs (⇧⌘O, ⇧⌘E) */
