@@ -21,7 +21,10 @@ export const SlideImage = memo(function SlideImage({ engine, index, revision, wi
       {visible && (
         <div
           className="slide-surface"
-          style={{ width: engine.width, height: engine.height, transform: `scale(${scale})` }}
+          // zoom scales like a transform without making a layer of its own. Inside a rounded
+          // overflow clip, WebKitGTK cuts a transformed layer a hair tighter and the preview's
+          // white background shows as a bright crescent at the corners.
+          style={{ width: engine.width, height: engine.height, zoom: scale }}
           // Drawn per revision, so this changes only when the slide does.
           dangerouslySetInnerHTML={{ __html: engine.html(index) }}
           data-revision={revision}
