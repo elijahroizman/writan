@@ -99,7 +99,7 @@ try {
   const names = tools.map((t) => t.name)
   check(
     'the new tools are listed',
-    ['view_document', 'move_shape', 'crop_picture', 'format_text', 'format_shape', 'add_shape', 'add_picture', 'delete_shapes', 'copy_shapes', 'group_shapes', 'set_table_text', 'duplicate_slide', 'move_slide', 'set_slide', 'insert_table', 'change_table', 'format_picture', 'format_cells', 'size_cells', 'insert_cells', 'delete_cells', 'merge_cells', 'add_chart', 'edit_sheet'].every((t) => names.includes(t)),
+    ['view_document', 'move_shape', 'crop_picture', 'format_text', 'format_shape', 'add_shape', 'add_picture', 'delete_shapes', 'copy_shapes', 'group_shapes', 'set_table_text', 'duplicate_slide', 'move_slide', 'set_slide', 'insert_table', 'change_table', 'format_picture', 'format_cells', 'size_cells', 'insert_cells', 'delete_cells', 'merge_cells', 'add_chart', 'edit_chart', 'edit_sheet'].every((t) => names.includes(t)),
     names.join(),
   )
   check('every tool has a unique name and an object schema', new Set(names).size === names.length && tools.every((t) => t.inputSchema?.type === 'object'))
@@ -338,6 +338,26 @@ try {
   check('merge_cells merges', !(await codex.call('merge_cells', { document: book, range: 'D1:E1' })).error)
   const chart = await codex.call('add_chart', { document: book, range: 'A1:B3', kind: 'column' })
   check('add_chart adds a chart', !chart.error && (await a.page.evaluate(() => window.__sheets.chartsOf(0).length)) === 1, chart.text)
+  const titled = await codex.call('edit_chart', { document: book, chart: 1, title: 'Prices', x_title: 'Dish', y_title: 'Price', legend: 'bottom' })
+  check('edit_chart sets the title, axis titles and legend', !titled.error && /“Prices”/.test(titled.text), titled.text)
+  const colored = await codex.call('edit_chart', { document: book, chart: 1, colors: ['#E5007E'] })
+  check('edit_chart sets a series color', !colored.error && /#E5007E/i.test(colored.text), colored.text)
+  const hostChart = await a.page.evaluate(() => {
+    const c = window.__sheets.chartsOf(0)[0]
+    return { title: c.title, cat: c.catTitle, val: c.valTitle, legend: c.legend, color: c.series[0]?.color }
+  })
+  check('the host sees the chart change', hostChart.title === 'Prices' && hostChart.cat === 'Dish' && hostChart.val === 'Price' && hostChart.legend === 'bottom' && hostChart.color === '#E5007E', JSON.stringify(hostChart))
+  const turned = await codex.call('edit_chart', { document: book, chart: 1, kind: 'bar', grouping: 'stacked' })
+  check('edit_chart changes kind and stacking', !turned.error && /stacked bar/.test(turned.text), turned.text)
+  const noChart = await codex.call('edit_chart', { document: book, chart: 9, title: 'x' })
+  check('a chart number that isn’t there is refused', noChart.error && /has 1 chart/.test(noChart.text), noChart.text)
+  const listed = (await codex.call('read_document', { document: book })).text
+  check('read_document lists the chart', /Charts:\n- chart 1: stacked bar.*“Prices”/.test(listed), listed.split('Charts:')[1]?.trim())
+  const sheetView = await codex.call('view_document', { document: book })
+  check('view_document gives a picture of the sheet', sheetView.images.length === 1 && sheetView.images[0].data.length > 1000 && /Sheet “Sheet1”/.test(sheetView.text), sheetView.text.slice(0, 200))
+  if (shots) writeFileSync(`${shots}/agent-view-sheet.jpg`, Buffer.from(sheetView.images[0].data, 'base64'))
+  const chartPic = await codex.call('view_document', { document: book, chart: 1, labels: false })
+  check('view_document can show one chart closer up', chartPic.images.length === 1 && /chart 1/.test(chartPic.text), chartPic.text.slice(0, 200))
   const sheet = await codex.call('edit_sheet', { document: book, action: 'add', name: 'Costs' })
   check('edit_sheet adds a named sheet', /Sheets now: Sheet1, Costs/.test(sheet.text), sheet.text)
   const ren = await codex.call('edit_sheet', { document: book, action: 'rename', sheet: 'Costs', name: 'Suppliers' })

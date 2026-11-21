@@ -12,7 +12,7 @@ import { useWorkspace } from '../../state/workspace'
 import { attach, followAsAgent, inviteOf, leaveAsAgent, onOthersChange, useCollab, usePresence, type Opened, type Peer } from '../session'
 import { type Answer, type Args, doc, need, str, type Tool, ToolError } from './common'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
-import { describeSheetsPlace, readSheets, SHEETS_TOOLS, sheetsTool } from './sheets'
+import { describeSheetsPlace, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
 import { readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
 import { readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
 
@@ -185,16 +185,19 @@ const SHARED_TOOLS: Tool[] = [
   {
     name: 'view_document',
     description:
-      'Shows a slide (PowerPoint) or a page (Word) as a picture, the way people see it. On a slide, each shape is outlined with its id, so you can tell which picture or box is which and see what overlaps; `labels: false` leaves them off, and `shape` shows just that shape, closer up. Look before and after changing how a slide looks.',
+      'Shows a slide (PowerPoint), a page (Word) or a sheet (Excel) as a picture, the way people see it — use it to check how things look, like cells showing #### because a column is too narrow. On a slide, each shape is outlined with its id so you can tell which is which and see what overlaps; `shape` shows just that shape, closer up. On a sheet, each chart is outlined with its number; `chart` shows just that chart, and `range` shows those cells (the content if left out). `labels: false` leaves the outlines off. Look before and after changing how something looks.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
         slide: { type: 'integer', description: 'PowerPoint: the slide’s number.' },
         shape: { type: 'string', description: 'PowerPoint: just this shape, closer up.' },
-        labels: { type: 'boolean', description: 'PowerPoint: outline each shape with its id (true unless set).' },
+        labels: { type: 'boolean', description: 'Outline each shape or chart with its id (true unless set).' },
         page: { type: 'integer', description: 'Word: the page’s number (1 if left out).' },
-        width: { type: 'integer', description: 'The picture’s width in pixels (1280 for a slide and 1000 for a page unless set; 200 to 2000).' },
+        sheet: { type: 'string', description: 'Excel: the sheet’s name (the first one if left out).' },
+        range: { type: 'string', description: 'Excel: the cells to show, like A1:F40 (the sheet’s content if left out).' },
+        chart: { type: 'integer', description: 'Excel: just this chart, closer up, numbered as read_document lists them.' },
+        width: { type: 'integer', description: 'The picture’s width in pixels (1280 for a slide, 1000 for a page and 1400 for a sheet unless set; 200 to 2400).' },
       },
       required: ['document'],
     },
@@ -274,8 +277,7 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
     case 'read_document':
       return { text: copy.kind === 'docx' ? readWord(engine as WordEngine, args) : copy.kind === 'pptx' ? readSlides(engine as SlidesEngine, args) : readSheets(engine as SheetsEngine, args) }
     case 'view_document':
-      if (copy.kind === 'xlsx') throw new ToolError('view_document shows slides and pages; read a workbook with read_document.')
-      return copy.kind === 'pptx' ? viewSlide(engine as SlidesEngine, args) : viewPage(engine as WordEngine, args)
+      return copy.kind === 'pptx' ? viewSlide(engine as SlidesEngine, args) : copy.kind === 'xlsx' ? await viewSheet(engine as SheetsEngine, args) : viewPage(engine as WordEngine, args)
     case 'where_is_everyone':
       return { text: whereIsEveryone(copy, engine) }
     case 'wait_for_changes':

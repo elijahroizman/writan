@@ -8,6 +8,7 @@ import { isTauri } from '../../lib/platform'
 import { browserRelay, connect, resetNative, type Transport } from '../transport'
 import { agentFrom } from './identity'
 import { AgentSession, runTool, ToolError, TOOLS } from './tools'
+import SKILL from './SKILL.md?raw'
 
 /** Whether agents can connect, and where. */
 export interface AgentsStatus {
@@ -115,6 +116,14 @@ export async function startAgents(token: string): Promise<void> {
     }
     bridge = t
     useAgentsStatus.setState({ state: 'on', local: `http://${base}/mcp/${token}`, network, message: null })
+    if (isTauri) {
+      // After an update (or a new address or port), an agent set up before may hold an older
+      // address or skill: bring the ones that have one up to date.
+      const { invoke } = await import('@tauri-apps/api/core')
+      void invoke<string[]>('agents_sync', { url: `http://${base}/mcp/${token}`, skill: SKILL })
+        .then((updated) => updated.length && console.info(`Agents updated: ${updated.join(', ')}`))
+        .catch(() => {})
+    }
   } catch (err) {
     if (mine === generation) useAgentsStatus.setState({ state: 'error', message: String((err as Error)?.message ?? err) })
   }

@@ -233,6 +233,8 @@ pub fn run() {
             agents::agents_installed,
             agents::agents_install_mcp,
             agents::agents_install_skill,
+            agents::agents_remove,
+            agents::agents_sync,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Writan");

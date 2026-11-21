@@ -4650,30 +4650,6 @@ button.section-title:hover {
 }
 
 /* Settings › AI */
-.ai-addresses {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin: 4px 0 8px;
-}
-
-.ai-address {
-  display: grid;
-  grid-template-columns: 150px 1fr auto;
-  align-items: center;
-  gap: 8px;
-}
-
-.ai-address input {
-  min-width: 0;
-  padding: 5px 8px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--press);
-  color: var(--fg);
-  font: 11.5px var(--font-mono, ui-monospace, monospace);
-}
-
 .agent-logo {
   flex: none;
   display: grid;

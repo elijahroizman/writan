@@ -100,6 +100,85 @@ pub fn agents_install_skill(agent: String, skill: String) -> Result<String, Stri
     Ok(format!("Added to {}.", tilde(&format!("{skills}/{NAME}"))))
 }
 
+/// Takes Writan's MCP server and skill back out of `agent`. Everything else stays.
+#[tauri::command]
+pub fn agents_remove(agent: String) -> Result<String, String> {
+    let (config, skills) = places(&agent).ok_or("Writan doesn't know that agent.")?;
+    let home = home()?;
+    let mut gone: Vec<&str> = Vec::new();
+    let dir = home.join(skills).join(NAME);
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)
+            .map_err(|e| format!("Couldn't remove {}: {e}", dir.display()))?;
+        gone.push("skill");
+    }
+    let mcp = match config {
+        Some(file) => {
+            let path = home.join(file);
+            let before = std::fs::read_to_string(&path).unwrap_or_default();
+            if !has_server(file, &before) {
+                false
+            } else {
+                let after = if file.ends_with(".toml") {
+                    remove_toml_server(&before)
+                } else if file.ends_with(".json") {
+                    remove_json_server(&before)?
+                } else {
+                    remove_yaml_server(&before)
+                };
+                write(&path, &after)?;
+                true
+            }
+        }
+        None => claude_remove()?,
+    };
+    if mcp {
+        gone.insert(0, "MCP server");
+    }
+    Ok(match gone.len() {
+        0 => "Nothing was set up.".into(),
+        _ => format!("Removed its {}.", gone.join(" and ")),
+    })
+}
+
+/// A new version's MCP address or skill isn't what an agent has: bring the ones that have it up
+/// to date. Runs at startup, so after the app updates, every agent set up before follows.
+#[tauri::command]
+pub fn agents_sync(url: String, skill: String) -> Result<Vec<String>, String> {
+    if !url.starts_with("http://") || url.contains(['"', '\'', '\\', ' ', '\n']) {
+        return Err("That isn't a Writan MCP address.".into());
+    }
+    let home = home()?;
+    let mut updated = Vec::new();
+    for agent in ["claude", "codex", "antigravity", "grok", "hermes"] {
+        let Some((config, skills)) = places(agent) else {
+            continue;
+        };
+        let want = format!("{url}?agent={agent}");
+        let stale = match config {
+            Some(file) => std::fs::read_to_string(home.join(file))
+                .ok()
+                .is_some_and(|t| server_url(file, &t).is_some_and(|u| u != want)),
+            None => std::fs::read_to_string(home.join(".claude.json"))
+                .ok()
+                .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+                .and_then(|v| v["mcpServers"][NAME]["url"].as_str().map(String::from))
+                .is_some_and(|u| u != want),
+        };
+        if stale && agents_install_mcp(agent.into(), want).is_ok() {
+            updated.push(format!("{agent}:mcp"));
+        }
+        let file = home.join(skills).join(NAME).join("SKILL.md");
+        if file.is_file()
+            && std::fs::read_to_string(&file).is_ok_and(|t| t != skill)
+            && write(&file, &skill).is_ok()
+        {
+            updated.push(format!("{agent}:skill"));
+        }
+    }
+    Ok(updated)
+}
+
 fn tilde(rel: &str) -> String {
     if cfg!(windows) {
         format!("%USERPROFILE%\\{}", rel.replace('/', "\\"))
@@ -133,9 +212,9 @@ fn write(path: &Path, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Claude Code keeps its servers in a big state file it writes itself, so its CLI adds this
-/// one. Apps opened from the Dock or Start menu don't get the terminal's PATH, so on macOS and
-/// Linux it runs in a login shell.
+/// Claude Code keeps its servers in a big state file it writes itself, so its CLI adds and
+/// removes this one. Apps opened from the Dock or Start menu don't get the terminal's PATH, so
+/// on macOS and Linux it runs in a login shell.
 fn claude_add(url: &str) -> Result<String, String> {
     let add = format!("claude mcp add --transport http --scope user {NAME} '{url}'");
     let script = format!("claude mcp remove --scope user {NAME} >/dev/null 2>&1; {add}");
@@ -195,6 +274,132 @@ fn is_our_table(line: &str) -> bool {
                 .map(|p| unquote(p.trim()))
                 .eq(["mcp_servers", NAME])
         })
+}
+
+/// The address our server entry points at, if the config has one.
+fn server_url(file: &str, text: &str) -> Option<String> {
+    if file.ends_with(".toml") {
+        let lines: Vec<&str> = text.lines().collect();
+        let start = lines.iter().position(|l| is_our_table(l))?;
+        let end = lines[start + 1..]
+            .iter()
+            .position(|l| l.trim_start().starts_with('['))
+            .map_or(lines.len(), |i| start + 1 + i);
+        lines[start + 1..end].iter().find_map(|l| {
+            let (k, v) = l.split('#').next()?.split_once('=')?;
+            (unquote(k.trim()) == "url").then(|| unquote(v.trim()).to_owned())
+        })
+    } else if file.ends_with(".json") {
+        serde_json::from_str::<serde_json::Value>(text).ok()?["mcpServers"][NAME]["serverUrl"]
+            .as_str()
+            .map(String::from)
+    } else {
+        let e = yaml_entry(text)?;
+        let (start, stop) = e.found?;
+        let lines: Vec<&str> = text.lines().collect();
+        lines[start + 1..stop].iter().find_map(|l| {
+            l.trim()
+                .strip_prefix("url:")
+                .map(|v| unquote(v.trim()).to_owned())
+        })
+    }
+}
+
+/// Our TOML table out of a config, leaving the rest — and a blank line where it sat, so tables
+/// that were apart stay apart.
+fn remove_toml_server(text: &str) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    let Some(start) = lines.iter().position(|l| is_our_table(l)) else {
+        return text.to_string();
+    };
+    let end = lines[start + 1..]
+        .iter()
+        .position(|l| l.trim_start().starts_with('['))
+        .map_or(lines.len(), |i| start + 1 + i);
+    let mut out: Vec<String> = lines[..start].iter().map(|l| l.to_string()).collect();
+    // One blank line separates what came before from what follows; at the end, it goes too.
+    if end == lines.len() && out.last().is_some_and(|l| l.trim().is_empty()) {
+        out.pop();
+    }
+    out.extend(lines[end..].iter().map(|l| l.to_string()));
+    let mut s = out.join("\n");
+    if !s.is_empty() && !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+/// Our server out of the JSON config, leaving the rest.
+fn remove_json_server(text: &str) -> Result<String, String> {
+    let mut v: serde_json::Value = serde_json::from_str(text).map_err(|e| {
+        format!("Antigravity's mcp_config.json isn't valid JSON ({e}), so Writan left it alone.")
+    })?;
+    if let Some(servers) = v.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
+        servers.remove(NAME);
+        if servers.is_empty() {
+            if let Some(root) = v.as_object_mut() {
+                root.remove("mcpServers");
+            }
+        }
+    }
+    let mut s = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
+    s.push('\n');
+    Ok(s)
+}
+
+/// Our entry out of the YAML config, leaving the rest — and the `mcp_servers:` line itself if
+/// nothing is left under it.
+fn remove_yaml_server(text: &str) -> String {
+    let Some(e) = yaml_entry(text) else {
+        return text.to_string();
+    };
+    let Some((start, stop)) = e.found else {
+        return text.to_string();
+    };
+    let lines: Vec<&str> = text.lines().collect();
+    let mut out: Vec<String> = lines.iter().map(|l| l.to_string()).collect();
+    out.splice(start..stop, []);
+    // Anything non-blank is left under `mcp_servers:`? Then its line stays.
+    let end = out[e.servers + 1..]
+        .iter()
+        .position(|l| !blank(l) && indent_of(l) == 0)
+        .map_or(out.len(), |i| e.servers + 1 + i);
+    if !out[e.servers + 1..end].iter().any(|l| !blank(l)) {
+        out.remove(e.servers);
+    }
+    let mut s = out.join("\n");
+    if !s.is_empty() && !s.ends_with('\n') {
+        s.push('\n');
+    }
+    s
+}
+
+/// Takes Writan's server out of Claude Code the way it went in. Returns whether it was there.
+fn claude_remove() -> Result<bool, String> {
+    let had = std::fs::read_to_string(home()?.join(".claude.json"))
+        .ok()
+        .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok())
+        .is_some_and(|v| v["mcpServers"].get(NAME).is_some());
+    if !had {
+        return Ok(false);
+    }
+    let remove = format!("claude mcp remove --scope user {NAME}");
+    let output = if cfg!(windows) {
+        Command::new("cmd").args(["/C", &remove]).output()
+    } else {
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+        Command::new(shell).args(["-l", "-c", &remove]).output()
+    };
+    match output {
+        Ok(o) if o.status.success() => Ok(true),
+        Ok(o) => Err(format!(
+            "Claude Code's command didn't work ({}). Run this in a terminal instead: {remove}",
+            String::from_utf8_lossy(&o.stderr).trim()
+        )),
+        Err(e) => Err(format!(
+            "Couldn't run Claude Code's command ({e}). Run this in a terminal instead: {remove}"
+        )),
+    }
 }
 
 /// A TOML config (Codex, Grok Build) with `[mcp_servers.writan]` holding just `url`. Everything
@@ -418,6 +623,91 @@ mod tests {
         assert_eq!(v["x"], 1);
         assert!(set_json_server("", URL).unwrap().contains("serverUrl"));
         assert!(set_json_server("not json", URL).is_err());
+    }
+
+    #[test]
+    fn server_url_reads_each_kind() {
+        let toml = format!("model = \"x\"\n[mcp_servers.writan]\nurl = \"{URL}\"\n");
+        assert_eq!(server_url("c.toml", &toml).as_deref(), Some(URL));
+        let toml = format!("model = \"x\"\n[mcp_servers.writan] # ours\nurl = '{URL}' # the app\n");
+        assert_eq!(server_url("c.toml", &toml).as_deref(), Some(URL));
+        assert_eq!(server_url("c.toml", "model = \"x\"\n"), None);
+        let json = format!("{{\"mcpServers\":{{\"writan\":{{\"serverUrl\":\"{URL}\"}}}}}}");
+        assert_eq!(server_url("c.json", &json).as_deref(), Some(URL));
+        assert_eq!(server_url("c.json", "{\"mcpServers\":{}}"), None);
+        let yaml =
+            format!("mcp_servers:\n  writan:\n    url: \"{URL}\"\n  other:\n    url: \"a\"\n");
+        assert_eq!(server_url("c.yaml", &yaml).as_deref(), Some(URL));
+        assert_eq!(
+            server_url("c.yaml", "mcp_servers:\n  other:\n    url: \"a\"\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn toml_loses_only_our_table() {
+        let added = set_toml_server("model = \"x\"\n\n[mcp_servers.other]\nurl = \"a\"\n", URL);
+        let removed = remove_toml_server(&added);
+        assert_eq!(
+            removed,
+            "model = \"x\"\n\n[mcp_servers.other]\nurl = \"a\"\n"
+        );
+        assert!(!has_server("c.toml", &removed));
+        // In the middle, the spacing around it stays tidy.
+        let middle = "[a]\nx = 1\n\n[mcp_servers.writan]\nurl = \"u\"\n\n[b]\ny = 2\n";
+        assert_eq!(remove_toml_server(middle), "[a]\nx = 1\n\n[b]\ny = 2\n");
+        // At the end, the blank line before it goes with it.
+        let end = "[a]\nx = 1\n\n[mcp_servers.writan]\nurl = \"u\"\n";
+        assert_eq!(remove_toml_server(end), "[a]\nx = 1\n");
+        // Alone, the file comes out empty.
+        assert_eq!(
+            remove_toml_server("[mcp_servers.writan]\nurl = \"u\"\n"),
+            ""
+        );
+        // Remove and add round-trip.
+        assert_eq!(set_toml_server(&removed, URL), added);
+    }
+
+    #[test]
+    fn json_loses_only_our_server() {
+        let added =
+            set_json_server(r#"{"mcpServers":{"other":{"serverUrl":"a"}},"x":1}"#, URL).unwrap();
+        let removed = remove_json_server(&added).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&removed).unwrap();
+        assert_eq!(v["mcpServers"]["other"]["serverUrl"], "a");
+        assert!(v["mcpServers"].get("writan").is_none());
+        assert_eq!(v["x"], 1);
+        // The only server: the mcpServers key goes too.
+        let removed = remove_json_server(&set_json_server("", URL).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&removed).unwrap(),
+            serde_json::json!({})
+        );
+        assert!(!has_server("c.json", &removed));
+        assert!(remove_json_server("not json").is_err());
+    }
+
+    #[test]
+    fn yaml_loses_only_our_entry() {
+        let added = set_yaml_server(
+            "model: x\nmcp_servers:\n    other:\n        url: \"a\"\n# end\ntools: []\n",
+            URL,
+        )
+        .unwrap();
+        let removed = remove_yaml_server(&added);
+        assert_eq!(
+            removed,
+            "model: x\nmcp_servers:\n    other:\n        url: \"a\"\n# end\ntools: []\n"
+        );
+        assert!(!has_server("c.yaml", &removed));
+        // The only entry: the mcp_servers line goes too.
+        let removed = remove_yaml_server(&set_yaml_server("model: x\n", URL).unwrap());
+        assert_eq!(removed, "model: x\n");
+        // And re-adding after either works.
+        assert!(has_server(
+            "c.yaml",
+            &set_yaml_server(&removed, URL).unwrap()
+        ));
     }
 
     #[test]
