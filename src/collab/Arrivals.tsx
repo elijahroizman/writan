@@ -1,6 +1,8 @@
-// A small note in the top left corner when someone joins or leaves a shared document, a person
-// or an AI agent. It goes away by itself (session.ts `arrive`).
+// A note in the top right corner, under the title bar's share button, when someone joins or leaves
+// a shared document, a person or an AI agent. Clicks go through it and it takes no focus, so it
+// never gets in the way of typing; it goes away by itself (session.ts `arrive`).
 
+import type { CSSProperties } from 'react'
 import { stripExtension } from '../lib/kinds'
 import { useWorkspace } from '../state/workspace'
 import { PeerAvatar } from './cursors'
@@ -15,11 +17,13 @@ export function Arrivals() {
       {list.map((a) => {
         const title = tabs.find((t) => t.id === a.tabId)?.title
         return (
-          <div key={a.id} className={`arrival ${a.joined ? 'joined' : 'left'}`}>
+          <div key={a.id} className={`arrival ${a.joined ? 'joined' : 'left'}`} style={{ '--peer': a.peer.color } as CSSProperties}>
             <PeerAvatar peer={a.peer} />
-            <span>
-              <strong>{a.peer.name || 'Someone'}</strong> {a.joined ? 'joined' : 'left'}
-              {title ? ` “${stripExtension(title)}”` : ''}
+            <span className="arrival-text">
+              <span className="arrival-who">
+                <strong>{a.peer.name || 'Someone'}</strong> {a.joined ? 'joined' : 'left'}
+              </span>
+              {title && <span className="arrival-doc">{stripExtension(title)}</span>}
             </span>
           </div>
         )

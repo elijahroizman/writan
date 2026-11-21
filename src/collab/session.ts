@@ -88,7 +88,7 @@ function arrive(tabId: string, peer: Peer, joined: boolean) {
   if (tabId.startsWith('agent:')) return
   const a = { id: ++arrivals, tabId, peer, joined }
   useArrivals.setState((now) => [...now.slice(-3), a], true)
-  window.setTimeout(() => useArrivals.setState((now) => now.filter((x) => x.id !== a.id), true), 4500)
+  window.setTimeout(() => useArrivals.setState((now) => now.filter((x) => x.id !== a.id), true), 6500)
 }
 
 /** Where everyone else is, by tab id and then client. Apart from `useCollab`, so the title bar

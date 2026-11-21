@@ -4516,52 +4516,86 @@ button.section-title:hover {
   object-fit: contain;
 }
 
-/* Someone joined or left a shared document (collab/Arrivals.tsx). */
+/* Someone joined or left a shared document (collab/Arrivals.tsx): top right, under the share
+   button, where it's seen but clear of the page. Clicks go through it. */
 .arrivals {
   position: fixed;
-  top: 52px;
-  left: 12px;
-  z-index: 60;
+  top: calc(var(--titlebar-h) + 12px);
+  right: 16px;
+  /* Over the Share panel and menus, which open in the same corner; under modal dialogs. */
+  z-index: 102;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  align-items: flex-end;
+  gap: 8px;
   pointer-events: none;
 }
 
 .arrival {
   display: flex;
   align-items: center;
-  gap: 8px;
-  max-width: 320px;
-  padding: 7px 12px 7px 8px;
-  border-radius: 10px;
+  gap: 12px;
+  min-width: 220px;
+  max-width: 360px;
+  padding: 11px 18px 11px 12px;
+  border-radius: 12px;
   background: var(--raised);
   color: var(--fg);
-  box-shadow: var(--shadow-pop);
-  font-size: 12.5px;
-  animation: arrival-in 0.18s ease-out, arrival-out 0.3s ease-in 4.1s forwards;
+  /* A ring in the color of their caret, so it's seen without being loud. */
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--peer) 60%, transparent), var(--shadow-pop);
+  font-size: 14px;
+  line-height: 1.3;
+  animation: arrival-in 0.22s ease-out, arrival-out 0.35s ease-in 6.1s forwards;
 }
 
-.arrival span:last-child {
+.arrival .share-avatar {
+  width: 32px;
+  height: 32px;
+  font-size: 15px;
+}
+
+.arrival-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.arrival-who,
+.arrival-doc {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.arrival-doc {
+  color: var(--fg-muted);
+  font-size: 12.5px;
+}
+
 .arrival.left {
-  color: var(--fg-muted, var(--fg));
+  color: var(--fg-muted);
+}
+
+.arrival.left .share-avatar {
+  opacity: 0.6;
 }
 
 @keyframes arrival-in {
   from {
     opacity: 0;
-    transform: translateY(-6px);
+    transform: translateX(16px);
   }
 }
 
 @keyframes arrival-out {
   to {
     opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arrival {
+    animation: arrival-out 0.35s ease-in 6.1s forwards;
   }
 }
 
