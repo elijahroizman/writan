@@ -2,6 +2,23 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.12.2 — 2026-11-21
+
+### AI agents
+- Agents can see what they're working on: a slide or a Word page comes to them as a picture, with each shape on a slide marked with its id, so they can tell which photo is which and see what overlaps.
+- In presentations, agents can move, resize, turn, flip, crop and restack pictures and shapes, format text, fills and outlines, add pictures, text boxes, shapes and tables, and copy, group and delete them. They can also copy, move, hide and delete slides and change their layout.
+- In Word documents, agents can format text and paragraphs, make lists, add and change tables, and add, resize and crop pictures. In workbooks they can format cells, size, insert and delete rows and columns, merge cells, add charts, and add, rename, move and delete sheets.
+- Each change an agent makes tells it what changed. Waiting for someone else's edit tells it which paragraphs, slides and shapes changed.
+- Only an agent on your computer can have Writan open a file or download a picture. One on another computer sends the picture itself.
+- Agents no longer lose their connection to Writan when the window reconnects.
+
+### Presentations
+- **New presentation** opens a plain deck again, with a title slide and a content slide. The starter-deck gallery is gone.
+- Cropping a picture to fill its frame without moving it now sticks.
+
+### Documents
+- A picture you just put in can be cropped. Before, cropping it only squashed it.
+
 ## 0.12.1 — 2026-11-21
 
 ### AI agents
