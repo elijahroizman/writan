@@ -2,6 +2,27 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.12.1 — 2026-11-21
+
+### AI agents
+- AI agents can now join a document you share and edit it with you, like another person: everyone sees each agent's caret, changes, name and logo. Turn it on in **Settings › AI**.
+- Settings › AI adds Writan to Claude Code, Codex, Antigravity, Grok Build or Hermes Agent in one click, with a skill that tells the agent how to work alongside people. Any other agent that takes an MCP server can use the address it shows, from this computer or another one on your network.
+- An agent can read the document, see where everyone is, add, change and delete paragraphs, set styles, replace text, add and fill in slides, write cells and formulas, undo its own changes, and wait for someone else's.
+
+### Edit together
+- You can see where everyone is: each person's caret and selection show in their own color with their name, and in presentations and workbooks the slide or sheet list marks where each person is. Your color is the same on everyone's screen.
+- A note in the top left corner says when someone joins or leaves.
+- A document is saved before it's shared, since everyone edits the file with you.
+- On a Mac, Writan asks for access to your local network when you share or join, and waits while macOS asks you.
+- A document you joined no longer offers to save or autosave, since the file is on the other person's computer. Closing it or quitting doesn't ask, once your changes have reached them. **Save As** keeps a copy of your own.
+
+### Presentations
+- **New presentation** makes a deck right away from your default starter. Templates are one step away: **Templates** on Home, or **New presentation from a template**, in a gallery you can search.
+- On Linux, slide thumbnails no longer show white corners.
+
+### Workbooks
+- Charts show their axis titles, you can edit them, and they're kept when you save.
+
 ## 0.12.0 — 2026-11-21
 
 ### Edit together on your network
