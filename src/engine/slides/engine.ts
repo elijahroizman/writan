@@ -235,6 +235,13 @@ export class SlidesEngine {
     return html
   }
 
+  /** A slide's display list, with its styles in the style sheet: for drawing it elsewhere. */
+  paintItems(index: number): PaintItem[] {
+    const p = JSON.parse(this.doc.paint(index)) as { items: PaintItem[]; styles: import('../paint').PaintStyle[] }
+    this.styles.add(p.styles)
+    return p.items
+  }
+
   /** Where this copy is, for the others while shared (collab/session.ts). */
   presence(): string {
     return this.doc.collabPresence()

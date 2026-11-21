@@ -10,7 +10,13 @@ import type { WordEngine } from '../../engine/word/engine'
 import { stripExtension } from '../../lib/kinds'
 import { useWorkspace } from '../../state/workspace'
 import { attach, followAsAgent, inviteOf, leaveAsAgent, onOthersChange, useCollab, usePresence, type Opened, type Peer } from '../session'
+import { type Answer, type Args, doc, need, str, type Tool, ToolError } from './common'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
+import { describeSheetsPlace, readSheets, SHEETS_TOOLS, sheetsTool } from './sheets'
+import { readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
+import { readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
+
+export { ToolError } from './common'
 
 type Engine = WordEngine | SlidesEngine | SheetsEngine
 
@@ -122,8 +128,6 @@ useCollab.subscribe(() => {
   for (const s of sessions) for (const tab of [...s.copies.keys()]) if (!shared.has(tab)) s.leave(tab)
 })
 
-export class ToolError extends Error {}
-
 async function openEngine(doc: Opened): Promise<Engine> {
   if (doc.kind === 'docx') return (await import('../../engine/word/engine')).WordEngine.open(doc.bytes)
   if (doc.kind === 'pptx') return (await import('../../engine/slides/engine')).SlidesEngine.open(doc.bytes)
@@ -155,9 +159,7 @@ export function documents(): { document: string; title: string; kind: 'docx' | '
 
 // ── The tools, as MCP lists them
 
-const doc = { type: 'string', description: 'The document, as list_documents gives it.' }
-
-export const TOOLS = [
+const SHARED_TOOLS: Tool[] = [
   {
     name: 'list_documents',
     description: 'The Word documents, presentations and workbooks shared in Writan that you can work on, with who is in each.',
@@ -166,7 +168,7 @@ export const TOOLS = [
   {
     name: 'read_document',
     description:
-      'Reads a shared document, joining it first if you haven’t (people then see you in it). Word: numbered paragraphs, headings marked; use from/to for part of a long one. PowerPoint: each slide’s layout, shapes (by id) with their text, and notes; use slide for one. Excel: a sheet’s cells as A1 references with values and formulas; use sheet and range (like A1:F40) for part.',
+      'Reads a shared document, joining it first if you haven’t (people then see you in it). Word: numbered paragraphs, headings and table cells marked; use from/to for part of a long one. PowerPoint: each slide’s layout, shapes back to front (by id) with where each is, its size, look and text, and notes; use slide for one. Excel: a sheet’s cells as A1 references with values and formulas; use sheet and range (like A1:F40) for part.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -181,32 +183,26 @@ export const TOOLS = [
     },
   },
   {
+    name: 'view_document',
+    description:
+      'Shows a slide (PowerPoint) or a page (Word) as a picture, the way people see it. On a slide, each shape is outlined with its id, so you can tell which picture or box is which and see what overlaps; `labels: false` leaves them off, and `shape` shows just that shape, closer up. Look before and after changing how a slide looks.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        slide: { type: 'integer', description: 'PowerPoint: the slide’s number.' },
+        shape: { type: 'string', description: 'PowerPoint: just this shape, closer up.' },
+        labels: { type: 'boolean', description: 'PowerPoint: outline each shape with its id (true unless set).' },
+        page: { type: 'integer', description: 'Word: the page’s number (1 if left out).' },
+        width: { type: 'integer', description: 'The picture’s width in pixels (1280 for a slide and 1000 for a page unless set; 200 to 2000).' },
+      },
+      required: ['document'],
+    },
+  },
+  {
     name: 'where_is_everyone',
     description: 'Who is in a shared document and where: the paragraph and text each person has selected in Word, the slide and shapes in PowerPoint, the sheet and cells in Excel. Use it to work where someone asks, or to stay out of their way.',
     inputSchema: { type: 'object', properties: { document: doc }, required: ['document'] },
-  },
-  {
-    name: 'insert_paragraphs',
-    description: 'Word: puts new paragraphs in after paragraph `after` (0 puts them at the start). Each line of `text` is a paragraph. `style` sets their style, like "Heading 2" or "Normal".',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, after: { type: 'integer' }, text: { type: 'string' }, style: { type: 'string' } },
-      required: ['document', 'after', 'text'],
-    },
-  },
-  {
-    name: 'replace_paragraphs',
-    description: 'Word: replaces paragraphs `from` to `to` (just `from` if `to` is left out) with `text`, one paragraph per line.',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, from: { type: 'integer' }, to: { type: 'integer' }, text: { type: 'string' } },
-      required: ['document', 'from', 'text'],
-    },
-  },
-  {
-    name: 'delete_paragraphs',
-    description: 'Word: deletes paragraphs `from` to `to` (just `from` if `to` is left out).',
-    inputSchema: { type: 'object', properties: { document: doc, from: { type: 'integer' }, to: { type: 'integer' } }, required: ['document', 'from'] },
   },
   {
     name: 'replace_text',
@@ -217,52 +213,9 @@ export const TOOLS = [
       required: ['document', 'find', 'replace'],
     },
   },
-  {
-    name: 'set_style',
-    description: 'Word: sets the style of paragraphs `from` to `to` (just `from` if `to` is left out), like "Heading 1", "Title" or "Normal".',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, from: { type: 'integer' }, to: { type: 'integer' }, style: { type: 'string' } },
-      required: ['document', 'from', 'style'],
-    },
-  },
-  {
-    name: 'set_shape_text',
-    description: 'PowerPoint: replaces the text of shape `shape` (its id from read_document) on slide `slide`. Each line is a paragraph.',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, slide: { type: 'integer' }, shape: { type: 'string' }, text: { type: 'string' } },
-      required: ['document', 'slide', 'shape', 'text'],
-    },
-  },
-  {
-    name: 'add_slide',
-    description: 'PowerPoint: adds a slide after slide `after` (at the end if left out), with a layout by name if given, and puts `title` and `body` in its placeholders. Says the new slide’s number.',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, after: { type: 'integer' }, layout: { type: 'string' }, title: { type: 'string' }, body: { type: 'string' } },
-      required: ['document'],
-    },
-  },
-  {
-    name: 'delete_slide',
-    description: 'PowerPoint: deletes slide `slide`.',
-    inputSchema: { type: 'object', properties: { document: doc, slide: { type: 'integer' } }, required: ['document', 'slide'] },
-  },
-  {
-    name: 'set_notes',
-    description: 'PowerPoint: replaces slide `slide`’s speaker notes.',
-    inputSchema: { type: 'object', properties: { document: doc, slide: { type: 'integer' }, text: { type: 'string' } }, required: ['document', 'slide', 'text'] },
-  },
-  {
-    name: 'write_cells',
-    description: 'Excel: writes cells, as `{ "A1": "Total", "B1": "=SUM(B2:B9)", "C1": "42" }`: text, numbers, dates or formulas, as typed in a cell.',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, sheet: { type: 'string', description: 'The first sheet if left out.' }, cells: { type: 'object', additionalProperties: { type: 'string' } } },
-      required: ['document', 'cells'],
-    },
-  },
+]
+
+const AFTER_TOOLS: Tool[] = [
   {
     name: 'undo',
     description: 'Takes back your last change in a document (only yours, never someone else’s). In a workbook, that’s the last cell you wrote.',
@@ -270,7 +223,7 @@ export const TOOLS = [
   },
   {
     name: 'wait_for_changes',
-    description: 'Waits until someone else changes the document, up to `seconds` (60 at most), and says who. Read the document again afterwards.',
+    description: 'Waits until someone else changes the document, up to `seconds` (60 at most), and says who changed what: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel.',
     inputSchema: { type: 'object', properties: { document: doc, seconds: { type: 'number' } }, required: ['document'] },
   },
   {
@@ -280,42 +233,76 @@ export const TOOLS = [
   },
 ]
 
-// ── Doing them
-
-type Args = Record<string, unknown>
-
-const str = (a: Args, k: string) => (typeof a[k] === 'string' ? (a[k] as string) : undefined)
-const int = (a: Args, k: string) => (typeof a[k] === 'number' && Number.isFinite(a[k]) ? Math.trunc(a[k] as number) : undefined)
-function need<T>(v: T | undefined, what: string): T {
-  if (v === undefined) throw new ToolError(`Give ${what}.`)
-  return v
+/** add_picture is both PowerPoint's (on a slide) and Word's (after a paragraph). */
+function merged(tools: Tool[]): Tool[] {
+  const out = new Map<string, Tool>()
+  for (const t of tools) {
+    const was = out.get(t.name)
+    if (!was) {
+      out.set(t.name, t)
+      continue
+    }
+    const a = was.inputSchema as { properties: Record<string, unknown>; required: string[] }
+    const b = t.inputSchema as { properties: Record<string, unknown>; required: string[] }
+    out.set(t.name, {
+      name: t.name,
+      description: `${was.description} ${t.description}`,
+      inputSchema: { type: 'object', properties: { ...a.properties, ...b.properties }, required: a.required.filter((k) => b.required.includes(k)) },
+    })
+  }
+  return [...out.values()]
 }
 
-/** Runs a tool for an agent; returns its text. */
-export async function runTool(session: AgentSession, name: string, args: Args): Promise<string> {
-  if (name === 'list_documents') return listDocuments()
+const WORD_PICTURE: Tool = {
+  name: 'add_picture',
+  description: 'Word: puts the picture in as a paragraph of its own after paragraph `after` (0 for the start), as wide as width says if given (in pixels).',
+  inputSchema: { type: 'object', properties: { document: doc, after: { type: 'integer', description: 'Word: the paragraph to put it after.' } }, required: ['document'] },
+}
+
+export const TOOLS: Tool[] = merged([...SHARED_TOOLS, ...WORD_TOOLS, ...SLIDES_TOOLS, WORD_PICTURE, ...SHEETS_TOOLS, ...AFTER_TOOLS])
+
+// ── Doing them
+
+/** Runs a tool for an agent. `local` says whether the agent is on this computer. */
+export async function runTool(session: AgentSession, name: string, args: Args, local = false): Promise<Answer> {
+  if (name === 'list_documents') return { text: listDocuments() }
   const tab = need(str(args, 'document'), 'the document')
-  if (name === 'leave_document') return session.leave(tab) ? 'Left.' : 'You weren’t in it.'
+  if (name === 'leave_document') return { text: session.leave(tab) ? 'Left.' : 'You weren’t in it.' }
   const { copy, engine } = await session.copy(tab)
+  let answer: Answer
   switch (name) {
     case 'read_document':
-      return copy.kind === 'docx' ? readWord(engine as WordEngine, args) : copy.kind === 'pptx' ? readSlides(engine as SlidesEngine, args) : readSheets(engine as SheetsEngine, args)
+      return { text: copy.kind === 'docx' ? readWord(engine as WordEngine, args) : copy.kind === 'pptx' ? readSlides(engine as SlidesEngine, args) : readSheets(engine as SheetsEngine, args) }
+    case 'view_document':
+      if (copy.kind === 'xlsx') throw new ToolError('view_document shows slides and pages; read a workbook with read_document.')
+      return copy.kind === 'pptx' ? viewSlide(engine as SlidesEngine, args) : viewPage(engine as WordEngine, args)
     case 'where_is_everyone':
-      return whereIsEveryone(copy, engine)
+      return { text: whereIsEveryone(copy, engine) }
+    case 'wait_for_changes':
+      return { text: await waitForChanges(copy, engine, Math.min(60, Math.max(1, Number(args.seconds) || 30))) }
     case 'undo': {
       const e = engine as { run(c: { cmd: string }): unknown; state: { canUndo: boolean } }
-      if (!e.state.canUndo) return 'Nothing of yours to undo.'
+      if (!e.state.canUndo) return { text: 'Nothing of yours to undo.' }
       e.run({ cmd: 'undo' })
-      return `Undone.${await delivered(session, copy, engine)}`
+      answer = { text: 'Undone.' }
+      break
     }
-    case 'wait_for_changes':
-      return waitForChanges(copy, Math.min(60, Math.max(1, Number(args.seconds) || 30)))
     case 'replace_text':
       if (copy.kind === 'xlsx') throw new ToolError('In a workbook, use write_cells.')
-      return `${replaceText(engine as WordEngine | SlidesEngine, need(str(args, 'find'), 'find'), str(args, 'replace') ?? '', args.match_case === true)}${await delivered(session, copy, engine)}`
+      answer = { text: replaceText(engine as WordEngine | SlidesEngine, need(str(args, 'find'), 'find'), str(args, 'replace') ?? '', args.match_case === true) }
+      break
+    default:
+      answer =
+        copy.kind === 'docx'
+          ? await wordTool(engine as WordEngine, name, args, local)
+          : copy.kind === 'pptx'
+            ? await slidesTool(engine as SlidesEngine, name, args, local)
+            : sheetsTool(engine as SheetsEngine, name, args)
   }
-  const text = copy.kind === 'docx' ? wordTool(engine as WordEngine, name, args) : copy.kind === 'pptx' ? slidesTool(engine as SlidesEngine, name, args) : sheetsTool(engine as SheetsEngine, name, args)
-  return `${text}${await delivered(session, copy, engine)}`
+  const note = await delivered(session, copy, engine)
+  // Once everyone has it, the answer says what the document holds now.
+  const now = answer.after && session.has(copy) ? await answer.after() : ''
+  return { text: `${answer.text}${note}${now}`, pictures: answer.pictures }
 }
 
 /**
@@ -347,158 +334,67 @@ function listDocuments(): string {
     .join('\n')
 }
 
-async function waitForChanges(copy: Copy, seconds: number): Promise<string> {
-  const who = await new Promise<string | null>((resolve) => {
+type Snapshot = { kind: 'docx'; paras: string[] } | { kind: 'pptx'; slides: ReturnType<typeof snapshotSlides> } | { kind: 'xlsx' }
+
+function snapshot(copy: Copy, engine: Engine): Snapshot {
+  if (copy.kind === 'docx') return { kind: 'docx', paras: snapshotWord(engine as WordEngine) }
+  if (copy.kind === 'pptx') return { kind: 'pptx', slides: snapshotSlides(engine as SlidesEngine) }
+  return { kind: 'xlsx' }
+}
+
+/**
+ * Waits for someone else's change, then a moment more while they're still at it (typing comes a
+ * key at a time), and says who changed what.
+ */
+async function waitForChanges(copy: Copy, engine: Engine, seconds: number): Promise<string> {
+  const before = snapshot(copy, engine)
+  const who = new Set<string>()
+  const first = await new Promise<boolean>((resolve) => {
     const timer = window.setTimeout(() => {
       stop()
-      resolve(null)
+      resolve(false)
     }, seconds * 1000)
     const stop = onOthersChange(copy.id, (client) => {
+      who.add(client)
       window.clearTimeout(timer)
       stop()
-      resolve(client)
+      resolve(true)
     })
   })
-  if (!who) return `Nobody changed it in ${seconds} seconds.`
-  const peer = useCollab.getState()[copy.id]?.peers.find((p) => p.client === who)
-  return `${peer?.name ?? 'Someone'} changed it.`
-}
-
-// ── Word
-
-interface Para {
-  path: number[]
-  text: string
-}
-
-/** Whether two paragraphs are in the same list of blocks (the body, or one table cell). */
-const sameList = (a: number[], b: number[]) => a.length === b.length && a.slice(0, -1).every((x, i) => x === b[i])
-/** Whether paragraph `b` comes straight after `a` in the same list, with no other block between. */
-const nextTo = (a: number[], b: number[]) => sameList(a, b) && b[b.length - 1] === a[a.length - 1] + 1
-
-const paragraphsOf = (e: WordEngine) => JSON.parse(e.doc.paragraphs()) as Para[]
-const samePath = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i])
-
-function readWord(e: WordEngine, args: Args): string {
-  const paras = paragraphsOf(e)
-  const headings = JSON.parse(e.doc.outline()) as { text: string; depth: number; path: number[] }[]
-  const from = Math.max(1, int(args, 'from') ?? 1)
-  const to = Math.min(paras.length, int(args, 'to') ?? paras.length)
-  const lines = [`${paras.length} paragraphs. Numbers are what the editing tools take.`]
-  for (let i = from; i <= to; i++) {
-    const p = paras[i - 1]
-    const h = headings.find((x) => samePath(x.path, p.path))
-    const where = p.path.length > 1 ? ' (in a table)' : ''
-    // The outline counts levels from 0.
-    lines.push(`[${i}]${h ? ` (Heading ${h.depth + 1})` : ''}${where} ${p.text.replace(/\uFFFC/g, '[picture]')}`)
-  }
-  return lines.join('\n')
-}
-
-function para(paras: Para[], n: number | undefined, what = 'paragraph'): Para {
-  if (n === undefined || n < 1 || n > paras.length) throw new ToolError(`There’s no ${what} ${n ?? ''}; the document has ${paras.length} paragraphs (1 to ${paras.length}).`)
-  return paras[n - 1]
-}
-
-/** Selects from (path, offset) to (path, offset), offsets in UTF-16 units of the text. */
-function select(e: WordEngine, a: [number[], number], f: [number[], number] = a) {
-  e.run({ cmd: 'select', anchor: a, focus: f })
-}
-
-function styleId(e: WordEngine, name: string): string {
-  const options = JSON.parse(e.doc.styleOptions()) as { styleId?: string; style_id?: string; name: string }[]
-  const want = name.trim().toLowerCase().replace(/\s+/g, ' ')
-  const hit = options.find((o) => o.name.toLowerCase() === want || (o.styleId ?? o.style_id ?? '').toLowerCase() === want.replace(/ /g, ''))
-  if (!hit) throw new ToolError(`No style “${name}”. Styles here: ${options.map((o) => o.name).join(', ')}.`)
-  return (hit.styleId ?? hit.style_id)!
-}
-
-/** Runs commands as one change, which undo takes back at once. */
-function grouped(e: { run(c: { cmd: string }): unknown }, f: () => void) {
-  e.run({ cmd: 'beginGroup' })
-  try {
-    f()
-  } finally {
-    e.run({ cmd: 'endGroup' })
-  }
-}
-
-function wordTool(e: WordEngine, name: string, args: Args): string {
-  const paras = paragraphsOf(e)
-  switch (name) {
-    case 'insert_paragraphs': {
-      const after = need(int(args, 'after'), 'after')
-      const text = need(str(args, 'text'), 'the text').replace(/\r\n?/g, '\n')
-      const lines = text.split('\n').length
-      const style = str(args, 'style')
-      const id = style ? styleId(e, style) : null
-      grouped(e, () => {
-        if (after === 0) {
-          const first = para(paras, 1)
-          select(e, [first.path, 0])
-          e.run({ cmd: 'paste', text: `${text}\n`, json: null })
-        } else {
-          const p = para(paras, after)
-          select(e, [p.path, p.text.length])
-          e.run({ cmd: 'enter' })
-          e.run({ cmd: 'paste', text, json: null })
-        }
-        if (id) {
-          const now = paragraphsOf(e)
-          const first = now[after]
-          const last = now[after + lines - 1]
-          if (first && last) {
-            select(e, [first.path, 0], [last.path, last.text.length])
-            e.run({ cmd: 'style', id })
-          }
-        }
-      })
-      return `Put in ${lines} paragraph${lines === 1 ? '' : 's'} as ${after + 1}${lines > 1 ? `–${after + lines}` : ''}.`
+  if (!first) return `Nobody changed it in ${seconds} seconds.`
+  // Until they've stopped for a second, for five seconds at most.
+  await new Promise<void>((resolve) => {
+    let quiet = window.setTimeout(done, 1000)
+    const cap = window.setTimeout(done, 5000)
+    const stop = onOthersChange(copy.id, (client) => {
+      who.add(client)
+      window.clearTimeout(quiet)
+      quiet = window.setTimeout(done, 1000)
+    })
+    function done() {
+      window.clearTimeout(quiet)
+      window.clearTimeout(cap)
+      stop()
+      resolve()
     }
-    case 'replace_paragraphs': {
-      const from = para(paras, int(args, 'from'))
-      const toN = int(args, 'to') ?? int(args, 'from')!
-      const to = para(paras, toN)
-      select(e, [from.path, 0], [to.path, to.text.length])
-      e.run({ cmd: 'paste', text: need(str(args, 'text'), 'the text').replace(/\r\n?/g, '\n'), json: null })
-      return 'Replaced.'
-    }
-    case 'delete_paragraphs': {
-      const fromN = need(int(args, 'from'), 'from')
-      const toN = int(args, 'to') ?? fromN
-      const from = para(paras, fromN)
-      const to = para(paras, toN)
-      // Only within one list of paragraphs (the body, or one table cell): a deletion that ran
-      // into a table would take the table with it.
-      if (toN < fromN || paras.slice(fromN - 1, toN).some((p) => !sameList(p.path, from.path))) {
-        throw new ToolError('Those paragraphs aren’t all in one place (a table is in between, or some are in a table cell). Delete them in parts.')
-      }
-      // Nothing but paragraphs in between: a content control or other block the list skips
-      // would go too.
-      for (let i = fromN; i < toN; i++) if (!nextTo(paras[i - 1].path, paras[i].path)) throw new ToolError('Something that isn’t a paragraph is among them. Delete the paragraphs around it separately.')
-      // The paragraphs go whole, as one change; the ones around them stay exactly as they were.
-      const container = from.path.slice(0, -1)
-      const result = e.run<string>({ cmd: 'deleteBlocks', container, from: from.path[from.path.length - 1], to: to.path[to.path.length - 1] })
-      if (result === 'section') throw new ToolError('One of those paragraphs ends a section (it holds that section’s page setup), so it can’t be deleted. Delete the paragraphs around it.')
-      if (result === 'missing') throw new ToolError('Those paragraphs aren’t there any more. Read the document again.')
-      if (result === 'all') {
-        // They're all there is in that list (a table cell, or the whole body): their text goes
-        // and one empty paragraph stays.
-        select(e, [from.path, 0], [to.path, to.text.length])
-        e.run({ cmd: 'delete', word: false })
-      }
-      return `Deleted ${toN - fromN + 1} paragraph${toN === fromN ? '' : 's'}.`
-    }
-    case 'set_style': {
-      const from = para(paras, int(args, 'from'))
-      const to = para(paras, int(args, 'to') ?? int(args, 'from'))
-      const id = styleId(e, need(str(args, 'style'), 'the style'))
-      select(e, [from.path, 0], [to.path, to.text.length])
-      e.run({ cmd: 'style', id })
-      return 'Done.'
-    }
-  }
-  throw new ToolError(`${name} isn’t for Word documents.`)
+  })
+  // Their last change is applied once the relay's message has been handled.
+  await new Promise((r) => setTimeout(r, 50))
+  const peers = useCollab.getState()[copy.id]?.peers ?? []
+  const names = [...who].map((c) => peers.find((p) => p.client === c)?.name ?? 'Someone')
+  const after = snapshot(copy, engine)
+  let what = ''
+  if (before.kind === 'docx' && after.kind === 'docx') what = wordChanges(before.paras, after.paras)
+  else if (before.kind === 'pptx' && after.kind === 'pptx') what = slidesChanges(before.slides, after.slides) || 'Nothing on the slides looks different (the change was to something read_document doesn’t show).'
+  // Where each of them is now, which in a workbook is where they changed it.
+  const places = usePresence.getState()[copy.id] ?? {}
+  const at = [...who]
+    .map((c) => {
+      const p = places[c]?.at as Record<string, unknown> | undefined
+      return p ? `${peers.find((x) => x.client === c)?.name ?? 'Someone'} is at ${describe(copy.kind, engine, p)}.` : null
+    })
+    .filter(Boolean)
+  return [`${names.join(' and ')} changed it.`, what, ...at].filter(Boolean).join('\n')
 }
 
 function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, matchCase: boolean): string {
@@ -523,176 +419,6 @@ function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, mat
     : `Replaced in ${changed} shape${changed === 1 ? '' : 's'}.`
 }
 
-// ── PowerPoint
-
-interface Element {
-  id: string
-  type: string
-  name: string
-  text: string
-  placeholder?: string
-  children?: Element[]
-}
-
-const elementsOf = (e: SlidesEngine, i: number) => JSON.parse(e.doc.elements(i)) as Element[]
-
-function readSlides(e: SlidesEngine, args: Args): string {
-  const one = int(args, 'slide')
-  const out = [`${e.slides.length} slides. Layouts: ${e.layouts.map((l) => l.name).join(', ')}.`]
-  e.slides.forEach((s, i) => {
-    if (one !== undefined && one !== i + 1) return
-    out.push(`\nSlide ${i + 1}${s.layoutName ? ` (${s.layoutName})` : ''}${s.hidden ? ' (hidden)' : ''}`)
-    const shapes = (els: Element[], depth: number) => {
-      for (const el of els) {
-        const label = `${'  '.repeat(depth)}- shape "${el.id}" ${el.type}${el.placeholder ? ` placeholder:${el.placeholder}` : ''} “${el.name}”`
-        out.push(el.text ? `${label}: ${el.text.replace(/\n/g, ' / ')}` : label)
-        if (el.children) shapes(el.children, depth + 1)
-      }
-    }
-    shapes(elementsOf(e, i), 1)
-    if (s.notes) out.push(`  notes: ${s.notes.replace(/\n/g, ' / ')}`)
-  })
-  return out.join('\n')
-}
-
-function slideIndex(e: SlidesEngine, n: number | undefined): number {
-  if (n === undefined || n < 1 || n > e.slides.length) throw new ToolError(`There’s no slide ${n ?? ''}; the presentation has ${e.slides.length} (1 to ${e.slides.length}).`)
-  return n - 1
-}
-
-/** Types `text` into a shape on the active slide, replacing what's there. */
-function typeInto(e: SlidesEngine, id: string, text: string) {
-  e.run({ cmd: 'beginEdit', id: Number(id), x: null, y: null })
-  if (e.state.editing !== id) throw new ToolError(`Shape "${id}" doesn’t hold text.`)
-  e.run({ cmd: 'selectAllText' })
-  text
-    .replace(/\r\n?/g, '\n')
-    .split('\n')
-    .forEach((line, i) => {
-      if (i) e.run({ cmd: 'enter' })
-      if (line) e.run({ cmd: 'insertText', text: line })
-      // An empty shape needs the selection gone before the first line.
-      else if (i === 0) e.run({ cmd: 'deleteText', word: false })
-    })
-}
-
-function slidesTool(e: SlidesEngine, name: string, args: Args): string {
-  switch (name) {
-    case 'set_shape_text': {
-      const i = slideIndex(e, int(args, 'slide'))
-      const id = need(str(args, 'shape'), 'the shape')
-      e.run({ cmd: 'setActive', index: i })
-      if (!elementsOf(e, i).some((el) => el.id === id)) throw new ToolError(`Slide ${i + 1} has no shape "${id}". read_document lists them.`)
-      grouped(e, () => typeInto(e, id, need(str(args, 'text'), 'the text')))
-      return 'Done.'
-    }
-    case 'add_slide': {
-      const after = int(args, 'after') === undefined ? e.slides.length - 1 : slideIndex(e, int(args, 'after'))
-      const layoutName = str(args, 'layout')
-      const layout = layoutName ? e.layouts.find((l) => l.name.toLowerCase() === layoutName.toLowerCase()) : null
-      if (layoutName && !layout) throw new ToolError(`No layout “${layoutName}”. Layouts: ${e.layouts.map((l) => l.name).join(', ')}.`)
-      grouped(e, () => {
-        e.run({ cmd: 'addSlide', after, layout: layout?.path ?? null })
-        const i = after + 1
-        e.run({ cmd: 'setActive', index: i })
-        const els = elementsOf(e, i)
-        const title = els.find((el) => el.placeholder === 'title' || el.placeholder === 'ctrTitle')
-        const body = els.find((el) => el.placeholder === 'body' || el.placeholder === 'subTitle' || el.placeholder === 'obj')
-        const t = str(args, 'title')
-        const b = str(args, 'body')
-        // A layout without the placeholder (Blank) gets a text box for it instead.
-        const box = (text: string, y: number, h: number, size: number) => {
-          const id = e.run<string>({ cmd: 'insertTextBox' })
-          e.run({ cmd: 'setBox', id: Number(id), x: e.width * 0.08, y: e.height * y, w: e.width * 0.84, h: e.height * h, rot: 0 })
-          typeInto(e, id, text)
-          e.run({ cmd: 'selectAllText' })
-          e.run({ cmd: 'textStyle', patch: { fontSize: size } })
-        }
-        if (t) title ? typeInto(e, title.id, t) : box(t, 0.08, 0.16, 36)
-        if (b) body ? typeInto(e, body.id, b) : box(b, 0.3, 0.6, 20)
-        e.run({ cmd: 'endEdit' })
-      })
-      return `Added slide ${after + 2}.`
-    }
-    case 'delete_slide': {
-      const i = slideIndex(e, int(args, 'slide'))
-      e.run({ cmd: 'deleteSlides', indexes: [i] })
-      return 'Deleted.'
-    }
-    case 'set_notes': {
-      const i = slideIndex(e, int(args, 'slide'))
-      e.run({ cmd: 'notes', index: i, text: need(str(args, 'text'), 'the text') })
-      return 'Done.'
-    }
-  }
-  throw new ToolError(`${name} isn’t for presentations.`)
-}
-
-// ── Excel
-
-/** `B3` as [row, column], from 0. */
-function cellRef(ref: string): [number, number] {
-  const m = /^\$?([A-Za-z]{1,3})\$?(\d{1,7})$/.exec(ref.trim())
-  if (!m) throw new ToolError(`“${ref}” isn’t a cell like B3.`)
-  let col = 0
-  for (const ch of m[1].toUpperCase()) col = col * 26 + (ch.charCodeAt(0) - 64)
-  return [Number(m[2]) - 1, col - 1]
-}
-
-function columnName(c: number) {
-  let s = ''
-  for (let n = c + 1; n > 0; n = Math.floor((n - 1) / 26)) s = String.fromCharCode(65 + ((n - 1) % 26)) + s
-  return s
-}
-
-function sheetIndex(e: SheetsEngine, name: string | undefined): number {
-  if (name === undefined) return e.sheets.findIndex((s) => !s.hidden)
-  const i = e.sheets.findIndex((s) => s.name.toLowerCase() === name.toLowerCase())
-  if (i < 0) throw new ToolError(`No sheet “${name}”. Sheets: ${e.sheets.map((s) => s.name).join(', ')}.`)
-  return i
-}
-
-function readSheets(e: SheetsEngine, args: Args): string {
-  const sheet = sheetIndex(e, str(args, 'sheet'))
-  const g = e.geometryOf(sheet).info
-  let [r0, c0, r1, c1] = [0, 0, Math.min(g.content[0], 200) - 1, Math.min(g.content[1], 52) - 1]
-  const range = str(args, 'range')
-  if (range) {
-    const [a, b = a] = range.split(':')
-    ;[r0, c0] = cellRef(a)
-    ;[r1, c1] = cellRef(b)
-  }
-  if ((Math.abs(r1 - r0) + 1) * (Math.abs(c1 - c0) + 1) > 20_000) throw new ToolError('That range is too big to read at once. Read up to 20,000 cells at a time, like A1:Z500.')
-  const out = [`Sheets: ${e.sheets.map((s) => s.name).join(', ')}. Reading ${e.sheets[sheet].name}!${columnName(c0)}${r0 + 1}:${columnName(Math.max(c0, c1))}${Math.max(r0, r1) + 1}.`]
-  for (let r = r0; r <= r1; r++) {
-    const cells: string[] = []
-    for (let c = c0; c <= c1; c++) {
-      const cell = JSON.parse(e.doc.cell(sheet, r, c)) as { input: string; display: string }
-      if (!cell.input) continue
-      cells.push(cell.input.startsWith('=') ? `${columnName(c)}${r + 1}: ${cell.input} → ${cell.display}` : `${columnName(c)}${r + 1}: ${cell.display}`)
-    }
-    if (cells.length) out.push(cells.join(' | '))
-  }
-  if (out.length === 1) out.push('(empty)')
-  return out.join('\n')
-}
-
-function sheetsTool(e: SheetsEngine, name: string, args: Args): string {
-  if (name !== 'write_cells') throw new ToolError(`${name} isn’t for workbooks.`)
-  const sheet = sheetIndex(e, str(args, 'sheet'))
-  const cells = args.cells as Record<string, unknown> | undefined
-  if (!cells || typeof cells !== 'object') throw new ToolError('Give cells, like { "A1": "Total" }.')
-  const entries = Object.entries(cells).map(([ref, v]) => [cellRef(ref), String(v ?? '')] as const)
-  if (!entries.length) return 'Nothing to write.'
-  // Each cell is its own change (workbooks have no grouping), so undo takes back the last one.
-  for (const [[row, col], text] of entries) e.run({ cmd: 'input', sheet, row, col, text })
-  // People see the agent where it wrote.
-  const rows = entries.map(([[r]]) => r)
-  const cols = entries.map(([[, c]]) => c)
-  e.run({ cmd: 'select', sheet, anchor: [Math.min(...rows), Math.min(...cols)], focus: [Math.max(...rows), Math.max(...cols)] })
-  return `Wrote ${entries.length} cell${entries.length === 1 ? '' : 's'}.`
-}
-
 // ── Where everyone is
 
 function whereIsEveryone(copy: Copy, engine: Engine): string {
@@ -707,11 +433,13 @@ function whereIsEveryone(copy: Copy, engine: Engine): string {
   return lines.length ? lines.join('\n') : 'Nobody else is in it.'
 }
 
+const samePath = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i])
+
 function describe(kind: Copy['kind'], engine: Engine, at: Record<string, unknown>): string {
   if (kind === 'docx') {
     if (at.s !== 'b') return 'in a header, footer or note'
     const e = engine as WordEngine
-    const paras = paragraphsOf(e)
+    const paras = JSON.parse(e.doc.paragraphs()) as { path: number[]; text: string }[]
     const [ap, ao] = at.a as [number[], number]
     const [fp, fo] = at.f as [number[], number]
     const ai = paras.findIndex((x) => samePath(x.path, ap))
@@ -729,13 +457,10 @@ function describe(kind: Copy['kind'], engine: Engine, at: Record<string, unknown
     const i = e.slides.findIndex((s) => s.id === at.slide)
     if (i < 0) return 'on a slide this copy hasn’t caught up with'
     const ids = ((at.frames as number[] | undefined) ?? []).map(String)
-    const names = elementsOf(e, i).filter((el) => ids.includes(el.id)).map((el) => `"${el.id}" “${el.name}”`)
+    const names = (JSON.parse(e.doc.elements(i)) as { id: string; name: string }[]).filter((el) => ids.includes(el.id)).map((el) => `"${el.id}" “${el.name}”`)
     const typing = at.e ? ', typing' : ''
     return `slide ${i + 1}${names.length ? `, shape ${names.join(', ')}${typing}` : ''}`
   }
-  const [ar, ac] = at.a as [number, number]
-  const [fr, fc] = at.f as [number, number]
-  const a = `${columnName(Math.min(ac, fc))}${Math.min(ar, fr) + 1}`
-  const b = `${columnName(Math.max(ac, fc))}${Math.max(ar, fr) + 1}`
-  return `sheet ${at.sheet}, ${a === b ? a : `${a}:${b}`}`
+  return describeSheetsPlace(at)
 }
+

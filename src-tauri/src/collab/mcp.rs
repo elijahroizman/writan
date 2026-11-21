@@ -69,9 +69,9 @@ const IDLE: Duration = Duration::from_secs(4 * 60 * 60);
 const INSTRUCTIONS: &str = "Writan is a word processor, presentation and spreadsheet app. \
 Through this server you join documents that people are sharing from Writan and edit them \
 together, live: they see your caret, your name and your changes as you make them, and you can \
-see where they are. Start with list_documents, then read_document. Keep changes small and \
-focused, don't edit what someone else is working on unless asked, and read again before editing \
-if time has passed.";
+see where they are. Start with list_documents, then read_document; view_document shows a slide \
+or page as people see it. Keep changes small and focused, don't edit what someone else is \
+working on unless asked, and read again before editing if time has passed.";
 
 /// An agent connected through MCP.
 struct Session {
@@ -477,8 +477,13 @@ fn post(stream: &TcpStream, mcp: &SharedMcp, req: &Request) {
             mcp,
             req.generation,
             &session,
-            agent,
-            &client,
+            Caller {
+                agent,
+                client: &client,
+                // Only an agent on this computer may have Writan read a file or an address for
+                // it; one elsewhere sends what it has.
+                local: stream.peer_addr().is_ok_and(|a| a.ip().is_loopback()),
+            },
             method,
             &msg["params"],
             &id,
@@ -493,14 +498,20 @@ fn post(stream: &TcpStream, mcp: &SharedMcp, req: &Request) {
     );
 }
 
+/// Who a call is from, for the page.
+struct Caller<'a> {
+    agent: Option<String>,
+    client: &'a str,
+    /// Whether the agent connected from this computer.
+    local: bool,
+}
+
 /// Hands a call to the page and waits for its answer.
-#[allow(clippy::too_many_arguments)]
 fn call_page(
     mcp: &SharedMcp,
     generation: u64,
     session: &str,
-    agent: Option<String>,
-    client: &str,
+    who: Caller,
     method: &str,
     params: &Value,
     id: &Value,
@@ -516,8 +527,8 @@ fn call_page(
         };
         let call = NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let text = json!({
-            "t": "call", "id": call, "session": session, "agent": agent, "client": client,
-            "method": method, "params": params,
+            "t": "call", "id": call, "session": session, "agent": who.agent, "client": who.client,
+            "local": who.local, "method": method, "params": params,
         })
         .to_string();
         if bridge.send(Cmd::Text(text)).is_err() {

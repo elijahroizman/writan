@@ -21,6 +21,8 @@ export interface AgentsStatus {
 export const useAgentsStatus = create<AgentsStatus>(() => ({ state: 'off', local: null, network: [], message: null }))
 
 let bridge: Transport | null = null
+/** Bumped by every start and stop, so a start that a later one overtook lets its connection go. */
+let generation = 0
 const sessions = new Map<string, AgentSession>()
 
 interface Call {
@@ -29,6 +31,8 @@ interface Call {
   session: string
   agent: string | null
   client: string
+  /** Whether the agent connected from this computer. */
+  local?: boolean
   method: string
   params: { name?: string; arguments?: Record<string, unknown> } | null
 }
@@ -43,8 +47,8 @@ async function answer(call: Call): Promise<unknown> {
   const name = call.params?.name ?? ''
   if (!TOOLS.some((t) => t.name === name)) return { content: [{ type: 'text', text: `Writan has no tool ${name}.` }], isError: true }
   try {
-    const text = await runTool(session, name, call.params?.arguments ?? {})
-    return { content: [{ type: 'text', text }] }
+    const { text, pictures = [] } = await runTool(session, name, call.params?.arguments ?? {}, call.local === true)
+    return { content: [{ type: 'text', text }, ...pictures.map((p) => ({ type: 'image', data: p.data, mimeType: p.mimeType }))] }
   } catch (err) {
     // A mistake the agent can fix comes back as the tool's answer, so it can try again.
     const text = err instanceof ToolError ? err.message : `Something went wrong: ${String((err as Error)?.message ?? err)}`
@@ -52,7 +56,8 @@ async function answer(call: Call): Promise<unknown> {
   }
 }
 
-function onMessage(data: string) {
+/** A message from the relay's server, answered on the connection it came on. */
+function onMessage(data: string, from: () => Transport | null) {
   let msg: Call | { t: 'end'; session: string }
   try {
     msg = JSON.parse(data)
@@ -66,7 +71,7 @@ function onMessage(data: string) {
   }
   if (msg.t !== 'call') return
   const call = msg
-  void answer(call).then((result) => bridge?.send(JSON.stringify({ t: 'result', id: call.id, result })))
+  void answer(call).then((result) => from()?.send(JSON.stringify({ t: 'result', id: call.id, result })))
 }
 
 /**
@@ -75,6 +80,7 @@ function onMessage(data: string) {
  */
 export async function startAgents(token: string): Promise<void> {
   stopBridge()
+  const mine = generation
   useAgentsStatus.setState({ state: 'starting', message: null })
   try {
     let base: string
@@ -92,17 +98,25 @@ export async function startAgents(token: string): Promise<void> {
       base = browserRelay().replace(/^wss?:\/\//, '')
       key = localStorage.getItem('workspace.agentsBridgeKey') ?? ''
     }
-    bridge = await connect(`ws://${base}/bridge/${key}`, {
-      message: onMessage,
+    let t: Transport | null = null
+    t = await connect(`ws://${base}/bridge/${key}`, {
+      message: (data) => onMessage(data, () => t),
       closed: (reason) => {
+        // Only the connection in use: one that a newer start replaced closes quietly.
+        if (!t || bridge !== t) return
         bridge = null
         endSessions()
         if (useAgentsStatus.getState().state === 'on') useAgentsStatus.setState({ state: 'error', message: `Agents can’t reach Writan any more: ${reason}` })
       },
     })
+    if (mine !== generation) {
+      t.close()
+      return
+    }
+    bridge = t
     useAgentsStatus.setState({ state: 'on', local: `http://${base}/mcp/${token}`, network, message: null })
   } catch (err) {
-    useAgentsStatus.setState({ state: 'error', message: String((err as Error)?.message ?? err) })
+    if (mine === generation) useAgentsStatus.setState({ state: 'error', message: String((err as Error)?.message ?? err) })
   }
 }
 
@@ -112,6 +126,7 @@ function endSessions() {
 }
 
 function stopBridge() {
+  generation++
   bridge?.close()
   bridge = null
   endSessions()

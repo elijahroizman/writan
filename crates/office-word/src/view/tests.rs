@@ -1338,3 +1338,39 @@ fn a_new_list_hangs_its_label_at_its_levels_indent() {
         assert!((x("Thing") - x(label) - 24.0).abs() < 0.5, "{new:?}");
     }
 }
+
+#[test]
+fn cropping_a_picture_put_in_here_shows_and_saves() {
+    // A 1×1 PNG.
+    let png = vec![
+        0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f,
+        0x15, 0xc4, 0x89, 0, 0, 0, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xcf, 0xc0, 0xf0, 0x1f, 0, 0x05, 0x00, 0x01, 0xff,
+        0x89, 0x99, 0x3d, 0x1d, 0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+    ];
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&["Before"])).unwrap();
+    v.layout(&mut host);
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 6)));
+    v.insert_image(png, "image/png", 200.0, 100.0);
+    // Select the picture: the one character after "Before".
+    let at = "Before".len() as u32;
+    v.set_selection(Selection { anchor: Pos::new(Path::top(0), at), focus: Pos::new(Path::top(0), at + "\u{FFFC}".len() as u32) });
+    assert!(v.state().image.is_some(), "the new picture is selected");
+    v.crop_image([0.0, 0.0, 50.0, 0.0], 952_500, 952_500);
+    let crop = v.state().image.expect("still selected").crop;
+    assert_eq!((crop.left, crop.right), (0.0, 50.0));
+    let back = WordView::open(&v.save().unwrap()).unwrap();
+    let img = back
+        .blocks(StoryId::Body)
+        .iter()
+        .find_map(|b| match b {
+            Block::Paragraph(p) => p.content.iter().find_map(|i| match i {
+                office_core::model::Inline::Image(img) => Some(img.clone()),
+                _ => None,
+            }),
+            _ => None,
+        })
+        .expect("the picture was saved");
+    assert_eq!(image_crop(&img), Some([0.0, 0.0, 0.5, 0.0]));
+    assert_eq!(img.width.0, 952_500);
+}
