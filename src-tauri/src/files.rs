@@ -9,7 +9,10 @@ use tauri::ipc::{InvokeBody, Request, Response};
 
 /// Returns the file's bytes as a raw IPC response (no JSON/base64 round trip),
 /// so opening a 50 MB PDF costs one copy.
-#[tauri::command]
+///
+/// Commands that touch the disk are `async`: Tauri runs plain commands on the main thread, so
+/// reading a big file there would freeze the window, and several reads would queue behind each other.
+#[tauri::command(async)]
 pub fn read_file(path: String) -> Result<Response, String> {
     fs::read(&path)
         .map(Response::new)
@@ -22,7 +25,7 @@ pub fn read_file(path: String) -> Result<Response, String> {
 ///
 /// With an `x-history` header the save is also kept in version history (see history.rs),
 /// named by the percent-encoded `x-history-label` if there is one.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn write_file<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     request: Request<'_>,
@@ -123,7 +126,7 @@ pub struct PathInfo {
     modified_ms: u64,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn path_info(path: String) -> PathInfo {
     match fs::metadata(&path) {
         Ok(meta) => PathInfo {
@@ -169,7 +172,7 @@ fn skipped(name: &str) -> bool {
 
 /// A folder's contents for the folder sidebar: subfolders first, then files, each by name
 /// (natural order, ignoring case). Hidden files are left out.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn list_dir(path: String) -> Result<Vec<DirEntry>, String> {
     let mut entries: Vec<DirEntry> = fs::read_dir(&path)
         .map_err(|e| format!("Couldn't open the folder “{}”: {e}", display_name(&path)))?

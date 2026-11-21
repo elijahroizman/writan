@@ -1,5 +1,5 @@
 import { Sparkles } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState } from 'react'
 import { isMac } from '../../lib/platform'
 import { transitionLabel } from './transitions'
 import type { SlideInfo, SlidesEngine } from '../../engine/slides/engine'
@@ -12,7 +12,7 @@ export type PickMode = 'only' | 'toggle' | 'range'
  * Left sidebar: every slide, click to go, drag to reorder, right-click for more.
  * ⌘-click (Ctrl on Windows) and shift-click pick several; Delete removes the picked slides.
  */
-export function SlideStrip({
+export const SlideStrip = memo(function SlideStrip({
   engine,
   slides,
   activeIndex,
@@ -148,4 +148,4 @@ export function SlideStrip({
       ))}
     </div>
   )
-}
+})

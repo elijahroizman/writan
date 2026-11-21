@@ -471,7 +471,7 @@ pub fn remove_font<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), Stri
 }
 
 /// One face's bytes, for the editors to register.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn font_file<R: Runtime>(
     app: AppHandle<R>,
     id: String,

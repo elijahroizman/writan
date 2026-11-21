@@ -67,6 +67,8 @@ impl Package {
     }
 
     pub fn read(bytes: &[u8]) -> Result<Package> {
+        #[cfg(test)]
+        READS.with(|n| n.set(n.get() + 1));
         let data: Arc<[u8]> = Arc::from(bytes);
         let mut archive = ZipArchive::new(Cursor::new(data))?;
         let mut parts: Vec<Part> = Vec::new();
@@ -350,6 +352,12 @@ fn write_all(zip: &mut ZipWriter<Cursor<Vec<u8>>>, data: &[u8]) -> Result<()> {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+thread_local! {
+    /// How many packages this thread has read, for tests that a zip is read only once.
+    pub(crate) static READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 fn name_hash(name: &str) -> u64 {
     let mut hash = std::collections::hash_map::DefaultHasher::new();

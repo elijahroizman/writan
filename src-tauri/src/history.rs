@@ -287,7 +287,7 @@ fn add_version(
 }
 
 /// A file's versions, newest first.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_list<R: Runtime>(app: AppHandle<R>, path: String) -> Result<Vec<Version>, String> {
     let root = root(&app)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -295,7 +295,7 @@ pub fn history_list<R: Runtime>(app: AppHandle<R>, path: String) -> Result<Vec<V
 }
 
 /// One version's bytes, as a raw response.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_read<R: Runtime>(
     app: AppHandle<R>,
     path: String,

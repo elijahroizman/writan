@@ -154,8 +154,16 @@ export function Pages({ engine, zoom, scroller }: Props) {
     }
   })
 
+  // Listeners are added once and call the latest render's functions through these refs, so
+  // a keystroke doesn't tear down and re-add them (and ResizeObserver's first call doesn't
+  // trigger another draw).
+  const drawRef = useRef(draw)
+  drawRef.current = draw
+  const scrollerRef = useRef(scroller)
+  scrollerRef.current = scroller
+
   useEffect(() => {
-    const sc = scroller()
+    const sc = scrollerRef.current()
     if (!sc) return
     let frame = 0
     const measure = () => {
@@ -167,7 +175,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
       if (!frame) {
         frame = requestAnimationFrame(() => {
           frame = 0
-          draw()
+          drawRef.current()
         })
       }
     }
@@ -179,7 +187,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
       sc.removeEventListener('scroll', onScroll)
       ro.disconnect()
     }
-  })
+  }, [])
 
   // Pages drawn at another zoom are drawn again only if their content changed; the CSS scale
   // takes care of the rest.
@@ -278,8 +286,11 @@ export function Pages({ engine, zoom, scroller }: Props) {
     run({ cmd: 'click', page: at.page, x: at.x, y: at.y, extend: e.shiftKey, count: e.detail }, false)
     drag.current = { page: at.page }
   }
+  const pointer = useRef({ zoom, pagePoint, run })
+  pointer.current = { zoom, pagePoint, run }
   useEffect(() => {
     const move = (e: MouseEvent) => {
+      const { zoom, pagePoint, run } = pointer.current
       if (resize.current) {
         const r = resize.current
         const dx = (e.clientX - r.startX) / zoom
@@ -297,7 +308,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
       const at = pagePoint(e.clientX, e.clientY)
       run({ cmd: 'drag', page: at.page, x: at.x, y: at.y }, false)
       // Keep the pointer's end of the selection in view while dragging past the edge.
-      const sc = scroller()
+      const sc = scrollerRef.current()
       if (sc) {
         const r = sc.getBoundingClientRect()
         if (e.clientY > r.bottom - 20) sc.scrollTop += 16
@@ -305,6 +316,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
       }
     }
     const up = (e: MouseEvent) => {
+      const { zoom, run } = pointer.current
       if (resize.current) {
         const r = resize.current
         resize.current = null
@@ -322,7 +334,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
-  })
+  }, [])
 
   const onContextMenu = (e: React.MouseEvent) => {
     const mark = spellingAt(engine, e.clientX, e.clientY)

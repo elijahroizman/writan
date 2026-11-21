@@ -448,13 +448,14 @@ impl WordView {
 
     /// Replaces the marks in set `set`.
     pub fn set_marks(&mut self, set: &str, marks: Vec<(String, Pos, Pos)>) {
+        let blocks = self.blocks(StoryId::Body);
+        let kept: Vec<Mark> = marks
+            .into_iter()
+            .filter(|(_, from, to)| pos::para(blocks, &from.path).is_some() && pos::para(blocks, &to.path).is_some())
+            .map(|(id, from, to)| Mark { set: set.to_string(), id, from, to })
+            .collect();
         self.marks.retain(|m| m.set != set);
-        let blocks = self.blocks(StoryId::Body).to_vec();
-        for (id, from, to) in marks {
-            if pos::para(&blocks, &from.path).is_some() && pos::para(&blocks, &to.path).is_some() {
-                self.marks.push(Mark { set: set.to_string(), id, from, to });
-            }
-        }
+        self.marks.extend(kept);
     }
 
     /// A font finished loading: measure everything again.

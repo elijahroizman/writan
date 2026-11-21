@@ -170,6 +170,66 @@ fn workbook_formats_columns_and_sheets() {
 }
 
 #[test]
+fn formatting_only_edits_skip_recalculation() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.set_now(46000.5);
+    let rand = CellRef::new(0, 0);
+    let source = CellRef::new(1, 0);
+    let dependent = CellRef::new(1, 1);
+    v.set_input(0, rand, "=RAND()");
+    v.set_input(0, source, "2");
+    v.set_input(0, dependent, "=A2*10");
+    let rolled = v.sheets()[0].value(rand).clone();
+    assert!(matches!(rolled, Value::Number(_)));
+    assert_eq!(v.cell_info(0, dependent).display, "20");
+
+    // Formatting can't change what a formula comes to, so nothing is worked out again: RAND
+    // keeps the number it rolled (a recalculation would roll it again).
+    let at = Range { start: rand, end: rand };
+    for patch in [
+        FormatPatch { bold: Some(true), ..Default::default() },
+        FormatPatch { number_format: Some("0.00".into()), ..Default::default() },
+        FormatPatch { borders: Some("all".into()), ..Default::default() },
+    ] {
+        v.format(0, at, &patch);
+        assert_eq!(v.sheets()[0].value(rand), &rolled);
+    }
+    v.set_column_width(0, 0, Some(140.0));
+    v.set_row_height(0, 3, Some(30.0));
+    assert_eq!(v.sheets()[0].value(rand), &rolled);
+    // Undo and redo do work it out again: the history holds A1 with the number RAND had then,
+    // which a later edit rolls again. A formula reading A1 must still agree with it.
+    let follower = CellRef::new(0, 2);
+    v.set_input(0, follower, "=A1");
+    v.format(0, at, &FormatPatch { bold: Some(false), ..Default::default() });
+    v.set_input(0, CellRef::new(2, 0), "7");
+    assert!(v.undo());
+    assert!(v.undo());
+    assert_eq!(v.sheets()[0].value(rand), v.sheets()[0].value(follower), "after undoing the formatting");
+    assert!(v.redo());
+    assert!(v.redo());
+    assert_eq!(v.sheets()[0].value(rand), v.sheets()[0].value(follower), "after redoing it");
+    let rolled = v.sheets()[0].value(rand).clone();
+
+    // A value edit still works the dependent formulas out again — and again on undo and redo.
+    v.set_input(0, source, "3");
+    assert_eq!(v.cell_info(0, dependent).display, "30");
+    assert_ne!(v.sheets()[0].value(rand), &rolled, "the edit recalculated, rolling RAND again");
+    assert!(v.undo());
+    assert_eq!(v.cell_info(0, dependent).display, "20");
+    assert!(v.redo());
+    assert_eq!(v.cell_info(0, dependent).display, "30");
+
+    // Formatting an empty cell adds it, which stretches the used range that A:A reads.
+    let blanks = CellRef::new(0, 6);
+    v.set_input(0, blanks, "=COUNTBLANK(F:F)");
+    let before = v.cell_info(0, blanks).display;
+    let far = CellRef::new(9, 5);
+    v.format(0, Range { start: far, end: far }, &FormatPatch { bold: Some(true), ..Default::default() });
+    assert_ne!(v.cell_info(0, blanks).display, before, "F10 now counts");
+}
+
+#[test]
 fn clipboard_copies_formula_blocks_and_keeps_tab_separated_values() {
     let mut v = SheetsView::blank(Kind::Sheets);
     let source = CellRef::new(1, 1);

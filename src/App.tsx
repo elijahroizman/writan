@@ -72,11 +72,21 @@ const BUILT_IN_EDITORS: Record<string, React.LazyExoticComponent<ComponentType<E
 const PluginEditor = lazy(() => import('./plugins/PluginEditor'))
 const editorFor = (kind: DocKind): ComponentType<EditorProps> => loadedEditors[kind] ?? BUILT_IN_EDITORS[kind] ?? PluginEditor
 
-/** Loads the office editors and their engine in the background, once the app is idle. */
+const OFFICE_KINDS: ReadonlySet<string> = new Set(['docx', 'pptx', 'xlsx', 'csv'])
+
+/**
+ * Loads the office editors and their engine in the background, once the app is idle. Called
+ * after the startup opens, so it doesn't compete with them (WebKit has no requestIdleCallback,
+ * so there it's a fixed delay).
+ */
 function preloadOfficeEditors() {
   const idle = (f: () => void) => (typeof window.requestIdleCallback === 'function' ? window.requestIdleCallback(f, { timeout: 3000 }) : globalThis.setTimeout(f, 1500))
   idle(() => {
     for (const kind of ['docx', 'pptx', 'xlsx']) void loadEditor(kind).catch(() => {})
+    // An office document on screen has loaded and compiled the engine. Warming it up again would
+    // only hold up that document's first edits.
+    const { tabs, activeId } = useWorkspace.getState()
+    if (tabs.some((t) => t.id === activeId && OFFICE_KINDS.has(t.kind))) return
     void import('./engine/preload').then((m) => m.preloadEngine()).catch(() => {})
   })
 }
@@ -491,8 +501,6 @@ export default function App() {
   const explorer = useFolder((s) => !!s.root && s.visible)
   const started = useRef(false)
 
-  useEffect(preloadOfficeEditors, [])
-
   // Startup: restore last session, then open anything Finder handed us.
   useEffect(() => {
     const unlisteners: Promise<() => void>[] = []
@@ -514,7 +522,7 @@ export default function App() {
         await Promise.all([startPlugins(), useExtraFonts.getState().refresh()])
         await restoreSession()
         await drainPending()
-      })()
+      })().finally(preloadOfficeEditors)
     }
     unlisteners.push(platform.listen<string>('menu', (id) => void runCommand(id)))
     unlisteners.push(platform.listen('open-requested', () => void drainPending()))

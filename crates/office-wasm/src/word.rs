@@ -559,12 +559,12 @@ impl WordDoc {
                 serde_json::Value::Null
             }
             Cmd::SetMarks { set, marks } => {
-                let blocks = v.body().to_vec();
+                let blocks = v.body();
                 let marks = marks
                     .into_iter()
                     .filter_map(|(id, path, a, b)| {
                         let path = Path(path);
-                        let p = office_engine::pos::para(&blocks, &path)?;
+                        let p = office_engine::pos::para(blocks, &path)?;
                         let flat = office_engine::text::flat(p);
                         Some((id, Pos::new(path.clone(), byte_offset(&flat.text, a)), Pos::new(path, byte_offset(&flat.text, b))))
                     })

@@ -145,6 +145,11 @@ export class SlidesEngine {
   /** The active slide's frames. */
   elements: Element[] = []
   tick = 0
+  /** Bumped when the slide list's JSON changes (content, notes, transitions, order). */
+  slidesVersion = 0
+  /** The JSON the slides and elements were last parsed from: unchanged ones keep their objects. */
+  private slidesJson = ''
+  private elementsJson = ''
   private drawn = new Map<string, { revision: number; html: string }>()
   private listeners = new Set<() => void>()
   private stopFonts: () => void
@@ -205,9 +210,18 @@ export class SlidesEngine {
 
   refresh() {
     if (this.disposed) return
-    this.slides = JSON.parse(this.doc.slides())
+    const slides = this.doc.slides()
+    if (slides !== this.slidesJson) {
+      this.slidesJson = slides
+      this.slides = JSON.parse(slides)
+      this.slidesVersion++
+    }
     this.state = JSON.parse(this.doc.state())
-    this.elements = JSON.parse(this.doc.elements(this.state.active))
+    const elements = this.doc.elements(this.state.active)
+    if (elements !== this.elementsJson) {
+      this.elementsJson = elements
+      this.elements = JSON.parse(elements)
+    }
     this.tick++
     for (const f of this.listeners) f()
     this.collab?.changed()
