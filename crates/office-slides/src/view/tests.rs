@@ -1247,3 +1247,21 @@ fn enter_turns_typed_bullets_into_real_ones() {
     v.undo();
     assert_eq!(bulleted(&v, 0, 2)[0], s("• Apple will appeal", false));
 }
+
+#[test]
+fn cropping_a_picture_without_moving_its_frame_is_a_change() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::open(&deck(&[&[]])).unwrap();
+    let id = v.insert_image(CLIPBOARD_PNG.to_vec(), "image/png", 200.0, 100.0, "Wide");
+    let el = v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).unwrap();
+    // The frame stays where it is: only the part of the picture it shows changes.
+    let to = Boxed { x: el.x, y: el.y, w: el.width, h: el.height, ..Default::default() };
+    v.crop_picture(id, [0.25, 0.0, 0.25, 0.0], to);
+    let el = v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).unwrap();
+    assert_eq!(el.crop, Some([0.25, 0.0, 0.25, 0.0]));
+    let back = SlidesView::open(&v.save().unwrap()).unwrap().elements(&mut host, 0);
+    assert_eq!(back.iter().find(|e| e.kind == "image").and_then(|e| e.crop), Some([0.25, 0.0, 0.25, 0.0]));
+    assert!(v.undo());
+    let el = v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).unwrap();
+    assert!(el.crop.is_none_or(|c| c == [0.0; 4]), "undo takes the crop back: {:?}", el.crop);
+}

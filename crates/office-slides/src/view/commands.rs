@@ -168,7 +168,9 @@ impl SlidesView {
         let sel = self.sel.clone();
         let mut after = before.clone();
         f(&mut after);
-        if after == before && after.origin.id() == before.origin.id() {
+        // Origins never make two slides unequal, so a change only to a frame's XML (a crop that
+        // keeps the picture's box) shows as a new origin.
+        if after == before && after.origin.id() == before.origin.id() && same_origins(&after.frames, &before.frames) {
             return;
         }
         self.slides_mut()[index] = after.clone();
@@ -2291,4 +2293,16 @@ fn for_each_shape(frame: &mut Frame, cb: &mut dyn FnMut(&mut Frame)) {
         FrameContent::Shape { .. } => cb(frame),
         _ => {}
     }
+}
+
+/// Whether the frames (and the frames in their groups) still have the origins they had.
+fn same_origins(a: &[Frame], b: &[Frame]) -> bool {
+    a.len() == b.len()
+        && a.iter().zip(b).all(|(x, y)| {
+            x.origin.id() == y.origin.id()
+                && match (&x.content, &y.content) {
+                    (FrameContent::Group { frames: fx }, FrameContent::Group { frames: fy }) => same_origins(fx, fy),
+                    _ => true,
+                }
+        })
 }

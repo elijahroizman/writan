@@ -85,6 +85,14 @@ export class StyleSheet {
     this.add(styles)
   }
 
+  /** A style as the engine sent it, and its ascent and descent, for drawing it on a canvas. */
+  style(style: number): { style: PaintStyle; ascent: number; descent: number } | undefined {
+    const s = this.sent[style]
+    if (!s) return undefined
+    const [ascent, descent] = host.metrics(s.font)
+    return { style: s, ascent, descent }
+  }
+
   top(style: number, baseline: number) {
     return baseline - (this.ascents[style] ?? 0) - (this.shifts[style] ?? 0)
   }

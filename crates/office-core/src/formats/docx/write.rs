@@ -329,11 +329,14 @@ fn write_image(image: &Image, ctx: &mut Ctx) -> Result<Element> {
                 .with_child(Element::new(ns::PIC, "cNvPr").with_attr("", "id", "0").with_attr("", "name", &name))
                 .with_child(Element::new(ns::PIC, "cNvPicPr")),
         )
-        .with_child(
-            Element::new(ns::PIC, "blipFill")
-                .with_child(Element::new(ns::A, "blip").with_attr(ns::R, "embed", rid))
-                .with_child(Element::new(ns::A, "stretch").with_child(Element::new(ns::A, "fillRect"))),
-        )
+        .with_child({
+            let mut fill = Element::new(ns::PIC, "blipFill").with_child(Element::new(ns::A, "blip").with_attr(ns::R, "embed", rid));
+            // A crop made before the picture had XML of its own (see `crop_image` in office-word).
+            if let Some(rect) = image.origin.get().and_then(|o| o.descendant(ns::A, "srcRect")) {
+                fill.push(rect.clone());
+            }
+            fill.with_child(Element::new(ns::A, "stretch").with_child(Element::new(ns::A, "fillRect")))
+        })
         .with_child(
             Element::new(ns::PIC, "spPr")
                 .with_child(

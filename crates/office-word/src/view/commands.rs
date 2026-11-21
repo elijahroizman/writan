@@ -1685,6 +1685,11 @@ impl WordView {
             img.width = w;
             img.height = h;
             let mut r = img.origin.get().cloned().unwrap_or_else(|| Element::new(ns::W, "r"));
+            // A picture put in here has no XML of its own until it's saved: its crop waits in a
+            // bare `pic:blipFill`, which the writer carries into the picture it makes.
+            if find_mut(&mut r, ns::PIC, "blipFill").is_none() {
+                r.push(Element::new(ns::PIC, "blipFill"));
+            }
             if let Some(fill) = find_mut(&mut r, ns::PIC, "blipFill") {
                 let rect = fill.child_or_insert(ns::A, "srcRect");
                 for (k, v) in ["l", "t", "r", "b"].iter().zip(crop) {

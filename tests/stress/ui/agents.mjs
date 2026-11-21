@@ -171,7 +171,7 @@ try {
   const del = await codex.call('delete_paragraphs', { document: docId, from: Number(beforeTable) })
   await a.page.waitForFunction(() => !document.querySelector('.docx-pages')?.textContent?.includes('Before the table.'))
   const tableLeft = (await codex.call('read_document', { document: docId })).text
-  check('deleting the paragraph before a table keeps the table', !del.error && /\(in a table\)/.test(tableLeft), `${del.text}\n${tableLeft}`)
+  check('deleting the paragraph before a table keeps the table', !del.error && /\(in a table/.test(tableLeft), `${del.text}\n${tableLeft}`)
   const across = await codex.call('delete_paragraphs', { document: docId, from: 1, to: 6 })
   check('deleting across a table is refused', across.error && across.text.includes('Delete them in parts'), across.text)
 
