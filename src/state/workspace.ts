@@ -100,8 +100,23 @@ async function unchangedOnDisk(tabId: string, path: string): Promise<boolean> {
   // replace bytes without changing either. Failed reads abort saving rather than allow a write.
   if (!(await platform.pathExists(path))) return false
   const bytes = await platform.readFile(path)
-  if ('bytes' in known) return bytes.length === known.bytes.length && bytes.every((b, i) => b === known.bytes[i])
+  if ('bytes' in known) return sameBytes(bytes, known.bytes)
   return (await digest(bytes)) === known.digest
+}
+
+/** Whether two byte arrays match, four bytes at a time where they line up (a callback per byte took about a second for 60 MB). */
+function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+  if (a.length !== b.length) return false
+  let i = 0
+  if (a.byteOffset % 4 === 0 && b.byteOffset % 4 === 0) {
+    const words = a.length >>> 2
+    const wa = new Uint32Array(a.buffer, a.byteOffset, words)
+    const wb = new Uint32Array(b.buffer, b.byteOffset, words)
+    for (let w = 0; w < words; w++) if (wa[w] !== wb[w]) return false
+    i = words * 4
+  }
+  for (; i < a.length; i++) if (a[i] !== b[i]) return false
+  return true
 }
 
 /** Keep conflict checking and writing together, including saves from different tabs. */
@@ -397,7 +412,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
 
     openPaths: async (paths) => {
       const failures: string[] = []
-      const opened: DocTab[] = []
+      const toRead: { path: string; kind: DocKind }[] = []
       const needPlugin: string[] = []
       for (const path of paths) {
         const existing = get().tabs.find((t) => t.path === path)
@@ -419,20 +434,36 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
           needPlugin.push(path)
           continue
         }
-        if (opened.some((t) => t.path === path)) continue
-        try {
-          const bytes = await platform.readFile(path)
-          const id = newId()
-          await remember(id, bytes, false)
-          opened.push({ id, kind, title: stripExtension(platform.basename(path)), path, bytes, loadId: 0, dirty: false })
-        } catch (err) {
-          failures.push(String(err))
-          if (!(await platform.pathExists(path))) get().removeRecent(path)
-        }
+        if (toRead.some((t) => t.path === path)) continue
+        toRead.push({ path, kind })
       }
+      // Files are read at the same time rather than one after another: a restored session with
+      // several tabs waits for the slowest read, not the sum of them. Tabs keep the given order.
+      const read = await Promise.all(
+        toRead.map(async ({ path, kind }): Promise<DocTab | null> => {
+          try {
+            const bytes = await platform.readFile(path)
+            const id = newId()
+            await remember(id, bytes, false)
+            return { id, kind, title: stripExtension(platform.basename(path)), path, bytes, loadId: 0, dirty: false }
+          } catch (err) {
+            failures.push(String(err))
+            if (!(await platform.pathExists(path))) get().removeRecent(path)
+            return null
+          }
+        }),
+      )
+      const opened = read.filter((t): t is DocTab => t !== null)
       // Add them in one go, so only the last one is shown. The others load when first opened
       // (see EditorSlot), which keeps a restored session from loading every document at launch.
       for (const tab of opened) {
+        // Another open of the same file may have finished while these were read.
+        const existing = get().tabs.find((t) => t.path === tab.path)
+        if (existing) {
+          disk.delete(tab.id)
+          get().activate(existing.id)
+          continue
+        }
         addTab(tab)
         addRecent(tab.path!, tab.kind)
       }
@@ -822,12 +853,10 @@ export async function restoreSession() {
 
 async function reopen(session: Session) {
   if (!session.paths.length) return
-  const existing = []
-  for (const path of session.paths) {
-    // A kind this build no longer has (a plugin that was removed) is left out, with no error.
-    if (!kindFromPath(path)) continue
-    if (await platform.pathExists(path)) existing.push(path)
-  }
+  // A kind this build no longer has (a plugin that was removed) is left out, with no error.
+  const known = session.paths.filter((path) => kindFromPath(path))
+  const found = await Promise.all(known.map((path) => platform.pathExists(path)))
+  const existing = known.filter((_, i) => found[i])
   const { openPaths } = useWorkspace.getState()
   // Open in order without moving focus around, then focus the tab that was active.
   useWorkspace.setState({ activeId: HOME_TAB_ID })

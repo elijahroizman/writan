@@ -279,12 +279,16 @@ async function registerPageFont(id: string) {
   // Claimed while loading so a second refresh doesn't load them twice; a failure frees it to retry.
   registered.set(id, faces)
   try {
-    for (const face of font.faces) {
-      const loaded = await new FontFace(face.family ?? font.family, await faceBytes(id, face.file), { weight: String(face.weight), style: face.style }).load()
-      // Removed while this was loading.
-      if (registered.get(id) !== faces) return
-      document.fonts.add(loaded)
-      faces.push(loaded)
+    // All faces at once: Microsoft's core fonts are 29 files, and documents are laid out
+    // again only when the last one is in.
+    const loaded = await Promise.all(
+      font.faces.map(async (face) => new FontFace(face.family ?? font.family, await faceBytes(id, face.file), { weight: String(face.weight), style: face.style }).load()),
+    )
+    // Removed while this was loading.
+    if (registered.get(id) !== faces) return
+    for (const face of loaded) {
+      document.fonts.add(face)
+      faces.push(face)
     }
     // Documents already open measured with the look-alikes (or nothing): lay them out again.
     if (faces.length) void import('../engine/host').then((h) => h.fontsChanged())
