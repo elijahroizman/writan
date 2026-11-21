@@ -1,5 +1,7 @@
 import { Sparkles } from 'lucide-react'
 import { memo, useEffect, useRef, useState } from 'react'
+import { PeerDots } from '../../collab/cursors'
+import { usePlaces } from '../../collab/session'
 import { isMac } from '../../lib/platform'
 import { transitionLabel } from './transitions'
 import type { SlideInfo, SlidesEngine } from '../../engine/slides/engine'
@@ -34,6 +36,9 @@ export const SlideStrip = memo(function SlideStrip({
   const listRef = useRef<HTMLDivElement>(null)
   const [drag, setDrag] = useState<{ from: number; target: number } | null>(null)
   const [thumbWidth, setThumbWidth] = useState(196)
+  // Who's on which slide, while the presentation is shared.
+  const places = usePlaces(engine)
+  const peersOn = (id: string) => places.filter((p) => (p.at as { slide?: string } | null)?.slide === id).map((p) => p.peer)
 
   // Thumbnails fill the sidebar, which the user can resize.
   useEffect(() => {
@@ -140,6 +145,7 @@ export const SlideStrip = memo(function SlideStrip({
                 <Sparkles size={10} />
               </span>
             )}
+            <PeerDots peers={peersOn(slide.id)} />
           </span>
           <div className="slide-thumb">
             <SlideImage engine={engine} index={i} revision={slide.revision} width={thumbWidth} />

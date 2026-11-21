@@ -255,6 +255,16 @@ export class WordEngine {
     this.input?.focus({ preventScroll: true })
   }
 
+  /** Where the caret is, for the others while shared (collab/session.ts). */
+  presence(): string {
+    return this.doc.collabPresence()
+  }
+
+  /** Where someone else's caret and selection show, from their `presence`. */
+  remoteOverlay(at: unknown): Pick<Overlay, 'caret' | 'rects'> {
+    return (JSON.parse(this.doc.remoteOverlay(JSON.stringify(at))) as Overlay | null) ?? { rects: [] }
+  }
+
   save(): Uint8Array {
     return this.doc.save()
   }

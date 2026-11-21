@@ -8,15 +8,18 @@
 //! a built-in style first used, a new header or footer. They're sent along with the change as
 //! what to do again (`extra`), and doing it again is a no-op where it's been done.
 
-use office_core::model::{Block, Origin};
+use office_core::model::{Block, Body, Origin};
 use office_core::xml::parse_element;
 use office_engine::collab::{self, fingerprint, send_content, take_content, Replica, Shared};
+use office_engine::display;
 use office_engine::edit::Splice;
-use office_engine::pos::{self, Pos, Selection};
+use office_engine::measure::Measurer;
+use office_engine::para::Ctx;
+use office_engine::pos::{self, Path, Pos, Selection};
 use office_engine::text;
 use serde_json::{json, Value};
 
-use super::{Dirty, StoryId, WStep, WordView};
+use super::{to_page, Dirty, Overlay, StoryId, WStep, WordView};
 use crate::{word, ListKind, StoryKind};
 
 /// How far undo looks for a splice's blocks around where they were, when they aren't there.
@@ -90,6 +93,66 @@ impl WordView {
 
     pub fn collab_pending(&self) -> bool {
         self.replica.as_ref().is_some_and(|r| r.has_pending())
+    }
+
+    /// Where the caret is, for the others to draw: the story, and the selection's ends as
+    /// `[path, byte offset]`.
+    pub fn collab_presence(&self) -> Value {
+        let end = |p: &Pos| json!([p.path.0, p.offset]);
+        json!({ "s": story_name(self.story), "a": end(&self.sel.anchor), "f": end(&self.sel.focus) })
+    }
+
+    /// Where another copy's caret and selection (its `collab_presence`) show on the pages, when
+    /// it's in the body. An end on a paragraph this copy doesn't have hides it: that copy made
+    /// changes that haven't arrived yet, and says where it is again when it sends them.
+    pub fn remote_overlay(&mut self, host: &mut dyn Measurer, presence: &Value) -> Overlay {
+        let mut out = Overlay::default();
+        if presence["s"] != "b" {
+            return out;
+        }
+        self.layout(host);
+        let WordView { doc, sections, pages, measure, styles, .. } = self;
+        let blocks: &[Block] = match &doc.body {
+            Body::Flow { blocks } => blocks,
+            _ => &[],
+        };
+        let end = |v: &Value| -> Option<Pos> {
+            let path = Path(v.get(0)?.as_array()?.iter().map(|n| n.as_u64().map(|n| n as u32)).collect::<Option<_>>()?);
+            let para = pos::para(blocks, &path)?;
+            let flat = text::flat(para);
+            let mut offset = (v.get(1)?.as_u64()? as u32).min(flat.text.len() as u32);
+            while offset > 0 && !flat.text.is_char_boundary(offset as usize) {
+                offset -= 1;
+            }
+            Some(Pos::new(path, offset))
+        };
+        let (Some(anchor), Some(focus)) = (end(&presence["a"]), end(&presence["f"])) else { return out };
+        let sel = Selection { anchor, focus };
+        let section_of = |path: &Path| sections.iter().position(|s| path.0[0] >= s.first && path.0[0] <= s.last);
+        let mut ctx = Ctx { host, measure, styles };
+        let (from, to) = sel.ordered();
+        if !sel.is_collapsed() {
+            for path in pos::paras_between(blocks, &from.path, &to.path) {
+                let Some(si) = section_of(&path) else { continue };
+                let Some((pb, dx, dy)) = sections[si].flow.find(&path) else { continue };
+                let len = pos::para(blocks, &path).map(text::len).unwrap_or(0);
+                let a = if path == from.path { from.offset } else { 0 };
+                let b = if path == to.path { to.offset } else { len };
+                for (x, y, w, h) in display::selection_rects(&mut ctx, pb, dx, dy, a, b, path != to.path) {
+                    let (page, px, py) = to_page(pages, si, x, y);
+                    out.rects.push((page, px, py, w, h));
+                }
+            }
+        }
+        if let Some(si) = section_of(&sel.focus.path) {
+            if let Some((pb, dx, dy)) = sections[si].flow.find(&sel.focus.path) {
+                let before = sel.focus.offset > 0 && from != to && sel.focus == to;
+                let (x, y, h) = display::caret_rect(&mut ctx, pb, dx, dy, sel.focus.offset, before);
+                let (page, px, py) = to_page(pages, si, x, y);
+                out.caret = Some((page, px, py, h));
+            }
+        }
+        out
     }
 
     /// Notes steps made here for sending, when shared.
@@ -460,6 +523,31 @@ mod tests {
 
     fn caret(v: &mut WordView, block: u32, offset: u32) {
         v.set_selection(Selection::caret(Pos::new(Path::top(block), offset)));
+    }
+
+    #[test]
+    fn others_see_the_caret_and_selection_where_they_are() {
+        let mut host = office_engine::measure::FixedMeasurer::default();
+        let mut room = Room::new(&["One", "Two words"], 2);
+        room.views[1].set_selection(Selection { anchor: Pos::new(Path::top(1), 1), focus: Pos::new(Path::top(1), 6) });
+        let presence = room.views[1].collab_presence();
+        let own = room.views[1].overlay(&mut host);
+        let seen = room.views[0].remote_overlay(&mut host, &presence);
+        assert_eq!(seen.caret, own.caret);
+        assert!(!seen.rects.is_empty());
+        assert_eq!(seen.rects, own.rects);
+        // It travels as JSON.
+        let seen = room.views[0].remote_overlay(&mut host, &serde_json::from_str(&presence.to_string()).unwrap());
+        assert_eq!(seen.caret, own.caret);
+
+        // A paragraph this copy doesn't have yet hides it; an offset past the end stops there.
+        let ahead = json!({ "s": "b", "a": [[5], 0], "f": [[5], 0] });
+        assert!(room.views[0].remote_overlay(&mut host, &ahead).caret.is_none());
+        let past = json!({ "s": "b", "a": [[0], 99], "f": [[0], 99] });
+        room.views[1].set_selection(Selection::caret(Pos::new(Path::top(0), 3)));
+        assert_eq!(room.views[0].remote_overlay(&mut host, &past).caret, room.views[1].overlay(&mut host).caret);
+        // Only the body is drawn.
+        assert!(room.views[0].remote_overlay(&mut host, &json!({ "s": "s0", "a": [[0], 0], "f": [[0], 0] })).caret.is_none());
     }
 
     #[test]

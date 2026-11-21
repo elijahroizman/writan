@@ -100,6 +100,57 @@ fn lan_addresses() -> Vec<Ipv4Addr> {
     found
 }
 
+/// Whether this app may reach other machines on the local network: `granted`, `denied`, or
+/// `unknown` when there's no network to try.
+///
+/// macOS 15 and later ask the first time an app reaches the local network, and until the
+/// person allows it every attempt fails with "no route to host". Trying here, when someone
+/// starts sharing or joining, makes macOS ask then, with the reason in the app's Info.plist,
+/// instead of leaving the connection to fail. The page asks again every second while it waits
+/// for an answer. Other systems have no such permission.
+#[tauri::command]
+pub fn collab_local_network() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        local_network()
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "granted"
+    }
+}
+
+/// Opens System Settings at Privacy & Security › Local Network, where Writan can be allowed
+/// after someone said no. Only on macOS.
+#[tauri::command]
+pub fn collab_network_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+            .spawn();
+    }
+}
+
+/// Sends one byte to the discard port of a neighbor on the main network (the usual router
+/// address). Nothing answers it; whether the system lets it go is the answer.
+#[cfg(target_os = "macos")]
+fn local_network() -> &'static str {
+    let Some(ip) = lan_addresses().into_iter().find(|ip| ip.is_private()) else {
+        return "unknown";
+    };
+    let [a, b, c, d] = ip.octets();
+    let neighbor = Ipv4Addr::new(a, b, c, if d == 1 { 2 } else { 1 });
+    let Ok(socket) = UdpSocket::bind((ip, 0)) else {
+        return "unknown";
+    };
+    match socket.send_to(&[0], (neighbor, 9)) {
+        Ok(_) => "granted",
+        Err(e) if e.kind() == std::io::ErrorKind::HostUnreachable => "denied",
+        Err(_) => "unknown",
+    }
+}
+
 /// Shares a document: starts the relay if need be and makes a session for it. The page then
 /// connects to `localUrl` and says hello with `hostKey` and the document. `name` and `kind` are
 /// for the page's own records; guests see the ones in the host's hello.

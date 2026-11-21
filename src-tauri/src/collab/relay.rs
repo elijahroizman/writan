@@ -17,6 +17,11 @@ use serde_json::value::RawValue;
 /// The protocol version in `hello` and `welcome`.
 pub const VERSION: u32 = 1;
 
+/// The colors people get, in the order they're handed out. The page has the same list.
+pub const COLORS: [&str; 8] = [
+    "#e5484d", "#3e63dd", "#30a46c", "#f76b15", "#8e4ec6", "#12a594", "#d6409f", "#ad7f58",
+];
+
 /// Every frame, in either direction, is at most this big.
 pub const MAX_FRAME: usize = 64 << 20;
 
@@ -53,6 +58,7 @@ struct Member {
     client: String,
     name: String,
     color: String,
+    host: bool,
     presence: Option<Box<RawValue>>,
 }
 
@@ -151,6 +157,9 @@ struct Welcome<'a> {
     t: &'static str,
     v: u32,
     client: &'a str,
+    /// The color this copy shows as: the one it asked for, unless someone has it.
+    color: &'a str,
+    host: bool,
     seq: u64,
     session: SessionInfo<'a>,
     snapshot: &'a str,
@@ -169,6 +178,7 @@ struct Peer<'a> {
     client: &'a str,
     name: &'a str,
     color: &'a str,
+    host: bool,
     presence: Option<&'a RawValue>,
 }
 
@@ -187,6 +197,7 @@ struct Join<'a> {
     client: &'a str,
     name: &'a str,
     color: &'a str,
+    host: bool,
 }
 
 #[derive(Serialize)]
@@ -216,6 +227,26 @@ fn same(a: &str, b: &str) -> bool {
             .zip(b.bytes())
             .fold(0, |acc, (x, y)| acc | (x ^ y))
             == 0
+}
+
+/// `#rgb` or `#rrggbb`.
+fn is_color(c: &str) -> bool {
+    c.strip_prefix('#')
+        .is_some_and(|h| (h.len() == 3 || h.len() == 6) && h.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
+/// A color nobody in `members` has: `wanted` if it's free, else the first free one in
+/// `COLORS`. With every color taken, they repeat in order.
+fn pick_color(members: &[Member], wanted: &str) -> String {
+    let used = |c: &str| members.iter().any(|m| m.color.eq_ignore_ascii_case(c));
+    if is_color(wanted) && !used(wanted) {
+        return wanted.to_owned();
+    }
+    COLORS
+        .iter()
+        .find(|c| !used(c))
+        .unwrap_or(&COLORS[members.len() % COLORS.len()])
+        .to_string()
 }
 
 fn json(value: &impl Serialize) -> String {
@@ -485,11 +516,14 @@ impl Relay {
             broadcast(session, None, &leave(&old.client), &mut out);
         }
 
+        let color = pick_color(&session.members, &hello.color);
         let snapshot = session.snapshot.as_ref().expect("set above");
         let welcome = json(&Welcome {
             t: "welcome",
             v: VERSION,
             client: &hello.client,
+            color: &color,
+            host,
             seq: session.seq,
             session: SessionInfo {
                 name: &snapshot.name,
@@ -504,6 +538,7 @@ impl Relay {
                     client: &m.client,
                     name: &m.name,
                     color: &m.color,
+                    host: m.host,
                     presence: m.presence.as_deref(),
                 })
                 .collect(),
@@ -513,14 +548,16 @@ impl Relay {
             t: "join",
             client: &hello.client,
             name: &hello.name,
-            color: &hello.color,
+            color: &color,
+            host,
         });
         broadcast(session, None, &join, &mut out);
         session.members.push(Member {
             conn,
             client: hello.client.clone(),
             name: hello.name,
-            color: hello.color,
+            color,
+            host,
             presence: None,
         });
         self.conns.get_mut(&conn).expect("connected").joined = Some(Joined {
@@ -635,6 +672,8 @@ mod tests {
         assert_eq!(w["t"], "welcome");
         assert_eq!(w["v"], 1);
         assert_eq!(w["client"], "h");
+        assert_eq!(w["color"], "#f00");
+        assert_eq!(w["host"], true);
         assert_eq!(w["seq"], 0);
         assert_eq!(
             w["session"],
@@ -655,12 +694,45 @@ mod tests {
         );
         assert_eq!(
             w["peers"],
-            json!([{ "client": "h", "name": "Host", "color": "#f00", "presence": { "at": 3 } }])
+            json!([{ "client": "h", "name": "Host", "color": "#f00", "host": true, "presence": { "at": 3 } }])
         );
+        assert_eq!(w["host"], false);
         assert_eq!(
             to(&out, 1),
-            vec![json!({ "t": "join", "client": "g", "name": "Guest", "color": "#0f0" })]
+            vec![
+                json!({ "t": "join", "client": "g", "name": "Guest", "color": "#0f0", "host": false })
+            ]
         );
+    }
+
+    #[test]
+    fn everyone_gets_a_color_of_their_own() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h").replace("#f00", COLORS[0]));
+        // Asking for a color someone has gets the first free one.
+        let out = join(&mut r, 2, &guest_hello("a").replace("#0f0", COLORS[0]));
+        assert_eq!(to(&out, 2)[0]["color"], COLORS[1]);
+        assert_eq!(to(&out, 1)[0]["color"], COLORS[1]);
+        // Not a color at all: the same.
+        let out = join(&mut r, 3, &guest_hello("b").replace("#0f0", "red"));
+        assert_eq!(to(&out, 3)[0]["color"], COLORS[2]);
+        // A free one is kept.
+        let out = join(&mut r, 4, &guest_hello("c").replace("#0f0", COLORS[5]));
+        assert_eq!(to(&out, 4)[0]["color"], COLORS[5]);
+        let colors: Vec<Value> = to(&out, 4)[0]["peers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|p| p["color"].clone())
+            .collect();
+        assert_eq!(
+            colors,
+            vec![json!(COLORS[0]), json!(COLORS[1]), json!(COLORS[2])]
+        );
+        // Someone leaving frees theirs.
+        r.disconnect(2);
+        let out = join(&mut r, 5, &guest_hello("d").replace("#0f0", COLORS[0]));
+        assert_eq!(to(&out, 5)[0]["color"], COLORS[1]);
     }
 
     #[test]
@@ -816,7 +888,7 @@ mod tests {
             to(&out, 1),
             vec![
                 json!({ "t": "leave", "client": "g" }),
-                json!({ "t": "join", "client": "g", "name": "Guest", "color": "#0f0" }),
+                json!({ "t": "join", "client": "g", "name": "Guest", "color": "#0f0", "host": false }),
             ]
         );
         // The welcome doesn't list the client's own old connection.

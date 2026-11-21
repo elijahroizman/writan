@@ -272,6 +272,13 @@ export class SheetsEngine {
     return { r0: Math.min(anchor[0], focus[0]), c0: Math.min(anchor[1], focus[1]), r1: Math.max(anchor[0], focus[0]), c1: Math.max(anchor[1], focus[1]) }
   }
 
+  /** Where the selection is, for the others while shared (collab/session.ts): the sheet by
+   * name, which stays put when sheets move, and the selection's ends as [row, column]. */
+  presence(): string {
+    const { sheet, anchor, focus } = this.state
+    return JSON.stringify({ sheet: this.sheets[sheet]?.name ?? null, a: anchor, f: focus })
+  }
+
   save(): Uint8Array {
     return this.doc.save()
   }

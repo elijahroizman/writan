@@ -6,7 +6,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import { colorFor, displayName, join, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
-import { isTauri } from '../lib/platform'
+import { localNetworkAllowed, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings } from '../collab/network'
+import { isMac, isTauri } from '../lib/platform'
 import { useWorkspace } from '../state/workspace'
 import { Button, Modal, Spinner, TextField } from './ui'
 
@@ -74,6 +75,27 @@ function useName() {
   return [name, (n: string) => setName(n)] as const
 }
 
+/** What to say while macOS hasn't let Writan reach the network: waiting for an answer to its
+ * question, or turned down. */
+type Network = 'waiting' | 'denied' | null
+
+function NetworkNote({ state }: { state: Network }) {
+  if (!state) return null
+  return (
+    <div className="share-network" role="status">
+      <p>{state === 'waiting' ? NETWORK_ASK : NETWORK_DENIED}</p>
+      {isMac && <Button onClick={openNetworkSettings}>Open Settings</Button>}
+    </div>
+  )
+}
+
+/** Waits for macOS to let Writan reach the network, saying so meanwhile. */
+async function networkFor(setNetwork: (n: Network) => void, cancelled: () => boolean): Promise<boolean> {
+  const ok = await localNetworkAllowed((on) => on && setNetwork('waiting'), cancelled)
+  setNetwork(ok || cancelled() ? null : 'denied')
+  return ok
+}
+
 function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<HTMLButtonElement | null> }) {
   const state = useCollab((s) => s[tabId])
   const tab = useWorkspace((s) => s.tabs.find((t) => t.id === tabId))
@@ -82,8 +104,19 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
   const [name, setName] = useName()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [network, setNetwork] = useState<Network>(null)
   const [copied, setCopied] = useState(false)
+  const gone = useRef(false)
+  useEffect(() => {
+    gone.current = false
+    return () => {
+      gone.current = true
+    }
+  }, [])
   const close = () => useSharePanel.setState({ tabId: null })
+  // Others edit the file on disk with you, so it needs to be one, and what they start from is
+  // what's saved.
+  const unsaved = !tab?.path || !!tab?.dirty
 
   useLayoutEffect(() => {
     const place = () => {
@@ -118,6 +151,13 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
     setBusy(true)
     setError(null)
     try {
+      const ws = useWorkspace.getState()
+      const now = ws.tabs.find((t) => t.id === tabId)
+      if (now && (!now.path || now.dirty)) {
+        const saved = (await ws.save(tabId)) && !useWorkspace.getState().tabs.find((t) => t.id === tabId)?.dirty
+        if (!saved) return setError('Save the document to share it. Everyone edits the saved file with you.')
+      }
+      if (!(await networkFor(setNetwork, () => gone.current))) return
       await share(tabId, who)
     } catch (err) {
       setError(String((err as Error)?.message ?? err))
@@ -134,7 +174,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
   }
 
   const live = state && (state.status === 'live' || state.status === 'connecting')
-  const you: Peer = { client: 'you', name: displayName() || 'You', color: colorFor(displayName() || 'you') }
+  const you: Peer = state?.you ?? { client: 'you', name: displayName() || 'You', color: colorFor(displayName() || 'you') }
 
   let body: React.ReactNode
   if (!state || !live) {
@@ -144,12 +184,15 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
           <h2 id="share-title">{state?.status === 'ended' || state?.status === 'disconnected' ? 'Not shared any more' : 'Share on your network'}</h2>
           <p>
             {state?.message ??
-              `People on the same network can open “${tab?.title ?? 'this document'}” and edit it with you while it’s open here. Your copy stays the file, and you save it as usual.`}
+              (tab?.path
+                ? `People on the same network can open “${tab.title}” and edit it with you while it’s open here. Your copy stays the file, and you save it as usual.`
+                : `People on the same network can edit “${tab?.title ?? 'this document'}” with you while it’s open here. Save it first: your copy stays the file, and you save it as usual.`)}
           </p>
         </header>
         {(!state || state.role === 'host') && (
           <div className="share-body">
             <TextField label="Your name" value={name} placeholder="How others see you" autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void start()} />
+            <NetworkNote state={network} />
             {error && <p className="share-error">{error}</p>}
             {!isTauri && <p className="share-note">In the browser, sharing goes through the relay at the address in workspace.collabRelay.</p>}
           </div>
@@ -162,7 +205,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
             <Button onClick={() => stop(tabId)}>Close</Button>
           ) : (
             <Button variant="primary" disabled={busy} onClick={() => void start()}>
-              {busy ? <Spinner size={14} /> : null} Share
+              {busy ? <Spinner size={14} /> : null} {unsaved ? 'Save and Share' : 'Share'}
             </Button>
           )}
         </footer>
@@ -231,10 +274,12 @@ export function JoinDialog() {
   const [link, setLink] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [network, setNetwork] = useState<Network>(null)
   if (!open) return null
   const close = () => {
-    if (busy) return
+    if (busy && network !== 'waiting') return
     setError(null)
+    setNetwork(null)
     useSharePanel.setState({ joining: false })
   }
   const go = async () => {
@@ -244,6 +289,7 @@ export function JoinDialog() {
     setBusy(true)
     setError(null)
     try {
+      if (!(await networkFor(setNetwork, () => !useSharePanel.getState().joining))) return
       await join(link, who)
       setLink('')
       useSharePanel.setState({ joining: false })
@@ -272,6 +318,7 @@ export function JoinDialog() {
         <div className="share-body">
           <TextField label="Link" value={link} placeholder="ws://…" autoFocus onChange={(e) => setLink(e.target.value)} />
           <TextField label="Your name" value={name} placeholder="How others see you" onChange={(e) => setName(e.target.value)} />
+          <NetworkNote state={network} />
           {error && <p className="share-error">{error}</p>}
         </div>
         <div className="dialog-actions">

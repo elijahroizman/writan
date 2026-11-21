@@ -1,0 +1,108 @@
+/* Everyone else's place in a shared document (cursors.tsx). --peer is their color; --peer-scale
+   undoes the zoom of an overlay that's drawn scaled. */
+
+.peer-caret {
+  position: absolute;
+  width: calc(2px * var(--peer-scale, 1));
+  margin-left: calc(-1px * var(--peer-scale, 1));
+  background: var(--peer);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* A knob on top of the caret: always there, and the place to point at to see the name. */
+.peer-caret::before {
+  content: '';
+  position: absolute;
+  left: calc(-2px * var(--peer-scale, 1));
+  top: calc(-3px * var(--peer-scale, 1));
+  width: calc(6px * var(--peer-scale, 1));
+  height: calc(6px * var(--peer-scale, 1));
+  border-radius: calc(1.5px * var(--peer-scale, 1));
+  background: var(--peer);
+  pointer-events: auto;
+}
+
+.peer-tag {
+  position: absolute;
+  left: calc(-1px * var(--peer-scale, 1));
+  bottom: 100%;
+  margin-bottom: calc(3px * var(--peer-scale, 1));
+  padding: 0 calc(5px * var(--peer-scale, 1));
+  border-radius: calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) 0;
+  background: var(--peer);
+  color: #fff;
+  font: 600 calc(11px * var(--peer-scale, 1)) / 1.6 var(--font-ui, system-ui, sans-serif);
+  letter-spacing: 0;
+  white-space: nowrap;
+  pointer-events: none;
+  user-select: none;
+  /* Shows while they move, then fades; remounting on each move shows it again. */
+  animation: peer-tag-fade 0.4s ease 4s forwards;
+}
+
+.peer-tag.below {
+  bottom: auto;
+  top: 100%;
+  margin: calc(3px * var(--peer-scale, 1)) 0 0;
+  border-radius: 0 calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1));
+}
+
+.peer-caret:hover .peer-tag,
+.peer-box:hover > .peer-tag {
+  animation: none;
+  opacity: 1;
+}
+
+@keyframes peer-tag-fade {
+  to {
+    opacity: 0;
+  }
+}
+
+.peer-sel {
+  position: absolute;
+  background: color-mix(in srgb, var(--peer) 24%, transparent);
+  pointer-events: none;
+}
+
+.peer-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: calc(2px * var(--peer-scale, 1)) solid var(--peer);
+  pointer-events: none;
+  transform-origin: 50% 50%;
+}
+
+/* The box's top edge shows the name on hover. */
+.peer-box::before {
+  content: '';
+  position: absolute;
+  inset: calc(-4px * var(--peer-scale, 1)) 0 auto;
+  height: calc(6px * var(--peer-scale, 1));
+  pointer-events: auto;
+}
+
+.peer-box > .peer-tag {
+  left: calc(-2px * var(--peer-scale, 1));
+  margin-bottom: 0;
+  border-radius: calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) 0;
+}
+
+.peer-box > .peer-tag.below {
+  margin: 0;
+  border-radius: 0 calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1));
+}
+
+.peer-dots {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.peer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--bg, #fff);
+}

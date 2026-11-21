@@ -4,7 +4,9 @@
 // text frame) edits its text, with the caret and selection drawn inside the frame.
 
 import type { ReactNode } from 'react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { PeerBox, PeerCaret, PeerSelection } from '../../collab/cursors'
+import { usePlaces } from '../../collab/session'
 import type { MenuEntry } from '../../components/ui'
 import { PopoverMenu } from '../../components/ui'
 import { isMac } from '../../lib/platform'
@@ -60,6 +62,8 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null)
 
   useEffect(() => engine.subscribe(() => setTick((t) => t + 1)), [engine])
+  // Where everyone else is, while the presentation is shared.
+  const places = usePlaces(engine)
   // Misspelled words get a wavy underline; right-clicking one offers corrections.
   useEffect(() => watchSlideSpelling(engine, setSpelling), [engine])
 
@@ -456,6 +460,25 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
               {caret && <div key={engine.tick} className="sc-caret" style={{ left: caret[0], top: caret[1], height: caret[2], width: 1.5 / px }} />}
             </div>
           )}
+          {places.map(({ peer, at, moves }) => {
+            const o = engine.remoteOverlay(at)
+            const t = o.text
+            return (
+              <Fragment key={peer.client}>
+                {o.boxes.map((b) => (
+                  <PeerBox key={b.id} peer={peer} moves={moves} scale={1 / px} named={!t?.caret} style={{ left: b.x, top: b.y, width: b.w, height: b.h, rotate: `${b.rot}deg` }} />
+                ))}
+                {t && (
+                  <div style={{ position: 'absolute', left: t.x, top: t.y, width: t.w, height: t.h, rotate: `${t.rot}deg`, transformOrigin: '50% 50%' }}>
+                    {t.rects.map((r, i) => (
+                      <PeerSelection key={i} peer={peer} style={{ left: r[0], top: r[1], width: r[2], height: r[3] }} />
+                    ))}
+                    {t.caret && <PeerCaret peer={peer} moves={moves} scale={1 / px} style={{ left: t.caret[0], top: t.caret[1], height: t.caret[2] }} />}
+                  </div>
+                )}
+              </Fragment>
+            )
+          })}
           {drag?.kind === 'marquee' && (
             <div className="sc-marquee" style={{ left: Math.min(drag.x0, drag.x1), top: Math.min(drag.y0, drag.y1), width: Math.abs(drag.x1 - drag.x0), height: Math.abs(drag.y1 - drag.y0) }} />
           )}

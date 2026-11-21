@@ -144,6 +144,13 @@ export const autosaveHooks = {
   flush: async (_tabId: string) => false,
 }
 
+/** Sharing plugs in here (see collab/session.ts). */
+export const collabHooks = {
+  /** Who keeps the file, for a tab that follows a document someone else is sharing; null
+   * otherwise. Such a tab isn't a file here: its changes go to them, and they save. */
+  keeper: (_tabId: string): string | null => null,
+}
+
 /** An unsaved document crash recovery kept (see lib/recovery.ts). */
 export interface RecoveredDoc {
   /** The tab it was in. */
@@ -556,6 +563,11 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     save: async (id, opts) => {
       const first = activeDoc(id)
       if (!first || !getEditor(first.id)) return false
+      const keeper = collabHooks.keeper(first.id)
+      if (keeper !== null && !opts?.saveAs && !opts?.to) {
+        await platform.showMessage(`${keeper} has the file and saves it. Your changes are already with them. To keep a copy of your own, use Save As.`, 'Nothing to save here')
+        return false
+      }
       while (saving.has(first.id)) await saving.get(first.id)
       // Register without another await, so a waiting save sees this tab's new path and editor.
       const job = (async () => {
@@ -658,8 +670,9 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       if (tabId === HOME_TAB_ID) return true
       const tab = get().tabs.find((t) => t.id === tabId)
       if (!tab) return true
-      // Autosaved tabs close without asking once their last changes are written.
-      if (tab.dirty && !(await autosaveHooks.flush(tab.id))) {
+      // Autosaved tabs close without asking once their last changes are written. A tab following
+      // someone else's shared document has nothing of its own to save: they have its changes.
+      if (tab.dirty && collabHooks.keeper(tab.id) === null && !(await autosaveHooks.flush(tab.id))) {
         get().activate(tab.id)
         const choice = await platform.askSaveChanges(tab.title)
         if (choice === 'cancel') return false

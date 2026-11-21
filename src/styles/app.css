@@ -4809,3 +4809,21 @@ button.section-title:hover {
   display: inline-flex;
   color: var(--accent);
 }
+
+/* macOS hasn't let Writan reach the local network yet (collab/network.ts). */
+.share-network {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bg-subtle, color-mix(in srgb, var(--fg) 6%, transparent));
+}
+
+.share-network p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--fg-muted, var(--fg));
+}
