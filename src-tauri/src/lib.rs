@@ -216,6 +216,7 @@ pub fn run() {
             defaults::set_default_apps,
             collab::collab_share,
             collab::collab_unshare,
+            collab::collab_find,
             collab::collab_connect,
             collab::collab_send,
             collab::collab_close,

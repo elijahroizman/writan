@@ -10,6 +10,7 @@
 //! client's hello, so no message arrives before `collab_connect` has returned the conn id.
 
 pub mod client;
+pub mod codes;
 pub mod mcp;
 pub mod relay;
 pub mod server;
@@ -28,8 +29,8 @@ use tauri::{AppHandle, Emitter, Runtime};
 use relay::Policy;
 use server::Server;
 
-/// The relay's port when it's free, so invitations from the same machine tend to look alike.
-const PORT: u16 = 47811;
+/// The relay's port when it's free. Guests looking for a join code ask this port.
+const PORT: u16 = codes::DISCOVERY_PORT;
 
 /// The relay, while anything is shared.
 static SERVER: Mutex<Option<Server>> = Mutex::new(None);
@@ -49,6 +50,8 @@ pub struct ShareInfo {
     pub addresses: Vec<String>,
     /// For guests: `ws://<first address>:<port>/v1/<session>?token=<token>`.
     pub invite_url: String,
+    /// Six digits a guest on the network can join with instead (`codes.rs`).
+    pub code: String,
     /// For the host's own connection.
     pub local_url: String,
 }
@@ -143,18 +146,29 @@ pub fn collab_share(name: String, kind: String) -> Result<ShareInfo, String> {
     let token = random_text(24)?;
     let host_key = random_text(24)?;
     server.register(&session, &token, &host_key);
+    let code = server.add_code(&session, &token)?;
     let port = server.port();
     let addresses: Vec<String> = lan_addresses().iter().map(Ipv4Addr::to_string).collect();
     let first = addresses.first().map_or("127.0.0.1", String::as_str);
     Ok(ShareInfo {
         invite_url: format!("ws://{first}:{port}/v1/{session}?token={token}"),
         local_url: format!("ws://127.0.0.1:{port}/v1/{session}"),
+        code,
         session,
         token,
         host_key,
         port,
         addresses,
     })
+}
+
+/// Finds who on the network is sharing with a six-digit code, and returns their invite link.
+#[tauri::command]
+pub async fn collab_find(code: String) -> Result<String, String> {
+    let code: String = code.chars().filter(char::is_ascii_digit).collect();
+    tauri::async_runtime::spawn_blocking(move || codes::find(&code, &lan_addresses()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// The relay's server, started if it isn't running.

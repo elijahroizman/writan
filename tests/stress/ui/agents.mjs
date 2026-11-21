@@ -66,7 +66,7 @@ async function joinFrom(page, invite, name) {
   await page.getByRole('tab', { name: 'Home' }).click()
   await page.getByRole('button', { name: 'Join a shared document…' }).click()
   const dialog = page.getByRole('dialog', { name: 'Join a shared document' })
-  await dialog.getByLabel('Link').fill(invite)
+  await dialog.getByLabel('Code').fill(invite)
   await dialog.getByLabel('Your name').fill(name)
   await dialog.getByRole('button', { name: 'Join' }).click()
   await dialog.waitFor({ state: 'detached' })

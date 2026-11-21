@@ -1,6 +1,6 @@
 # Editing together
 
-Several people can edit one Word document, presentation or workbook at the same time. One person shares it. The others join with the link they get, from a computer on the same network. This page is about how that works. What it looks like to use is in [features](../user/features.md#sharing-on-your-network).
+Several people can edit one Word document, presentation or workbook at the same time. One person shares it. The others join with the six-digit code they get, from a computer on the same network. This page is about how that works. What it looks like to use is in [features](../user/features.md#sharing-on-your-network).
 
 ```
  host's app                                         guest's app
@@ -52,7 +52,20 @@ JSON text frames over WebSocket, at `/v1/<session>`:
 | host | `end` | The host stopped sharing. The relay tells everyone with `end` and forgets the session. |
 | relay | `error { code, message }` | `bad-token`, `not-ready`, `no-session`, `version`, `bad-message`, `not-host`. |
 
-The invite is the relay's address with the token as a query parameter: `ws://192.168.1.20:47811/v1/<session>?token=<token>`. The token is 192 random bits. Anyone with the link can edit while the host's tab is open.
+The invite is the relay's address with the token as a query parameter: `ws://192.168.1.20:47811/v1/<session>?token=<token>`. The token is 192 random bits. Anyone with the link can edit while the host's tab is open. People don't see it unless they ask for it; they join with a code.
+
+## Join codes
+
+Sharing also gives the session a six-digit code (`src-tauri/src/collab/codes.rs`). The host's relay answers lookups for it two ways:
+
+- `GET /join/<code>` on the relay's port, refused when the request has an `Origin` (a web page);
+- a UDP datagram `writan-join 1 <code>` on port 47811, answered only when the code is there.
+
+Both answer `{ session, token, port }`. The guest's app (`collab_find`) broadcasts the UDP lookup to 255.255.255.255 and each of its networks' `.255`, and at the same time asks `GET /join/<code>` of every address in each of its /24 networks on port 47811, 48 at a time, and of itself. The first answer wins, and the guest builds the invite link from it and joins as before. Both run because some networks drop broadcasts and others are bigger than a /24. After 4 seconds with no answer, the guest is told nobody has that code; if the system refused to reach the network (macOS before it's allowed), it says so, and the page waits as it does for a link.
+
+A code has a million values, so each relay limits wrong guesses: 20 a minute from one address and 100 from everyone, after which it answers nothing until the minute is up. A guest's search reaches every Writan on the network, so a few misses per join are normal. A code ends with its session.
+
+AI agents never use a code. They reach shared documents through the MCP server, which needs its own token (below), and the page hands their copies the host's invite itself.
 
 ## Where everyone is
 

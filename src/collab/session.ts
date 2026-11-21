@@ -12,7 +12,7 @@
 import { create } from 'zustand'
 import { stripExtension } from '../lib/kinds'
 import { collabHooks, getEditor, useWorkspace } from '../state/workspace'
-import { connect, host, parseInvite, unhost, type Invite, type Transport } from './transport'
+import { connect, findInvite, host, parseCode, parseInvite, unhost, type Invite, type Transport } from './transport'
 
 export const SHAREABLE = new Set(['docx', 'pptx', 'xlsx'])
 
@@ -61,6 +61,8 @@ export interface Share {
   you: Peer | null
   /** The link others join with (the host's to hand out; a guest's to rejoin). */
   invite: string | null
+  /** The six digits guests join with, for the host to hand out. */
+  code: string | null
   /** The host's addresses on the network. */
   addresses: string[]
   /** The others in the document. */
@@ -270,7 +272,7 @@ function finish(link: Link, status: Share['status'], message: string | null) {
 }
 
 const ERRORS: Record<string, string> = {
-  'bad-token': 'This invite link isn’t valid any more. Ask for a new one.',
+  'bad-token': 'This invite isn’t valid any more. Ask for a new code.',
   'no-session': 'This document isn’t being shared any more.',
   'not-ready': 'This document isn’t being shared any more.',
   version: 'The person sharing has a different version of Writan.',
@@ -295,7 +297,7 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
         if (!tabId) return finish(link, 'disconnected', 'Writan can’t open this kind of document.')
         link.tabId = tabId
         links.set(tabId, link)
-        useCollab.setState({ [tabId]: { role: 'guest', status: 'connecting', you, invite: null, addresses: [], peers, message: null } })
+        useCollab.setState({ [tabId]: { role: 'guest', status: 'connecting', you, invite: null, code: null, addresses: [], peers, message: null } })
       } else {
         update(link.tabId, { peers, you })
       }
@@ -357,13 +359,13 @@ export async function share(tabId: string, name: string): Promise<void> {
   if (!tab || !getEditor(tabId) || !SHAREABLE.has(tab.kind) || links.has(tabId)) return
   const link: Link = { ...newLink(name), tabId, role: 'host' }
   links.set(tabId, link)
-  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', you: null, invite: null, addresses: [], peers: [], message: null } })
+  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', you: null, invite: null, code: null, addresses: [], peers: [], message: null } })
   const title = `${tab.title}.${tab.kind}`
   try {
     const hosting = await host(title, tab.kind)
     link.session = hosting.session
     link.invite = hosting.local
-    update(tabId, { invite: hosting.invite, addresses: hosting.addresses })
+    update(tabId, { invite: hosting.invite, code: hosting.code, addresses: hosting.addresses })
     // Everyone starts from these bytes, the host too: reloading makes the host's document what
     // the others read from them. Taken last, and again if the document changed while they were
     // written (Word adds its comments asynchronously), so nothing typed is lost.
@@ -403,10 +405,16 @@ export async function share(tabId: string, name: string): Promise<void> {
   }
 }
 
-/** Joins a document someone shared: opens it in a new tab once it arrives. */
-export async function join(inviteText: string, name: string, cancelled: () => boolean = () => false): Promise<void> {
+/**
+ * Joins a document someone shared, from its six-digit code or its link: opens it in a new tab
+ * once it arrives.
+ */
+export async function join(codeOrLink: string, name: string, cancelled: () => boolean = () => false): Promise<void> {
+  const code = parseCode(codeOrLink)
+  const inviteText = code ? await findInvite(code) : codeOrLink.trim()
+  if (cancelled()) return
   const invite = parseInvite(inviteText)
-  if (!invite) throw new Error('That isn’t an invite link. It starts with ws:// and has a token in it.')
+  if (!invite) throw new Error('That isn’t a code or a link. A code is six digits.')
   const tabId = await follow(invite, newLink(name), ({ bytes, name: fileName, kind }) => {
     // Given up on (the dialog closed) while connecting: leave without opening anything.
     if (cancelled()) throw new Error('Cancelled.')
@@ -415,7 +423,7 @@ export async function join(inviteText: string, name: string, cancelled: () => bo
     if (!id) throw new Error('Writan can’t open this kind of document.')
     return id
   })
-  update(tabId, { invite: inviteText.trim() })
+  update(tabId, { invite: inviteText })
 }
 
 /** A shared document as the relay first sends it. */

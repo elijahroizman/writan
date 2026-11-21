@@ -8,13 +8,16 @@
 //! The same port serves Writan's MCP server for AI agents (`mcp.rs`): `/mcp/<token>` is plain
 //! HTTP, and `/bridge/<key>` is the page's WebSocket that answers agents' tool calls.
 //!
+//! Join codes are looked up on it too: `GET /join/<code>`, and UDP broadcasts on
+//! `codes::DISCOVERY_PORT` (see `codes.rs`).
+//!
 //! The app starts a server when the first document is shared, or agents are let in, and drops
 //! it when neither is true any more, which closes the port. Connections already open finish on
 //! their own.
 
 use std::collections::HashMap;
 use std::io;
-use std::net::{TcpListener, TcpStream};
+use std::net::{TcpListener, TcpStream, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
@@ -25,6 +28,7 @@ use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http::StatusCode;
 use tungstenite::protocol::WebSocketConfig;
 
+use super::codes::{self, SharedCodes};
 use super::mcp::{self, Mcp, SharedMcp};
 use super::relay::{ConnId, Outgoing, Policy, Relay, MAX_FRAME};
 use super::socket::{pump, set_pump_timeouts, Cmd};
@@ -64,9 +68,11 @@ type Shared = Arc<Mutex<State>>;
 pub struct Server {
     state: Shared,
     mcp: SharedMcp,
+    codes: SharedCodes,
     port: u16,
     stop: Arc<AtomicBool>,
     accepting: Option<JoinHandle<()>>,
+    discovering: Option<JoinHandle<()>>,
 }
 
 impl Server {
@@ -91,18 +97,32 @@ impl Server {
         }));
         let stop = Arc::new(AtomicBool::new(false));
         let mcp: SharedMcp = Arc::new(Mutex::new(None));
+        let codes: SharedCodes = Arc::default();
         let accepting = {
-            let (state, mcp, stop) = (state.clone(), mcp.clone(), stop.clone());
+            let (state, mcp, codes, stop) =
+                (state.clone(), mcp.clone(), codes.clone(), stop.clone());
             std::thread::Builder::new()
                 .name("collab-accept".into())
-                .spawn(move || accept(listener, state, mcp, stop))?
+                .spawn(move || accept(listener, state, mcp, codes, port, stop))?
         };
+        // Without the UDP port (something else has it), codes are still found over TCP.
+        let discovering = UdpSocket::bind(("0.0.0.0", codes::DISCOVERY_PORT))
+            .ok()
+            .and_then(|socket| {
+                let (codes, stop) = (codes.clone(), stop.clone());
+                std::thread::Builder::new()
+                    .name("collab-discovery".into())
+                    .spawn(move || codes::serve_udp(socket, codes, port, stop))
+                    .ok()
+            });
         Ok(Server {
             state,
             mcp,
+            codes,
             port,
             stop,
             accepting: Some(accepting),
+            discovering,
         })
     }
 
@@ -119,8 +139,14 @@ impl Server {
             .register(session, token, host_key);
     }
 
+    /// A six-digit code guests can join `session` with, until it ends.
+    pub fn add_code(&self, session: &str, token: &str) -> Result<String, String> {
+        self.codes.lock().unwrap().add(session, token)
+    }
+
     /// Ends a session for everyone in it, as the host's `end` would.
     pub fn end_session(&self, session: &str) {
+        self.codes.lock().unwrap().remove_session(session);
         let mut state = self.state.lock().unwrap();
         let out = state.relay.end_session(session);
         state.dispatch(out);
@@ -128,6 +154,7 @@ impl Server {
 
     /// Ends every session (see `Relay::end_all`).
     pub fn end_all(&self) {
+        self.codes.lock().unwrap().clear();
         let mut state = self.state.lock().unwrap();
         let out = state.relay.end_all();
         state.dispatch(out);
@@ -157,19 +184,29 @@ impl Drop for Server {
         if let Some(t) = self.accepting.take() {
             let _ = t.join();
         }
+        if let Some(t) = self.discovering.take() {
+            let _ = t.join();
+        }
     }
 }
 
-fn accept(listener: TcpListener, state: Shared, mcp: SharedMcp, stop: Arc<AtomicBool>) {
+fn accept(
+    listener: TcpListener,
+    state: Shared,
+    mcp: SharedMcp,
+    codes: SharedCodes,
+    port: u16,
+    stop: Arc<AtomicBool>,
+) {
     for stream in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
             break;
         }
         let Ok(stream) = stream else { continue };
-        let (state, mcp) = (state.clone(), mcp.clone());
+        let (state, mcp, codes) = (state.clone(), mcp.clone(), codes.clone());
         let _ = std::thread::Builder::new()
             .name("collab-conn".into())
-            .spawn(move || serve(stream, state, mcp));
+            .spawn(move || serve(stream, state, mcp, codes, port));
     }
 }
 
@@ -230,7 +267,7 @@ fn session_from_path(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
-fn serve(stream: TcpStream, state: Shared, mcp: SharedMcp) {
+fn serve(stream: TcpStream, state: Shared, mcp: SharedMcp, codes: SharedCodes, port: u16) {
     let started = Instant::now();
     let Ok(handle) = stream.try_clone() else {
         return;
@@ -243,6 +280,7 @@ fn serve(stream: TcpStream, state: Shared, mcp: SharedMcp) {
     match peek_path(&stream, started + HELLO_TIMEOUT) {
         Some(p) if p.starts_with("/mcp/") => return mcp::serve_http(stream, &mcp),
         Some(p) if p.starts_with("/bridge/") => return bridge(stream, mcp, &p),
+        Some(p) if p.starts_with("/join/") => return codes::serve_http(stream, &codes, port),
         _ => {}
     }
     let mut session = String::new();
@@ -414,9 +452,12 @@ mod tests {
         let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
         s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
         let mut req = format!(
-            "{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n",
+            "{method} {path} HTTP/1.1\r\nContent-Length: {}\r\n",
             body.len()
         );
+        if !headers.iter().any(|(k, _)| k.eq_ignore_ascii_case("host")) {
+            req.push_str(&format!("Host: 127.0.0.1:{port}\r\n"));
+        }
         for (k, v) in headers {
             req.push_str(&format!("{k}: {v}\r\n"));
         }
@@ -428,6 +469,66 @@ mod tests {
         let (head, body) = out.split_once("\r\n\r\n").unwrap();
         let (status, headers) = head.split_once("\r\n").unwrap_or((head, ""));
         (status.to_owned(), headers.to_owned(), body.to_owned())
+    }
+
+    #[test]
+    fn collab_join_codes_are_looked_up_over_http() {
+        let server = Server::start(Policy::Registered, &[0]).unwrap();
+        let port = server.port();
+        server.register("doc", "tok", "hk");
+        let code = server.add_code("doc", "tok").unwrap();
+        let (status, _, body) = http(port, "GET", &format!("/join/{code}"), &[], "");
+        assert!(status.contains("200"), "{status}");
+        let found: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            found,
+            json!({ "session": "doc", "token": "tok", "port": port })
+        );
+        // A web page can't look codes up, and a wrong code finds nothing.
+        let (status, _, _) = http(
+            port,
+            "GET",
+            &format!("/join/{code}"),
+            &[("Origin", "http://evil.example")],
+            "",
+        );
+        assert!(status.contains("403"), "{status}");
+        // Nor can one that rebinds its own name to this computer.
+        let (status, _, _) = http(
+            port,
+            "GET",
+            &format!("/join/{code}"),
+            &[("Host", "evil.example")],
+            "",
+        );
+        assert!(status.contains("403"), "{status}");
+        let wrong = if code == "000000" { "000001" } else { "000000" };
+        assert!(http(port, "GET", &format!("/join/{wrong}"), &[], "")
+            .0
+            .contains("404"));
+        // Once the session ends, its code does too.
+        server.end_session("doc");
+        assert!(http(port, "GET", &format!("/join/{code}"), &[], "")
+            .0
+            .contains("404"));
+    }
+
+    /// The guest's search finds a relay on this computer. Needs the usual port free.
+    #[test]
+    fn collab_a_guest_finds_the_relay_by_its_code() {
+        let Ok(server) = Server::start(Policy::Registered, &[codes::DISCOVERY_PORT]) else {
+            eprintln!("port {} is taken; skipped", codes::DISCOVERY_PORT);
+            return;
+        };
+        server.register("doc", "tok", "hk");
+        let code = server.add_code("doc", "tok").unwrap();
+        let invite = codes::find(&code, &[]).unwrap();
+        assert_eq!(
+            invite,
+            format!("ws://127.0.0.1:{}/v1/doc?token=tok", codes::DISCOVERY_PORT)
+        );
+        let wrong = if code == "000000" { "000001" } else { "000000" };
+        assert!(codes::find(wrong, &[]).unwrap_err().contains("Nobody"));
     }
 
     #[test]

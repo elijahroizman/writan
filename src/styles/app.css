@@ -4395,6 +4395,50 @@ button.section-title:hover {
   font-size: 11.5px;
 }
 
+/* The host's six-digit join code (collab/codes.rs). */
+.share-code {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 8px 14px;
+  border-radius: var(--radius-sm);
+  background: var(--field);
+}
+
+.share-code-digits {
+  display: inline-flex;
+  align-items: center;
+  color: var(--fg);
+  font-size: 26px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  /* Digits have no descenders: trimmed to their own height, they sit in the middle. */
+  text-box: trim-both cap alphabetic;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.share-code-gap {
+  display: inline-block;
+  width: 0.45em;
+}
+
+.share-copy-link {
+  align-self: flex-start;
+  margin: -2px 0 0;
+  font-size: 11.5px;
+}
+
+.share-code-field input {
+  font-size: 14px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.06em;
+}
+
 .share-invite {
   display: flex;
   align-items: center;

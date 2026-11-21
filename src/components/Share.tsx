@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import { colorFor, displayName, join, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
+import { parseCode, parseInvite } from '../collab/transport'
 import { PeerAvatar } from '../collab/cursors'
 import { askForNetwork, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings, whileNetworkAllowed } from '../collab/network'
 import { isMac, isTauri } from '../lib/platform'
@@ -92,7 +93,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
   const [name, setName] = useName()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [copied, setCopied] = useState(false)
+  const [copied, setCopied] = useState<'code' | 'link' | null>(null)
   const close = () => useSharePanel.setState({ tabId: null })
   // Others edit the file on disk with you, so it needs to be one, and what they start from is
   // what's saved.
@@ -147,11 +148,12 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
     }
   }
 
-  const copy = async () => {
-    if (!state?.invite) return
-    await navigator.clipboard.writeText(state.invite).catch(() => {})
-    setCopied(true)
-    window.setTimeout(() => setCopied(false), 1500)
+  const copy = async (what: 'code' | 'link') => {
+    const text = what === 'code' ? state?.code : state?.invite
+    if (!text) return
+    await navigator.clipboard.writeText(text).catch(() => {})
+    setCopied(what)
+    window.setTimeout(() => setCopied(null), 1500)
   }
 
   const live = state && (state.status === 'live' || state.status === 'connecting')
@@ -201,17 +203,37 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
             {state.status === 'connecting'
               ? 'Connecting…'
               : host
-                ? 'Send this link to people on your network. Anyone with it can edit while this tab is open.'
+                ? state.code
+                  ? 'Give this code to people on your network. Anyone with it can edit while this tab is open.'
+                  : 'Send this link to people on your network. Anyone with it can edit while this tab is open.'
                 : 'Your changes go to everyone in the document. The person sharing keeps the file.'}
           </p>
         </header>
         <div className="share-body">
-          {host && state.invite && (
+          {host && state.code && (
+            <div className="share-code">
+              <span className="share-code-digits" aria-label={`Code ${state.code.split('').join(' ')}`}>
+                {state.code.slice(0, 3)}
+                <span className="share-code-gap" />
+                {state.code.slice(3)}
+              </span>
+              <Button onClick={() => void copy('code')}>
+                {copied === 'code' ? <Check size={14} /> : <Copy size={14} />} {copied === 'code' ? 'Copied' : 'Copy'}
+              </Button>
+            </div>
+          )}
+          {host && state.code && state.invite && (
+            // For a guest the code can't find: another subnet, or a network that drops broadcasts.
+            <button type="button" className="share-link share-copy-link" onClick={() => void copy('link')}>
+              {copied === 'link' ? <Check size={12} /> : <Link2 size={12} />} {copied === 'link' ? 'Link copied' : 'Copy the link instead'}
+            </button>
+          )}
+          {host && !state.code && state.invite && (
             <div className="share-invite">
               <Link2 size={14} className="share-invite-icon" />
               <input readOnly value={state.invite} aria-label="Invite link" onFocus={(e) => e.currentTarget.select()} />
-              <Button onClick={() => void copy()}>
-                {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied' : 'Copy'}
+              <Button onClick={() => void copy('link')}>
+                {copied === 'link' ? <Check size={14} /> : <Copy size={14} />} {copied === 'link' ? 'Copied' : 'Copy'}
               </Button>
             </div>
           )}
@@ -248,11 +270,12 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
   )
 }
 
-/** Asks for an invite link and joins. */
+/** Asks for the code (or link) and joins. */
 export function JoinDialog() {
   const open = useSharePanel((s) => s.joining)
   const [name, setName] = useName()
-  const [link, setLink] = useState('')
+  const [code, setCode] = useState('')
+  const usable = !!parseCode(code) || !!parseInvite(code)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [network, setNetwork] = useState<Network>(null)
@@ -280,14 +303,14 @@ export function JoinDialog() {
     try {
       await askForNetwork()
       const joined = await whileNetworkAllowed(
-        () => join(link, who, cancelled).then(() => true),
+        () => join(code, who, cancelled).then(() => true),
         (on) => !cancelled() && setNetwork(on ? 'waiting' : null),
         cancelled,
       )
       if (cancelled()) return
       if (!joined) return setNetwork('denied')
       setNetwork(null)
-      setLink('')
+      setCode('')
       useSharePanel.setState({ joining: false })
     } catch (err) {
       if (cancelled()) return
@@ -311,10 +334,20 @@ export function JoinDialog() {
       >
         <div className="dialog-text">
           <h2 id="join-title">Join a shared document</h2>
-          <p>Paste the link the person sharing sent you. You both need to be on the same network.</p>
+          <p>Type the code the person sharing sees in their Share panel. You both need to be on the same network.</p>
         </div>
         <div className="share-body">
-          <TextField label="Link" value={link} placeholder="ws://…" autoFocus onChange={(e) => setLink(e.target.value)} />
+          <TextField
+            label="Code"
+            value={code}
+            placeholder="123 456"
+            autoFocus
+            autoComplete="off"
+            spellCheck={false}
+            inputMode="numeric"
+            className="share-code-field"
+            onChange={(e) => setCode(e.target.value)}
+          />
           <TextField label="Your name" value={name} placeholder="How others see you" onChange={(e) => setName(e.target.value)} />
           <NetworkNote state={network} />
           {error && <p className="share-error">{error}</p>}
@@ -323,8 +356,8 @@ export function JoinDialog() {
           <Button onClick={close} disabled={busy}>
             Cancel
           </Button>
-          <button type="submit" className="btn primary" disabled={busy || !link.trim()}>
-            {busy ? <Spinner size={14} /> : null} Join
+          <button type="submit" className="btn primary" disabled={busy || !usable}>
+            {busy ? <Spinner size={14} /> : null} {busy && network !== 'waiting' && parseCode(code) ? 'Looking…' : 'Join'}
           </button>
         </div>
       </form>
