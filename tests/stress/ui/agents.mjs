@@ -145,6 +145,8 @@ try {
   await b.page.keyboard.type(' Bo again.')
   const heard = await waiting
   check('wait_for_changes hears Bo', heard.text.includes('Bo changed it'), heard.text)
+  // It hears the first of Bo's keys; the rest follow.
+  await a.page.waitForFunction(() => document.querySelector('.docx-pages')?.textContent?.includes('Bo again.'))
 
   // Undo takes back only the agent's own change.
   const undo = await codex.call('undo', { document: docId })
@@ -153,9 +155,29 @@ try {
   check('Bo’s typing stays', (await bodyText(a.page)).includes('Bo again.'))
   if (shots) await a.page.screenshot({ path: `${shots}/agent-word.png` })
 
+  // Deleting the paragraph just before a table leaves the table.
+  await a.page.evaluate(() => {
+    const e = window.__docxEditor
+    const paras = JSON.parse(e.doc.paragraphs())
+    const last = paras[paras.length - 1]
+    e.run({ cmd: 'select', anchor: [last.path, last.text.length], focus: [last.path, last.text.length] })
+    e.run({ cmd: 'enter' })
+    e.run({ cmd: 'insertText', text: 'Before the table.' })
+    e.run({ cmd: 'insertTable', rows: 2, cols: 2 })
+  })
+  await new Promise((r) => setTimeout(r, 500))
+  const withTable = await codex.call('read_document', { document: docId })
+  const beforeTable = /\[(\d+)\] Before the table\./.exec(withTable.text)?.[1]
+  const del = await codex.call('delete_paragraphs', { document: docId, from: Number(beforeTable) })
+  await a.page.waitForFunction(() => !document.querySelector('.docx-pages')?.textContent?.includes('Before the table.'))
+  const tableLeft = (await codex.call('read_document', { document: docId })).text
+  check('deleting the paragraph before a table keeps the table', !del.error && /\(in a table\)/.test(tableLeft), `${del.text}\n${tableLeft}`)
+  const across = await codex.call('delete_paragraphs', { document: docId, from: 1, to: 6 })
+  check('deleting across a table is refused', across.error && across.text.includes('Delete them in parts'), across.text)
+
   // A mistake comes back as an answer the agent can act on.
   const bad = await codex.call('replace_paragraphs', { document: docId, from: 99, text: 'x' })
-  check('a wrong paragraph number is explained', bad.error && bad.text.includes('has 4 paragraphs'), bad.text)
+  check('a wrong paragraph number is explained', bad.error && /has \d+ paragraphs/.test(bad.text), bad.text)
 
   // A second agent, known by its client's name.
   const claude = await mcpClient(null, 'claude-code')

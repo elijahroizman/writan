@@ -108,12 +108,17 @@ fn tilde(rel: &str) -> String {
     }
 }
 
+/// Writes a file whole or not at all: a config an agent reads is never left half written.
 fn write(path: &Path, text: &str) -> Result<(), String> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)
-            .map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
-    }
-    std::fs::write(path, text).map_err(|e| format!("Couldn't write {}: {e}", path.display()))
+    let dir = path.parent().ok_or("No folder to write in.")?;
+    std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)
+        .map_err(|e| format!("Couldn't write in {}: {e}", dir.display()))?;
+    std::io::Write::write_all(&mut tmp, text.as_bytes())
+        .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+    tmp.persist(path)
+        .map_err(|e| format!("Couldn't write {}: {e}", path.display()))?;
+    Ok(())
 }
 
 /// Claude Code keeps its servers in a big state file it writes itself, so its CLI adds this
@@ -148,8 +153,7 @@ fn claude_add(url: &str) -> Result<String, String> {
 /// Whether a config file's text has Writan's server in it.
 fn has_server(file: &str, text: &str) -> bool {
     if file.ends_with(".toml") {
-        text.lines()
-            .any(|l| l.trim() == format!("[mcp_servers.{NAME}]"))
+        text.lines().any(is_our_table)
     } else if file.ends_with(".json") {
         serde_json::from_str::<serde_json::Value>(text)
             .is_ok_and(|v| v["mcpServers"].get(NAME).is_some())
@@ -158,13 +162,26 @@ fn has_server(file: &str, text: &str) -> bool {
     }
 }
 
+/// Whether a TOML line opens Writan's table, `[mcp_servers.writan]`, with or without a comment
+/// after it.
+fn is_our_table(line: &str) -> bool {
+    let code = line.split('#').next().unwrap_or("").trim();
+    code.strip_prefix('[')
+        .and_then(|l| l.strip_suffix(']'))
+        .is_some_and(|name| {
+            name.split('.')
+                .map(|p| p.trim().trim_matches('"'))
+                .eq(["mcp_servers", NAME])
+        })
+}
+
 /// A TOML config (Codex, Grok Build) with `[mcp_servers.writan]` holding just `url`. Everything
 /// outside that table stays as it was.
 fn set_toml_server(text: &str, url: &str) -> String {
     let header = format!("[mcp_servers.{NAME}]");
     let entry = format!("{header}\nurl = \"{url}\"\n");
     let lines: Vec<&str> = text.lines().collect();
-    let Some(start) = lines.iter().position(|l| l.trim() == header) else {
+    let Some(start) = lines.iter().position(|l| is_our_table(l)) else {
         let sep = if text.is_empty() || text.ends_with("\n\n") {
             ""
         } else if text.ends_with('\n') {
@@ -330,6 +347,14 @@ mod tests {
             set_toml_server("", URL),
             format!("[mcp_servers.writan]\nurl = \"{URL}\"\n")
         );
+        // A comment after the table's name, or quotes in it, is still the same table.
+        let commented = "[mcp_servers.writan] # Writan\nurl = \"old\"\n";
+        assert_eq!(
+            set_toml_server(commented, URL),
+            format!("[mcp_servers.writan]\nurl = \"{URL}\"\n")
+        );
+        assert!(has_server("c.toml", "[ mcp_servers.\"writan\" ]\n"));
+        assert!(!has_server("c.toml", "[mcp_servers.writan2]\n"));
     }
 
     #[test]

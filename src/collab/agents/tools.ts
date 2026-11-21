@@ -24,54 +24,88 @@ interface Copy {
   engine: Promise<Engine>
 }
 
+/** Every connected agent, so their copies leave a document that stops being shared here. */
+const sessions = new Set<AgentSession>()
+
 /** One agent connected through MCP, and the documents it has joined. */
 export class AgentSession {
-  readonly copies = new Map<string, Copy>()
-  constructor(readonly who: Agent | OtherAgent) {}
+  /** Its copies by the tab they follow, joining or joined. */
+  readonly copies = new Map<string, Promise<Copy>>()
+  private ended = false
+  constructor(readonly who: Agent | OtherAgent) {
+    sessions.add(this)
+  }
 
   /** Leaves every document. */
   end() {
-    for (const c of this.copies.values()) leaveAsAgent(c.id)
-    this.copies.clear()
+    this.ended = true
+    sessions.delete(this)
+    for (const tab of [...this.copies.keys()]) this.leave(tab)
   }
 
   leave(tab: string) {
     const c = this.copies.get(tab)
     if (!c) return false
-    leaveAsAgent(c.id)
     this.copies.delete(tab)
+    // A join still under way leaves once it's done.
+    void c.then(close, () => {})
     return true
   }
 
   /** The agent's copy of a shared tab's document, joining it first if need be. */
   async copy(tab: string): Promise<{ copy: Copy; engine: Engine }> {
-    let c = this.copies.get(tab)
-    if (!c) {
-      const invite = inviteOf(tab)
-      const doc = documents().find((d) => d.document === tab)
-      if (!invite || !doc) throw new ToolError(`No shared document “${tab}”. list_documents shows the ones you can work on.`)
-      const who = this.who
-      let resolveEngine!: (e: Engine) => void
-      let rejectEngine!: (err: unknown) => void
-      const engine = new Promise<Engine>((res, rej) => {
-        resolveEngine = res
-        rejectEngine = rej
-      })
-      const id = await followAsAgent(invite, { name: who.name, color: who.id ? AGENTS[who.id].color : '#6E56CF', agent: who.id ?? 'ai' }, (copyId, opened) => {
-        void openEngine(opened).then((e) => {
-          attach(copyId, e)
-          resolveEngine(e)
-        }, rejectEngine)
-      })
-      c = { id, tab, kind: doc.kind, engine }
-      this.copies.set(tab, c)
+    // Only while it's shared here: someone who stopped sharing or left takes the agent out too.
+    if (!documents().some((d) => d.document === tab)) {
+      this.leave(tab)
+      throw new ToolError(`No shared document “${tab}”. list_documents shows the ones you can work on.`)
     }
+    let pending = this.copies.get(tab)
+    if (!pending) {
+      pending = this.join(tab)
+      this.copies.set(tab, pending)
+      pending.catch(() => this.copies.get(tab) === pending && this.copies.delete(tab))
+    }
+    const c = await pending
     const engine = await c.engine
     // The relay's welcome is applied when the copy goes live, just after the engine attaches.
     await live(c.id)
+    if (this.ended || this.copies.get(tab) !== pending) throw new ToolError('You left the document.')
     return { copy: c, engine }
   }
+
+  private async join(tab: string): Promise<Copy> {
+    const invite = inviteOf(tab)
+    const doc = documents().find((d) => d.document === tab)
+    if (!invite || !doc) throw new ToolError(`No shared document “${tab}”. list_documents shows the ones you can work on.`)
+    const who = this.who
+    let resolveEngine!: (e: Engine) => void
+    let rejectEngine!: (err: unknown) => void
+    const engine = new Promise<Engine>((res, rej) => {
+      resolveEngine = res
+      rejectEngine = rej
+    })
+    engine.catch(() => {})
+    const id = await followAsAgent(invite, { name: who.name, color: who.id ? AGENTS[who.id].color : '#6E56CF', agent: who.id ?? 'ai' }, (copyId, opened) => {
+      void openEngine(opened).then((e) => {
+        attach(copyId, e)
+        resolveEngine(e)
+      }, rejectEngine)
+    })
+    return { id, tab, kind: doc.kind, engine }
+  }
 }
+
+/** A copy leaves its document, and its engine goes. */
+function close(c: Copy) {
+  leaveAsAgent(c.id)
+  void c.engine.then((e) => e.dispose(), () => {})
+}
+
+// A document that stops being shared here (stopped, left, closed) loses its agents too.
+useCollab.subscribe(() => {
+  const shared = new Set(documents().map((d) => d.document))
+  for (const s of sessions) for (const tab of [...s.copies.keys()]) if (!shared.has(tab)) s.leave(tab)
+})
 
 export class ToolError extends Error {}
 
@@ -164,7 +198,7 @@ export const TOOLS = [
     description: 'Word and PowerPoint: replaces every occurrence of `find` with `replace`. Says how many it replaced.',
     inputSchema: {
       type: 'object',
-      properties: { document: doc, find: { type: 'string' }, replace: { type: 'string' }, match_case: { type: 'boolean' } },
+      properties: { document: doc, find: { type: 'string' }, replace: { type: 'string' }, match_case: { type: 'boolean', description: 'Word only.' } },
       required: ['document', 'find', 'replace'],
     },
   },
@@ -265,9 +299,18 @@ export async function runTool(session: AgentSession, name: string, args: Args): 
       if (copy.kind === 'xlsx') throw new ToolError('In a workbook, use write_cells.')
       return replaceText(engine as WordEngine | SlidesEngine, need(str(args, 'find'), 'find'), str(args, 'replace') ?? '', args.match_case === true)
   }
-  if (copy.kind === 'docx') return wordTool(engine as WordEngine, name, args)
-  if (copy.kind === 'pptx') return slidesTool(engine as SlidesEngine, name, args)
-  return sheetsTool(engine as SheetsEngine, name, args)
+  const text = copy.kind === 'docx' ? wordTool(engine as WordEngine, name, args) : copy.kind === 'pptx' ? slidesTool(engine as SlidesEngine, name, args) : sheetsTool(engine as SheetsEngine, name, args)
+  return `${text}${await delivered(engine)}`
+}
+
+/**
+ * Waits for the relay to put the agent's changes in order with everyone's, so the answer is
+ * about the shared document. A change that met someone else's at the same spot can still lose;
+ * then reading again shows theirs.
+ */
+async function delivered(engine: Engine): Promise<string> {
+  for (let i = 0; i < 100 && engine.doc.collabPending(); i++) await new Promise((r) => setTimeout(r, 50))
+  return engine.doc.collabPending() ? ' (Still on its way to the others.)' : ''
 }
 
 function peopleIn(id: string): Peer[] {
@@ -309,6 +352,9 @@ interface Para {
   path: number[]
   text: string
 }
+
+/** Whether two paragraphs are in the same list of blocks (the body, or one table cell). */
+const sameList = (a: number[], b: number[]) => a.length === b.length && a.slice(0, -1).every((x, i) => x === b[i])
 
 const paragraphsOf = (e: WordEngine) => JSON.parse(e.doc.paragraphs()) as Para[]
 const samePath = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i])
@@ -400,20 +446,21 @@ function wordTool(e: WordEngine, name: string, args: Args): string {
     case 'delete_paragraphs': {
       const fromN = need(int(args, 'from'), 'from')
       const toN = int(args, 'to') ?? fromN
+      const from = para(paras, fromN)
       const to = para(paras, toN)
-      para(paras, fromN)
-      if (paras.length === toN - fromN + 1) {
-        // Everything: what's left is one empty paragraph.
-        select(e, [paras[0].path, 0], [to.path, to.text.length])
-        e.run({ cmd: 'delete', word: false })
-      } else if (toN < paras.length) {
-        select(e, [paras[fromN - 1].path, 0], [paras[toN].path, 0])
-        e.run({ cmd: 'delete', word: false })
-      } else {
-        const before = paras[fromN - 2]
-        select(e, [before.path, before.text.length], [to.path, to.text.length])
-        e.run({ cmd: 'delete', word: false })
+      // Only within one list of paragraphs (the body, or one table cell): a deletion that ran
+      // into a table would take the table with it.
+      if (toN < fromN || paras.slice(fromN - 1, toN).some((p) => !sameList(p.path, from.path))) {
+        throw new ToolError('Those paragraphs aren’t all in one place (a table is in between, or some are in a table cell). Delete them in parts.')
       }
+      const after = paras[toN]
+      const before = paras[fromN - 2]
+      if (after && sameList(after.path, to.path)) select(e, [from.path, 0], [after.path, 0])
+      else if (before && sameList(before.path, from.path)) select(e, [before.path, before.text.length], [to.path, to.text.length])
+      // Nothing else in that list (a table cell, or a body between tables): its text goes and an
+      // empty paragraph stays.
+      else select(e, [from.path, 0], [to.path, to.text.length])
+      e.run({ cmd: 'delete', word: false })
       return `Deleted ${toN - fromN + 1} paragraph${toN === fromN ? '' : 's'}.`
     }
     case 'set_style': {
@@ -437,11 +484,19 @@ function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, mat
     e.run({ cmd: 'find', query: '', matchCase: false, wholeWord: false })
     return `Replaced ${count}.`
   }
+  // Presentations find text whatever its case.
+  if (matchCase) throw new ToolError('In a presentation, replace_text can’t match case. Leave match_case out, or use set_shape_text.')
   const found = e.run<unknown[]>({ cmd: 'find', query: find })
   const count = Array.isArray(found) ? found.length : 0
   if (!count) return `“${find}” isn’t in the presentation.`
   e.run({ cmd: 'replaceAll', text: by })
-  return `Replaced in ${count} shape${count === 1 ? '' : 's'}.`
+  // Text whose formatting changes partway through isn't replaced; say where it's left.
+  const left = e.run<unknown[]>({ cmd: 'find', query: find })
+  const still = Array.isArray(left) ? left.length : 0
+  const done = count - still
+  return still
+    ? `Replaced in ${done} shape${done === 1 ? '' : 's'}; ${still} still ${still === 1 ? 'has' : 'have'} it, with its formatting changing partway (use set_shape_text there).`
+    : `Replaced in ${count} shape${count === 1 ? '' : 's'}.`
 }
 
 // ── PowerPoint
@@ -583,6 +638,7 @@ function readSheets(e: SheetsEngine, args: Args): string {
     ;[r0, c0] = cellRef(a)
     ;[r1, c1] = cellRef(b)
   }
+  if ((Math.abs(r1 - r0) + 1) * (Math.abs(c1 - c0) + 1) > 20_000) throw new ToolError('That range is too big to read at once. Read up to 20,000 cells at a time, like A1:Z500.')
   const out = [`Sheets: ${e.sheets.map((s) => s.name).join(', ')}. Reading ${e.sheets[sheet].name}!${columnName(c0)}${r0 + 1}:${columnName(Math.max(c0, c1))}${Math.max(r0, r1) + 1}.`]
   for (let r = r0; r <= r1; r++) {
     const cells: string[] = []

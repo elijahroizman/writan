@@ -26,6 +26,16 @@ const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-
 /// A request body bigger than this is refused.
 const MAX_BODY: usize = 8 << 20;
 
+/// A request's head (its request line and headers) may be this big at most.
+const MAX_HEAD: u64 = 64 << 10;
+
+/// A request's head has to arrive within this long.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Tool calls' ids, never reused, so an answer can't reach another call even after the address
+/// changes and the server's state starts over.
+static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// How long a tool call may take in the page. Waiting for someone else's change can take a
 /// minute by itself.
 const CALL_TIMEOUT: Duration = Duration::from_secs(150);
@@ -60,7 +70,6 @@ pub struct Mcp {
     sessions: HashMap<String, Session>,
     /// Tool calls waiting for the page, by id.
     calls: HashMap<u64, Sender<Value>>,
-    next_call: u64,
 }
 
 pub type SharedMcp = Arc<Mutex<Option<Mcp>>>;
@@ -74,7 +83,6 @@ impl Mcp {
             next_bridge: 1,
             sessions: HashMap::new(),
             calls: HashMap::new(),
-            next_call: 1,
         }
     }
 
@@ -154,7 +162,6 @@ pub fn bridge_closed(mcp: &SharedMcp, id: u64) {
 /// An HTTP request, as far as MCP needs it.
 struct Request {
     method: String,
-    path: String,
     query: String,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
@@ -169,14 +176,23 @@ impl Request {
     }
 }
 
-fn read_request(stream: &TcpStream) -> Option<Request> {
-    let mut reader = BufReader::new(stream);
+/// Reads a request: its head (at most `MAX_HEAD` bytes, all within `REQUEST_TIMEOUT`), then,
+/// only for this server's address, its body. Fails with the status to answer.
+fn read_request(stream: &TcpStream, mcp: &SharedMcp) -> Result<Request, &'static str> {
+    let started = Instant::now();
+    let mut reader = BufReader::new(Read::take(stream, MAX_HEAD));
     let mut head = Vec::new();
     // The head ends with an empty line.
     loop {
         let start = head.len();
-        if reader.read_until(b'\n', &mut head).ok()? == 0 || head.len() > 64 << 10 {
-            return None;
+        let n = reader
+            .read_until(b'\n', &mut head)
+            .map_err(|_| "400 Bad Request")?;
+        if n == 0 || !head.ends_with(b"\n") {
+            return Err("400 Bad Request");
+        }
+        if started.elapsed() > REQUEST_TIMEOUT {
+            return Err("408 Request Timeout");
         }
         if head[start..] == *b"\r\n" || head[start..] == *b"\n" {
             break;
@@ -184,9 +200,19 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
     }
     let mut headers = [httparse::EMPTY_HEADER; 64];
     let mut req = httparse::Request::new(&mut headers);
-    req.parse(&head).ok()?;
-    let target = req.path?.to_owned();
+    req.parse(&head).map_err(|_| "400 Bad Request")?;
+    let target = req.path.ok_or("400 Bad Request")?.to_owned();
     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+    let token_ok = {
+        let guard = mcp.lock().unwrap();
+        match (guard.as_ref(), path.strip_prefix("/mcp/")) {
+            (Some(m), Some(token)) => same(token.trim_end_matches('/'), &m.token),
+            _ => false,
+        }
+    };
+    if !token_ok {
+        return Err("404 Not Found");
+    }
     let headers: Vec<(String, String)> = req
         .headers
         .iter()
@@ -198,8 +224,7 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
         })
         .collect();
     let mut out = Request {
-        method: req.method?.to_owned(),
-        path: path.to_owned(),
+        method: req.method.ok_or("400 Bad Request")?.to_owned(),
         query: query.to_owned(),
         headers,
         body: Vec::new(),
@@ -209,11 +234,14 @@ fn read_request(stream: &TcpStream) -> Option<Request> {
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(0);
     if len > MAX_BODY {
-        return None;
+        return Err("413 Content Too Large");
     }
+    reader.get_mut().set_limit(len as u64);
     out.body = vec![0; len];
-    reader.read_exact(&mut out.body).ok()?;
-    Some(out)
+    reader
+        .read_exact(&mut out.body)
+        .map_err(|_| "400 Bad Request")?;
+    Ok(out)
 }
 
 fn respond(mut stream: &TcpStream, status: &str, headers: &[(&str, &str)], body: &str) {
@@ -264,21 +292,10 @@ fn query_value(query: &str, name: &str) -> Option<String> {
 
 /// Serves one HTTP request on `/mcp/<token>`, then closes the connection.
 pub fn serve_http(stream: TcpStream, mcp: &SharedMcp) {
-    let Some(req) = read_request(&stream) else {
-        respond(&stream, "400 Bad Request", &[], "");
-        return;
+    let req = match read_request(&stream, mcp) {
+        Ok(req) => req,
+        Err(status) => return respond(&stream, status, &[], ""),
     };
-    let token_ok = {
-        let guard = mcp.lock().unwrap();
-        match (guard.as_ref(), req.path.strip_prefix("/mcp/")) {
-            (Some(m), Some(token)) => same(token.trim_end_matches('/'), &m.token),
-            _ => false,
-        }
-    };
-    if !token_ok {
-        respond(&stream, "404 Not Found", &[], "");
-        return;
-    }
     // Agents don't send Origin; a web page does. Refusing it keeps a page in a browser on this
     // network from driving the server (DNS rebinding), as MCP asks.
     if req.header("origin").is_some() {
@@ -452,8 +469,7 @@ fn call_page(
         let Some((_, bridge)) = &m.bridge else {
             return json_rpc_error(id, -32603, "Writan's window isn't open.");
         };
-        let call = m.next_call;
-        m.next_call += 1;
+        let call = NEXT_CALL.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let text = json!({
             "t": "call", "id": call, "session": session, "agent": agent, "client": client,
             "method": method, "params": params,
