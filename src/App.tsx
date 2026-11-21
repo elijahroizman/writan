@@ -10,12 +10,14 @@ import { showVersionHistory, useVersionHistory, VersionHistory } from './compone
 import { NewFilePicker, useNewFile } from './components/NewFile'
 import { TexInstall, TexRemove } from './components/TexInstall'
 import { Dialogs } from './components/Dialogs'
+import { canShare, JoinDialog, showJoinDialog, showSharePanel, useSharePanel } from './components/Share'
 import { TitleBar } from './components/TitleBar'
 import { CenterState } from './components/ui'
 import type { DocKind } from './lib/kinds'
 import { kindFromPath } from './lib/kinds'
 import * as platform from './lib/platform'
 import { flushAutosave, startAutosave } from './lib/autosave'
+import { resetNative } from './collab/transport'
 import { discardRecovery, resumeRecovery, startRecovery } from './lib/recovery'
 import { installUpdate, openUpdatePanel, startUpdateChecks } from './lib/updater'
 import { startPlugins } from './state/plugins'
@@ -280,6 +282,12 @@ export async function runCommand(id: string) {
     case 'version-history':
       showVersionHistory()
       break
+    case 'share':
+      showSharePanel()
+      break
+    case 'join-shared':
+      showJoinDialog()
+      break
     case 'reveal': {
       const tab = ws.tabs.find((t) => t.id === ws.activeId)
       if (tab?.path) await platform.revealInFinder(tab.path)
@@ -439,6 +447,8 @@ export function commandAvailable(command: string) {
       return false
     case 'version-history':
       return !!tab
+    case 'share':
+      return !!tab && canShare(tab.id)
     case 'split-view':
       return !!ws.split || (!!tab && SPLIT_KINDS.has(tab.kind))
     case 'close-folder':
@@ -524,6 +534,7 @@ export default function App() {
     // Shortcuts changed in Settings: the menu is built with the defaults.
     void syncMenu()
     const stopUpdateChecks = startUpdateChecks()
+    void resetNative()
     const stopAutosave = startAutosave()
     const stopRecovery = startRecovery()
     const stopFolderPalette = startFolderPalette()
@@ -553,7 +564,7 @@ export default function App() {
   useEffect(() => {
     const menuOwnsShortcuts = platform.isTauri && platform.isMac
     const onKey = (e: KeyboardEvent) => {
-      if (useSettings.getState().open || useSetup.getState().open || useNewFile.getState().open || useStarters.getState().open || useVersionHistory.getState().tabId) return
+      if (useSettings.getState().open || useSetup.getState().open || useNewFile.getState().open || useStarters.getState().open || useVersionHistory.getState().tabId || useSharePanel.getState().joining) return
       // The palette answers its own keys; its shortcut still closes it.
       if (usePalette.getState().open && keysFromEvent(e) !== keysFor('command-palette')) return
       const mod = platform.isMac ? e.metaKey : e.ctrlKey
@@ -666,6 +677,7 @@ export default function App() {
       {texOffer && <TexInstall />}
       {texRemoval && <TexRemove />}
       <FocusMode />
+      <JoinDialog />
       <Dialogs />
       {dropHover && (
         <div className="drop-overlay">

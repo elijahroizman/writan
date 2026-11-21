@@ -1,4 +1,4 @@
-import { Check, CircleAlert, Columns2, Copy, FolderOpen, History, LayoutGrid, Plus, Save, SaveOff, X } from 'lucide-react'
+import { Check, CircleAlert, Columns2, Copy, FolderOpen, History, LayoutGrid, Plus, Save, SaveOff, Users, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { autosaveBlock, useAutosaveStatus } from '../lib/autosave'
 import { isMac, isTauri, revealInFinder, revealLabel, shortcut, tildify } from '../lib/platform'
@@ -9,6 +9,8 @@ import { keysFor, withKeys } from '../state/shortcuts'
 import { HOME_TAB_ID, SPLIT_KINDS, useWorkspace } from '../state/workspace'
 import type { DocKind } from '../lib/kinds'
 import { pickSplit } from '../App'
+import { useCollab } from '../collab/session'
+import { canShare, ShareButton, showSharePanel } from './Share'
 import { UpdateButton } from './UpdateButton'
 import { showVersionHistory } from './VersionHistory'
 import { IconButton, KindIcon, PopoverMenu } from './ui'
@@ -24,6 +26,7 @@ export function TitleBar() {
   const [fullscreen, setFullscreen] = useState(false)
   const [drag, setDrag] = useState<{ id: string; dx: number } | null>(null)
   const tabRefs = useRef(new Map<string, HTMLDivElement>())
+  const shared = useCollab((s) => s)
 
   // Traffic lights disappear in full screen, so reclaim their space.
   useEffect(() => {
@@ -120,6 +123,11 @@ export function TitleBar() {
                 <KindIcon kind={tab.kind} size={15} />
               </span>
               <span className="tab-title">{tab.title}</span>
+              {(shared[tab.id]?.status === 'live' || shared[tab.id]?.status === 'connecting') && (
+                <span className="tab-shared" title={shared[tab.id].role === 'host' ? 'Shared on your network' : 'A shared document'}>
+                  <Users size={12} />
+                </span>
+              )}
               <button
                 type="button"
                 className="tab-close"
@@ -150,6 +158,7 @@ export function TitleBar() {
         <Plus size={16} />
       </IconButton>
       <div className="titlebar-spacer" data-tauri-drag-region />
+      <ShareButton />
       <AutosaveChip />
       <UpdateButton />
       {tabMenu && (
@@ -163,6 +172,7 @@ export function TitleBar() {
               : SPLIT_KINDS.has(tabs.find((t) => t.id === tabMenu.id)?.kind as DocKind)
                 ? [{ label: 'Open to the side…', icon: <Columns2 size={14} />, onSelect: () => void openBeside(tabMenu.id) }]
                 : []),
+            ...(canShare(tabMenu.id) ? [{ label: shared[tabMenu.id] ? 'Sharing…' : 'Share on your network…', icon: <Users size={14} />, onSelect: () => showSharePanel(tabMenu.id) }] : []),
             ...(isTauri && tabs.find((t) => t.id === tabMenu.id)?.path
               ? [
                   { label: revealLabel, icon: <FolderOpen size={14} />, onSelect: () => void revealInFinder(tabs.find((t) => t.id === tabMenu.id)!.path!) },

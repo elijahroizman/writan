@@ -10,6 +10,7 @@ mod sheet;
 mod slide;
 mod table;
 mod text;
+pub mod wire;
 
 use std::any::{Any, TypeId};
 use std::collections::HashMap;
@@ -110,7 +111,7 @@ pub struct Document {
     pub extensions: Extensions,
     /// The main part's markup around the body: Word's `w:document` (with the body's final
     /// section properties), PowerPoint's `p:presentation`, Excel's `workbook`.
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 
@@ -140,7 +141,7 @@ pub enum Block {
     Raw {
         xml: Element,
         /// Decoded content for display only; the XML is still the source for saving.
-        #[serde(skip)]
+        #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::shared_slice")]
         preview: Arc<[Block]>,
     },
 }
@@ -158,7 +159,7 @@ pub struct Image {
     /// Alt text.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 
@@ -269,7 +270,7 @@ impl Origin {
 /// A hash of what a node said when it was read, so a back end can tell an untouched node
 /// without comparing it with the file: cheap where the file is huge. Like origins, it never
 /// makes two nodes unequal and isn't part of the JSON.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct Fingerprint(pub Option<u64>);
 
 impl PartialEq for Fingerprint {

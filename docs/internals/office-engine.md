@@ -32,6 +32,7 @@ office-word        office-slides       office-sheets
   - `history`: undo, merging runs of typing into one step.
   - `display`: the display list (text, rects, lines, images, paths, groups) the host paints.
   - `geometry`: shape outlines.
+  - `collab`: keeping the copies of a shared document the same (see [editing together](collaboration.md)).
 - **`office-word`, `office-slides`, `office-sheets`** each add a `view` module on top of their layer:
   - `WordView` paginates (widows and orphans, keep-with-next, page breaks), places headers, footers, footnotes and floating pictures, and handles the editing commands.
   - `SlidesView` resolves placeholders through layouts and masters, applies theme style references and table styles, and edits frames, text and slides.

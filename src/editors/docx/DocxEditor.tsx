@@ -69,6 +69,7 @@ import { usePinchZoom } from '../../lib/pinch'
 import { isMac, openExternal, shortcut } from '../../lib/platform'
 import { withKeys } from '../../state/shortcuts'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { useShared } from '../../collab/useShared'
 import { CommentPeek, CommentStore, CommentsSection } from './Comments'
 import { TrackedChangesSection } from './TrackedChanges'
 import { EXTRA_FONTS, useExtraFonts } from '../../state/fonts'
@@ -113,6 +114,7 @@ export default function DocxTab({ tab, active }: EditorProps) {
 
 function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps & { comments: CommentStore; commentsChanged: React.MutableRefObject<boolean> }) {
   const editor = useDocxEditor()
+  useShared(tab.id, editor)
   const totalPages = useEditorState((s) => s.page?.total ?? 0)
   const zoom = useZoom()
   const search = useDocumentSearch()

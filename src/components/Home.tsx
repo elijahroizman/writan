@@ -1,4 +1,4 @@
-import { Folder, FolderOpen, MoreHorizontal, Moon, Settings, Sun } from 'lucide-react'
+import { Folder, FolderOpen, MoreHorizontal, Moon, Settings, Sun, Users } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { KINDS } from '../lib/kinds'
 import { basename, dirname, revealInFinder, revealLabel, isTauri, shortcut, tildify } from '../lib/platform'
@@ -10,6 +10,7 @@ import { useSettings } from '../state/settings'
 import type { RecentFile } from '../state/workspace'
 import { useWorkspace } from '../state/workspace'
 import { ActionCard, ActionRow, DocBadge, EmptyState, IconButton, KindIcon, PillTabs, PopoverMenu, Wordmark } from './ui'
+import { showJoinDialog } from './Share'
 
 /** Recent's filters: file types grouped the way people think of them. */
 const RECENT_GROUPS = [
@@ -56,6 +57,9 @@ export function Home() {
           <div className="home-header-actions">
             <IconButton label={shortcut(withKeys(theme === 'dark' ? 'Switch to light' : 'Switch to dark', 'toggle-theme'))} onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')}>
               {theme === 'dark' ? <Sun size={16} /> : <Moon size={16} />}
+            </IconButton>
+            <IconButton label="Join a shared document…" onClick={() => showJoinDialog()}>
+              <Users size={16} />
             </IconButton>
             <IconButton label={shortcut(withKeys('Settings', 'settings'))} onClick={() => useSettings.getState().setOpen(true)}>
               <Settings size={16} />

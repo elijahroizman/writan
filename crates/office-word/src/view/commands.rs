@@ -72,7 +72,7 @@ impl WordView {
     }
 
     /// A selection with both ends on paragraphs that exist, at offsets they have.
-    fn clamp(&self, sel: Selection) -> Selection {
+    pub(crate) fn clamp(&self, sel: Selection) -> Selection {
         let blocks = self.blocks(self.story);
         let fix = |p: Pos| -> Pos {
             match pos::para(blocks, &p.path) {
@@ -337,7 +337,8 @@ impl WordView {
             }
             self.unrecorded = false;
         }
-        let steps = splices.into_iter().map(|s| WStep::Text(story, s)).collect();
+        let steps: Vec<WStep> = splices.into_iter().map(|s| WStep::Text(story, s)).collect();
+        self.shared_made(&steps);
         self.history.record(steps, before, (self.story, self.sel.clone()), kind);
         self.stale = true;
         self.goal_x = None;
@@ -351,9 +352,15 @@ impl WordView {
     pub fn undo(&mut self) -> bool {
         self.caret_near = None;
         let Some(e) = self.history.undo() else { return false };
-        for step in e.steps.iter().rev() {
-            self.undo_step(step);
-            self.note_step(step, true);
+        if self.replica.is_some() {
+            if !self.shared_replay(e.steps.iter().rev().map(WStep::inverse).collect()) {
+                return false;
+            }
+        } else {
+            for step in e.steps.iter().rev() {
+                self.undo_step(step);
+                self.note_step(step, true);
+            }
         }
         self.unrecorded = false;
         self.story = e.before.0;
@@ -365,9 +372,15 @@ impl WordView {
     pub fn redo(&mut self) -> bool {
         self.caret_near = None;
         let Some(e) = self.history.redo() else { return false };
-        for step in &e.steps {
-            self.redo_step(step);
-            self.note_step(step, false);
+        if self.replica.is_some() {
+            if !self.shared_replay(e.steps.clone()) {
+                return false;
+            }
+        } else {
+            for step in &e.steps {
+                self.redo_step(step);
+                self.note_step(step, false);
+            }
         }
         self.unrecorded = false;
         self.story = e.after.0;
@@ -376,14 +389,14 @@ impl WordView {
         true
     }
 
-    fn undo_step(&mut self, step: &WStep) {
+    pub(crate) fn undo_step(&mut self, step: &WStep) {
         match step {
             WStep::Text(story, s) => s.undo(self.blocks_mut(*story)),
             WStep::Origin { block, before, .. } => self.set_origin(*block, before.clone()),
         }
     }
 
-    fn redo_step(&mut self, step: &WStep) {
+    pub(crate) fn redo_step(&mut self, step: &WStep) {
         match step {
             WStep::Text(story, s) => s.apply(self.blocks_mut(*story)),
             WStep::Origin { block, after, .. } => self.set_origin(*block, after.clone()),
@@ -391,7 +404,7 @@ impl WordView {
     }
 
     /// Notes what an undone or redone step changed in the body.
-    fn note_step(&mut self, step: &WStep, undo: bool) {
+    pub(crate) fn note_step(&mut self, step: &WStep, undo: bool) {
         match step {
             WStep::Text(StoryId::Body, s) => self.dirty.note(s, undo),
             WStep::Text(..) => {}
@@ -980,6 +993,7 @@ impl WordView {
 
     pub fn set_style(&mut self, id: &str) {
         if crate::ensure_style(&mut self.doc, id) {
+            self.shared_extra(serde_json::json!({ "style": id }));
             self.extras = super::read_extras(&self.doc);
             self.specs.clear();
             self.dirty = super::Dirty::Full;
@@ -1016,6 +1030,8 @@ impl WordView {
                 Some((n, _)) if n != "0" && self.list_kind(&n) == Some(k) => n,
                 _ => {
                     let id = crate::add_list(&mut self.doc, k);
+                    let kind = if k == ListKind::Numbers { "numbers" } else { "bullets" };
+                    self.shared_extra(serde_json::json!({ "list": id, "kind": kind }));
                     // The new list's indents are in the numbering part.
                     self.extras = super::read_extras(&self.doc);
                     id
@@ -1579,7 +1595,7 @@ impl WordView {
     pub fn insert_image(&mut self, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) {
         let max_w = self.sections.first().map(|s| emu_px(s.section.text_width())).unwrap_or(600.0);
         let k = if width > max_w && width > 0.0 { max_w / width } else { 1.0 };
-        let media = self.doc.add_media(content_type, bytes);
+        let media = self.add_media(content_type, bytes);
         let img = Image {
             media,
             width: Emu::from_pixels(width * k),
@@ -1696,12 +1712,13 @@ impl WordView {
             steps.push(WStep::Origin { block, before, after });
         }
         let before = (self.story, self.sel.clone());
+        self.shared_made(&steps);
         self.history.record(steps, before.clone(), before, None);
         self.dirty = super::Dirty::Full;
         self.stale = true;
     }
 
-    fn origin_of(&self, block: Option<u32>) -> Origin {
+    pub(crate) fn origin_of(&self, block: Option<u32>) -> Origin {
         match block {
             None => self.doc.origin.clone(),
             Some(i) => match &self.doc.body {
@@ -1723,7 +1740,11 @@ impl WordView {
         let story = match existing {
             Some(i) => i,
             None => match self.add_story(p.section, kind) {
-                Some(i) => i,
+                Some(i) => {
+                    let name = if kind == StoryKind::Footer { "footer" } else { "header" };
+                    self.shared_extra(serde_json::json!({ "story": i, "section": p.section, "kind": name }));
+                    i
+                }
                 None => return false,
             },
         };
@@ -1809,7 +1830,7 @@ impl WordView {
     }
 
     /// Makes a header or footer for section `si`, referenced as its default one.
-    fn add_story(&mut self, si: usize, kind: StoryKind) -> Option<usize> {
+    pub(crate) fn add_story(&mut self, si: usize, kind: StoryKind) -> Option<usize> {
         let (local, rel_kind, ty) = match kind {
             StoryKind::Header => (
                 "hdr",

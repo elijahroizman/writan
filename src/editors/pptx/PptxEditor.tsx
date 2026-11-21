@@ -49,10 +49,12 @@ import type { Deck } from './types'
 import { parseVideoLink, videoPoster } from './video'
 import { VideoFrame } from './VideoFrame'
 import './pptx.css'
+import { useShared } from '../../collab/useShared'
 
 export default function PptxEditor({ tab, active }: EditorProps) {
   const [engine, setEngine] = useState<SlidesEngine | null>(null)
   const [error, setError] = useState<string | null>(null)
+  useShared(tab.id, engine)
   useEffect(() => {
     let live = true
     let opened: SlidesEngine | null = null

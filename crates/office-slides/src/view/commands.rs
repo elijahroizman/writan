@@ -137,6 +137,7 @@ impl SlidesView {
 
     fn record(&mut self, steps: Vec<SStep>, before: Sel, kind: Option<&'static str>) {
         let after = self.sel.clone();
+        self.shared_made(&steps);
         self.history.record(steps, before, after, kind);
         self.goal_x = None;
     }
@@ -169,8 +170,14 @@ impl SlidesView {
 
     pub fn undo(&mut self) -> bool {
         let Some(e) = self.history.undo() else { return false };
-        for step in e.steps.iter().rev() {
-            self.apply(step, true);
+        if self.replica.is_some() {
+            if !self.shared_replay(e.steps.iter().rev().map(SStep::inverse).collect()) {
+                return false;
+            }
+        } else {
+            for step in e.steps.iter().rev() {
+                self.apply(step, true);
+            }
         }
         self.sel = e.before;
         self.clamp_sel();
@@ -179,15 +186,21 @@ impl SlidesView {
 
     pub fn redo(&mut self) -> bool {
         let Some(e) = self.history.redo() else { return false };
-        for step in &e.steps {
-            self.apply(step, false);
+        if self.replica.is_some() {
+            if !self.shared_replay(e.steps.clone()) {
+                return false;
+            }
+        } else {
+            for step in &e.steps {
+                self.apply(step, false);
+            }
         }
         self.sel = e.after;
         self.clamp_sel();
         true
     }
 
-    fn apply(&mut self, step: &SStep, undo: bool) {
+    pub(crate) fn apply(&mut self, step: &SStep, undo: bool) {
         match step {
             SStep::Slide { index, before, after } => {
                 if let Some(s) = self.slides_mut().get_mut(*index) {
@@ -200,13 +213,14 @@ impl SlidesView {
                 self.touch_all();
             }
             SStep::Notes { index, before, after } => {
-                crate::set_notes(&mut self.doc, *index, if undo { before.clone() } else { after.clone() });
+                let seed = self.notes_part_seed(*index);
+                crate::set_notes_in(&mut self.doc, *index, if undo { before.clone() } else { after.clone() }, seed.as_deref());
                 self.touch(*index);
             }
         }
     }
 
-    fn clamp_sel(&mut self) {
+    pub(crate) fn clamp_sel(&mut self) {
         let n = self.slides().len();
         self.sel.active = self.sel.active.min(n.saturating_sub(1));
         let frames: Vec<u32> = self.slides().get(self.sel.active).map(|s| s.frames.iter().map(|f| f.id).collect()).unwrap_or_default();
@@ -254,8 +268,9 @@ impl SlidesView {
             .or_else(|| crate::layouts(&self.doc).first().map(|t| t.part.clone()));
         let before = self.slides().to_vec();
         let sel = self.sel.clone();
+        let seed = self.new_part_seed();
         let added = match &layout {
-            Some(l) => crate::add_slide(&mut self.doc, l),
+            Some(l) => crate::add_slide_in(&mut self.doc, l, seed.as_deref()),
             None => {
                 self.slides_mut().push(Slide::default());
                 Some(self.slides().len() - 1)
@@ -279,7 +294,9 @@ impl SlidesView {
         let last = idx.last().copied().unwrap_or(0);
         // A copy is a new slide: its own part when saved, written from the model, named now
         // when it takes its original's speaker notes.
-        let parts = crate::copy_notes(&mut self.doc, &idx);
+        let seed = self.new_part_seed();
+        let parts = crate::copy_notes_in(&mut self.doc, &idx, seed.as_deref());
+        self.share_copied_notes(&parts);
         self.change_deck(|slides| {
             let copies: Vec<Slide> = idx
                 .iter()
@@ -355,7 +372,8 @@ impl SlidesView {
             return;
         }
         let sel = self.sel.clone();
-        crate::set_notes(&mut self.doc, index, after.clone());
+        let seed = self.notes_part_seed(index);
+        crate::set_notes_in(&mut self.doc, index, after.clone(), seed.as_deref());
         self.record(vec![SStep::Notes { index, before, after }], sel, Some("notes"));
     }
 
@@ -695,7 +713,7 @@ impl SlidesView {
             .into_iter()
             .map(|id| {
                 let picture = media.remove(&id).unwrap();
-                let imported = self.doc.add_media(&picture.content_type, picture.bytes);
+                let imported = self.add_media(&picture.content_type, picture.bytes);
                 (id, imported)
             })
             .collect();
@@ -1159,7 +1177,7 @@ impl SlidesView {
         let (w, h) = self.size();
         let k = (w * 0.6 / width.max(1.0)).min(h * 0.6 / height.max(1.0)).min(1.0);
         let (bw, bh) = (width * k, height * k);
-        let media = self.doc.add_media(content_type, bytes);
+        let media = self.add_media(content_type, bytes);
         let xf = Xfrm { x: px_emu((w - bw) / 2.0), y: px_emu((h - bh) / 2.0), width: px_emu(bw), height: px_emu(bh), ..Default::default() };
         let f = Frame {
             id: 0,

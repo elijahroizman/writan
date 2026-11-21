@@ -4,6 +4,7 @@
 //! again after each change, and sheets.
 
 mod charts;
+mod collab;
 mod commands;
 
 use std::collections::HashMap;
@@ -127,6 +128,14 @@ pub struct SheetsView {
     pending_cut: Option<commands::PendingCut>,
     /// The formulas in a circular reference, as of the last recalculation.
     pub(crate) circular: Vec<(usize, CellRef)>,
+    /// Set while the workbook is shared with other copies (see `collab`).
+    /// While shared: style indexes below this were in the workbook when sharing started, so every
+    /// copy has them (see `collab`).
+    pub(crate) shared_styles: usize,
+    /// Another copy changed the document since it was saved here, while shared. Their changes
+    /// aren't in the undo history, which [`Self::is_dirty`] otherwise goes by.
+    pub(crate) others_changed: bool,
+    pub(crate) replica: Option<office_engine::collab::Replica<CStep>>,
 }
 
 /// A block of the grid drawn: items in grid pixels.
@@ -210,6 +219,9 @@ impl SheetsView {
             pending_cut: None,
             now: None,
             circular,
+            shared_styles: 0,
+            others_changed: false,
+            replica: None,
         }
     }
 
@@ -219,10 +231,11 @@ impl SheetsView {
 
     pub fn mark_saved(&mut self) {
         self.saved = self.history.version();
+        self.others_changed = false;
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.history.version() != self.saved
+        self.history.version() != self.saved || self.others_changed
     }
 
     pub fn revision(&self) -> u64 {

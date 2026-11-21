@@ -131,6 +131,8 @@ export interface DeckState {
 let sheets = 0
 
 export class SlidesEngine {
+  /** Set while the document is shared (collab/session.ts): hears about every change, to send it. */
+  collab: { changed(): void } | null = null
   readonly doc: SlidesDoc
   readonly styles: StyleSheet
   readonly media: MediaCache
@@ -208,6 +210,7 @@ export class SlidesEngine {
     this.elements = JSON.parse(this.doc.elements(this.state.active))
     this.tick++
     for (const f of this.listeners) f()
+    this.collab?.changed()
   }
 
   /** A slide drawn, as HTML in slide pixels; kept until the slide changes. */

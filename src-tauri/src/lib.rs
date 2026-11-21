@@ -1,4 +1,6 @@
 mod cli;
+/// Public so `examples/collab_relay.rs` can run the relay without the app.
+pub mod collab;
 mod defaults;
 mod files;
 mod fonts;
@@ -217,6 +219,12 @@ pub fn run() {
             fonts::system_has_core_fonts,
             defaults::default_apps,
             defaults::set_default_apps,
+            collab::collab_share,
+            collab::collab_unshare,
+            collab::collab_connect,
+            collab::collab_send,
+            collab::collab_close,
+            collab::collab_reset,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Writan");

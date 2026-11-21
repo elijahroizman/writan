@@ -89,6 +89,7 @@ impl SheetsView {
 
     fn record(&mut self, steps: Vec<CStep>, before: SheetSel) {
         let after = self.sel;
+        self.shared_made(&steps);
         self.history.record(steps, before, after, None);
         self.recalculate();
     }
@@ -223,8 +224,14 @@ impl SheetsView {
     pub fn undo(&mut self) -> bool {
         let Some(e) = self.history.undo() else { return false };
         self.pending_cut = None;
-        for s in e.steps.iter().rev() {
-            self.apply(s, true);
+        if self.replica.is_some() {
+            if !self.shared_replay(e.steps.iter().rev().map(CStep::inverse).collect()) {
+                return false;
+            }
+        } else {
+            for s in e.steps.iter().rev() {
+                self.apply(s, true);
+            }
         }
         self.sel = e.before;
         self.recalculate();
@@ -235,8 +242,14 @@ impl SheetsView {
     pub fn redo(&mut self) -> bool {
         let Some(e) = self.history.redo() else { return false };
         self.pending_cut = None;
-        for s in &e.steps {
-            self.apply(s, false);
+        if self.replica.is_some() {
+            if !self.shared_replay(e.steps.clone()) {
+                return false;
+            }
+        } else {
+            for s in &e.steps {
+                self.apply(s, false);
+            }
         }
         self.sel = e.after;
         self.recalculate();
@@ -244,7 +257,7 @@ impl SheetsView {
         true
     }
 
-    fn apply(&mut self, step: &CStep, undo: bool) {
+    pub(crate) fn apply(&mut self, step: &CStep, undo: bool) {
         match step {
             CStep::Cells { sheet, cells } => {
                 for (at, old, new) in cells {
@@ -947,12 +960,17 @@ impl SheetsView {
 }
 
 /// Puts a cell back as it was (or removes it).
-fn put_cell(s: &mut Sheet, at: CellRef, cell: Option<SheetCell>) {
+pub(crate) fn put_cell(s: &mut Sheet, at: CellRef, cell: Option<SheetCell>) {
     match cell {
         Some(c) => *s.cell_mut(at) = c,
         None => {
             if let Ok(i) = s.rows.binary_search_by_key(&at.row, |r| r.index) {
                 s.rows[i].cells.retain(|c| c.col != at.col);
+                // A row made for the cell goes with it, so taking a change back leaves the sheet
+                // as it was. A row read from the file keeps its markup (its height).
+                if s.rows[i].cells.is_empty() && s.rows[i].origin.get().is_none() {
+                    s.rows.remove(i);
+                }
             }
         }
     }
