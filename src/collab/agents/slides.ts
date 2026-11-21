@@ -295,17 +295,6 @@ export function slideIndex(e: SlidesEngine, n: number | undefined): number {
   return n - 1
 }
 
-/**
- * Where a slide is now, by the id it had before a wait. A slide made here has no part yet, and
- * its id follows its revision, so one still at the same place counts as the same slide.
- */
-function slideNow(e: SlidesEngine, id: string, was: number): number {
-  const i = e.slides.findIndex((x) => x.id === id)
-  if (i >= 0) return i
-  if (id.startsWith('new-') && e.slides[was]?.id.startsWith('new-')) return was
-  throw new ToolError('That slide was deleted or moved meanwhile. Read the document again.')
-}
-
 /** A shape on a slide, anywhere in its groups, and the group it's in. */
 function findShape(e: SlidesEngine, i: number, id: string): { el: Element; group: Element | null } {
   const walk = (els: Element[], group: Element | null): { el: Element; group: Element | null } | null => {
@@ -589,15 +578,14 @@ async function cropPicture(e: SlidesEngine, args: Args): Promise<Answer> {
   const { x, y, width: w, height: h } = el
   let crop: [number, number, number, number]
   let to = { x, y, w, h }
-  const slideId = e.slides[i].id
   if (fit === 'fill' || fit === 'fit') {
     const size = await naturalSize(e.media, el.media)
     if (!size) throw new ToolError('Writan can’t read that picture’s size, so it can’t fit it. Give left, top, right and bottom instead.')
-    // Someone may have moved the slide, or another call made another slide active, meanwhile.
-    i = slideNow(e, slideId, i)
+    // Another call may have made another slide active meanwhile, or someone changed this one.
+    i = slideIndex(e, int(args, 'slide'))
     e.run({ cmd: 'setActive', index: i })
     const now = topShape(e, i, id, 'crop')
-    if (now.x !== x || now.y !== y || now.width !== w || now.height !== h) throw new ToolError('Someone changed that picture meanwhile. Read the slide again.')
+    if (now.media !== el.media || now.x !== x || now.y !== y || now.width !== w || now.height !== h) throw new ToolError('Someone changed that picture meanwhile. Read the slide again.')
     const A = size.width / size.height
     const F = w / h
     if (fit === 'fill') {
@@ -729,15 +717,14 @@ function addShape(e: SlidesEngine, args: Args): Answer {
 }
 
 async function addPicture(e: SlidesEngine, args: Args, local: boolean): Promise<Answer> {
-  const was = slideIndex(e, int(args, 'slide'))
-  const slideId = e.slides[was].id
+  slideIndex(e, int(args, 'slide'))
   checkSize(args)
   const got = await pictureBytes(args, local)
   const type = pictureType(got.bytes)
   if (!type) throw new ToolError('That isn’t a picture Writan can put on a slide. Give a PNG, JPEG, GIF, WebP or SVG.')
   const pic = await scaledPicture(got.bytes, type, e.width * 2, e.height * 2)
-  // The slide by what it is, not where it was: someone may have moved it meanwhile.
-  const i = slideNow(e, slideId, was)
+  // The slide is found once the picture has loaded, as when any edit starts.
+  const i = slideIndex(e, int(args, 'slide'))
   e.run({ cmd: 'setActive', index: i })
   const id = grouped(e, () => {
     const id = e.doc.insertImage(pic.bytes, pic.type, pic.width, pic.height, str(args, 'name') ?? got.name)
@@ -966,18 +953,17 @@ export function snapshotSlides(e: SlidesEngine): SlidesSnapshot {
 /** What's different between two snapshots, slide by slide and shape by shape. */
 export function slidesChanges(a: SlidesSnapshot, b: SlidesSnapshot): string {
   const out: string[] = []
-  // A slide made here has an id that follows its revision: one at the same place is the same slide.
-  const ids = new Set(b.slides.map((s) => s.id))
-  const key = (s: { id: string }, i: number, other: { id: string }[], has: Set<string>) =>
-    !has.has(s.id) && s.id.startsWith('new-') && other[i]?.id.startsWith('new-') ? other[i].id : s.id
-  const olds = a.slides.map((s, i) => ({ ...s, id: key(s, i, b.slides, ids) }))
-  const before = new Map(olds.map((s, i) => [s.id, { s, i }]))
+  const before = new Map(a.slides.map((s, i) => [s.id, { s, i }]))
   const after = new Set(b.slides.map((s) => s.id))
-  for (const [id, { i }] of before) if (!after.has(id)) out.push(`Slide ${i + 1} (as it was numbered) was deleted.`)
+  // A slide made in Writan has no part yet, and its id follows its revision: such a slide that
+  // changed can't be told from a new one, so it isn't called deleted or new.
+  const made = (id: string) => id.startsWith('new-')
+  for (const [id, { i }] of before) if (!after.has(id) && !made(id)) out.push(`Slide ${i + 1} (as it was numbered) was deleted.`)
+  if (a.slides.length !== b.slides.length) out.push(`There are ${plural(b.slides.length, 'slide')} now, ${a.slides.length} before.`)
   b.slides.forEach((s, i) => {
     const old = before.get(s.id)
     if (!old) {
-      out.push(`Slide ${i + 1} is new.`)
+      out.push(made(s.id) ? `Slide ${i + 1} is new or changed (it was made in Writan, so it can’t be compared); read it again.` : `Slide ${i + 1} is new.`)
       return
     }
     if (old.s.revision === s.revision && old.s.notes === s.notes) return

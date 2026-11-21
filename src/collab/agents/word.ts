@@ -241,7 +241,8 @@ function formatWord(e: WordEngine, args: Args): Answer {
       applyFormat(e, args, false)
       // Bold and the like a paragraph at a time: turning one off across paragraphs of different
       // styles would follow only the first one's style.
-      for (let n = fromN; n <= toN; n++) {
+      const toggles = ['bold', 'italic', 'underline', 'strikethrough'].some((k) => args[k] !== undefined)
+      for (let n = fromN; toggles && n <= toN; n++) {
         const p = paras[n - 1]
         select(e, [p.path, 0], [p.path, p.text.length])
         applyFormat(e, { bold: args.bold, italic: args.italic, underline: args.underline, strikethrough: args.strikethrough })
@@ -436,18 +437,21 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       const img = selectPicture(e, n, which)
       if (args.reset === true) {
         const c = img.crop
+        let uncropped = { w: img.widthEmu, h: img.heightEmu }
         grouped(e, () => {
           // Uncropped first, at the scale it shows now; then its own size where Writan knows it.
           if (c.left || c.top || c.right || c.bottom) {
             const w = img.widthEmu / Math.max(0.01, 1 - (c.left + c.right) / 100)
             const h = img.heightEmu / Math.max(0.01, 1 - (c.top + c.bottom) / 100)
             e.run({ cmd: 'cropImage', left: 0, top: 0, right: 0, bottom: 0, widthEmu: Math.round(w), heightEmu: Math.round(h) })
+            uncropped = { w: Math.round(w), h: Math.round(h) }
           }
           e.run({ cmd: 'resetImageSize' })
         })
+        // Only a size that changed is known to be the picture's own (Writan can't read some kinds').
         const now = e.state.image
-        const sized = now && (Math.abs(now.widthEmu - img.widthEmu) > 1 || Math.abs(now.heightEmu - img.heightEmu) > 1)
-        const text = sized || !(c.left || c.top || c.right || c.bottom) ? 'Uncropped, at its own size.' : 'Uncropped. Writan can’t read this picture’s own size, so it keeps the size it had; give width or height to change it.'
+        const sized = now && (Math.abs(now.widthEmu - uncropped.w) > 1 || Math.abs(now.heightEmu - uncropped.h) > 1)
+        const text = sized ? 'Uncropped, and back to its own size.' : 'Uncropped. Its size is as below; give width or height to change it.'
         return { text, after: () => pictureNow(e, n, which) }
       }
       const w0 = num(args, 'width')
