@@ -350,7 +350,10 @@ const afterShape = (e: SlidesEngine, i: number, id: string, surround = false) =>
   if (i >= e.slides.length) return ''
   const hit = findHit(e, i, id)
   if (!hit) return `\nShape "${id}" isn’t on slide ${i + 1} any more; someone else changed it. Read the slide again.`
-  return `\nSlide ${i + 1}, now:\n${shapeLine(hit)}${surround ? surroundings(e, i, hit) : ''}`
+  const order = elementsOf(e, i).map((el) => el.id)
+  const at = order.indexOf(id)
+  const layer = surround && at >= 0 ? `\nIt’s ${at + 1} of ${order.length} from the back.` : ''
+  return `\nSlide ${i + 1}, now:\n${shapeLine(hit)}${surround ? surroundings(e, i, hit) : ''}${layer}`
 }
 
 function findHit(e: SlidesEngine, i: number, id: string): Element | null {
@@ -471,6 +474,21 @@ const SHAPES: Record<string, string> = {
   line: 'line',
 }
 
+/** Width and height the agent gave, checked before anything changes. A line can be 0 one way. */
+function checkSize(args: Args) {
+  for (const k of ['width', 'height']) {
+    const v = num(args, k)
+    if (v !== undefined && v < 1) throw new ToolError('Width and height must be at least 1 pixel.')
+  }
+}
+
+/** A color an agent gave, or "none" (null); checked before anything changes. */
+const colorArg = (args: Args, k: string, what: string) => {
+  const v = str(args, k)
+  if (v === undefined) return undefined
+  return v.trim().toLowerCase() === 'none' ? null : hexColor(v, what)
+}
+
 /** Where a new or moved shape goes: what's given, the rest from `from`, keeping proportions when one side is given. */
 function boxFrom(args: Args, from: { x: number; y: number; width: number; height: number }, keep = true) {
   const w0 = num(args, 'width')
@@ -481,7 +499,6 @@ function boxFrom(args: Args, from: { x: number; y: number; width: number; height
     if (w0 !== undefined && h0 === undefined) h = (from.height * w0) / from.width
     if (h0 !== undefined && w0 === undefined) w = (from.width * h0) / from.height
   }
-  if (w < 1 || h < 1) throw new ToolError('Width and height must be at least 1 pixel.')
   return { x: num(args, 'x') ?? from.x, y: num(args, 'y') ?? from.y, w, h }
 }
 
@@ -508,7 +525,7 @@ function formatText(e: SlidesEngine, args: Args): Answer {
   const i = slideIndex(e, int(args, 'slide'))
   const id = need(str(args, 'shape'), 'the shape')
   e.run({ cmd: 'setActive', index: i })
-  const { el } = findShape(e, i, id)
+  const el = topShape(e, i, id, 'format')
   const patch = textPatch(args)
   if (!Object.keys(patch).length) throw new ToolError('Give what to change: font, size, bold, italic, underline, strikethrough, color or align.')
   const from = int(args, 'from')
@@ -551,7 +568,7 @@ function formatText(e: SlidesEngine, args: Args): Answer {
 }
 
 async function cropPicture(e: SlidesEngine, args: Args): Promise<Answer> {
-  const i = slideIndex(e, int(args, 'slide'))
+  let i = slideIndex(e, int(args, 'slide'))
   const id = need(str(args, 'shape'), 'the shape')
   e.run({ cmd: 'setActive', index: i })
   const el = topShape(e, i, id, 'crop')
@@ -561,9 +578,16 @@ async function cropPicture(e: SlidesEngine, args: Args): Promise<Answer> {
   const { x, y, width: w, height: h } = el
   let crop: [number, number, number, number]
   let to = { x, y, w, h }
+  const slideId = e.slides[i].id
   if (fit === 'fill' || fit === 'fit') {
     const size = await naturalSize(e.media, el.media)
     if (!size) throw new ToolError('Writan can’t read that picture’s size, so it can’t fit it. Give left, top, right and bottom instead.')
+    // Someone may have moved the slide, or another call made another slide active, meanwhile.
+    i = e.slides.findIndex((x) => x.id === slideId)
+    if (i < 0) throw new ToolError('That slide was deleted meanwhile.')
+    e.run({ cmd: 'setActive', index: i })
+    const now = findHit(e, i, id)
+    if (!now || now.x !== x || now.y !== y || now.width !== w || now.height !== h) throw new ToolError('Someone changed that picture meanwhile. Read the slide again.')
     const A = size.width / size.height
     const F = w / h
     if (fit === 'fill') {
@@ -608,6 +632,7 @@ function moveShape(e: SlidesEngine, args: Args): Answer {
   const id = need(str(args, 'shape'), 'the shape')
   e.run({ cmd: 'setActive', index: i })
   const el = topShape(e, i, id, 'move')
+  checkSize(args)
   const b = boxFrom(args, el, args.keep_proportions !== false)
   const rot = num(args, 'rotation') ?? el.rotation
   const layer = str(args, 'layer')
@@ -635,12 +660,14 @@ function formatShape(e: SlidesEngine, args: Args): Answer {
   const link = str(args, 'link')
   if (fill === undefined && outline === undefined && width === undefined && link === undefined) throw new ToolError('Give what to change: fill, outline, outline_width or link.')
   if ((fill !== undefined || outline !== undefined || width !== undefined) && el.type === 'image') throw new ToolError('A picture has no fill or outline here; format_shape can set its link.')
+  const fillHex = colorArg(args, 'fill', 'The fill')
+  const lineHex = colorArg(args, 'outline', 'The outline')
   grouped(e, () => {
     pick(e, [id])
-    if (fill !== undefined) e.run({ cmd: 'fill', hex: fill.trim().toLowerCase() === 'none' ? null : hexColor(fill, 'The fill') })
+    if (fill !== undefined) e.run({ cmd: 'fill', hex: fillHex })
     if (outline !== undefined || width !== undefined) {
-      const none = outline?.trim().toLowerCase() === 'none'
-      e.run({ cmd: 'line', hex: outline && !none ? hexColor(outline, 'The outline') : null, width: none ? 0 : (width ?? (outline ? Math.max(1, el.shapeStyle?.strokeWidth ?? 1) : null)) })
+      const none = lineHex === null
+      e.run({ cmd: 'line', hex: lineHex ?? null, width: none ? 0 : (width ?? (outline ? Math.max(1, el.shapeStyle?.strokeWidth ?? 1) : null)) })
     }
     if (link !== undefined) e.run({ cmd: 'link', id: Number(id), url: link.trim() || null })
   })
@@ -653,6 +680,9 @@ function addShape(e: SlidesEngine, args: Args): Answer {
   const text = str(args, 'text')
   e.run({ cmd: 'setActive', index: i })
   const patch = textPatch(args)
+  checkSize(args)
+  const fillHex = colorArg(args, 'fill', 'The fill')
+  const lineHex = colorArg(args, 'outline', 'The outline')
   const id = grouped(e, () => {
     let id: string
     if (kind === 'text box' || kind === 'textbox' || kind === 'text') id = e.run<string>({ cmd: 'insertTextBox' })
@@ -662,7 +692,7 @@ function addShape(e: SlidesEngine, args: Args): Answer {
       if (rows < 1 || rows > 50 || cols < 1 || cols > 20) throw new ToolError('A table has 1 to 50 rows and 1 to 20 columns.')
       id = e.run<string>({ cmd: 'insertTable', rows, cols })
     } else {
-      const preset = SHAPES[kind] ?? (/^[a-z][a-zA-Z0-9]*$/.test(str(args, 'kind')!.trim()) ? str(args, 'kind')!.trim() : null)
+      const preset = SHAPES[kind]
       if (!preset) throw new ToolError(`Writan has no shape “${kind}”. Kinds: text box, ${Object.keys(SHAPES).join(', ')}, table.`)
       id = e.run<string>({ cmd: 'insertShape', preset })
     }
@@ -678,21 +708,23 @@ function addShape(e: SlidesEngine, args: Args): Answer {
     if (text && kind !== 'table' && kind !== 'line') typeInto(e, id, text)
     pick(e, [id])
     if (Object.keys(patch).length) e.run({ cmd: kind === 'table' ? 'tableTextStyle' : 'textStyle', patch })
-    const fill = str(args, 'fill')
-    const outline = str(args, 'outline')
-    if (fill !== undefined) e.run({ cmd: 'fill', hex: fill.trim().toLowerCase() === 'none' ? null : hexColor(fill, 'The fill') })
-    if (outline !== undefined) e.run({ cmd: 'line', hex: outline.trim().toLowerCase() === 'none' ? null : hexColor(outline, 'The outline'), width: outline.trim().toLowerCase() === 'none' ? 0 : null })
+    if (fillHex !== undefined) e.run({ cmd: 'fill', hex: fillHex })
+    if (lineHex !== undefined) e.run({ cmd: 'line', hex: lineHex, width: lineHex === null ? 0 : null })
     return id
   })
   return { text: `Added shape "${id}" on slide ${i + 1}.`, after: afterShape(e, i, id, true) }
 }
 
 async function addPicture(e: SlidesEngine, args: Args, local: boolean): Promise<Answer> {
-  const i = slideIndex(e, int(args, 'slide'))
+  const slideId = e.slides[slideIndex(e, int(args, 'slide'))].id
+  checkSize(args)
   const got = await pictureBytes(args, local)
   const type = pictureType(got.bytes)
   if (!type) throw new ToolError('That isn’t a picture Writan can put on a slide. Give a PNG, JPEG, GIF, WebP or SVG.')
   const pic = await scaledPicture(got.bytes, type, e.width * 2, e.height * 2)
+  // The slide by what it is, not where it was: someone may have moved it meanwhile.
+  const i = e.slides.findIndex((x) => x.id === slideId)
+  if (i < 0) throw new ToolError('That slide was deleted meanwhile.')
   e.run({ cmd: 'setActive', index: i })
   const id = grouped(e, () => {
     const id = e.doc.insertImage(pic.bytes, pic.type, pic.width, pic.height, str(args, 'name') ?? got.name)
@@ -756,7 +788,7 @@ export async function slidesTool(e: SlidesEngine, name: string, args: Args, loca
       const i = slideIndex(e, int(args, 'slide'))
       const id = need(str(args, 'shape'), 'the shape')
       e.run({ cmd: 'setActive', index: i })
-      findShape(e, i, id)
+      topShape(e, i, id, 'write in')
       grouped(e, () => typeInto(e, id, need(str(args, 'text'), 'the text')))
       return { text: 'Done.', after: afterShape(e, i, id) }
     }
@@ -898,7 +930,7 @@ export async function slidesTool(e: SlidesEngine, name: string, args: Args, loca
 // ── What changed, for wait_for_changes
 
 export interface SlidesSnapshot {
-  slides: { id: string; revision: number; shapes: Map<string, string>; notes: string }[]
+  slides: { id: string; revision: number; shapes: Map<string, string>; order: string[]; notes: string }[]
 }
 
 export function snapshotSlides(e: SlidesEngine): SlidesSnapshot {
@@ -911,8 +943,9 @@ export function snapshotSlides(e: SlidesEngine): SlidesSnapshot {
           if (el.children) walk(el.children)
         }
       }
-      walk(elementsOf(e, i))
-      return { id: s.id, revision: s.revision, shapes, notes: s.notes }
+      const els = elementsOf(e, i)
+      walk(els)
+      return { id: s.id, revision: s.revision, shapes, order: els.map((el) => el.id), notes: s.notes }
     }),
   }
 }
@@ -938,6 +971,8 @@ export function slidesChanges(a: SlidesSnapshot, b: SlidesSnapshot): string {
     }
     for (const [sid, line] of old.s.shapes) if (!s.shapes.has(sid)) lines.push(`  - deleted ${line}`)
     if (old.s.notes !== s.notes) lines.push(`  notes now: ${clip(s.notes, 300) || '(none)'}`)
+    const kept = s.order.filter((sid) => old.s.order.includes(sid))
+    if (kept.join() !== old.s.order.filter((sid) => s.order.includes(sid)).join()) lines.push(`  restacked, back to front now: ${s.order.map((sid) => `"${sid}"`).join(', ')}`)
     if (old.i !== i) out.push(`Slide ${old.i + 1} moved to ${i + 1}.`)
     if (lines.length) out.push(`Slide ${i + 1}:`, ...lines)
   })

@@ -200,6 +200,7 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
     }
     case 'format_cells': {
       const r = rangeOf(need(str(args, 'range'), 'the range'))
+      if ((r.r1 - r.r0 + 1) * (r.c1 - r.c0 + 1) > 20_000) throw new ToolError('That range is too big to format at once. Format up to 20,000 cells at a time.')
       const patch: Record<string, unknown> = {}
       for (const [k, to] of [
         ['bold', 'bold'],
@@ -242,9 +243,10 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
       if (!Object.keys(patch).length) throw new ToolError('Give what to change: bold, italic, underline, strikethrough, font, size, color, fill, align, vertical_align, wrap, number_format or borders.')
       e.run({ cmd: 'format', sheet: s, range: r, patch })
       selectRange(e, s, r)
+      // A number format changes what cells show, so the answer shows them.
       const refs: [number, number][] = []
-      for (let row = r.r0; row <= r.r1 && refs.length < 41; row++) for (let c = r.c0; c <= r.c1 && refs.length < 41; c++) if (cellOf(e, s, row, c).input) refs.push([row, c])
-      return { text: `Formatted ${refName(r.r0, r.c0)}${r.r1 > r.r0 || r.c1 > r.c0 ? `:${refName(r.r1, r.c1)}` : ''}.`, after: refs.length && nf !== undefined ? afterCells(e, s, refs) : undefined }
+      if (nf !== undefined) for (let row = r.r0; row <= r.r1 && refs.length < 41; row++) for (let c = r.c0; c <= r.c1 && refs.length < 41; c++) if (cellOf(e, s, row, c).input) refs.push([row, c])
+      return { text: `Formatted ${refName(r.r0, r.c0)}${r.r1 > r.r0 || r.c1 > r.c0 ? `:${refName(r.r1, r.c1)}` : ''}.`, after: refs.length ? afterCells(e, s, refs) : undefined }
     }
     case 'clear_cells': {
       const r = rangeOf(need(str(args, 'range'), 'the range'))
@@ -274,7 +276,7 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
         const h = px('height')
         for (let r = a; r <= b; r++) e.run({ cmd: 'rowHeight', sheet: s, row: r, px: h })
       }
-      return { text: 'Done.' }
+      return { text: `Set ${[cols && `columns ${cols}`, rows && `rows ${rows}`].filter(Boolean).join(' and ')}.` }
     }
     case 'insert_cells': {
       const count = int(args, 'count') ?? 1
@@ -308,13 +310,14 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
       const r = rangeOf(need(str(args, 'range'), 'the range'))
       e.run({ cmd: 'merge', sheet: s, range: r })
       selectRange(e, s, r)
-      return { text: 'Done.' }
+      const merged = (JSON.parse(e.doc.cell(s, r.r0, r.c0)) as { merged?: boolean }).merged
+      return { text: merged ? `Merged ${refName(r.r0, r.c0)}:${refName(r.r1, r.c1)}.` : `${refName(r.r0, r.c0)}:${refName(r.r1, r.c1)} isn’t merged now.` }
     }
     case 'add_chart': {
       const r = rangeOf(need(str(args, 'range'), 'the range'))
       const kind = str(args, 'kind') ?? 'column'
       if (!['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter'].includes(kind)) throw new ToolError('kind is column, bar, line, area, pie, doughnut or scatter.')
-      e.run({ cmd: 'addChart', sheet: s, range: r, kind })
+      if (e.run<number | null>({ cmd: 'addChart', sheet: s, range: r, kind }) == null) throw new ToolError('Those cells can’t make that chart. Give a range with numbers in it, labels in its first row or column.')
       return { text: `Added a ${kind} chart of ${refName(r.r0, r.c0)}:${refName(r.r1, r.c1)} on ${e.sheets[s].name}.` }
     }
   }

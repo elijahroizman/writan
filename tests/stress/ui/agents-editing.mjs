@@ -191,8 +191,19 @@ try {
   check('group_shapes groups', !!g && /group/.test(grouped.text), grouped.text)
   const inGroup = await codex.call('move_shape', { document: deck, slide: n, shape: tb, x: 0 })
   check('moving a shape inside a group says to move the group or ungroup', inGroup.error && inGroup.text.includes(`inside group "${g}"`), inGroup.text)
+  const childText = await codex.call('format_text', { document: deck, slide: n, shape: tb, bold: true })
+  check('formatting a shape inside a group says to ungroup', childText.error && childText.text.includes(`inside group "${g}"`), childText.text)
   const ungrouped = await codex.call('group_shapes', { document: deck, slide: n, shapes: [g], ungroup: true })
   check('group_shapes with ungroup takes it apart', !ungrouped.error && /Ungrouped into/.test(ungrouped.text), ungrouped.text)
+  const shapesBefore = (await a.page.evaluate((n) => JSON.parse(window.__slides.doc.elements(n - 1)).length, n))
+  const badColor = await codex.call('add_shape', { document: deck, slide: n, kind: 'oval', outline: 'not a color' })
+  check('a bad color is refused before anything is added', badColor.error && (await a.page.evaluate((n) => JSON.parse(window.__slides.doc.elements(n - 1)).length, n)) === shapesBefore, badColor.text)
+  const line = await codex.call('add_shape', { document: deck, slide: n, kind: 'line', x: 60, y: 660, width: 300 })
+  const l1 = idIn(line.text)
+  check('add_shape adds a line', !line.error && /line/.test(line.text), line.text)
+  const lineBack = await codex.call('move_shape', { document: deck, slide: n, shape: l1, layer: 'back' })
+  check('a line can be restacked, and the answer says where it is in the stack', !lineBack.error && /It’s 1 of \d+ from the back/.test(lineBack.text), lineBack.text)
+  await codex.call('delete_shapes', { document: deck, slide: n, shapes: [l1] })
   const del = await codex.call('delete_shapes', { document: deck, slide: n, shapes: [p2] })
   check('delete_shapes deletes', !del.error && !(await hostShape(n, p2)), del.text)
 
@@ -234,6 +245,16 @@ try {
     e.run({ cmd: 'setBox', id: Number(id), x: 20, y: el.y, w: el.width, h: el.height, rot: 0 })
   }, [n, p1])
   const heard = await waiting
+  const waitingStack = codex.call('wait_for_changes', { document: deck, seconds: 15 })
+  await new Promise((r) => setTimeout(r, 400))
+  await a.page.evaluate(([n, id]) => {
+    const e = window.__slides
+    e.run({ cmd: 'setActive', index: n - 1 })
+    e.run({ cmd: 'selectFrames', ids: [Number(id)] })
+    e.run({ cmd: 'restack', how: 'front' })
+  }, [n, p1])
+  const heardStack = await waitingStack
+  check('wait_for_changes says when shapes were restacked', /restacked, back to front now: .*"\d+"$/m.test(heardStack.text) && heardStack.text.trimEnd().includes(`"${p1}"`), heardStack.text)
   check('wait_for_changes says who changed which slide and shape', heard.text.includes('Ada changed it') && heard.text.includes(`Slide ${n}:`) && heard.text.includes(`changed shape "${p1}"`) && /at x 20,/.test(heard.text), heard.text)
   if (shots) await a.page.screenshot({ path: `${shots}/agent-slides-host.png` })
 
@@ -250,6 +271,9 @@ try {
   const docId = /\.docx {2}document: "([^"]+)"/.exec(docs.text)?.[1]
   const fmt = await codex.call('format_text', { document: docId, from: 1, size: 28, bold: true, color: '#1F4E79', align: 'center' })
   check('format_text formats Word paragraphs and says how they look', !fmt.error && /28pt/.test(fmt.text) && /bold/.test(fmt.text) && /aligned center/.test(fmt.text), fmt.text)
+  await codex.call('format_text', { document: docId, from: 2, find: 'dish', bold: true })
+  const unbold = await codex.call('format_text', { document: docId, from: 2, bold: false })
+  check('bold false unbolds a paragraph that is partly bold', !unbold.error && !/bold/.test(unbold.text.split('\n')[0]), unbold.text)
   const part = await codex.call('format_text', { document: docId, from: 2, find: 'order', italic: true, highlight: 'yellow' })
   check('format_text formats just the words found', !part.error && /Formatted 1 match/.test(part.text) && /italic/.test(part.text), part.text)
   const list = await codex.call('insert_paragraphs', { document: docId, after: 2, text: 'Pad thai\nGreen curry' })
@@ -267,6 +291,10 @@ try {
   check('add_picture puts a picture in a Word document, sized', !pic.error && /300 × 150 pixels/.test(pic.text), pic.text)
   const cropW = await codex.call('format_picture', { document: docId, paragraph: 3, right: 0.5 })
   check('format_picture crops a Word picture', !cropW.error && /150 × 150 pixels, cropped 50% right/.test(cropW.text), cropW.text)
+  const reset = await codex.call('format_picture', { document: docId, paragraph: 3, reset: true })
+  check('format_picture reset uncrops', !reset.error && !/cropped \d/.test(reset.text), reset.text)
+  await codex.call('format_picture', { document: docId, paragraph: 3, width: 300 })
+  await codex.call('format_picture', { document: docId, paragraph: 3, right: 0.5 })
   const page = await codex.call('view_document', { document: docId, page: 1 })
   check('view_document gives a picture of a page', page.images.length === 1 && /Page 1 of 1/.test(page.text), page.text)
   if (shots) writeFileSync(`${shots}/agent-view-page.jpg`, Buffer.from(page.images[0].data, 'base64'))

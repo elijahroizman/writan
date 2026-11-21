@@ -172,9 +172,13 @@ function looks(e: WordEngine): string {
   return bits.filter(Boolean).join(', ')
 }
 
-/** Sets a toggle (bold…) to `on` for the selection: a mixed selection takes two toggles. */
+/**
+ * Sets a toggle (bold…) for the whole selection. The state says on only when all of it is, so
+ * a mixed selection reads as off: turning it off turns it all on first, then all off.
+ */
 function toggleTo(e: WordEngine, what: 'bold' | 'italic' | 'underline' | 'strike', on: boolean) {
-  for (let i = 0; i < 2 && e.state[what] !== on; i++) e.run({ cmd: 'toggle', what })
+  if (!e.state[what]) e.run({ cmd: 'toggle', what })
+  if (!on) e.run({ cmd: 'toggle', what })
 }
 
 const HIGHLIGHTS = ['yellow', 'green', 'cyan', 'magenta', 'blue', 'red', 'darkBlue', 'darkCyan', 'darkGreen', 'darkMagenta', 'darkRed', 'darkYellow', 'darkGray', 'lightGray', 'black', 'none']
@@ -421,8 +425,17 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       const which = int(args, 'picture') ?? 1
       const img = selectPicture(e, n, which)
       if (args.reset === true) {
-        e.run({ cmd: 'resetImageSize' })
-        return { text: 'Back to its own size, uncropped.', after: () => pictureNow(e, n, which) }
+        const c = img.crop
+        grouped(e, () => {
+          // Uncropped first, at the scale it shows now; then its own size where Writan knows it.
+          if (c.left || c.top || c.right || c.bottom) {
+            const w = img.widthEmu / Math.max(0.01, 1 - (c.left + c.right) / 100)
+            const h = img.heightEmu / Math.max(0.01, 1 - (c.top + c.bottom) / 100)
+            e.run({ cmd: 'cropImage', left: 0, top: 0, right: 0, bottom: 0, widthEmu: Math.round(w), heightEmu: Math.round(h) })
+          }
+          e.run({ cmd: 'resetImageSize' })
+        })
+        return { text: 'Uncropped, and back to its own size.', after: () => pictureNow(e, n, which) }
       }
       const w0 = num(args, 'width')
       const h0 = num(args, 'height')
