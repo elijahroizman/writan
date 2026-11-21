@@ -65,8 +65,10 @@ pub struct ChartPatch {
     pub legend: Option<String>,
     /// New cells to plot, `A1:C7` or `Sheet2!A1:C7`.
     pub range: Option<String>,
-    /// `RRGGBB` per series, by index; empty for automatic.
+    /// `RRGGBB` for one series, by index; empty for automatic.
     pub color: Option<(usize, String)>,
+    /// `RRGGBB` per series, in order; empty for automatic, null to leave it.
+    pub colors: Option<Vec<Option<String>>>,
 }
 
 impl Grid {
@@ -270,10 +272,20 @@ impl SheetsView {
                 _ => None,
             };
         }
+        let set_color = |s: &mut ChartSeries, color: &str| {
+            let hex = color.trim().trim_start_matches('#').to_ascii_uppercase();
+            s.color = (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())).then_some(hex);
+        };
         if let Some((i, color)) = &patch.color {
             if let Some(s) = chart.series.get_mut(*i) {
-                let hex = color.trim().trim_start_matches('#').to_ascii_uppercase();
-                s.color = (hex.len() == 6 && hex.chars().all(|c| c.is_ascii_hexdigit())).then_some(hex);
+                set_color(s, color);
+            }
+        }
+        if let Some(colors) = &patch.colors {
+            for (s, color) in chart.series.iter_mut().zip(colors.iter()) {
+                if let Some(color) = color {
+                    set_color(s, color);
+                }
             }
         }
         if let Some(r) = &patch.range {
@@ -298,7 +310,11 @@ impl SheetsView {
                 data_block(&old).and_then(|(n, r)| Some((self.sheets().iter().position(|s| s.name.eq_ignore_ascii_case(&n))?, r)))
             {
                 if let Some((series, _)) = self.series_for(data_sheet, range, chart.kind) {
+                    let colors: Vec<_> = chart.series.iter().map(|s| s.color.clone()).collect();
                     chart.series = series;
+                    for (s, c) in chart.series.iter_mut().zip(colors) {
+                        s.color = c;
+                    }
                 }
             }
         }

@@ -1,9 +1,15 @@
 // What an agent can do in a workbook: read cells with their formulas, and do what people do in
 // the editor: write and clear cells, format them, size columns and rows, insert and delete rows
-// and columns, merge cells, add charts, and add, rename, move and delete sheets.
+// and columns, merge cells, add and edit charts, and add, rename, move and delete sheets. It can
+// also see a sheet the way people do — cells, pictures and charts — to check how things look.
 
-import type { SheetsEngine } from '../../engine/sheets/engine'
-import { type Answer, type Args, bool, doc, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import type { ChartView, SheetsEngine } from '../../engine/sheets/engine'
+import { ChartSvg } from '../../engine/sheets/Chart'
+import type { PaintItem, PaintStyle } from '../../engine/paint'
+import { type Answer, type Args, bool, canvasPicture, doc, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
+import { draw, mark } from './picture'
 
 const sheet = { type: 'string', description: 'The sheet’s name (the first one if left out).' }
 const range = { type: 'string', description: 'Cells like B3, or a range like A1:F40.' }
@@ -79,6 +85,28 @@ export const SHEETS_TOOLS: Tool[] = [
     inputSchema: { type: 'object', properties: { document: doc, sheet, range, kind: { type: 'string', enum: ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter'] } }, required: ['document', 'range'] },
   },
   {
+    name: 'edit_chart',
+    description:
+      'Excel: changes chart `chart` on `sheet`, numbered as read_document lists them: its title, axis titles, kind, how series stack, the legend, the cells it plots or its series’ colors. Give only what should change; "" as a title removes it.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        sheet,
+        chart: { type: 'integer', description: 'The chart’s number, from 1.' },
+        title: { type: 'string', description: 'The chart’s title.' },
+        x_title: { type: 'string', description: 'The horizontal axis’s title.' },
+        y_title: { type: 'string', description: 'The vertical axis’s title.' },
+        kind: { type: 'string', enum: ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter'] },
+        grouping: { type: 'string', enum: ['standard', 'stacked', 'percent'], description: 'How series combine: side by side, stacked, or stacked to 100%.' },
+        legend: { type: 'string', enum: ['none', 'right', 'bottom', 'top', 'left'], description: 'Where the legend goes.' },
+        range: { type: 'string', description: 'New cells to plot, like A1:C7 or Sheet2!A1:C7.' },
+        colors: { type: 'array', items: { type: ['string', 'null'] }, description: 'The series’ colors, in order, like "#4472C4"; "auto" or "" for the theme’s color, null to leave one.' },
+      },
+      required: ['document', 'chart'],
+    },
+  },
+  {
     name: 'edit_sheet',
     description: 'Excel: `action` "add" adds a sheet at the end (named `name` if given); "rename" renames `sheet` to `name`; "move" moves `sheet` to position `to` (from 1); "delete" deletes `sheet`.',
     inputSchema: {
@@ -148,6 +176,32 @@ function cellText(e: SheetsEngine, s: number, r: number, c: number): string | nu
   return cell.input.startsWith('=') ? `${refName(r, c)}: ${cell.input} → ${cell.display}` : `${refName(r, c)}: ${cell.display}`
 }
 
+const KIND_NAMES: Record<string, string> = { column: 'column', bar: 'bar', line: 'line', area: 'area', pie: 'pie', doughnut: 'doughnut', scatter: 'scatter', other: 'chart' }
+
+/** A chart as one line, numbered as view_document and edit_chart see it. */
+function describeChart(c: ChartView, n: number): string {
+  const parts = [`chart ${n}: ${c.grouping === 'stacked' ? 'stacked ' : c.grouping === 'percentStacked' ? '100% stacked ' : ''}${KIND_NAMES[c.kind] ?? 'chart'}`]
+  if (c.range) parts.push(`of ${c.range}`)
+  if (c.title) parts.push(`“${c.title}”`)
+  // A bar chart's value axis runs along the bottom, so its X axis is the value one.
+  const bar = c.kind === 'bar'
+  const [x, y] = bar ? [c.valTitle, c.catTitle] : [c.catTitle, c.valTitle]
+  if (x) parts.push(`x axis “${x}”`)
+  if (y) parts.push(`y axis “${y}”`)
+  parts.push(c.legend ? `legend ${c.legend}` : 'no legend')
+  if (c.series.length) parts.push(`series ${c.series.map((s, i) => `${s.name || `${i + 1}`}${s.color ? ` #${s.color.replace('#', '')}` : ''}`).join(', ')}`)
+  return parts.join(', ')
+}
+
+/** The chart numbered `n` on the sheet, or an error that says what's there. */
+function chartAt(e: SheetsEngine, s: number, n: number | undefined): ChartView {
+  const charts = e.chartsOf(s)
+  if (!charts.length) throw new ToolError(`“${e.sheets[s].name}” has no charts.`)
+  if (n === undefined) throw new ToolError(`Give the chart’s number, 1${charts.length > 1 ? ` to ${charts.length}` : ''}.`)
+  if (n < 1 || n > charts.length) throw new ToolError(`“${e.sheets[s].name}” has ${plural(charts.length, 'chart')}: chart is 1${charts.length > 1 ? ` to ${charts.length}` : ''}.`)
+  return charts[n - 1]
+}
+
 export function readSheets(e: SheetsEngine, args: Args): string {
   const s = sheetIndex(e, str(args, 'sheet'))
   const g = e.geometryOf(s).info
@@ -165,6 +219,8 @@ export function readSheets(e: SheetsEngine, args: Args): string {
     if (cells.length) out.push(cells.join(' | '))
   }
   if (out.length === 1) out.push('(empty)')
+  const charts = e.chartsOf(s)
+  if (charts.length) out.push('', 'Charts:', ...charts.map((c, i) => `- ${describeChart(c, i + 1)}`))
   return out.join('\n')
 }
 
@@ -320,6 +376,44 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
       if (e.run<number | null>({ cmd: 'addChart', sheet: s, range: r, kind }) == null) throw new ToolError('Those cells can’t make that chart. Give a range with numbers in it, labels in its first row or column.')
       return { text: `Added a ${kind} chart of ${refName(r.r0, r.c0)}:${refName(r.r1, r.c1)} on ${e.sheets[s].name}.` }
     }
+    case 'edit_chart': {
+      const i = need(int(args, 'chart'), 'the chart’s number')
+      const c = chartAt(e, s, i)
+      const kind = str(args, 'kind')
+      if (kind !== undefined && !['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter'].includes(kind)) throw new ToolError('kind is column, bar, line, area, pie, doughnut or scatter.')
+      const grouping = str(args, 'grouping')
+      if (grouping !== undefined && !['standard', 'stacked', 'percent'].includes(grouping)) throw new ToolError('grouping is standard, stacked or percent.')
+      const legend = str(args, 'legend')
+      if (legend !== undefined && !['none', 'right', 'bottom', 'top', 'left'].includes(legend)) throw new ToolError('legend is none, right, bottom, top or left.')
+      const patch: Record<string, unknown> = {}
+      const title = str(args, 'title')
+      if (title !== undefined) patch.title = title
+      // A bar chart's value axis runs along the bottom, so its X axis is the value one.
+      const [xk, yk] = (kind ?? c.kind) === 'bar' ? ['valTitle', 'catTitle'] : ['catTitle', 'valTitle']
+      const xTitle = str(args, 'x_title')
+      if (xTitle !== undefined) patch[xk] = xTitle
+      const yTitle = str(args, 'y_title')
+      if (yTitle !== undefined) patch[yk] = yTitle
+      if (kind !== undefined) patch.kind = kind
+      if (grouping !== undefined) patch.grouping = grouping === 'percent' ? 'percentStacked' : grouping
+      if (legend !== undefined) patch.legend = legend
+      const cells = str(args, 'range')
+      if (cells !== undefined) patch.range = cells
+      const colors = args.colors
+      if (colors !== undefined) {
+        if (!Array.isArray(colors)) throw new ToolError('colors is a list of colors, one per series, like ["#4472C4", "#ED7D31"].')
+        patch.colors = colors.map((v, n) => {
+          if (v === null || v === undefined) return null
+          const t = String(v).trim()
+          if (t === '' || ['auto', 'automatic', 'none', 'default'].includes(t.toLowerCase())) return ''
+          return hexColor(t, `Series ${n + 1}’s color`).toUpperCase()
+        })
+      }
+      if (!Object.keys(patch).length) throw new ToolError('Give what to change: title, x_title, y_title, kind, grouping, legend, range or colors.')
+      e.run({ cmd: 'setChart', sheet: s, index: i - 1, patch })
+      const now = e.chartsOf(s)[i - 1] ?? c
+      return { text: `Changed ${describeChart(now, i)}.` }
+    }
   }
   throw new ToolError(`${name} isn’t for workbooks.`)
 }
@@ -358,6 +452,119 @@ function editSheet(e: SheetsEngine, args: Args): Answer {
     }
   }
   throw new ToolError('action is add, rename, move or delete.')
+}
+
+/** The column and row headers' size in grid pixels, as the editor draws them (Grid.tsx). */
+const HEAD_W = 46
+const HEAD_H = 22
+
+/**
+ * A sheet as the grid shows it: cells with their letters and numbers, pictures and charts. The
+ * agent sees what people see — #### where a column is too narrow, say — and each chart is
+ * outlined with its number, as edit_chart numbers them.
+ */
+export async function viewSheet(e: SheetsEngine, args: Args): Promise<Answer> {
+  const s = sheetIndex(e, str(args, 'sheet'))
+  const g = e.geometryOf(s)
+  const charts = e.chartsOf(s)
+  const labels = args.labels !== false
+  const want = Math.min(2400, Math.max(200, num(args, 'width') ?? 1400))
+  const overlap = (v: { x: number; y: number; w: number; h: number }, b: { x: number; y: number; w: number; h: number }) => b.x + b.w > v.x && b.x < v.x + v.w && b.y + b.h > v.y && b.y < v.y + v.h
+
+  // `chart` shows just that chart, closer up; `range` the cells given; the content otherwise.
+  let cells: { r0: number; c0: number; r1: number; c1: number } | null = null
+  let view: { x: number; y: number; w: number; h: number }
+  const at = int(args, 'chart')
+  if (at !== undefined) {
+    const c = chartAt(e, s, at)
+    const pad = 8
+    view = { x: c.x - pad, y: c.y - pad, w: c.w + pad * 2, h: c.h + pad * 2 }
+  } else {
+    const wantRange = str(args, 'range')
+    cells = wantRange
+      ? rangeOf(wantRange)
+      : { r0: 0, c0: 0, r1: Math.min(Math.max(g.info.content[0], 15), 120) - 1, c1: Math.min(Math.max(g.info.content[1], 8), 40) - 1 }
+    view = { x: g.x(cells.c0), y: g.y(cells.r0), w: g.x(cells.c1 + 1) - g.x(cells.c0), h: g.y(cells.r1 + 1) - g.y(cells.r0) }
+    // A chart or picture overlapping the cells comes along; the view grows to take it whole.
+    for (const b of [...charts, ...e.picturesOf(s)]) {
+      if (!overlap(view, b)) continue
+      const x0 = Math.min(view.x, b.x)
+      const y0 = Math.min(view.y, b.y)
+      view = { x: x0, y: y0, w: Math.max(view.x + view.w, b.x + b.w) - x0, h: Math.max(view.y + view.h, b.y + b.h) - y0 }
+    }
+  }
+
+  const items: PaintItem[] = []
+  if (cells) {
+    const painted = JSON.parse(e.doc.paint(s, cells.r0, cells.r1 + 1, cells.c0, cells.c1 + 1)) as { items: PaintItem[]; styles: PaintStyle[] }
+    e.styles.add(painted.styles)
+    items.push(...painted.items)
+    for (const p of e.picturesOf(s)) {
+      if (!overlap(view, p)) continue
+      items.push({ t: 'image', media: p.media, x: p.x, y: p.y, w: p.w, h: p.h, crop: p.crop })
+    }
+  }
+
+  // Column letters and row numbers sit in strips around the cells.
+  const head = cells !== null
+  const area = head ? { x: view.x - HEAD_W, y: view.y - HEAD_H, w: view.w + HEAD_W, h: view.h + HEAD_H } : view
+  const scale = Math.min(want / area.w, 4)
+  const canvas = await draw({ width: g.width, height: g.height, items, styles: e.styles, media: e.media }, scale, [], area)
+  const ctx = canvas.getContext('2d')!
+  if (cells) {
+    // Headers, as the editor draws them: a raised strip with the letter or number centered.
+    ctx.fillStyle = '#f5f5f5'
+    ctx.fillRect(area.x, area.y, HEAD_W, HEAD_H)
+    ctx.fillRect(view.x, area.y, view.w, HEAD_H)
+    ctx.fillRect(area.x, view.y, HEAD_W, view.h)
+    ctx.fillStyle = '#d4d4d4'
+    ctx.fillRect(view.x - 1, area.y, 1, area.h)
+    ctx.fillRect(area.x, view.y - 1, area.w, 1)
+    ctx.font = `11.5px ${getComputedStyle(document.body).fontFamily || 'sans-serif'}`
+    ctx.fillStyle = '#6b6b6b'
+    ctx.textAlign = 'center'
+    ctx.textBaseline = 'middle'
+    for (let c = cells.c0; c <= cells.c1; c++) {
+      ctx.fillStyle = '#d4d4d4'
+      if (c > cells.c0) ctx.fillRect(g.x(c) - 0.5, area.y, 1, HEAD_H)
+      ctx.fillStyle = '#6b6b6b'
+      ctx.fillText(columnName(c), (g.x(c) + g.x(c + 1)) / 2, area.y + HEAD_H / 2 + 0.5)
+    }
+    for (let r = cells.r0; r <= cells.r1; r++) {
+      ctx.fillStyle = '#d4d4d4'
+      if (r > cells.r0) ctx.fillRect(area.x, g.y(r) - 0.5, HEAD_W, 1)
+      ctx.fillStyle = '#6b6b6b'
+      ctx.fillText(String(r + 1), area.x + HEAD_W / 2, (g.y(r) + g.y(r + 1)) / 2 + 0.5)
+    }
+  }
+  // Charts aren't engine paint items; the editor draws them as SVG, so draw the same SVG here.
+  for (const c of charts) {
+    if (!overlap(view, c)) continue
+    const markup = renderToStaticMarkup(createElement(ChartSvg, { chart: c, width: c.w, height: c.h }))
+    const svg = markup.slice(markup.indexOf('<svg'), markup.lastIndexOf('</svg>') + 6).replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"')
+    const img = new Image()
+    img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
+    try {
+      await img.decode()
+      ctx.drawImage(img, c.x, c.y, c.w, c.h)
+    } catch {
+      ctx.fillStyle = '#fff'
+      ctx.fillRect(c.x, c.y, c.w, c.h)
+      ctx.strokeStyle = '#d9d9d9'
+      ctx.strokeRect(c.x, c.y, c.w, c.h)
+    } finally {
+      URL.revokeObjectURL(img.src)
+    }
+  }
+  if (labels) for (const [i, c] of charts.entries()) if (overlap(view, c)) mark(ctx, { label: `chart ${i + 1}`, x: c.x, y: c.y, w: c.w, h: c.h }, 1 / scale)
+
+  const picture = await canvasPicture(canvas)
+  const shown = cells ? `${refName(cells.r0, cells.c0)}:${refName(cells.r1, cells.c1)}` : 'the cells under it'
+  const text = [
+    `Sheet “${e.sheets[s].name}”${at !== undefined ? `, chart ${at}` : `, ${shown}`}, ${canvas.width} × ${canvas.height}.${labels && charts.length ? ' Each chart is outlined in pink with its number.' : ''}`,
+    ...charts.map((c, i) => describeChart(c, i + 1)),
+  ].join('\n')
+  return { text, pictures: [picture] }
 }
 
 /** Where someone's selection is, from their presence. */

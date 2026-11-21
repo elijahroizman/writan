@@ -189,7 +189,7 @@ function paint(ctx: CanvasRenderingContext2D, items: PaintItem[], styles: StyleS
 }
 
 /** A box outlined, with its label in a tag at its top left. `px` is one picture pixel. */
-function mark(ctx: CanvasRenderingContext2D, m: Mark, px: number) {
+export function mark(ctx: CanvasRenderingContext2D, m: Mark, px: number) {
   ctx.save()
   ctx.translate(m.x + m.w / 2, m.y + m.h / 2)
   if (m.rot) ctx.rotate((m.rot * Math.PI) / 180)
@@ -208,6 +208,7 @@ function mark(ctx: CanvasRenderingContext2D, m: Mark, px: number) {
   ctx.fillRect(m.x, m.y, w, h)
   ctx.fillStyle = '#ffffff'
   ctx.textBaseline = 'middle'
+  ctx.textAlign = 'left'
   ctx.fillText(m.label, m.x + 4 * px, m.y + h / 2)
   ctx.restore()
 }

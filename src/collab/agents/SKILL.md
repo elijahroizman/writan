@@ -21,9 +21,9 @@ In a Word document it returns numbered paragraphs, and marks headings and the ta
 
 In a presentation it returns the slide size in pixels (96 to an inch), then each slide's layout, shapes and speaker notes. Every shape has an id in quotes, like `shape "4"`, which you pass as `shape`, and says what it is, where it is (`at x 80, y 120, 400 × 300`), how it looks (font, size, color, fill, outline, crop) and its text. Shapes are listed back to front: a later one covers an earlier one.
 
-In a workbook it returns the cells in use on one sheet as A1 references, with each formula and its result. Pass `sheet` and `range` (like `A1:F40`) to read another part.
+In a workbook it returns the cells in use on one sheet as A1 references, with each formula and its result, then the sheet's charts by number. Pass `sheet` and `range` (like `A1:F40`) to read another part.
 
-`view_document` shows a slide or a Word page as a picture, the way people see it. On a slide each shape is outlined in pink with its id, so you can tell which photo is which, and see what overlaps or looks crowded. Pass `shape` to see one shape closer up. Look at a slide before you change how it looks, and again afterwards to check.
+`view_document` shows a slide, a Word page or a sheet as a picture, the way people see it. On a slide each shape is outlined in pink with its id, so you can tell which photo is which, and see what overlaps or looks crowded; pass `shape` to see one closer up. On a sheet each chart is outlined with its number; pass `range` for another part or `chart` for one chart. On a sheet you can see what the text can't tell you, like #### where a column is too narrow. Look at a slide before you change how it looks, and again afterwards to check.
 
 ## Editing
 
@@ -38,7 +38,7 @@ PowerPoint:
 
 Positions and sizes are in slide pixels from the top left. `move_shape` and `crop_picture` answer with what the shape overlaps and whether it runs off the slide.
 
-Excel: `write_cells` with values as someone would type them, such as `"42"`, `"Total"` or `"=SUM(B2:B9)"`; `format_cells` (bold, colors, fill, alignment, wrap, number format like `"$#,##0.00"`, borders); `clear_cells`, `size_cells`, `insert_cells`, `delete_cells`, `merge_cells`, `add_chart` and `edit_sheet` (add, rename, move or delete a sheet).
+Excel: `write_cells` with values as someone would type them, such as `"42"`, `"Total"` or `"=SUM(B2:B9)"`; `format_cells` (bold, colors, fill, alignment, wrap, number format like `"$#,##0.00"`, borders); `clear_cells`, `size_cells`, `insert_cells`, `delete_cells`, `merge_cells`, `add_chart` and `edit_chart` (title, axis titles, kind, stacking, legend, the cells it plots and series colors, by chart number), and `edit_sheet` (add, rename, move or delete a sheet).
 
 `undo` takes back your last change and leaves other people's alone.
 
