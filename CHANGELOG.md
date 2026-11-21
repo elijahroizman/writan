@@ -2,6 +2,24 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.12.3 — 2026-11-22
+
+### Edit together
+- Sharing gives a six-digit code instead of a long link. The others type it into **Join a shared document…**, and Writan finds your computer on the network. **Copy the link instead** is still there for networks where the code can't find you.
+- The note that says someone joined or left is bigger, and shows at the top right under the share button.
+
+### AI agents
+- Agents don't need a code: they join shared documents through Writan's MCP server, as before.
+- In workbooks, agents can change a chart's title, axis titles, kind, legend, range and colors, and see a sheet, a chart or a range of cells the way people do.
+- Settings › AI can remove Writan from an agent, and Writan keeps the setup in agents that already have it up to date when it starts.
+
+### Version history
+- Every saved version shows as the document itself: Word pages, every slide, a workbook's sheets, PDFs, Markdown, text and pictures. Before, workbooks, PDFs and pictures couldn't be shown, and the rest showed a diff of their text.
+- Opening version history takes the keyboard, so typing no longer changes the document behind it.
+
+### Settings
+- The downloadable fonts are gone, and so is the Plugins page: the LaTeX switch is on **Settings › General**. Documents still use the look-alike fonts, or Microsoft's when they're installed.
+
 ## 0.12.2 — 2026-11-21
 
 ### AI agents
