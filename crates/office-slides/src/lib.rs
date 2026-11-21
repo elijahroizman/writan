@@ -54,6 +54,11 @@ impl Layer for Decks {
         &[Kind::Slides]
     }
 
+    // before_write is the default no-op, so saving needn't copy the document for it.
+    fn edits_before_write(&self, _: Kind) -> bool {
+        false
+    }
+
     fn after_read(&self, doc: &mut Document) -> Result<()> {
         let mut ppt = Ppt {
             default_text: templates::levels(doc.origin.get().and_then(|o| o.child(ns::P, "defaultTextStyle"))),

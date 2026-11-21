@@ -61,6 +61,11 @@ impl Layer for Words {
         &[Kind::Word]
     }
 
+    // before_write is the default no-op, so saving needn't copy the document for it.
+    fn edits_before_write(&self, _: Kind) -> bool {
+        false
+    }
+
     fn after_read(&self, doc: &mut Document) -> Result<()> {
         let mut word = Word::default();
         if let Some(pkg) = &doc.package {
