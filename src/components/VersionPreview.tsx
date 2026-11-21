@@ -288,7 +288,16 @@ function onLinkClick(e: React.MouseEvent<HTMLElement>) {
   if (!link) return
   e.preventDefault()
   const href = link.getAttribute('href') ?? ''
-  if (href.startsWith('#')) e.currentTarget.querySelector(`[id="${CSS.escape(href.slice(1))}"]`)?.scrollIntoView({ behavior: 'smooth' })
+  if (href.startsWith('#')) {
+    // Headings' ids are as written ("café"); links to them are percent-encoded ("caf%C3%A9").
+    let id = href.slice(1)
+    try {
+      id = decodeURIComponent(id)
+    } catch {
+      // A stray % stays as it is.
+    }
+    e.currentTarget.querySelector(`[id="${CSS.escape(id)}"]`)?.scrollIntoView({ behavior: 'smooth' })
+  }
   else if (/^(https?:|mailto:)/i.test(href)) void openExternal(href)
 }
 

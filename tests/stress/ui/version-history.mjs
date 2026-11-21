@@ -21,7 +21,7 @@ const drafts = ['Plan\n\nWe open in May.\n', 'Plan\n\nWe open in June.\n', 'Plan
 writeFileSync(NOTES, drafts.at(-1))
 writeFileSync(FRESH, 'Nothing saved yet.\n')
 const README = `${dir}/Readme.md`
-writeFileSync(README, '# Opening day\n\nDoors open at **nine**. See [the map](https://example.com/map).\n')
+writeFileSync(README, '# Opening day\n\nDoors open at **nine**. See [the map](https://example.com/map) and [the café](#café).\n\n' + 'More.\n\n'.repeat(200) + '## Café\n\nUpstairs.\n')
 // Windows-1252, as older Windows files are.
 const OLD = `${dir}/Old.txt`
 writeFileSync(OLD, Buffer.from('Caf\xe9 menu\n', 'latin1'))
@@ -263,6 +263,12 @@ try {
   await dialog.getByRole('link', { name: 'the map' }).click()
   await page.waitForFunction(() => window.__fake.opened.includes('https://example.com/map'))
   assert.equal(page.url(), url)
+  // A link to a heading scrolls to it.
+  await dialog.getByRole('link', { name: 'the café' }).click()
+  await page.waitForFunction(() => {
+    const heading = [...document.querySelectorAll('.vh-canvas h2')].find((h) => h.textContent === 'Café')
+    return heading && heading.getBoundingClientRect().top < innerHeight
+  })
   await page.keyboard.press('Escape')
 
   // Text reads in the encoding the editor reads it in.
