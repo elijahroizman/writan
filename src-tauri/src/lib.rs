@@ -1,3 +1,4 @@
+mod agents;
 mod cli;
 /// Public so `examples/collab_relay.rs` can run the relay without the app.
 pub mod collab;
@@ -227,6 +228,11 @@ pub fn run() {
             collab::collab_reset,
             collab::collab_local_network,
             collab::collab_network_settings,
+            collab::agents_enable,
+            collab::agents_disable,
+            agents::agents_installed,
+            agents::agents_install_mcp,
+            agents::agents_install_skill,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Writan");

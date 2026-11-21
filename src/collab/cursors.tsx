@@ -1,7 +1,9 @@
 // Where everyone else is in a shared document: their caret or picked frames in their color,
 // with their name. The editors place these; session.ts keeps where each person is.
 
+import { Bot } from 'lucide-react'
 import type { CSSProperties, ReactNode } from 'react'
+import { logoOf } from './agents/identity'
 import type { Peer, Place } from './session'
 import './cursors.css'
 
@@ -78,6 +80,26 @@ export function PeerBox({
       {named.length > 0 && <PeerTags peers={named} moves={moves} scale={scale} below={below} />}
       {children}
     </div>
+  )
+}
+
+/** Someone's picture in lists and the title bar: their initial in their color, or an agent's
+ * logo with a ring in its color. */
+export function PeerAvatar({ peer, you, className = '' }: { peer: Peer; you?: boolean; className?: string }) {
+  const title = you ? `${nameOf(peer)} (you)` : nameOf(peer)
+  if (peer.agent) {
+    const logo = logoOf(peer.agent)
+    return (
+      <span className={`share-avatar agent ${className}`} style={{ '--peer': peer.color } as CSSProperties} title={title} aria-hidden>
+        {logo ? <img src={logo.src} alt="" draggable={false} style={{ transform: `scale(${logo.scale})` }} /> : <Bot size={12} />}
+      </span>
+    )
+  }
+  const initial = nameOf(peer).trim().charAt(0).toUpperCase() || '?'
+  return (
+    <span className={`share-avatar ${className}`} style={{ background: peer.color }} title={title} aria-hidden>
+      {initial}
+    </span>
   )
 }
 

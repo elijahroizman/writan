@@ -345,6 +345,38 @@ impl WordView {
         self.caret_near = None;
     }
 
+    /// Removes the body's blocks `from..=to` from the list at `container` (the body, `[]`, or a
+    /// table cell's) as one change, leaving the blocks around them as they were. Refuses, saying
+    /// why: `missing` (the blocks aren't there, or the caret isn't in the body), `section` (one
+    /// ends a section, so deleting it would join two), or `all` (they're the whole list, which is
+    /// never emptied).
+    pub fn delete_blocks(&mut self, container: &[u32], from: u32, to: u32) -> Result<(), &'static str> {
+        if self.story != StoryId::Body || from > to {
+            return Err("missing");
+        }
+        let Some(list) = pos::blocks_at_mut(self.blocks_mut(StoryId::Body), container) else { return Err("missing") };
+        if to as usize >= list.len() {
+            return Err("missing");
+        }
+        // A paragraph that ends a section holds that section's page setup.
+        let ends_section =
+            |b: &Block| matches!(b, Block::Paragraph(p) if p.origin.get().and_then(|o| o.path(ns::W, &["pPr", "sectPr"])).is_some());
+        if list[from as usize..=to as usize].iter().any(ends_section) {
+            return Err("section");
+        }
+        if list.len() == (to - from + 1) as usize {
+            return Err("all");
+        }
+        let removed: Vec<Block> = list.drain(from as usize..=to as usize).collect();
+        let splice = Splice { container: container.to_vec(), index: from, removed, inserted: Vec::new() };
+        // The caret goes where the blocks were.
+        let mut at = container.to_vec();
+        at.push(from.min(list.len() as u32 - 1));
+        let sel = self.clamp(Selection::caret(Pos::new(Path(at), 0)));
+        self.record(vec![splice], Some(sel), None);
+        Ok(())
+    }
+
     fn apply_edit(&mut self, e: Edit, kind: Option<&'static str>) {
         self.record(e.splices, e.selection, kind);
     }

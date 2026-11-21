@@ -1,4 +1,4 @@
-import { ArrowLeft, Blocks, Keyboard, Monitor, Moon, Palette, Pencil, Plus, RotateCcw, Save, Search, Settings2, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Blocks, Keyboard, Monitor, Moon, Palette, Pencil, Plus, RotateCcw, Save, Search, Settings2, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canSetDefaults, defaultStatus, makeDefault, openDefaultAppsSettings } from '../lib/defaults'
@@ -21,6 +21,7 @@ import type { ShortcutDef } from '../state/shortcuts'
 import { SHORTCUTS, isValidKeys, keysFor, keysFromEvent, syncMenu, useShortcuts } from '../state/shortcuts'
 import { useFolder } from '../state/folder'
 import { useWorkspace } from '../state/workspace'
+import { AiPage } from './AiSettings'
 import { CoreFontsOffer, NO_CALIBRI } from './CoreFonts'
 import { PluginRow } from './PluginList'
 import { formatSize as formatVersionSize } from './VersionHistory'
@@ -40,6 +41,7 @@ const PAGES: { id: SettingsPage; label: string; icon: ReactNode }[] = [
   { id: 'plugins', label: 'Plugins', icon: <Blocks size={15} strokeWidth={1.75} /> },
   { id: 'autosave', label: 'Autosave', icon: <Save size={15} strokeWidth={1.75} /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette size={15} strokeWidth={1.75} /> },
+  { id: 'ai', label: 'AI', icon: <Sparkles size={15} strokeWidth={1.75} /> },
   { id: 'shortcuts', label: 'Keyboard Shortcuts', icon: <Keyboard size={15} strokeWidth={1.75} /> },
 ]
 
@@ -101,6 +103,7 @@ export default function SettingsPanel() {
             {page === 'plugins' && <PluginsPage />}
             {page === 'autosave' && <AutosavePage />}
             {page === 'appearance' && <AppearancePage />}
+            {page === 'ai' && <AiPage />}
             {page === 'shortcuts' && <ShortcutsPage />}
             {page === 'licenses' && (
               <Suspense fallback={<Spinner />}>

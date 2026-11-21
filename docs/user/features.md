@@ -98,6 +98,16 @@ Everyone's changes show on everyone's screen as they're made, and so does where 
 
 **Stop sharing** in the same panel ends it for everyone, and so does closing the tab or quitting. The others keep what they had as an unsaved copy. The panel lists who's in the document. Anyone with the link can edit while the tab is shared, so send it only to people you mean to.
 
+A note in the top left corner says when someone joins or leaves.
+
+## AI agents
+
+AI agents can join a document you've shared and edit it with you, the way a person would: everyone sees the agent's caret, its changes, and its name and logo. Turn on **Let agents join shared documents** in **Settings › AI**. The page then gives an address, with a secret in it, that agents connect to through MCP.
+
+For an agent on this computer, **Add MCP server** sets it up in Claude Code, Codex, Antigravity, Grok Build or Hermes Agent, and **Add skill** adds Writan's skill, which tells the agent how to work alongside people. Start a new session in the agent afterwards. Any other agent that takes a remote MCP server can use the address too, and **Copy skill** copies the skill to add by hand. For an agent on another computer on your network, give it the address under **From another computer**.
+
+Then share a document and ask the agent to work on it. It can read the document, see where everyone is, add, change and delete paragraphs, set styles, replace text, add and fill in slides, write cells and formulas, undo its own changes, and wait for someone else's. It can only work on documents you've shared, while Writan is open. Anyone with the address can edit what you share; **New address** makes a new secret, and agents set up with the old one stop connecting.
+
 ## Fonts
 
 Word documents use open-licensed stand-ins for Calibri, Cambria, Arial, Times New Roman and Courier New, with the same widths, so lines break where Word breaks them. Where the computer has the real font, documents use it. On Linux, which lacks Microsoft's fonts, Writan offers to download Arial, Times New Roman, Courier New, Georgia, Verdana and the rest of Microsoft's core fonts once you accept Microsoft's license; Calibri and Cambria can't be downloaded. See [Plugins › Microsoft's core fonts](plugins.md#microsofts-core-fonts-linux).

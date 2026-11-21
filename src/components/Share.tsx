@@ -6,6 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import { colorFor, displayName, join, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
+import { PeerAvatar } from '../collab/cursors'
 import { askForNetwork, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings, whileNetworkAllowed } from '../collab/network'
 import { isMac, isTauri } from '../lib/platform'
 import { useWorkspace } from '../state/workspace'
@@ -23,14 +24,7 @@ export function canShare(tabId: string) {
   return !!tab && (SHAREABLE.has(tab.kind) || !!useCollab.getState()[tabId])
 }
 
-function Avatar({ peer, you }: { peer: Peer; you?: boolean }) {
-  const initial = (peer.name || '?').trim().charAt(0).toUpperCase() || '?'
-  return (
-    <span className="share-avatar" style={{ background: peer.color }} title={you ? `${peer.name} (you)` : peer.name} aria-hidden>
-      {initial}
-    </span>
-  )
-}
+const Avatar = PeerAvatar
 
 export function ShareButton() {
   const activeId = useWorkspace((s) => s.activeId)
@@ -231,6 +225,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
               <li key={p.client}>
                 <Avatar peer={p} />
                 <span>{p.name || 'Someone'}</span>
+                {(p.agent || p.host) && <span className="share-role">{p.agent ? 'AI agent' : 'Sharing'}</span>}
               </li>
             ))}
             {!state.peers.length && <li className="share-empty">No one else is here yet.</li>}

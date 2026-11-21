@@ -48,6 +48,7 @@ src/
   components/             title bar and tabs, Home, the welcome tour (Setup.tsx), Settings, the three-pane workbench; ui.tsx is the design system the rest are built from
   editors/{docx,pptx,pdf,markdown,text}/   built-in editors, each loaded the first time it's needed
   collab/                 sharing a document for editing together (see collaboration.md)
+  collab/agents/          AI agents in shared documents: their tools, the MCP bridge, names and logos, the skill
   plugins/catalog.ts      every plugin and the file types it opens
   plugins/api.ts          the contract an optional plugin's editor implements
 plugins/<id>/             plugin bundles (Images ships in the app; LaTeX is downloaded)
@@ -60,7 +61,8 @@ src-tauri/
   src/update.rs           the latest release's notes, Mac relaunch, apt updates on Linux
   windows/hooks.nsh       closes Writan before a Windows install or uninstall
   src/defaults.rs         makes Writan the default app for its file types
-  src/collab/             the relay that orders shared documents' changes, its WebSocket server and client
+  src/collab/             the relay that orders shared documents' changes, its WebSocket server and client, and the MCP server for agents (mcp.rs)
+  src/agents.rs           sets up Writan's MCP server and skill in Claude Code, Codex, Antigravity, Grok Build and Hermes
   src/files.rs            raw-bytes file reading and atomic saving
   src/menu.rs             the native menu bar
   linux/                  the .deb's install scripts and APT signing key

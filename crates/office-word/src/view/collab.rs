@@ -241,6 +241,10 @@ impl WordView {
         } as usize;
         let old = list[index..index + n].to_vec();
         let inserted: Vec<Block> = take_content(&old, &step["after"])?;
+        // Two copies deleting a list's last blocks at once (each leaving one) would leave it empty.
+        if inserted.is_empty() && n > 0 && n == list.len() {
+            return None;
+        }
         let root = self.blocks_mut(story);
         let list = pos::blocks_at_mut(root, &container)?;
         let removed: Vec<Block> = list.splice(index..index + n, inserted.iter().cloned()).collect();
@@ -548,6 +552,53 @@ mod tests {
         assert_eq!(room.views[0].remote_overlay(&mut host, &past).caret, room.views[1].overlay(&mut host).caret);
         // Only the body is drawn.
         assert!(room.views[0].remote_overlay(&mut host, &json!({ "s": "s0", "a": [[0], 0], "f": [[0], 0] })).caret.is_none());
+    }
+
+    #[test]
+    fn deleting_blocks_leaves_the_ones_around_them_as_they_were() {
+        let mut room = Room::new(&["Title", "Body", "Next"], 2);
+        // The first paragraph looks different from the second, on both copies.
+        for v in &mut room.views {
+            let Body::Flow { blocks } = &mut v.doc.body else { panic!() };
+            let Block::Paragraph(p) = &mut blocks[0] else { panic!() };
+            p.props.align = Some(office_core::model::Align::Center);
+        }
+        let second = room.views[1].body()[1].clone();
+        assert_eq!(room.views[0].delete_blocks(&[], 0, 0), Ok(()));
+        room.sync();
+        assert_eq!(room.agree(), ["Body", "Next"]);
+        assert_eq!(room.views[1].body()[0], second);
+        // Undo puts it back, on every copy.
+        assert!(room.views[0].undo());
+        room.sync();
+        assert_eq!(room.agree(), ["Title", "Body", "Next"]);
+        // A list is never emptied, and blocks that aren't there aren't deleted.
+        assert_eq!(room.views[0].delete_blocks(&[], 0, 2), Err("all"));
+        assert_eq!(room.views[0].delete_blocks(&[], 2, 5), Err("missing"));
+        // Nor is a paragraph that ends a section, which holds its page setup.
+        let Body::Flow { blocks } = &mut room.views[0].doc.body else { panic!() };
+        let Block::Paragraph(p) = &mut blocks[1] else { panic!() };
+        let origin = office_core::xml::parse_element(
+            r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:pPr><w:sectPr/></w:pPr></w:p>"#,
+        )
+        .unwrap();
+        p.origin = Origin::new(origin);
+        assert_eq!(room.views[0].delete_blocks(&[], 1, 1), Err("section"));
+        assert_eq!(room.views[0].delete_blocks(&[], 0, 2), Err("section"));
+    }
+
+    #[test]
+    fn two_copies_deleting_the_last_blocks_at_once_leave_one() {
+        for first in [0, 1] {
+            let mut room = Room::new(&["One", "Two"], 2);
+            assert_eq!(room.views[0].delete_blocks(&[], 0, 0), Ok(()));
+            assert_eq!(room.views[1].delete_blocks(&[], 1, 1), Ok(()));
+            room.send(first);
+            room.send(1 - first);
+            room.sync();
+            let left = room.agree();
+            assert_eq!(left.len(), 1, "{left:?}");
+        }
     }
 
     #[test]

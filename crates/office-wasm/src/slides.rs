@@ -494,8 +494,7 @@ impl SlidesDoc {
             }
             Cmd::ReplaceAll { text } => {
                 let all = self.matches.clone();
-                v.replace(&all, &self.query, &text);
-                serde_json::json!(all.len())
+                serde_json::json!({ "matched": all.len(), "changed": v.replace(&all, &self.query, &text) })
             }
         };
         v.sync_caret();

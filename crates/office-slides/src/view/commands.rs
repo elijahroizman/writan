@@ -1895,25 +1895,33 @@ impl SlidesView {
     }
 
     /// Replaces `query` (any case) with `by` in the frames given, one undo step.
-    pub fn replace(&mut self, matches: &[(usize, u32)], query: &str, by: &str) {
+    /// Returns how many of the frames it changed: a match whose formatting changes partway
+    /// through it isn't replaced, since each run is replaced on its own.
+    pub fn replace(&mut self, matches: &[(usize, u32)], query: &str, by: &str) -> usize {
         let q = query.trim().to_string();
         if q.is_empty() {
-            return;
+            return 0;
         }
+        let mut changed = 0;
         self.begin_group();
         for &(slide, id) in matches {
             let (q, by) = (q.clone(), by.to_string());
+            let mut did = false;
             self.change_slide(slide, None, |s| {
                 if let Some(f) = find_frame_mut(&mut s.frames, id) {
                     for_each_paragraph(f, &mut |p| {
                         for r in p.runs_mut() {
-                            r.text = replace_ci(&r.text, &q, &by);
+                            let (new, any) = replace_ci_counted(&r.text, &q, &by);
+                            did |= any;
+                            r.text = new;
                         }
                     });
                 }
             });
+            changed += usize::from(did);
         }
         self.end_group();
+        changed
     }
 
     /// The frame with `id` on the active slide.
@@ -2218,24 +2226,27 @@ pub(super) fn set_bullet(p: &mut Paragraph, numbered: Option<bool>) {
 }
 
 /// `text` with every `query` (any case) replaced by `by`.
-fn replace_ci(text: &str, query: &str, by: &str) -> String {
+/// `text` with every `query` replaced by `by`, ignoring case, and whether there was any.
+fn replace_ci_counted(text: &str, query: &str, by: &str) -> (String, bool) {
     if query.is_empty() {
-        return text.to_string();
+        return (text.to_string(), false);
     }
     let lower = text.to_lowercase();
     let q = query.to_lowercase();
     if lower.len() != text.len() {
-        return text.replace(query, by);
+        return (text.replace(query, by), text.contains(query));
     }
     let mut out = String::new();
     let mut from = 0;
+    let mut any = false;
     while let Some(at) = lower[from..].find(&q) {
         out.push_str(&text[from..from + at]);
         out.push_str(by);
         from += at + q.len();
+        any = true;
     }
     out.push_str(&text[from..]);
-    out
+    (out, any)
 }
 
 /// Text in an editing table's cells, as it's drawn (see `draw::CellText`).
