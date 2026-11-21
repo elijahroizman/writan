@@ -111,7 +111,17 @@ fn tilde(rel: &str) -> String {
 /// Writes a file whole or not at all: a config an agent reads is never left half written. A
 /// config that's a link to a file elsewhere (dotfiles kept in a repository) is written there.
 fn write(path: &Path, text: &str) -> Result<(), String> {
-    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let linked = std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_symlink());
+    let path = &match std::fs::canonicalize(path) {
+        Ok(target) => target,
+        Err(_) if linked => {
+            return Err(format!(
+                "{} is a link to a file that isn't there, so Writan left it alone.",
+                path.display()
+            ))
+        }
+        Err(_) => path.to_path_buf(),
+    };
     let dir = path.parent().ok_or("No folder to write in.")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
@@ -164,6 +174,16 @@ fn has_server(file: &str, text: &str) -> bool {
     }
 }
 
+/// A TOML key without its one pair of quotes, if it has them.
+fn unquote(key: &str) -> &str {
+    for q in ['"', '\''] {
+        if let Some(inner) = key.strip_prefix(q).and_then(|k| k.strip_suffix(q)) {
+            return inner;
+        }
+    }
+    key
+}
+
 /// Whether a TOML line opens Writan's table, `[mcp_servers.writan]`, with or without a comment
 /// after it.
 fn is_our_table(line: &str) -> bool {
@@ -172,7 +192,7 @@ fn is_our_table(line: &str) -> bool {
         .and_then(|l| l.strip_suffix(']'))
         .is_some_and(|name| {
             name.split('.')
-                .map(|p| p.trim().trim_matches(['"', '\'']))
+                .map(|p| unquote(p.trim()))
                 .eq(["mcp_servers", NAME])
         })
 }
@@ -358,6 +378,10 @@ mod tests {
         assert!(has_server("c.toml", "[ mcp_servers.\"writan\" ]\n"));
         assert!(!has_server("c.toml", "[mcp_servers.writan2]\n"));
         assert!(has_server("c.toml", "['mcp_servers'.'writan']\n"));
+        // Quotes inside a quoted key are part of the name: that's another table.
+        let other = "[\"'mcp_servers'\".writan]\nurl = \"a\"\n";
+        assert!(!has_server("c.toml", other));
+        assert!(set_toml_server(other, URL).starts_with(other));
     }
 
     #[cfg(unix)]
@@ -374,6 +398,14 @@ mod tests {
             .file_type()
             .is_symlink());
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "new\n");
+        // A link to nothing is left alone.
+        let dangling = dir.path().join("gone.toml");
+        std::os::unix::fs::symlink(dir.path().join("missing.toml"), &dangling).unwrap();
+        assert!(write(&dangling, "x").is_err());
+        assert!(std::fs::symlink_metadata(&dangling)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]

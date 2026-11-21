@@ -325,9 +325,9 @@ export async function runTool(session: AgentSession, name: string, args: Args): 
  */
 async function delivered(session: AgentSession, copy: Copy, engine: Engine): Promise<string> {
   // A copy that left meanwhile has no document to ask any more.
-  const here = () => session.has(copy)
+  const here = () => session.has(copy) && useCollab.getState()[copy.id]?.status === 'live'
   for (let i = 0; i < 100 && here() && engine.doc.collabPending(); i++) await new Promise((r) => setTimeout(r, 50))
-  if (!here()) return ' (You left the document before it reached the others.)'
+  if (!here()) return ' (Your connection to the document ended before it reached the others.)'
   return engine.doc.collabPending() ? ' (Still on its way to the others.)' : ''
 }
 
@@ -476,30 +476,12 @@ function wordTool(e: WordEngine, name: string, args: Args): string {
       // Nothing but paragraphs in between: a content control or other block the list skips
       // would go too.
       for (let i = fromN; i < toN; i++) if (!nextTo(paras[i - 1].path, paras[i].path)) throw new ToolError('Something that isn’t a paragraph is among them. Delete the paragraphs around it separately.')
-      const after = paras[toN]
-      const before = paras[fromN - 2]
-      if (before && nextTo(before.path, from.path)) {
-        // From the end of the paragraph before: it stays as it was, and the next is untouched.
-        select(e, [before.path, before.text.length], [to.path, to.text.length])
-        e.run({ cmd: 'delete', word: false })
-      } else if (after && nextTo(to.path, after.path)) {
-        // The first in its list: the next paragraph takes its place, keeping its own style.
-        select(e, [after.path, 0])
-        // No style of its own is Normal.
-        let style = e.state.style
-        if (!style) {
-          try {
-            style = styleId(e, 'Normal')
-          } catch {
-            style = null
-          }
-        }
-        select(e, [from.path, 0], [after.path, 0])
-        e.run({ cmd: 'delete', word: false })
-        if (style) e.run({ cmd: 'style', id: style })
-      } else {
-        // Alone in its list (a table cell, or a body between tables): its text goes and an
-        // empty paragraph stays.
+      // The paragraphs go whole, as one change; the ones around them stay exactly as they were.
+      const container = from.path.slice(0, -1)
+      const deleted = e.run<boolean>({ cmd: 'deleteBlocks', container, from: from.path[from.path.length - 1], to: to.path[to.path.length - 1] })
+      if (!deleted) {
+        // They're all there is in that list (a table cell, or the whole body): their text goes
+        // and one empty paragraph stays.
         select(e, [from.path, 0], [to.path, to.text.length])
         e.run({ cmd: 'delete', word: false })
       }
@@ -530,15 +512,16 @@ function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, mat
   if (matchCase) throw new ToolError('In a presentation, replace_text can’t match case. Leave match_case out, or use set_shape_text.')
   const found = e.run<{ slide: number; id: string }[]>({ cmd: 'find', query: find })
   if (!found.length) return `“${find}” isn’t in the presentation.`
-  const textOf = (m: { slide: number; id: string }) => elementsOf(e, m.slide).find((el) => el.id === m.id)?.text
+  const textOf = (m: { slide: number; id: string }) => elementsOf(e, m.slide).find((el) => el.id === m.id)?.text ?? ''
   const before = found.map(textOf)
   e.run({ cmd: 'replaceAll', text: by })
-  // Text whose formatting changes partway through isn't replaced; say where that was.
-  const done = found.filter((m, i) => textOf(m) !== before[i]).length
-  const missed = found.length - done
-  return missed
-    ? `Replaced in ${done} shape${done === 1 ? '' : 's'}. In ${missed} more, the text’s formatting changes partway through it, so it wasn’t replaced there; use set_shape_text.`
-    : `Replaced in ${done} shape${done === 1 ? '' : 's'}.`
+  // Each shape's text should now read as if every match were replaced. Where it doesn't, some
+  // of it had formatting changing partway through and was left.
+  const every = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+  const left = found.filter((m, i) => textOf(m) !== before[i].replace(every, () => by)).length
+  return left
+    ? `Replaced in ${found.length - left} shape${found.length - left === 1 ? '' : 's'}. In ${left} more, some of it has formatting changing partway through and wasn’t replaced; use set_shape_text there.`
+    : `Replaced in ${found.length} shape${found.length === 1 ? '' : 's'}.`
 }
 
 // ── PowerPoint

@@ -551,6 +551,29 @@ mod tests {
     }
 
     #[test]
+    fn deleting_blocks_leaves_the_ones_around_them_as_they_were() {
+        let mut room = Room::new(&["Title", "Body", "Next"], 2);
+        // The first paragraph looks different from the second, on both copies.
+        for v in &mut room.views {
+            let Body::Flow { blocks } = &mut v.doc.body else { panic!() };
+            let Block::Paragraph(p) = &mut blocks[0] else { panic!() };
+            p.props.align = Some(office_core::model::Align::Center);
+        }
+        let second = room.views[1].body()[1].clone();
+        assert!(room.views[0].delete_blocks(&[], 0, 0));
+        room.sync();
+        assert_eq!(room.agree(), ["Body", "Next"]);
+        assert_eq!(room.views[1].body()[0], second);
+        // Undo puts it back, on every copy.
+        assert!(room.views[0].undo());
+        room.sync();
+        assert_eq!(room.agree(), ["Title", "Body", "Next"]);
+        // A list is never emptied, and blocks that aren't there aren't deleted.
+        assert!(!room.views[0].delete_blocks(&[], 0, 2));
+        assert!(!room.views[0].delete_blocks(&[], 2, 5));
+    }
+
+    #[test]
     fn typing_reaches_every_copy() {
         let mut room = Room::new(&["One", "Two"], 2);
         caret(&mut room.views[0], 0, 3);

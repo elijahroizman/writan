@@ -345,6 +345,27 @@ impl WordView {
         self.caret_near = None;
     }
 
+    /// Removes the body's blocks `from..=to` from the list at `container` (the body, `[]`, or a
+    /// table cell's) as one change, leaving the blocks around them as they were. A list is never
+    /// emptied: returns false then, or when the blocks aren't there, or the caret isn't in the body.
+    pub fn delete_blocks(&mut self, container: &[u32], from: u32, to: u32) -> bool {
+        if self.story != StoryId::Body || from > to {
+            return false;
+        }
+        let Some(list) = pos::blocks_at_mut(self.blocks_mut(StoryId::Body), container) else { return false };
+        if to as usize >= list.len() || list.len() == (to - from + 1) as usize {
+            return false;
+        }
+        let removed: Vec<Block> = list.drain(from as usize..=to as usize).collect();
+        let splice = Splice { container: container.to_vec(), index: from, removed, inserted: Vec::new() };
+        // The caret goes where the blocks were.
+        let mut at = container.to_vec();
+        at.push(from.min(list.len() as u32 - 1));
+        let sel = self.clamp(Selection::caret(Pos::new(Path(at), 0)));
+        self.record(vec![splice], Some(sel), None);
+        true
+    }
+
     fn apply_edit(&mut self, e: Edit, kind: Option<&'static str>) {
         self.record(e.splices, e.selection, kind);
     }
