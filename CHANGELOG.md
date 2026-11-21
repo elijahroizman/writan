@@ -2,6 +2,25 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.12.0 — 2026-11-21
+
+### Edit together on your network
+- Several people can now edit one Word document, presentation or workbook at the same time from computers on the same network. Click the people button in the title bar, press **Share** and send the link. Others join from the people button on Home, or **Join a shared document…** in the command palette.
+- Everyone's changes show on everyone's screen as they're made. The person sharing keeps the file and saves it as usual, with everyone's changes. When two people change the same paragraph, slide or cell at the same moment, the first change counts.
+- It's a first version: comments don't sync, you can't see the others' cursors, a copy whose connection drops stops following, and the connection isn't encrypted, so share only on a network you trust.
+
+### Version history
+- **File › Version History…** shows a version as a page with its changes marked in place, Word headings and tables included, and a timeline of every version along the bottom. Drag along it, click it or press ← and → to scrub through your saves.
+- It opens on what the latest save changed. **Compare with now** shows what going back would undo, and an edited phrase is marked as one change rather than word by word.
+
+### Faster
+- Formatting cells in a big workbook no longer recalculates every formula.
+- Typing in long Word documents and large presentations does much less work per keystroke, and saving them no longer copies the whole document first.
+- Reading and saving files no longer holds up the window, and a restored session opens its files in parallel.
+
+### Updates
+- The update button in the title bar is now just an icon, and its panel lists the changes in every release you've missed, not only the newest.
+
 ## 0.11.4 — 2026-11-20
 
 ### Look and feel
