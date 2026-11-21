@@ -64,7 +64,6 @@ import { parseVideoLink } from './video'
 import type { Deck, Element, Transition } from './types'
 import type { ShapeLook, TextLook } from '../../engine/slides/engine'
 import { hasText } from './types'
-import { extraFamilies, useExtraFonts } from '../../state/fonts'
 
 type TextStyle = Partial<TextLook>
 type ShapeStyle = Partial<ShapeLook>
@@ -304,7 +303,6 @@ export function tableLooks(deck: Deck): TableLook[] {
 }
 
 function TableSection({ deck, el }: { deck: Deck; el: Element }) {
-  const extraFonts = useExtraFonts((s) => s.installed)
   const { engine } = deck
   const data = el.table
   const looks = tableLooks(deck)
@@ -313,7 +311,7 @@ function TableSection({ deck, el }: { deck: Deck; el: Element }) {
   const header = data.header
   const banded = data.banded
   const first = data.textStyle
-  const fonts = Array.from(new Set([engine.theme.body, engine.theme.heading, ...FONTS, ...extraFamilies(extraFonts)].filter(Boolean)))
+  const fonts = Array.from(new Set([engine.theme.body, engine.theme.heading, ...FONTS].filter(Boolean)))
   const op = (op: string, value?: string | number) => engine.run({ cmd: 'table', op, value: value == null ? null : String(value) })
   const style = (patch: TextStyle) => engine.run({ cmd: 'tableTextStyle', patch })
 
@@ -382,11 +380,10 @@ function Stepper({ label, value, min, max, onChange }: { label: string; value: n
 }
 
 function TextSection({ deck, el }: { deck: Deck; el: Element & { textStyle?: TextStyle } }) {
-  const extraFonts = useExtraFonts((s) => s.installed)
   const { engine } = deck
   const style: TextStyle = el.textStyle ?? {}
   const set = (patch: TextStyle) => engine.run({ cmd: 'textStyle', patch })
-  const fonts = Array.from(new Set([engine.theme.body, engine.theme.heading, ...FONTS, ...extraFamilies(extraFonts)].filter(Boolean) as string[]))
+  const fonts = Array.from(new Set([engine.theme.body, engine.theme.heading, ...FONTS].filter(Boolean) as string[]))
   const align = style.align === 'center' || style.align === 'right' || style.align === 'justify' ? style.align : 'left'
   return (
     <Section title="Text">
@@ -606,7 +603,6 @@ function MultiSelection({ deck, count, onArrange, canArrange }: { deck: Deck; co
 
 /** Text styling for every selected object that holds text, all at once (one undo step). */
 function GroupTextSection({ deck }: { deck: Deck }) {
-  const extraFonts = useExtraFonts((s) => s.installed)
   const { engine, elements, selectedIds } = deck
   const ids = new Set(selectedIds)
   const texts = pickedText(elements, ids)
@@ -617,7 +613,7 @@ function GroupTextSection({ deck }: { deck: Deck }) {
     return texts.every((t) => t.textStyle?.[key] === first) ? first : undefined
   }
   const set = (patch: TextStyle) => engine.run({ cmd: 'textStyle', patch })
-  const fonts = Array.from(new Set([engine.theme.body, engine.theme.heading, ...FONTS, ...extraFamilies(extraFonts)].filter(Boolean) as string[]))
+  const fonts = Array.from(new Set([engine.theme.body, engine.theme.heading, ...FONTS].filter(Boolean) as string[]))
   const all = (key: 'bold' | 'italic' | 'underline' | 'strikethrough') => texts.every((t) => !!t.textStyle?.[key])
   const color = normalizeHex(shared('color') as string | undefined)
   const align = shared('align')

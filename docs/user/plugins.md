@@ -1,6 +1,6 @@
 # Plugins
 
-Word, PowerPoint, PDF, Markdown, text and images are built in. LaTeX is optional and off until you turn it on, in the welcome tour on first launch or later in **Settings › Plugins**. The same page has optional [fonts](#fonts).
+Word, PowerPoint, PDF, Markdown, text and images are built in. LaTeX is optional and off until you turn it on, in the welcome tour on first launch or later in **Settings › General**.
 
 | Plugin | Opens | Size | How it arrives |
 | --- | --- | --- | --- |
@@ -24,7 +24,7 @@ LaTeX works like Markdown: source and preview side by side, and ⌘E (Ctrl+E on 
 
 Typing `\` lists LaTeX's commands, as VS Code's LaTeX extension does: `\frac{}{}`, `\section{}`, `\alpha` and the rest. Keep typing to narrow the list, then press Tab or Return to put one in; Tab then moves between its braces. `\begin{` lists the environments and adds the matching `\end`, `\ref{` lists the document's labels, and commands made with `\newcommand` are listed too.
 
-LaTeX compiles with the TeX installed on your computer a few seconds after you stop typing (set how long in **Settings › Plugins**). The PDF shows in Writan's own viewer, and errors and the outline are in the sidebar. A document compiles from the folder it's saved in, so `\input` and pictures beside it work.
+LaTeX compiles with the TeX installed on your computer a few seconds after you stop typing (set how long in **Settings › General**). The PDF shows in Writan's own viewer, and errors and the outline are in the sidebar. A document compiles from the folder it's saved in, so `\input` and pictures beside it work.
 
 ### Getting TeX
 
@@ -34,30 +34,6 @@ If there's no TeX when you turn LaTeX on, Writan offers to install it:
 - **Windows:** MiKTeX, just for your user account, through winget. If winget isn't there or fails, MiKTeX's own installer is downloaded and checked against its published SHA-256.
 - **Debian, Ubuntu:** TeX Live through apt, after asking for your password.
 
-You can hide the install window while it runs; **Settings › Plugins** shows the progress. When you turn LaTeX off, Writan asks whether to remove TeX too (only if it knows how it was installed). It's unticked unless you choose it.
+You can hide the install window while it runs; **Settings › General** shows the progress. When you turn LaTeX off, Writan asks whether to remove TeX too (only if it knows how it was installed). It's unticked unless you choose it.
 
 LaTeX on Windows is still being tested. If installing or removing TeX fails, the message includes what winget or the installer said; please put that in an [issue](https://github.com/elijahroizman/writan/issues).
-
-## Fonts
-
-**Settings › Plugins › Fonts** downloads extra fonts for Word documents and PowerPoint slides. Each is off until you turn it on; Writan then downloads it from its maker, checks every file against the copy it was tested with, and adds it to the font menus. Turning it off removes it.
-
-| Font | What it's for | From |
-| --- | --- | --- |
-| Michelangelus | A serif drawn from Michelangelo's handwriting | Microsoft (its license doesn't let apps include it) |
-| Ubuntu | Ubuntu's rounded sans-serif | Google Fonts |
-| JetBrains Mono | Code | JetBrains |
-| Atkinson Hyperlegible | Readers with low vision | Google Fonts |
-| Courier Prime | Screenplays; a better Courier | Google Fonts |
-| Instrument Serif | Headings and title slides (regular and italic) | Google Fonts |
-| Comic Neue | Posters, worksheets, invitations | Google Fonts |
-
-Documents keep the font's name, so Word shows the same font wherever it's installed.
-
-### Microsoft's core fonts (Linux)
-
-Mac and Windows come with Arial, Times New Roman and Courier New, the fonts most Word and PowerPoint files are set in. Linux doesn't, so Writan draws them with look-alikes that take the same space (Liberation Sans, Serif and Mono). On Linux, the welcome tour and **Settings › Plugins › Fonts** offer Microsoft's own: Arial, Arial Black, Times New Roman, Courier New, Georgia, Verdana, Trebuchet MS, Comic Sans MS, Impact, Andale Mono and Webdings (about 4 MB).
-
-Microsoft lets anyone install these under its End-User License Agreement, but only from its original installers. Writan shows the agreement and downloads nothing until you tick **I accept Microsoft's license agreement**. It then fetches the installers from the [corefonts project](https://sourceforge.net/projects/corefonts/) on SourceForge, checks each against the copy Debian's ttf-mscorefonts-installer checks, and unpacks the fonts into its own data folder with a dated copy of the agreement. Documents then use them in place of the look-alikes. Turning them off removes them, and documents go back to the look-alikes. If the system already has them (from ttf-mscorefonts-installer, say), Writan doesn't offer them.
-
-Calibri and Cambria, Office's newer defaults, can't be downloaded anywhere: Writan always draws them with Carlito and Caladea, which take the same space.

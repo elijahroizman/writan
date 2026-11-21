@@ -92,7 +92,7 @@ try {
             return window.__fake.saveAnswer
           case 'plugin:event|listen':
             return ++cb
-          case 'installed_plugins': case 'installed_fonts': case 'history_list': case 'list_dir': case 'walk_dir':
+          case 'installed_plugins': case 'history_list': case 'list_dir': case 'walk_dir':
             return []
           default:
             return null

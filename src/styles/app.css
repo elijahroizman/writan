@@ -2746,12 +2746,6 @@ button.section-title:hover {
   justify-content: space-between;
 }
 
-.plugin-count {
-  font-weight: 500;
-  letter-spacing: 0;
-  text-transform: none;
-}
-
 .plugin-group-hint {
   display: block;
   margin-bottom: 4px;
@@ -2767,20 +2761,6 @@ button.section-title:hover {
   display: flex;
   gap: 4px;
   padding-top: 2px;
-}
-
-.font-badge {
-  flex: none;
-  display: grid;
-  place-items: center;
-  width: 28px;
-  height: 28px;
-  margin-top: 2px;
-  border-radius: 7px;
-  background: var(--press);
-  color: var(--fg-muted);
-  font-size: 14px;
-  line-height: 1;
 }
 
 .plugin-text {
@@ -3221,50 +3201,6 @@ button.section-title:hover {
 
 .setup-default-name {
   flex: 1;
-}
-
-/* Microsoft's core fonts (components/CoreFonts.tsx): the license to accept, then the download. */
-.core-fonts-offer {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 8px;
-  margin-top: 4px;
-  align-self: stretch;
-}
-
-.core-fonts-license {
-  align-self: stretch;
-  max-height: 150px;
-  margin: 0;
-}
-
-.core-fonts-actions {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.core-fonts-done {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 4px;
-}
-
-.core-fonts-done svg {
-  flex: none;
-  color: var(--accent);
-}
-
-.core-fonts-specimen {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  padding: 28px 32px;
-  font-size: 26px;
-  line-height: 1.15;
-  color: var(--fg);
 }
 
 .tour-text .hint {

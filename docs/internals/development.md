@@ -1,6 +1,6 @@
 # Development
 
-Setup for each system is in the [README](../../README.md#run-it-locally). This page covers the rest. AI agents: also read [AGENTS.md](../../AGENTS.md), which says to accept Microsoft's core fonts on Linux before judging how documents look.
+Setup for each system is in the [README](../../README.md#run-it-locally). This page covers the rest. AI agents: also read [AGENTS.md](../../AGENTS.md), which explains why documents on Linux show look-alike fonts.
 
 ## Commands
 
@@ -41,7 +41,7 @@ Mac and Windows build on case-insensitive file systems, so never add two paths t
 ```
 src/
   App.tsx                 shell: tabs, menu commands, session restore, drag and drop
-  state/                  open tabs and saving, settings, plugins, TeX, fonts
+  state/                  open tabs and saving, settings, plugins, TeX
   lib/platform.ts         native file dialogs and file I/O (browser fallbacks for dev)
   lib/dialogs.ts          the app's own questions and alerts (components/Dialogs.tsx)
   lib/updater.ts          update checks, the Tauri updater, and apt on Linux
@@ -57,7 +57,6 @@ src-tauri/
   src/lib.rs              app setup, Open With handling
   src/plugins.rs          downloads, checks and serves optional plugins (wsplugin: scheme)
   src/tex.rs              finds, runs, installs and removes the system's TeX
-  src/fonts.rs            downloads the optional fonts (Michelangelus, Ubuntu, JetBrains Mono…)
   src/update.rs           the latest release's notes, Mac relaunch, apt updates on Linux
   windows/hooks.nsh       closes Writan before a Windows install or uninstall
   src/defaults.rs         makes Writan the default app for its file types

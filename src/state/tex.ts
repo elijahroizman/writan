@@ -134,7 +134,7 @@ export const useTex = create<TexState>((set, get) => ({
   },
 
   close: () => {
-    // An install that's under way carries on; Settings › Plugins shows how it's going.
+    // An install that's under way carries on; Settings › General shows how it's going.
     set({ offer: false })
     const status = get().status ?? NONE
     for (const resolve of closed) resolve(status)

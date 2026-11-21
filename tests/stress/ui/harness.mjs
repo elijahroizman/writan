@@ -121,7 +121,6 @@ function fakeTauri() {
           return null
         case 'take_pending_opens':
         case 'installed_plugins':
-        case 'installed_fonts':
         case 'history_list':
           return []
         case 'history_usage':

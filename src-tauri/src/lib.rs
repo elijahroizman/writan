@@ -4,7 +4,6 @@ mod cli;
 pub mod collab;
 mod defaults;
 mod files;
-mod fonts;
 mod history;
 mod icon;
 // Helpers below are called from the macOS launch path. Other targets still
@@ -213,11 +212,6 @@ pub fn run() {
             tex::tex_install,
             tex::tex_uninstall_method,
             tex::tex_uninstall,
-            fonts::installed_fonts,
-            fonts::install_font,
-            fonts::remove_font,
-            fonts::font_file,
-            fonts::system_has_core_fonts,
             defaults::default_apps,
             defaults::set_default_apps,
             collab::collab_share,

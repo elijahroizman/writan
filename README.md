@@ -2,7 +2,7 @@
 
 # Writan
 
-A small, fast app for the documents most people actually open: **Word, PowerPoint, Excel, CSV, PDF, Markdown, plain text and images**, each in a tab of one window. Optional plugins add **LaTeX** and extra fonts.
+A small, fast app for the documents most people actually open: **Word, PowerPoint, Excel, CSV, PDF, Markdown, plain text and images**, each in a tab of one window. An optional plugin adds **LaTeX**.
 
 Runs on macOS (Apple silicon and Intel), Windows (x64), and Debian/Ubuntu, Fedora and Arch Linux (x64 and ARM64). Everything runs locally: no accounts, nothing uploaded, works offline.
 
@@ -34,7 +34,7 @@ This is early software, mostly written by AI models, and it has bugs. LaTeX on W
 
 - [What each editor can do](docs/user/features.md)
 - [Keyboard shortcuts](docs/user/keyboard-shortcuts.md)
-- [Plugins: images, LaTeX and fonts](docs/user/plugins.md)
+- [Plugins: images and LaTeX](docs/user/plugins.md)
 - [Updating, and the APT repository](docs/user/updating.md)
 - [What it doesn't do yet](docs/user/limitations.md)
 - [Changelog](CHANGELOG.md)
