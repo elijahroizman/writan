@@ -5,8 +5,12 @@
 //! in the order the relay numbered them. Nothing here needs Tauri, so the standalone relay in
 //! `examples/collab_relay.rs` runs the same code.
 //!
-//! The app starts a server when the first document is shared and drops it when the last one
-//! stops, which closes the port. Connections already open finish on their own.
+//! The same port serves Writan's MCP server for AI agents (`mcp.rs`): `/mcp/<token>` is plain
+//! HTTP, and `/bridge/<key>` is the page's WebSocket that answers agents' tool calls.
+//!
+//! The app starts a server when the first document is shared, or agents are let in, and drops
+//! it when neither is true any more, which closes the port. Connections already open finish on
+//! their own.
 
 use std::collections::HashMap;
 use std::io;
@@ -21,6 +25,7 @@ use tungstenite::handshake::server::{ErrorResponse, Request, Response};
 use tungstenite::http::StatusCode;
 use tungstenite::protocol::WebSocketConfig;
 
+use super::mcp::{self, Mcp, SharedMcp};
 use super::relay::{ConnId, Outgoing, Policy, Relay, MAX_FRAME};
 use super::socket::{pump, set_pump_timeouts, Cmd};
 
@@ -58,6 +63,7 @@ type Shared = Arc<Mutex<State>>;
 /// A running relay server. Dropping it stops accepting connections.
 pub struct Server {
     state: Shared,
+    mcp: SharedMcp,
     port: u16,
     stop: Arc<AtomicBool>,
     accepting: Option<JoinHandle<()>>,
@@ -84,14 +90,16 @@ impl Server {
             next: 1,
         }));
         let stop = Arc::new(AtomicBool::new(false));
+        let mcp: SharedMcp = Arc::new(Mutex::new(None));
         let accepting = {
-            let (state, stop) = (state.clone(), stop.clone());
+            let (state, mcp, stop) = (state.clone(), mcp.clone(), stop.clone());
             std::thread::Builder::new()
                 .name("collab-accept".into())
-                .spawn(move || accept(listener, state, stop))?
+                .spawn(move || accept(listener, state, mcp, stop))?
         };
         Ok(Server {
             state,
+            mcp,
             port,
             stop,
             accepting: Some(accepting),
@@ -128,6 +136,16 @@ impl Server {
     pub fn session_count(&self) -> usize {
         self.state.lock().unwrap().relay.session_count()
     }
+
+    /// Lets agents in at `/mcp/<token>`, with the page answering at `/bridge/<bridge_key>`, or
+    /// (`None`) stops. Agents' sessions start over either way.
+    pub fn set_mcp(&self, token_and_key: Option<(&str, &str)>) {
+        *self.mcp.lock().unwrap() = token_and_key.map(|(token, key)| Mcp::new(token, key));
+    }
+
+    pub fn has_mcp(&self) -> bool {
+        self.mcp.lock().unwrap().is_some()
+    }
 }
 
 impl Drop for Server {
@@ -142,17 +160,68 @@ impl Drop for Server {
     }
 }
 
-fn accept(listener: TcpListener, state: Shared, stop: Arc<AtomicBool>) {
+fn accept(listener: TcpListener, state: Shared, mcp: SharedMcp, stop: Arc<AtomicBool>) {
     for stream in listener.incoming() {
         if stop.load(Ordering::SeqCst) {
             break;
         }
         let Ok(stream) = stream else { continue };
-        let state = state.clone();
+        let (state, mcp) = (state.clone(), mcp.clone());
         let _ = std::thread::Builder::new()
             .name("collab-conn".into())
-            .spawn(move || serve(stream, state));
+            .spawn(move || serve(stream, state, mcp));
     }
+}
+
+/// The path a request is for, read without taking it off the socket, so the WebSocket
+/// handshake can still read the whole request.
+fn peek_path(stream: &TcpStream, by: Instant) -> Option<String> {
+    let mut buf = [0u8; 4096];
+    loop {
+        let n = stream.peek(&mut buf).ok()?;
+        if n == 0 {
+            return None;
+        }
+        if let Some(end) = buf[..n].iter().position(|&b| b == b'\n') {
+            let line = std::str::from_utf8(&buf[..end]).ok()?;
+            let target = line.split(' ').nth(1)?;
+            return Some(target.split('?').next().unwrap_or(target).to_owned());
+        }
+        if n == buf.len() || Instant::now() >= by {
+            return None;
+        }
+        std::thread::sleep(Duration::from_millis(5));
+    }
+}
+
+/// The page's end of the MCP server: agents' tool calls go out on it, and answers come back.
+/// Only this computer can open it.
+fn bridge(stream: TcpStream, mcp: SharedMcp, path: &str) {
+    let local = stream.peer_addr().is_ok_and(|a| a.ip().is_loopback());
+    if !local || !mcp::bridge_allowed(&mcp, path) {
+        let mut s = &stream;
+        let _ = std::io::Write::write_all(
+            &mut s,
+            b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+        );
+        return;
+    }
+    let Ok(handle) = stream.try_clone() else {
+        return;
+    };
+    let config = WebSocketConfig::default()
+        .max_message_size(Some(MAX_FRAME))
+        .max_frame_size(Some(MAX_FRAME));
+    let Ok(mut ws) = tungstenite::accept_with_config(stream, Some(config)) else {
+        return;
+    };
+    if set_pump_timeouts(&handle).is_err() {
+        return;
+    }
+    let (tx, rx) = channel();
+    let id = mcp::bridge_opened(&mcp, tx);
+    pump(&mut ws, &rx, None, |text| mcp::bridge_text(&mcp, text));
+    mcp::bridge_closed(&mcp, id);
 }
 
 /// The session id in a `/v1/<session>` path.
@@ -161,7 +230,7 @@ fn session_from_path(path: &str) -> Option<&str> {
     (!id.is_empty() && !id.contains('/')).then_some(id)
 }
 
-fn serve(stream: TcpStream, state: Shared) {
+fn serve(stream: TcpStream, state: Shared, mcp: SharedMcp) {
     let started = Instant::now();
     let Ok(handle) = stream.try_clone() else {
         return;
@@ -170,6 +239,11 @@ fn serve(stream: TcpStream, state: Shared) {
         || handle.set_write_timeout(Some(HELLO_TIMEOUT)).is_err()
     {
         return;
+    }
+    match peek_path(&stream, started + HELLO_TIMEOUT) {
+        Some(p) if p.starts_with("/mcp/") => return mcp::serve_http(stream, &mcp),
+        Some(p) if p.starts_with("/bridge/") => return bridge(stream, mcp, &p),
+        _ => {}
     }
     let mut session = String::new();
     // tungstenite's callback type; its error is an HTTP response, which is big.
@@ -326,5 +400,148 @@ mod tests {
         assert_eq!(session_from_path("/v1/abc"), Some("abc"));
         assert_eq!(session_from_path("/v1/"), None);
         assert_eq!(session_from_path("/v1/a/b"), None);
+    }
+
+    /// One HTTP request; returns the status line, headers and body.
+    fn http(
+        port: u16,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &str,
+    ) -> (String, String, String) {
+        use std::io::{Read, Write};
+        let mut s = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let mut req = format!(
+            "{method} {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\n",
+            body.len()
+        );
+        for (k, v) in headers {
+            req.push_str(&format!("{k}: {v}\r\n"));
+        }
+        req.push_str("\r\n");
+        req.push_str(body);
+        s.write_all(req.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        let (head, body) = out.split_once("\r\n\r\n").unwrap();
+        let (status, headers) = head.split_once("\r\n").unwrap_or((head, ""));
+        (status.to_owned(), headers.to_owned(), body.to_owned())
+    }
+
+    #[test]
+    fn collab_mcp_calls_go_to_the_page_and_back() {
+        let server = Server::start(Policy::Registered, &[0]).unwrap();
+        let port = server.port();
+        // Off until it's turned on.
+        let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","clientInfo":{"name":"codex-mcp-client"}}}"#;
+        assert!(http(port, "POST", "/mcp/tok", &[], init).0.contains("404"));
+        server.set_mcp(Some(("tok", "key")));
+        assert!(http(port, "POST", "/mcp/nope", &[], init).0.contains("404"));
+        // A web page can't drive it.
+        assert!(http(
+            port,
+            "POST",
+            "/mcp/tok",
+            &[("Origin", "http://evil.example")],
+            init
+        )
+        .0
+        .contains("403"));
+
+        let (status, headers, body) = http(
+            port,
+            "POST",
+            "/mcp/tok?agent=codex",
+            &[("Content-Type", "application/json")],
+            init,
+        );
+        assert!(status.contains("200"), "{status}");
+        let reply: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(reply["result"]["protocolVersion"], "2025-06-18");
+        assert_eq!(reply["result"]["serverInfo"]["name"], "writan");
+        let session = headers
+            .lines()
+            .find_map(|l| l.strip_prefix("Mcp-Session-Id: "))
+            .unwrap()
+            .to_owned();
+
+        // Without the page, a tool call says so.
+        let list = r#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#;
+        let (_, _, body) = http(
+            port,
+            "POST",
+            "/mcp/tok",
+            &[("Mcp-Session-Id", &session)],
+            list,
+        );
+        assert!(body.contains("window isn't open"), "{body}");
+
+        // The page's bridge: the wrong key is refused, the right one gets the call.
+        assert!(tungstenite::connect(format!("ws://127.0.0.1:{port}/bridge/nope")).is_err());
+        let (mut page, _) =
+            tungstenite::connect(format!("ws://127.0.0.1:{port}/bridge/key")).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        let caller = std::thread::spawn(move || {
+            http(
+                port,
+                "POST",
+                "/mcp/tok",
+                &[("Mcp-Session-Id", &session)],
+                list,
+            )
+        });
+        let call: Value = loop {
+            if let Message::Text(t) = page.read().unwrap() {
+                break serde_json::from_str(t.as_str()).unwrap();
+            }
+        };
+        assert_eq!(call["t"], "call");
+        assert_eq!(call["method"], "tools/list");
+        assert_eq!(call["agent"], "codex");
+        assert_eq!(call["client"], "codex-mcp-client");
+        page.send(Message::text(
+            json!({ "t": "result", "id": call["id"], "result": { "tools": [] } }).to_string(),
+        ))
+        .unwrap();
+        let (status, _, body) = caller.join().unwrap();
+        assert!(status.contains("200"));
+        let reply: Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(
+            reply,
+            json!({ "jsonrpc": "2.0", "id": 2, "result": { "tools": [] } })
+        );
+
+        // A notification gets no answer; an unknown session starts over.
+        let note = r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#;
+        assert!(http(
+            port,
+            "POST",
+            "/mcp/tok",
+            &[("Mcp-Session-Id", call["session"].as_str().unwrap())],
+            note
+        )
+        .0
+        .contains("202"));
+        assert!(http(
+            port,
+            "POST",
+            "/mcp/tok",
+            &[("Mcp-Session-Id", "gone")],
+            list
+        )
+        .0
+        .contains("404"));
+        // The newer handshake isn't spoken; clients fall back to initialize.
+        let discover = r#"{"jsonrpc":"2.0","id":3,"method":"server/discover"}"#;
+        let (_, _, body) = http(port, "POST", "/mcp/tok", &[], discover);
+        assert!(body.contains("-32601"), "{body}");
+        // The relay still works on the same port.
+        let mut ws = open(port, "nothing");
+        send(
+            &mut ws,
+            json!({ "t": "hello", "v": 1, "token": "x", "client": "c" }),
+        );
     }
 }

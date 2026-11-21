@@ -1,0 +1,504 @@
+//! Writan's MCP server: how an AI agent (Claude Code, Codex, Antigravity, Grok, Hermes…) joins
+//! shared documents and edits them alongside people.
+//!
+//! It's served by the relay's server (`server.rs`) on the same port, at `/mcp/<token>`, speaking
+//! MCP's Streamable HTTP transport: each JSON-RPC message is a POST, answered with one JSON
+//! response. This file only handles the transport and the session handshake. The tools are the
+//! page's (`src/collab/agents.ts`), because the page has the document engine: every `tools/list`
+//! and `tools/call` goes to it over a WebSocket at `/bridge/<key>`, which only this computer can
+//! open, and its answer comes back the same way. An agent then joins a document through the
+//! relay like any other copy, so people see it, its caret and its changes like anyone else's.
+
+use std::collections::HashMap;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::net::TcpStream;
+use std::sync::mpsc::{channel, Sender};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use serde_json::{json, Value};
+
+use super::socket::Cmd;
+
+/// The MCP versions this server speaks, newest first.
+const VERSIONS: [&str; 4] = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// A request body bigger than this is refused.
+const MAX_BODY: usize = 8 << 20;
+
+/// How long a tool call may take in the page. Waiting for someone else's change can take a
+/// minute by itself.
+const CALL_TIMEOUT: Duration = Duration::from_secs(150);
+
+/// A session nobody has used for this long is forgotten (and its agent leaves its documents).
+const IDLE: Duration = Duration::from_secs(4 * 60 * 60);
+
+/// What the server says about itself to every agent.
+const INSTRUCTIONS: &str = "Writan is a word processor, presentation and spreadsheet app. \
+Through this server you join documents that people are sharing from Writan and edit them \
+together, live: they see your caret, your name and your changes as you make them, and you can \
+see where they are. Start with list_documents, then read_document. Keep changes small and \
+focused, don't edit what someone else is working on unless asked, and read again before editing \
+if time has passed.";
+
+/// An agent connected through MCP.
+struct Session {
+    /// Which agent, as the URL it was installed with says (`?agent=codex`), if it does.
+    agent: Option<String>,
+    /// The name the agent's MCP client gave in `initialize` (`clientInfo.name`).
+    client: String,
+    used: Instant,
+}
+
+/// The MCP side of the server: the token in the URL, the page's bridge and agents' sessions.
+pub struct Mcp {
+    token: String,
+    bridge_key: String,
+    /// The page's connection, while it's open.
+    bridge: Option<(u64, Sender<Cmd>)>,
+    next_bridge: u64,
+    sessions: HashMap<String, Session>,
+    /// Tool calls waiting for the page, by id.
+    calls: HashMap<u64, Sender<Value>>,
+    next_call: u64,
+}
+
+pub type SharedMcp = Arc<Mutex<Option<Mcp>>>;
+
+impl Mcp {
+    pub fn new(token: &str, bridge_key: &str) -> Mcp {
+        Mcp {
+            token: token.to_owned(),
+            bridge_key: bridge_key.to_owned(),
+            bridge: None,
+            next_bridge: 1,
+            sessions: HashMap::new(),
+            calls: HashMap::new(),
+            next_call: 1,
+        }
+    }
+
+    /// Tells the page an agent's session is over, so it leaves its documents.
+    fn end(&mut self, session: &str) {
+        if self.sessions.remove(session).is_some() {
+            if let Some((_, tx)) = &self.bridge {
+                let _ = tx.send(Cmd::Text(
+                    json!({ "t": "end", "session": session }).to_string(),
+                ));
+            }
+        }
+    }
+}
+
+/// Compares secrets in time that doesn't depend on where they differ.
+fn same(a: &str, b: &str) -> bool {
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0, |acc, (x, y)| acc | (x ^ y))
+            == 0
+}
+
+/// The key in a `/bridge/<key>` path, if it's the page's.
+pub fn bridge_allowed(mcp: &SharedMcp, path: &str) -> bool {
+    let Some(key) = path.strip_prefix("/bridge/") else {
+        return false;
+    };
+    mcp.lock()
+        .unwrap()
+        .as_ref()
+        .is_some_and(|m| same(key, &m.bridge_key))
+}
+
+/// The page's bridge connected: calls go to it from now on. Returns its id for `bridge_text`
+/// and `bridge_closed`.
+pub fn bridge_opened(mcp: &SharedMcp, tx: Sender<Cmd>) -> u64 {
+    let mut guard = mcp.lock().unwrap();
+    let Some(m) = guard.as_mut() else {
+        let _ = tx.send(Cmd::Close);
+        return 0;
+    };
+    let id = m.next_bridge;
+    m.next_bridge += 1;
+    // A page that loaded again replaces the old connection.
+    if let Some((_, old)) = m.bridge.replace((id, tx)) {
+        let _ = old.send(Cmd::Close);
+    }
+    id
+}
+
+/// A message from the page: the answer to a call.
+pub fn bridge_text(mcp: &SharedMcp, text: &str) {
+    let Ok(msg) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
+    if msg["t"] != "result" {
+        return;
+    }
+    let Some(id) = msg["id"].as_u64() else { return };
+    let mut guard = mcp.lock().unwrap();
+    if let Some(tx) = guard.as_mut().and_then(|m| m.calls.remove(&id)) {
+        let _ = tx.send(msg);
+    }
+}
+
+pub fn bridge_closed(mcp: &SharedMcp, id: u64) {
+    let mut guard = mcp.lock().unwrap();
+    if let Some(m) = guard.as_mut() {
+        if m.bridge.as_ref().is_some_and(|(b, _)| *b == id) {
+            m.bridge = None;
+        }
+    }
+}
+
+/// An HTTP request, as far as MCP needs it.
+struct Request {
+    method: String,
+    path: String,
+    query: String,
+    headers: Vec<(String, String)>,
+    body: Vec<u8>,
+}
+
+impl Request {
+    fn header(&self, name: &str) -> Option<&str> {
+        self.headers
+            .iter()
+            .find(|(n, _)| n.eq_ignore_ascii_case(name))
+            .map(|(_, v)| v.as_str())
+    }
+}
+
+fn read_request(stream: &TcpStream) -> Option<Request> {
+    let mut reader = BufReader::new(stream);
+    let mut head = Vec::new();
+    // The head ends with an empty line.
+    loop {
+        let start = head.len();
+        if reader.read_until(b'\n', &mut head).ok()? == 0 || head.len() > 64 << 10 {
+            return None;
+        }
+        if head[start..] == *b"\r\n" || head[start..] == *b"\n" {
+            break;
+        }
+    }
+    let mut headers = [httparse::EMPTY_HEADER; 64];
+    let mut req = httparse::Request::new(&mut headers);
+    req.parse(&head).ok()?;
+    let target = req.path?.to_owned();
+    let (path, query) = target.split_once('?').unwrap_or((&target, ""));
+    let headers: Vec<(String, String)> = req
+        .headers
+        .iter()
+        .map(|h| {
+            (
+                h.name.to_owned(),
+                String::from_utf8_lossy(h.value).into_owned(),
+            )
+        })
+        .collect();
+    let mut out = Request {
+        method: req.method?.to_owned(),
+        path: path.to_owned(),
+        query: query.to_owned(),
+        headers,
+        body: Vec::new(),
+    };
+    let len: usize = out
+        .header("content-length")
+        .and_then(|v| v.trim().parse().ok())
+        .unwrap_or(0);
+    if len > MAX_BODY {
+        return None;
+    }
+    out.body = vec![0; len];
+    reader.read_exact(&mut out.body).ok()?;
+    Some(out)
+}
+
+fn respond(mut stream: &TcpStream, status: &str, headers: &[(&str, &str)], body: &str) {
+    let mut text = format!(
+        "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\nCache-Control: no-store\r\n",
+        body.len()
+    );
+    for (name, value) in headers {
+        text.push_str(&format!("{name}: {value}\r\n"));
+    }
+    text.push_str("\r\n");
+    text.push_str(body);
+    let _ = stream.write_all(text.as_bytes());
+    let _ = stream.flush();
+}
+
+fn json_rpc_error(id: &Value, code: i64, message: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
+}
+
+/// A value from a URL's query string (`agent=codex`), with `+` and `%xx` decoded.
+fn query_value(query: &str, name: &str) -> Option<String> {
+    let hex = |b: u8| (b as char).to_digit(16).map(|d| d as u8);
+    query.split('&').find_map(|pair| {
+        let (k, v) = pair.split_once('=')?;
+        (k == name).then(|| {
+            let bytes = v.as_bytes();
+            let mut out = Vec::with_capacity(bytes.len());
+            let mut i = 0;
+            while i < bytes.len() {
+                match bytes[i] {
+                    b'%' if i + 2 < bytes.len() => match (hex(bytes[i + 1]), hex(bytes[i + 2])) {
+                        (Some(hi), Some(lo)) => {
+                            out.push(hi << 4 | lo);
+                            i += 2;
+                        }
+                        _ => out.push(b'%'),
+                    },
+                    b'+' => out.push(b' '),
+                    b => out.push(b),
+                }
+                i += 1;
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        })
+    })
+}
+
+/// Serves one HTTP request on `/mcp/<token>`, then closes the connection.
+pub fn serve_http(stream: TcpStream, mcp: &SharedMcp) {
+    let Some(req) = read_request(&stream) else {
+        respond(&stream, "400 Bad Request", &[], "");
+        return;
+    };
+    let token_ok = {
+        let guard = mcp.lock().unwrap();
+        match (guard.as_ref(), req.path.strip_prefix("/mcp/")) {
+            (Some(m), Some(token)) => same(token.trim_end_matches('/'), &m.token),
+            _ => false,
+        }
+    };
+    if !token_ok {
+        respond(&stream, "404 Not Found", &[], "");
+        return;
+    }
+    // Agents don't send Origin; a web page does. Refusing it keeps a page in a browser on this
+    // network from driving the server (DNS rebinding), as MCP asks.
+    if req.header("origin").is_some() {
+        respond(&stream, "403 Forbidden", &[], "");
+        return;
+    }
+    match req.method.as_str() {
+        "POST" => post(&stream, mcp, &req),
+        "DELETE" => {
+            if let Some(id) = req.header("mcp-session-id") {
+                if let Some(m) = mcp.lock().unwrap().as_mut() {
+                    m.end(id);
+                }
+            }
+            respond(&stream, "200 OK", &[], "");
+        }
+        // No server-to-client stream: everything is an answer to a POST.
+        _ => respond(
+            &stream,
+            "405 Method Not Allowed",
+            &[("Allow", "POST, DELETE")],
+            "",
+        ),
+    }
+}
+
+fn post(stream: &TcpStream, mcp: &SharedMcp, req: &Request) {
+    let Ok(msg) = serde_json::from_slice::<Value>(&req.body) else {
+        let body = json_rpc_error(&Value::Null, -32700, "Not JSON.").to_string();
+        respond(
+            stream,
+            "400 Bad Request",
+            &[("Content-Type", "application/json")],
+            &body,
+        );
+        return;
+    };
+    let method = msg["method"].as_str().unwrap_or("");
+    let id = msg.get("id").cloned();
+
+    if method == "initialize" {
+        let session = new_session_id();
+        let wanted = msg["params"]["protocolVersion"].as_str().unwrap_or("");
+        let version = VERSIONS
+            .iter()
+            .find(|v| **v == wanted)
+            .unwrap_or(&VERSIONS[0]);
+        {
+            let mut guard = mcp.lock().unwrap();
+            let Some(m) = guard.as_mut() else { return };
+            let stale: Vec<String> = m
+                .sessions
+                .iter()
+                .filter(|(_, s)| s.used.elapsed() > IDLE)
+                .map(|(k, _)| k.clone())
+                .collect();
+            for s in stale {
+                m.end(&s);
+            }
+            m.sessions.insert(
+                session.clone(),
+                Session {
+                    agent: query_value(&req.query, "agent").filter(|a| !a.is_empty()),
+                    client: msg["params"]["clientInfo"]["name"]
+                        .as_str()
+                        .unwrap_or("")
+                        .to_owned(),
+                    used: Instant::now(),
+                },
+            );
+        }
+        let body = json!({
+            "jsonrpc": "2.0",
+            "id": id.unwrap_or(Value::Null),
+            "result": {
+                "protocolVersion": version,
+                "capabilities": { "tools": {} },
+                "serverInfo": { "name": "writan", "title": "Writan", "version": env!("CARGO_PKG_VERSION") },
+                "instructions": INSTRUCTIONS,
+            },
+        })
+        .to_string();
+        respond(
+            stream,
+            "200 OK",
+            &[
+                ("Content-Type", "application/json"),
+                ("Mcp-Session-Id", &session),
+            ],
+            &body,
+        );
+        return;
+    }
+
+    // Everything after initialize names its session. A request in the newer, sessionless
+    // handshake (`server/discover`) is told the method isn't known, so the client falls back to
+    // initialize.
+    let Some(session) = req.header("mcp-session-id").map(str::to_owned) else {
+        if let Some(id) = id.as_ref().filter(|_| !method.is_empty()) {
+            let text = format!("Writan doesn't know {method} here; start with initialize.");
+            let body = json_rpc_error(id, -32601, &text).to_string();
+            respond(
+                stream,
+                "200 OK",
+                &[("Content-Type", "application/json")],
+                &body,
+            );
+            return;
+        }
+        let body = json_rpc_error(&id.unwrap_or(Value::Null), -32600, "Start with initialize.")
+            .to_string();
+        respond(
+            stream,
+            "400 Bad Request",
+            &[("Content-Type", "application/json")],
+            &body,
+        );
+        return;
+    };
+    let who = {
+        let mut guard = mcp.lock().unwrap();
+        guard.as_mut().and_then(|m| {
+            m.sessions.get_mut(&session).map(|s| {
+                s.used = Instant::now();
+                (s.agent.clone(), s.client.clone())
+            })
+        })
+    };
+    let Some((agent, client)) = who else {
+        // Forgotten (Writan restarted, or it sat idle): the client starts a new one.
+        respond(stream, "404 Not Found", &[], "");
+        return;
+    };
+
+    // Notifications and responses get no answer.
+    let Some(id) = id else {
+        respond(stream, "202 Accepted", &[], "");
+        return;
+    };
+    let reply = match method {
+        "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
+        "tools/list" | "tools/call" => {
+            call_page(mcp, &session, agent, &client, method, &msg["params"], &id)
+        }
+        _ => json_rpc_error(&id, -32601, &format!("Writan doesn't know {method}.")),
+    };
+    respond(
+        stream,
+        "200 OK",
+        &[("Content-Type", "application/json")],
+        &reply.to_string(),
+    );
+}
+
+/// Hands a call to the page and waits for its answer.
+fn call_page(
+    mcp: &SharedMcp,
+    session: &str,
+    agent: Option<String>,
+    client: &str,
+    method: &str,
+    params: &Value,
+    id: &Value,
+) -> Value {
+    let (tx, rx) = channel();
+    let call = {
+        let mut guard = mcp.lock().unwrap();
+        let Some(m) = guard.as_mut() else {
+            return json_rpc_error(id, -32603, "Writan stopped letting agents in.");
+        };
+        let Some((_, bridge)) = &m.bridge else {
+            return json_rpc_error(id, -32603, "Writan's window isn't open.");
+        };
+        let call = m.next_call;
+        m.next_call += 1;
+        let text = json!({
+            "t": "call", "id": call, "session": session, "agent": agent, "client": client,
+            "method": method, "params": params,
+        })
+        .to_string();
+        if bridge.send(Cmd::Text(text)).is_err() {
+            return json_rpc_error(id, -32603, "Writan's window isn't open.");
+        }
+        m.calls.insert(call, tx);
+        call
+    };
+    let answer = rx.recv_timeout(CALL_TIMEOUT);
+    if let Some(m) = mcp.lock().unwrap().as_mut() {
+        m.calls.remove(&call);
+    }
+    match answer {
+        Ok(msg) => match msg.get("error") {
+            Some(e) if !e.is_null() => json!({ "jsonrpc": "2.0", "id": id, "error": e }),
+            _ => {
+                json!({ "jsonrpc": "2.0", "id": id, "result": msg.get("result").cloned().unwrap_or(json!({})) })
+            }
+        },
+        Err(_) => json_rpc_error(id, -32603, "Writan took too long to answer."),
+    }
+}
+
+fn new_session_id() -> String {
+    let mut buf = [0u8; 16];
+    let _ = getrandom::fill(&mut buf);
+    buf.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn query_values_are_decoded() {
+        assert_eq!(
+            query_value("agent=codex&x=1", "agent").as_deref(),
+            Some("codex")
+        );
+        assert_eq!(query_value("a=b%20c+d", "a").as_deref(), Some("b c d"));
+        assert_eq!(query_value("a=%zz", "a").as_deref(), Some("%zz"));
+        assert_eq!(query_value("a=%4", "a").as_deref(), Some("%4"));
+        assert_eq!(query_value("", "agent"), None);
+    }
+}

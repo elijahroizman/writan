@@ -64,6 +64,16 @@ Each copy sends `presence` when its caret or selection moves (at most every 50 m
 
 The receiving engine places it in its own document (`remote_overlay` in each layer's view): an end that isn't in this copy yet hides the caret, and an offset past a paragraph's end stops there. The sender sends again after its change, so the caret lands once both copies have it. The page draws them with `src/collab/cursors.tsx`. A person's color comes from the relay, which never gives two people the same one while there are free ones (`relay::COLORS`, the same list as `session.ts`). The color asked for comes from the name, so a person tends to keep theirs.
 
+## AI agents
+
+Agents join through Writan's MCP server, which the relay's server also serves, on the same port (`src-tauri/src/collab/mcp.rs`). It speaks MCP's Streamable HTTP: every JSON-RPC message is a POST to `/mcp/<token>`, answered with one JSON response, and `initialize` starts a session (`Mcp-Session-Id`). A request with an `Origin` header is refused, so a web page can't drive it. The newer sessionless `server/discover` gets "method not found", and clients fall back to `initialize`.
+
+The tools are the page's (`src/collab/agents/tools.ts`), because the page has the engine. The relay's server sends each `tools/list` and `tools/call` to the page over a WebSocket at `/bridge/<key>`, which only this computer can open, and waits for the answer. The page connects to it through `transport.ts`, like a shared document, so the browser reaches the standalone relay (`--mcp <token> --bridge <key>`) the same way.
+
+An agent works on a copy of its own, with no tab: `followAsAgent` in `session.ts` joins the document through the relay like a guest, and the copy's engine opens without a view. Its edits are the editor's own commands, so they reach everyone as ops, and its caret as presence, like anyone's. Its hello carries `agent` (`claude`, `codex`…, or `ai`), which the relay passes on in `join` and `peers`, and its own color, which the relay lets it keep even when someone has it. `src/collab/agents/identity.ts` names each agent, from the URL's `?agent=` (set when Settings › AI installs it) or the MCP client's name, and holds its color and logo. The logos are the companies' own marks, unchanged, shown only to say which agent is which.
+
+Settings › AI installs the server and the skill (`src/collab/agents/SKILL.md`) into an agent (`src-tauri/src/agents.rs`): Claude Code through its CLI, the others by changing only Writan's entry in their config files.
+
 ## Moving to a server
 
 Only the relay's address would change. `relay.rs` uses no sockets and no Tauri, so a server can run it as it is. `Policy::Open` already lets the first hello with a snapshot create a session, which is what the browser version and the test relay use (`cargo run --example collab_relay`). A server would add:

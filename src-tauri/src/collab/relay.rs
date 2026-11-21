@@ -59,6 +59,8 @@ struct Member {
     name: String,
     color: String,
     host: bool,
+    /// Which AI agent, for one that joined through Writan's MCP server (`claude`, `codex`…).
+    agent: Option<String>,
     presence: Option<Box<RawValue>>,
 }
 
@@ -127,6 +129,8 @@ struct Hello {
     host_key: Option<String>,
     #[serde(default)]
     snapshot: Option<SnapshotIn>,
+    #[serde(default)]
+    agent: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -179,6 +183,8 @@ struct Peer<'a> {
     name: &'a str,
     color: &'a str,
     host: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<&'a str>,
     presence: Option<&'a RawValue>,
 }
 
@@ -198,6 +204,8 @@ struct Join<'a> {
     name: &'a str,
     color: &'a str,
     host: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -516,7 +524,13 @@ impl Relay {
             broadcast(session, None, &leave(&old.client), &mut out);
         }
 
-        let color = pick_color(&session.members, &hello.color);
+        // An agent keeps its own color (Claude's clay…) even if someone has it: its logo and
+        // name tell it apart.
+        let color = if hello.agent.is_some() && is_color(&hello.color) {
+            hello.color.clone()
+        } else {
+            pick_color(&session.members, &hello.color)
+        };
         let snapshot = session.snapshot.as_ref().expect("set above");
         let welcome = json(&Welcome {
             t: "welcome",
@@ -539,6 +553,7 @@ impl Relay {
                     name: &m.name,
                     color: &m.color,
                     host: m.host,
+                    agent: m.agent.as_deref(),
                     presence: m.presence.as_deref(),
                 })
                 .collect(),
@@ -550,6 +565,7 @@ impl Relay {
             name: &hello.name,
             color: &color,
             host,
+            agent: hello.agent.as_deref(),
         });
         broadcast(session, None, &join, &mut out);
         session.members.push(Member {
@@ -558,6 +574,7 @@ impl Relay {
             name: hello.name,
             color,
             host,
+            agent: hello.agent,
             presence: None,
         });
         self.conns.get_mut(&conn).expect("connected").joined = Some(Joined {
@@ -733,6 +750,23 @@ mod tests {
         r.disconnect(2);
         let out = join(&mut r, 5, &guest_hello("d").replace("#0f0", COLORS[0]));
         assert_eq!(to(&out, 5)[0]["color"], COLORS[1]);
+    }
+
+    #[test]
+    fn agents_are_named_and_keep_their_color() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h").replace("#f00", COLORS[0]));
+        let claude = json!({ "t": "hello", "v": 1, "token": "tok", "client": "a", "name": "Claude", "color": "#D97757", "agent": "claude" });
+        let out = join(&mut r, 2, &claude.to_string());
+        assert_eq!(to(&out, 1)[0]["agent"], "claude");
+        assert_eq!(to(&out, 2)[0]["color"], "#D97757");
+        // A second one keeps the color too.
+        let out = join(&mut r, 3, &claude.to_string().replace("\"a\"", "\"b\""));
+        assert_eq!(to(&out, 3)[0]["color"], "#D97757");
+        let peers = &to(&out, 3)[0]["peers"];
+        assert_eq!(peers[1]["agent"], "claude");
+        // People don't get an agent field at all.
+        assert!(peers[0].get("agent").is_none());
     }
 
     #[test]

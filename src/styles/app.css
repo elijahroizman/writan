@@ -4827,3 +4827,113 @@ button.section-title:hover {
   line-height: 1.45;
   color: var(--fg-muted, var(--fg));
 }
+
+/* An agent's picture: its logo on white, ringed in its color (collab/cursors.tsx). */
+.share-avatar.agent {
+  background: #fff;
+  box-shadow: 0 0 0 1.5px var(--peer), 0 0 0 3px var(--chrome);
+  color: #111;
+}
+
+.share-avatar.agent img {
+  width: 72%;
+  height: 72%;
+  object-fit: contain;
+}
+
+/* Someone joined or left a shared document (collab/Arrivals.tsx). */
+.arrivals {
+  position: fixed;
+  top: 52px;
+  left: 12px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.arrival {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 320px;
+  padding: 7px 12px 7px 8px;
+  border-radius: 10px;
+  background: var(--raised);
+  color: var(--fg);
+  box-shadow: var(--shadow-pop);
+  font-size: 12.5px;
+  animation: arrival-in 0.18s ease-out, arrival-out 0.3s ease-in 4.1s forwards;
+}
+
+.arrival span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.arrival.left {
+  color: var(--fg-muted, var(--fg));
+}
+
+@keyframes arrival-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+}
+
+@keyframes arrival-out {
+  to {
+    opacity: 0;
+  }
+}
+
+/* Settings › AI */
+.ai-addresses {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 4px 0 8px;
+}
+
+.ai-address {
+  display: grid;
+  grid-template-columns: 150px 1fr auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.ai-address input {
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--press);
+  color: var(--fg);
+  font: 11.5px var(--font-mono, ui-monospace, monospace);
+}
+
+.agent-logo {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+  border-radius: 7px;
+  background: #fff;
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fg) 12%, transparent);
+}
+
+.agent-logo img {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.agent-logo.generic {
+  background: var(--press);
+  color: var(--fg-muted);
+}

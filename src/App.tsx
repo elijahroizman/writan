@@ -18,6 +18,9 @@ import { kindFromPath } from './lib/kinds'
 import * as platform from './lib/platform'
 import { flushAutosave, startAutosave } from './lib/autosave'
 import { resetNative } from './collab/transport'
+import { followAiSettings } from './collab/agents/bridge'
+import { Arrivals } from './collab/Arrivals'
+import { useAi } from './state/ai'
 import { discardRecovery, resumeRecovery, startRecovery } from './lib/recovery'
 import { installUpdate, openUpdatePanel, startUpdateChecks } from './lib/updater'
 import { startPlugins } from './state/plugins'
@@ -548,6 +551,8 @@ export default function App() {
     void syncMenu()
     const stopUpdateChecks = startUpdateChecks()
     void resetNative()
+    // AI agents connect through Writan's MCP server when Settings › AI lets them.
+    const stopAgents = followAiSettings(useAi)
     const stopAutosave = startAutosave()
     const stopRecovery = startRecovery()
     const stopFolderPalette = startFolderPalette()
@@ -559,6 +564,7 @@ export default function App() {
       window.clearInterval(pruneTimer)
       stopPruneOnChange()
       stopUpdateChecks()
+      stopAgents()
       stopAutosave()
       stopRecovery()
       stopFolderPalette()
@@ -691,6 +697,7 @@ export default function App() {
       {texRemoval && <TexRemove />}
       <FocusMode />
       <JoinDialog />
+      <Arrivals />
       <Dialogs />
       {dropHover && (
         <div className="drop-overlay">

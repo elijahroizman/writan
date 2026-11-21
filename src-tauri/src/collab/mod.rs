@@ -10,6 +10,7 @@
 //! client's hello, so no message arrives before `collab_connect` has returned the conn id.
 
 pub mod client;
+pub mod mcp;
 pub mod relay;
 pub mod server;
 mod socket;
@@ -137,12 +138,7 @@ pub fn collab_network_settings() {
 pub fn collab_share(name: String, kind: String) -> Result<ShareInfo, String> {
     let _ = (name, kind);
     let mut slot = SERVER.lock().unwrap();
-    if slot.is_none() {
-        let server = Server::start(Policy::Registered, &[PORT, 0])
-            .map_err(|e| format!("Couldn't start sharing: {e}"))?;
-        *slot = Some(server);
-    }
-    let server = slot.as_ref().expect("started above");
+    let server = running(&mut slot).map_err(|e| format!("Couldn't start sharing: {e}"))?;
     let session = random_text(12)?;
     let token = random_text(24)?;
     let host_key = random_text(24)?;
@@ -161,13 +157,65 @@ pub fn collab_share(name: String, kind: String) -> Result<ShareInfo, String> {
     })
 }
 
+/// The relay's server, started if it isn't running.
+fn running(slot: &mut Option<Server>) -> std::io::Result<&Server> {
+    if slot.is_none() {
+        *slot = Some(Server::start(Policy::Registered, &[PORT, 0])?);
+    }
+    Ok(slot.as_ref().expect("started above"))
+}
+
 /// Stops sharing: everyone in the session is told and disconnected. When nothing else is
-/// shared, the relay stops listening.
+/// shared and agents aren't let in, the relay stops listening.
 #[tauri::command]
 pub fn collab_unshare(session: String) {
     let mut slot = SERVER.lock().unwrap();
     if let Some(server) = slot.as_ref() {
         server.end_session(&session);
+        if server.session_count() == 0 && !server.has_mcp() {
+            *slot = None;
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentsInfo {
+    pub port: u16,
+    /// The page's key to `/bridge/<key>`.
+    pub bridge_key: String,
+    /// This machine's addresses on the network, for agents on other computers.
+    pub addresses: Vec<String>,
+}
+
+/// Lets AI agents in through Writan's MCP server, at `/mcp/<token>` on the relay's port (see
+/// `mcp.rs`). The page then connects to `/bridge/<bridgeKey>` to answer their tool calls.
+#[tauri::command]
+pub fn agents_enable(token: String) -> Result<AgentsInfo, String> {
+    if token.len() < 16
+        || !token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("That isn't a usable token.".into());
+    }
+    let mut slot = SERVER.lock().unwrap();
+    let server = running(&mut slot).map_err(|e| format!("Couldn't let agents in: {e}"))?;
+    let bridge_key = random_text(24)?;
+    server.set_mcp(Some((&token, &bridge_key)));
+    Ok(AgentsInfo {
+        port: server.port(),
+        bridge_key,
+        addresses: lan_addresses().iter().map(Ipv4Addr::to_string).collect(),
+    })
+}
+
+/// Stops letting agents in. When nothing is shared either, the relay stops listening.
+#[tauri::command]
+pub fn agents_disable() {
+    let mut slot = SERVER.lock().unwrap();
+    if let Some(server) = slot.as_ref() {
+        server.set_mcp(None);
         if server.session_count() == 0 {
             *slot = None;
         }
