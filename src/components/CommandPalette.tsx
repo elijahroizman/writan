@@ -26,6 +26,7 @@ import {
   LogIn,
   Italic,
   LayoutGrid,
+  LayoutTemplate,
   Link,
   LogOut,
   MessageSquarePlus,
@@ -68,7 +69,7 @@ import { commandAvailable, runCommand } from '../App'
 import { KINDS } from '../lib/kinds'
 import { basename, dirname, tildify } from '../lib/platform'
 import { enabledKinds, usePlugins } from '../state/plugins'
-import { createNew } from '../state/starters'
+import { chooseTemplate, createNew, hasTemplates } from '../state/starters'
 import type { SettingsPage } from '../state/settings'
 import { useSettings } from '../state/settings'
 import type { Scope } from '../state/shortcuts'
@@ -253,6 +254,17 @@ function commandItems(): PaletteItem[] {
       keywords: `new create ${kind.label}`,
       run: () => createNew(kind.id),
     })
+    if (hasTemplates(kind.id)) {
+      items.push({
+        id: `new-template:${kind.id}`,
+        label: `${sentence(kind.create.title)} from a template…`,
+        detail: 'Plain, Harbor, Graphite…',
+        group: 'Commands',
+        icon: <LayoutTemplate size={14} />,
+        keywords: `new create ${kind.label} template theme design starter gallery`,
+        run: chooseTemplate,
+      })
+    }
   }
 
   for (const mode of ['light', 'dark', 'system'] as const) {

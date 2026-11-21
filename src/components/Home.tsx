@@ -1,11 +1,11 @@
-import { Folder, FolderOpen, MoreHorizontal, Moon, Settings, Sun, Users } from 'lucide-react'
+import { Folder, FolderOpen, LayoutTemplate, MoreHorizontal, Moon, Settings, Sun, Users } from 'lucide-react'
 import { useMemo, useRef, useState } from 'react'
 import { KINDS } from '../lib/kinds'
 import { basename, dirname, revealInFinder, revealLabel, isTauri, shortcut, tildify } from '../lib/platform'
 import { folderName, useFolder } from '../state/folder'
 import { keysFor, withKeys } from '../state/shortcuts'
 import { enabledKinds, usePlugins } from '../state/plugins'
-import { createNew } from '../state/starters'
+import { chooseTemplate, createNew, hasTemplates } from '../state/starters'
 import { useSettings } from '../state/settings'
 import type { RecentFile } from '../state/workspace'
 import { useWorkspace } from '../state/workspace'
@@ -86,14 +86,21 @@ export function Home() {
               {kinds
                 .filter((k) => k.create)
                 .map((k) => (
-                  <ActionRow
-                    key={k.id}
-                    icon={<DocBadge kind={k.id} size={30} />}
-                    title={newName(k.create!.title)}
-                    hint={k.create!.hint}
-                    label={k.create!.title}
-                    onClick={() => createNew(k.id)}
-                  />
+                  <div key={k.id} className="home-new-item">
+                    <ActionRow
+                      icon={<DocBadge kind={k.id} size={30} />}
+                      title={newName(k.create!.title)}
+                      hint={k.create!.hint}
+                      label={k.create!.title}
+                      onClick={() => createNew(k.id)}
+                    />
+                    {hasTemplates(k.id) && (
+                      <button type="button" className="home-new-templates" title={`${k.create!.title} from a template…`} onClick={chooseTemplate}>
+                        <LayoutTemplate size={14} />
+                        Templates
+                      </button>
+                    )}
+                  </div>
                 ))}
             </div>
           </div>
