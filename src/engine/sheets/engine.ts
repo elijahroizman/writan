@@ -118,6 +118,10 @@ export interface ChartView {
   kind: ChartKind
   grouping: ChartGrouping
   title: string | null
+  /** The category axis's title (a scatter chart's x axis). */
+  catTitle: string | null
+  /** The value axis's title (a scatter chart's y axis). */
+  valTitle: string | null
   legend: LegendPosition | null
   x: number
   y: number

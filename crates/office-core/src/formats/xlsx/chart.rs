@@ -167,7 +167,34 @@ pub fn read_chart(root: &Element) -> Option<Chart> {
         Some("l") => LegendPosition::Left,
         _ => LegendPosition::Right,
     });
-    Some(Chart { kind, grouping, title, legend, series, anchor: ChartAnchor::default(), source: None })
+    // Axis titles, from the axes the first group plots on. A scatter chart's two value axes
+    // are told apart by the group's axId order (x first); other kinds read by the axis' kind.
+    let ids: Vec<&str> = first.children_named(ns::C, "axId").filter_map(|a| a.attr("val")).collect();
+    let (mut cat_title, mut val_title) = (None, None);
+    for ax in plot.elements().filter(|e| e.in_ns(ns::C) && matches!(e.local.as_str(), "catAx" | "valAx" | "dateAx")) {
+        let Some(t) = ax.child(ns::C, "title").and_then(title_text) else { continue };
+        let id = ax.child(ns::C, "axId").and_then(|a| a.attr("val"));
+        if !id.is_some_and(|i| ids.contains(&i)) {
+            continue;
+        }
+        let slot = if ax.local == "valAx" && kind == ChartKind::Scatter {
+            if id == ids.first().copied() {
+                &mut cat_title
+            } else if id == ids.get(1).copied() {
+                &mut val_title
+            } else {
+                continue;
+            }
+        } else if ax.local == "valAx" {
+            &mut val_title
+        } else {
+            &mut cat_title
+        };
+        if slot.is_none() {
+            *slot = Some(t);
+        }
+    }
+    Some(Chart { kind, grouping, title, cat_title, val_title, legend, series, anchor: ChartAnchor::default(), source: None })
 }
 
 fn auto_title(series: &[ChartSeries]) -> Option<String> {
@@ -578,6 +605,20 @@ fn series_data(s: &ChartSeries, sheets: &[Sheet], scatter: bool) -> SeriesData {
 const AX_CAT: &str = "500000001";
 const AX_VAL: &str = "500000002";
 
+/// A `c:title` of rich text at `sz` hundredths of a point, turned for a vertical axis.
+fn rich_title(text: &str, sz: &str, vertical: bool) -> Element {
+    let size = |e: Element| e.with_attr("", "sz", sz).with_attr("", "b", "0");
+    let body = Element::new(ns::A, "bodyPr");
+    let body = if vertical { body.with_attr("", "rot", "-5400000").with_attr("", "vert", "horz") } else { body };
+    let p = Element::new(ns::A, "p").with_child(Element::new(ns::A, "pPr").with_child(size(Element::new(ns::A, "defRPr")))).with_child(
+        Element::new(ns::A, "r")
+            .with_child(size(Element::new(ns::A, "rPr").with_attr("", "lang", "en-US")))
+            .with_child(Element::new(ns::A, "t").with_text(text)),
+    );
+    let rich = c("rich").with_child(body).with_child(Element::new(ns::A, "lstStyle")).with_child(p);
+    c("title").with_child(c("tx").with_child(rich)).with_child(cv("overlay", "0"))
+}
+
 /// A fresh `chartSpace` for a chart, with caches from the sheets' values.
 pub fn chart_space(chart: &Chart, sheets: &[Sheet]) -> Element {
     let mut root = c("chartSpace");
@@ -587,14 +628,7 @@ pub fn chart_space(chart: &Chart, sheets: &[Sheet]) -> Element {
     root.push(cv("roundedCorners", "0"));
     let mut ch = c("chart");
     if let Some(title) = chart.title.as_deref().filter(|t| !t.trim().is_empty()) {
-        let size = |e: Element| e.with_attr("", "sz", "1400").with_attr("", "b", "0");
-        let p = Element::new(ns::A, "p").with_child(Element::new(ns::A, "pPr").with_child(size(Element::new(ns::A, "defRPr")))).with_child(
-            Element::new(ns::A, "r")
-                .with_child(size(Element::new(ns::A, "rPr").with_attr("", "lang", "en-US")))
-                .with_child(Element::new(ns::A, "t").with_text(title)),
-        );
-        let rich = c("rich").with_child(Element::new(ns::A, "bodyPr")).with_child(Element::new(ns::A, "lstStyle")).with_child(p);
-        ch.push(c("title").with_child(c("tx").with_child(rich)).with_child(cv("overlay", "0")));
+        ch.push(rich_title(title, "1400", false));
         ch.push(cv("autoTitleDeleted", "0"));
     } else {
         ch.push(cv("autoTitleDeleted", "1"));
@@ -725,51 +759,44 @@ pub fn chart_space(chart: &Chart, sheets: &[Sheet]) -> Element {
         let ticks = |e: Element| {
             e.with_child(cv("majorTickMark", "none")).with_child(cv("minorTickMark", "none")).with_child(cv("tickLblPos", "nextTo"))
         };
+        let axis_head = |local: &str, id: &str, pos: &str| {
+            c(local)
+                .with_child(cv("axId", id))
+                .with_child(c("scaling").with_child(cv("orientation", "minMax")))
+                .with_child(cv("delete", "0"))
+                .with_child(cv("axPos", pos))
+        };
+        // An axis's title sits where the axis is: along the bottom, or turned beside it.
+        let axis_title =
+            |t: &Option<String>, pos: &str| t.as_deref().filter(|t| !t.trim().is_empty()).map(|t| rich_title(t, "1000", pos == "l"));
+        let mut first = axis_head(if scatter { "valAx" } else { "catAx" }, AX_CAT, cat_pos);
+        if let Some(t) = axis_title(&chart.cat_title, cat_pos) {
+            first.push(t);
+        }
+        let first = ticks(first.with_child(num_fmt("General")))
+            .with_child(axis_line())
+            .with_child(cv("crossAx", AX_VAL))
+            .with_child(cv("crosses", "autoZero"));
         let first = if scatter {
-            ticks(
-                c("valAx")
-                    .with_child(cv("axId", AX_CAT))
-                    .with_child(c("scaling").with_child(cv("orientation", "minMax")))
-                    .with_child(cv("delete", "0"))
-                    .with_child(cv("axPos", cat_pos))
-                    .with_child(num_fmt("General")),
-            )
-            .with_child(axis_line())
-            .with_child(cv("crossAx", AX_VAL))
-            .with_child(cv("crosses", "autoZero"))
-            .with_child(cv("crossBetween", "midCat"))
+            first.with_child(cv("crossBetween", "midCat"))
         } else {
-            ticks(
-                c("catAx")
-                    .with_child(cv("axId", AX_CAT))
-                    .with_child(c("scaling").with_child(cv("orientation", "minMax")))
-                    .with_child(cv("delete", "0"))
-                    .with_child(cv("axPos", cat_pos))
-                    .with_child(num_fmt("General")),
-            )
-            .with_child(axis_line())
-            .with_child(cv("crossAx", AX_VAL))
-            .with_child(cv("crosses", "autoZero"))
-            .with_child(cv("auto", "1"))
-            .with_child(cv("lblAlgn", "ctr"))
-            .with_child(cv("lblOffset", "100"))
-            .with_child(cv("noMultiLvlLbl", "0"))
+            first
+                .with_child(cv("auto", "1"))
+                .with_child(cv("lblAlgn", "ctr"))
+                .with_child(cv("lblOffset", "100"))
+                .with_child(cv("noMultiLvlLbl", "0"))
         };
         plot.push(first);
         let percent = chart.grouping == ChartGrouping::PercentStacked;
-        let second = ticks(
-            c("valAx")
-                .with_child(cv("axId", AX_VAL))
-                .with_child(c("scaling").with_child(cv("orientation", "minMax")))
-                .with_child(cv("delete", "0"))
-                .with_child(cv("axPos", val_pos))
-                .with_child(gridlines())
-                .with_child(num_fmt(if percent { "0%" } else { "General" })),
-        )
-        .with_child(c("spPr").with_child(Element::new(ns::A, "ln").with_child(Element::new(ns::A, "noFill"))))
-        .with_child(cv("crossAx", AX_CAT))
-        .with_child(cv("crosses", "autoZero"))
-        .with_child(cv("crossBetween", if scatter { "midCat" } else { "between" }));
+        let mut second = axis_head("valAx", AX_VAL, val_pos).with_child(gridlines());
+        if let Some(t) = axis_title(&chart.val_title, val_pos) {
+            second.push(t);
+        }
+        let second = ticks(second.with_child(num_fmt(if percent { "0%" } else { "General" })))
+            .with_child(c("spPr").with_child(Element::new(ns::A, "ln").with_child(Element::new(ns::A, "noFill"))))
+            .with_child(cv("crossAx", AX_CAT))
+            .with_child(cv("crosses", "autoZero"))
+            .with_child(cv("crossBetween", if scatter { "midCat" } else { "between" }));
         plot.push(second);
     } else {
         plot.push(group);

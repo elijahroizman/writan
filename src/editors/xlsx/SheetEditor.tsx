@@ -858,6 +858,21 @@ function ChartPanel({ chart, kind, onChange, onDelete }: { chart: ChartView; kin
     if (e.key === 'Enter') e.currentTarget.blur()
     e.stopPropagation()
   }
+  // A bar chart's value axis runs along the bottom, so its X axis is the value one.
+  const bar = chart.kind === 'bar'
+  const axisField = (label: string, title: string | null, key: 'catTitle' | 'valTitle') => (
+    <TextField
+      key={`${key}-${title ?? ''}`}
+      label={label}
+      defaultValue={title ?? ''}
+      placeholder="No title"
+      aria-label={`${label} title`}
+      onKeyDown={commitOnEnter}
+      onBlur={(e) => {
+        if (e.currentTarget.value.trim() !== (title ?? '')) onChange({ [key]: e.currentTarget.value })
+      }}
+    />
+  )
   return (
     <>
       <InspectorHeader kind={kind}>Chart</InspectorHeader>
@@ -894,6 +909,12 @@ function ChartPanel({ chart, kind, onChange, onDelete }: { chart: ChartView; kin
           }}
         />
       </Section>
+      {!pie && chart.kind !== 'other' && (
+        <Section title="Axis titles">
+          {axisField('X axis', bar ? chart.valTitle : chart.catTitle, bar ? 'valTitle' : 'catTitle')}
+          {axisField('Y axis', bar ? chart.catTitle : chart.valTitle, bar ? 'catTitle' : 'valTitle')}
+        </Section>
+      )}
       <Section title="Data">
         <TextField
           key={chart.range ?? ''}

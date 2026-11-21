@@ -260,10 +260,16 @@ function AxisPlot({ chart, box, show, hide }: PlotProps) {
   const labelW = Math.max(...valueTicks.map((t) => textWidth(compact(t, percent))))
   const catLabels = chart.categories.length ? chart.categories : Array.from({ length: n }, (_, i) => String(i + 1))
   const catW = horizontal ? Math.min(Math.max(...catLabels.map((c) => textWidth(c)), 10), (box.right - box.left) * 0.3) : 0
-  const left = box.left + (horizontal ? catW + 6 : labelW + 6)
-  const bottom = box.bottom - (horizontal ? FONT + 6 : FONT + 8)
+  // Axis titles sit where the axes are: along the bottom, turned on the side — when the
+  // plot still fits with them. A tight chart keeps its plot and drops the titles.
+  const xTitle = (horizontal ? chart.valTitle : chart.catTitle)?.trim()
+  const yTitle = (horizontal ? chart.catTitle : chart.valTitle)?.trim()
   const right = box.right - 4
   const top = box.top + 4
+  const showX = !!xTitle && box.bottom - (horizontal ? FONT + 6 : FONT + 8) - (FONT + 8) - top >= 10
+  const showY = !!yTitle && right - box.left - (horizontal ? catW + 6 : labelW + 6) - (FONT + 6) >= 10
+  const left = box.left + (horizontal ? catW + 6 : labelW + 6) + (showY ? FONT + 6 : 0)
+  const bottom = box.bottom - (horizontal ? FONT + 6 : FONT + 8) - (showX ? FONT + 8 : 0)
   if (right - left < 10 || bottom - top < 10) return null
 
   // Scatter's x axis is numbers too.
@@ -327,6 +333,18 @@ function AxisPlot({ chart, box, show, hide }: PlotProps) {
   }
   // The baseline.
   els.push(horizontal ? <line key="axis" x1={zero} x2={zero} y1={top} y2={bottom} stroke={AXIS} /> : <line key="axis" x1={left} x2={right} y1={zero} y2={zero} stroke={AXIS} />)
+  if (showX && xTitle)
+    els.push(
+      <text key="xt" x={(left + right) / 2} y={box.bottom - 4} textAnchor="middle" fill={MUTED}>
+        {clip(xTitle, right - left)}
+      </text>,
+    )
+  if (showY && yTitle)
+    els.push(
+      <text key="yt" transform={`translate(${box.left + FONT} ${(top + bottom) / 2}) rotate(-90)`} textAnchor="middle" fill={MUTED}>
+        {clip(yTitle, bottom - top)}
+      </text>,
+    )
 
   const tipFor = (i: number) => ({
     title: catLabels[i] ?? '',

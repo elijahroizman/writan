@@ -20,6 +20,10 @@ pub struct ChartView {
     pub kind: ChartKind,
     pub grouping: ChartGrouping,
     pub title: Option<String>,
+    /// The category axis's title (a scatter chart's x axis).
+    pub cat_title: Option<String>,
+    /// The value axis's title (a scatter chart's y axis).
+    pub val_title: Option<String>,
     pub legend: Option<LegendPosition>,
     /// Grid pixels.
     pub x: f64,
@@ -53,6 +57,10 @@ pub struct ChartPatch {
     pub grouping: Option<ChartGrouping>,
     /// Empty for no title.
     pub title: Option<String>,
+    /// The category (x) axis's title; empty for none.
+    pub cat_title: Option<String>,
+    /// The value (y) axis's title; empty for none.
+    pub val_title: Option<String>,
     /// `none`, `right`, `bottom`, `top`, `left`.
     pub legend: Option<String>,
     /// New cells to plot, `A1:C7` or `Sheet2!A1:C7`.
@@ -190,6 +198,8 @@ impl SheetsView {
                     kind: c.kind,
                     grouping: c.grouping,
                     title: c.title.clone(),
+                    cat_title: c.cat_title.clone(),
+                    val_title: c.val_title.clone(),
                     legend: c.legend,
                     x,
                     y,
@@ -217,7 +227,7 @@ impl SheetsView {
         let (w, h) = (480.0, 288.0);
         let anchor = ChartAnchor { from: grid.point_at(x, y), to: Some(grid.point_at(x + w, y + h)), size: None };
         let legend = (series.len() > 1 || !kind.has_axes()).then_some(LegendPosition::Bottom);
-        let chart = Chart { kind, grouping: ChartGrouping::Standard, title, legend, series, anchor, source: None };
+        let chart = Chart { kind, grouping: ChartGrouping::Standard, title, legend, series, anchor, source: None, ..Default::default() };
         let index = self.sheets()[sheet].charts.len();
         self.change_charts(sheet, |charts| charts.push(chart));
         Some(index)
@@ -244,6 +254,12 @@ impl SheetsView {
         }
         if let Some(t) = &patch.title {
             chart.title = (!t.trim().is_empty()).then(|| t.trim().to_string());
+        }
+        if let Some(t) = &patch.cat_title {
+            chart.cat_title = (!t.trim().is_empty()).then(|| t.trim().to_string());
+        }
+        if let Some(t) = &patch.val_title {
+            chart.val_title = (!t.trim().is_empty()).then(|| t.trim().to_string());
         }
         if let Some(l) = &patch.legend {
             chart.legend = match l.as_str() {
