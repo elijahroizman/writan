@@ -1,9 +1,10 @@
-//! The latest GitHub release, and a macOS relaunch that replaces this process
+//! The GitHub releases' notes, and a macOS relaunch that replaces this process
 //! instead of opening a second copy of the app.
 
 use serde::Serialize;
+use std::cmp::Ordering;
 
-const LATEST_RELEASE: &str = "https://api.github.com/repos/elijahroizman/writan/releases/latest";
+const RELEASES: &str = "https://api.github.com/repos/elijahroizman/writan/releases?per_page=50";
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -13,6 +14,19 @@ pub struct ReleaseNotes {
     notes: String,
     url: String,
     published_at: Option<String>,
+    /// Every release newer than this copy, newest first. Empty when this copy is current.
+    releases: Vec<ReleaseEntry>,
+    /// The missed-version list is incomplete: the page cap was hit or a later page failed.
+    /// Still older missed versions are on GitHub.
+    truncated: bool,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReleaseEntry {
+    version: String,
+    notes: String,
+    url: String,
 }
 
 #[derive(serde::Deserialize)]
@@ -22,6 +36,10 @@ struct GithubRelease {
     body: Option<String>,
     html_url: String,
     published_at: Option<String>,
+    #[serde(default)]
+    draft: bool,
+    #[serde(default)]
+    prerelease: bool,
 }
 
 fn version_from_tag(tag: &str) -> String {
@@ -31,47 +49,153 @@ fn version_from_tag(tag: &str) -> String {
     }
 }
 
-fn notes_from_release(release: GithubRelease) -> ReleaseNotes {
+/// The release's version, for real releases only. Drafts never reach the API; pre-releases are
+/// the pacman `arch/*` repositories, and a tag that isn't a version isn't one either.
+fn real_version(release: &GithubRelease) -> Option<String> {
+    if release.draft || release.prerelease {
+        return None;
+    }
     let version = version_from_tag(&release.tag_name);
-    let name = release
-        .name
-        .filter(|n| !n.trim().is_empty())
-        .unwrap_or_else(|| format!("Writan {version}"));
-    ReleaseNotes {
-        version,
-        name,
-        notes: release.body.unwrap_or_default(),
-        url: release.html_url,
-        published_at: release.published_at,
+    version
+        .starts_with(|c: char| c.is_ascii_digit())
+        .then_some(version)
+}
+
+/// Orders versions (both like 0.7.2); a missing part counts as 0, so 0.11 is 0.11.0.
+fn version_cmp(a: &str, b: &str) -> Ordering {
+    let pa: Vec<u64> = a
+        .split(['.', '-'])
+        .map(|n| n.parse().unwrap_or(0))
+        .collect();
+    let pb: Vec<u64> = b
+        .split(['.', '-'])
+        .map(|n| n.parse().unwrap_or(0))
+        .collect();
+    for i in 0..pa.len().max(pb.len()) {
+        match pa
+            .get(i)
+            .copied()
+            .unwrap_or(0)
+            .cmp(&pb.get(i).copied().unwrap_or(0))
+        {
+            Ordering::Equal => {}
+            order => return order,
+        }
+    }
+    Ordering::Equal
+}
+
+/// GitHub's `rel="next"` pagination link, if there is another page.
+fn next_page(link: Option<&str>) -> Option<String> {
+    link?.split(',').find_map(|part| {
+        let (url, rel) = part.split_once(';')?;
+        (rel.trim() == "rel=\"next\"").then(|| url.trim().trim_matches(['<', '>']).to_string())
+    })
+}
+
+fn release_name(release: &GithubRelease, version: &str) -> String {
+    match release.name.as_deref() {
+        Some(name) if !name.trim().is_empty() => name.to_string(),
+        _ => format!("Writan {version}"),
     }
 }
 
-/// The latest GitHub release: version, notes and page. This is the changelog the
-/// update panel shows, including when this copy is already current (the updater
-/// feed then returns nothing). Off the main thread, which a slow network would freeze.
+// The release workflow ends every release's body with this pointer to CHANGELOG.md and the
+// install instructions. In a list of missed versions each entry links to GitHub instead.
+fn strip_trailer(body: &str) -> String {
+    body.lines()
+        .filter(|line| !line.trim_start().starts_with("Earlier versions:"))
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
+}
+
+/// The GitHub releases' notes: the latest release's own notes plus `releases`, every release
+/// newer than this copy, which the update panel lists under per-version headings. This is the
+/// changelog the panel shows, including when this copy is already current (the updater feed
+/// then returns nothing). Off the main thread, which a slow network would freeze.
 #[tauri::command]
-pub async fn latest_release() -> Result<ReleaseNotes, String> {
-    tauri::async_runtime::spawn_blocking(fetch_latest_release)
+pub async fn release_notes(app: tauri::AppHandle) -> Result<ReleaseNotes, String> {
+    let current = app.package_info().version.to_string();
+    tauri::async_runtime::spawn_blocking(move || fetch_release_notes(&current))
         .await
         .map_err(|e| e.to_string())?
 }
 
-fn fetch_latest_release() -> Result<ReleaseNotes, String> {
+fn fetch_page(url: &str) -> Result<(Vec<GithubRelease>, Option<String>), String> {
     let mut response = crate::files::http_agent()
-        .get(LATEST_RELEASE)
+        .get(url)
         .header("User-Agent", "Writan")
         .header("Accept", "application/vnd.github+json")
         .call()
         .map_err(|_| "Couldn't reach GitHub. Check your connection and try again.".to_string())?;
+    let next = next_page(response.headers().get("link").and_then(|v| v.to_str().ok()));
+    // A 50-release page is under ~1.5 MB at the sizes GitHub sends today; asset metadata can
+    // grow, so the limit leaves room rather than sitting just above the current response.
     let bytes = response
         .body_mut()
         .with_config()
-        .limit(200 * 1024)
+        .limit(4 * 1024 * 1024)
         .read_to_vec()
         .map_err(|_| "Couldn't read the release notes.".to_string())?;
-    let release: GithubRelease = serde_json::from_slice(&bytes)
+    let page = serde_json::from_slice(&bytes)
         .map_err(|_| "Couldn't read the release notes.".to_string())?;
-    Ok(notes_from_release(release))
+    Ok((page, next))
+}
+
+fn fetch_release_notes(current: &str) -> Result<ReleaseNotes, String> {
+    let mut releases = Vec::new();
+    let mut url = Some(RELEASES.to_string());
+    // The list runs newest first but not by version: a maintenance release for an old version
+    // lands on the first page, so every page is read. Ten pages of 50 is a bound, not a filter;
+    // `truncated` says it was hit.
+    for _ in 0..10 {
+        let Some(page_url) = url.clone() else { break };
+        match fetch_page(&page_url) {
+            Ok((page, next)) => {
+                releases.extend(page);
+                url = next;
+            }
+            // A later page can fail without losing the releases already fetched. Leaving `url`
+            // set marks the list truncated.
+            Err(e) if releases.is_empty() => return Err(e),
+            Err(_) => break,
+        }
+    }
+    let truncated = url.is_some();
+    notes_from_list(current, &releases, truncated)
+        .ok_or_else(|| "Couldn't read the release notes.".to_string())
+}
+
+fn notes_from_list(
+    current: &str,
+    releases: &[GithubRelease],
+    truncated: bool,
+) -> Option<ReleaseNotes> {
+    let mut versions: Vec<(String, &GithubRelease)> = releases
+        .iter()
+        .filter_map(|r| real_version(r).map(|v| (v, r)))
+        .collect();
+    versions.sort_by(|a, b| version_cmp(&b.0, &a.0));
+    let (latest_version, latest) = versions.first()?;
+    Some(ReleaseNotes {
+        version: latest_version.clone(),
+        name: release_name(latest, latest_version),
+        notes: latest.body.clone().unwrap_or_default(),
+        url: latest.html_url.clone(),
+        published_at: latest.published_at.clone(),
+        releases: versions
+            .iter()
+            .filter(|(version, _)| version_cmp(version, current).is_gt())
+            .map(|(version, release)| ReleaseEntry {
+                version: version.clone(),
+                notes: strip_trailer(release.body.as_deref().unwrap_or_default()),
+                url: release.html_url.clone(),
+            })
+            .collect(),
+        truncated,
+    })
 }
 
 /// Where the .deb's install script puts Writan's APT repository (src-tauri/linux/postinst).
@@ -452,18 +576,82 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn reads_release_notes() {
-        let release = GithubRelease {
-            tag_name: "v0.4.0".into(),
-            name: Some("Writan v0.4.0".into()),
-            body: Some("## Changes\n\n- Fixes the Dock icon".into()),
-            html_url: "https://github.com/elijahroizman/writan/releases/tag/v0.4.0".into(),
+    fn release(tag: &str, name: &str, body: &str, prerelease: bool) -> GithubRelease {
+        GithubRelease {
+            tag_name: tag.into(),
+            name: Some(name.into()),
+            body: Some(body.into()),
+            html_url: format!("https://github.com/elijahroizman/writan/releases/tag/{tag}"),
             published_at: Some("2026-10-16T00:00:00Z".into()),
-        };
-        let notes = notes_from_release(release);
-        assert_eq!(notes.version, "0.4.0");
-        assert!(notes.notes.contains("Dock icon"));
-        assert_eq!(notes.published_at.as_deref(), Some("2026-10-16T00:00:00Z"));
+            draft: false,
+            prerelease,
+        }
+    }
+
+    #[test]
+    fn orders_versions() {
+        assert_eq!(version_cmp("0.11.4", "0.11.3"), Ordering::Greater);
+        assert_eq!(version_cmp("0.11.4", "0.11.4"), Ordering::Equal);
+        assert_eq!(version_cmp("0.9.9", "0.11.0"), Ordering::Less);
+        assert_eq!(version_cmp("0.11", "0.11.0"), Ordering::Equal);
+    }
+
+    #[test]
+    fn lists_the_missed_versions() {
+        let releases = vec![
+            release("arch/x86_64", "pacman repository (x86_64)", "repo", true),
+            release("docs", "Documentation", "not a version", false),
+            release(
+                "v0.11.2",
+                "Writan v0.11.2",
+                "- B\n\nEarlier versions: [CHANGELOG.md](x).",
+                false,
+            ),
+            release(
+                "v0.11.4",
+                "Writan v0.11.4",
+                "- A\n\nEarlier versions: [CHANGELOG.md](x).",
+                false,
+            ),
+            release(
+                "v0.11.3",
+                "Writan v0.11.3",
+                "- C\n\nEarlier versions: [CHANGELOG.md](x).",
+                false,
+            ),
+        ];
+        let notes = notes_from_list("0.11.2", &releases, false).unwrap();
+        assert_eq!(notes.version, "0.11.4");
+        assert_eq!(notes.name, "Writan v0.11.4");
+        assert!(notes.notes.contains("Earlier versions:"));
+        let missed: Vec<&str> = notes.releases.iter().map(|r| r.version.as_str()).collect();
+        assert_eq!(missed, ["0.11.4", "0.11.3"]);
+        assert!(!notes.releases[0].notes.contains("Earlier versions:"));
+        assert!(notes.releases[0].notes.contains("- A"));
+    }
+
+    #[test]
+    fn no_missed_versions_when_current() {
+        let releases = vec![release("v0.11.4", "Writan v0.11.4", "- A", false)];
+        let notes = notes_from_list("0.11.4", &releases, false).unwrap();
+        assert!(notes.releases.is_empty());
+        assert!(notes_from_list("0.11.4", &[], false).is_none());
+    }
+
+    #[test]
+    fn reads_the_next_page_link() {
+        let link = concat!(
+            "<https://api.github.com/x?page=2>; rel=\"next\", ",
+            "<https://api.github.com/x?page=9>; rel=\"last\""
+        );
+        assert_eq!(
+            next_page(Some(link)).as_deref(),
+            Some("https://api.github.com/x?page=2")
+        );
+        assert_eq!(
+            next_page(Some("<https://api.github.com/x?page=1>; rel=\"prev\"")),
+            None
+        );
+        assert_eq!(next_page(None), None);
     }
 }

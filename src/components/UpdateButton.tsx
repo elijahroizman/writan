@@ -2,7 +2,7 @@ import { CircleArrowUp } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isLinux, isMac, openExternal } from '../lib/platform'
-import { checkForUpdates, closeUpdatePanel, newer, packageManager, toggleUpdatePanel, updatesInstallable, useUpdate, type LinuxPackage, type UpdatePhase } from '../lib/updater'
+import { checkForUpdates, closeUpdatePanel, newer, packageManager, RELEASES_PAGE, toggleUpdatePanel, updatesInstallable, useUpdate, type LinuxPackage, type ReleaseEntry, type UpdatePhase } from '../lib/updater'
 import { runCommand } from '../App'
 import { Spinner } from './ui'
 
@@ -65,6 +65,8 @@ export function UpdateButton() {
   const open = useUpdate((s) => s.open)
   const version = useUpdate((s) => s.version)
   const notes = useUpdate((s) => s.notes)
+  const releases = useUpdate((s) => s.releases)
+  const truncated = useUpdate((s) => s.truncated)
   const url = useUpdate((s) => s.url)
   const publishedAt = useUpdate((s) => s.publishedAt)
   const error = useUpdate((s) => s.error)
@@ -73,6 +75,9 @@ export function UpdateButton() {
   const panel = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x: 0, y: 0, maxHeight: 420 })
   const [html, setHtml] = useState('')
+  // The rendered notes kept with the release list they came from, so a refresh can't show new
+  // version headings over the previous list's notes.
+  const [sections, setSections] = useState<{ releases: ReleaseEntry[]; html: string[] } | null>(null)
 
   const busy = phase === 'checking' || phase === 'downloading' || phase === 'installing'
   const label = buttonLabel(phase)
@@ -91,6 +96,20 @@ export function UpdateButton() {
     }
   }, [notes])
 
+  useEffect(() => {
+    if (!releases.length) {
+      setSections(null)
+      return
+    }
+    let cancel = false
+    void Promise.all(releases.map((release) => renderNotes(release.notes))).then((rendered) => {
+      if (!cancel) setSections({ releases, html: rendered })
+    })
+    return () => {
+      cancel = true
+    }
+  }, [releases])
+
   useLayoutEffect(() => {
     if (!open) return
     const place = () => {
@@ -108,7 +127,7 @@ export function UpdateButton() {
     place()
     window.addEventListener('resize', place)
     return () => window.removeEventListener('resize', place)
-  }, [open, html, phase])
+  }, [open, html, sections, phase])
 
   useEffect(() => {
     if (!open) return
@@ -137,6 +156,7 @@ export function UpdateButton() {
   }
 
   const action = phase === 'error' ? 'Try again' : busy || phase === 'ready' ? label : 'Check again'
+  const title = phase === 'ready' && version ? `Writan ${version} is ready to install` : busy ? label : 'Check for updates'
 
   return (
     <>
@@ -146,11 +166,11 @@ export function UpdateButton() {
         className={`update-btn ${phase === 'ready' ? 'ready' : ''}`}
         aria-haspopup="dialog"
         aria-expanded={open}
-        title={phase === 'ready' && version ? `Writan ${version} is ready to install` : 'Check for updates'}
+        aria-label={title}
+        title={title}
         onClick={() => toggleUpdatePanel()}
       >
         {busy ? <Spinner size={14} /> : <CircleArrowUp size={14} />}
-        {label}
       </button>
       {open &&
         createPortal(
@@ -175,8 +195,25 @@ export function UpdateButton() {
                 void openExternal(href)
               }}
             >
-              {phase === 'checking' && !html ? (
+              {phase === 'checking' && !html && !sections ? (
                 <p className="update-notes-empty">Fetching the release notes…</p>
+              ) : sections ? (
+                <>
+                  {sections.releases.map((release, i) => (
+                    <section key={release.version} className="update-release">
+                      <h3>Changes in {release.version}</h3>
+                      <div dangerouslySetInnerHTML={{ __html: sections.html[i] ?? '' }} />
+                      <p className="update-release-link">
+                        <a href={release.url}>View on GitHub</a>
+                      </p>
+                    </section>
+                  ))}
+                  {truncated && (
+                    <p className="update-release-link">
+                      <a href={RELEASES_PAGE}>Earlier versions on GitHub</a>
+                    </p>
+                  )}
+                </>
               ) : html ? (
                 <div dangerouslySetInnerHTML={{ __html: html }} />
               ) : (
@@ -184,7 +221,7 @@ export function UpdateButton() {
               )}
             </div>
             <footer className="update-panel-foot">
-              {url && (
+              {url && !sections && (
                 <button type="button" className="update-link" onClick={() => void openExternal(url)}>
                   View on GitHub
                 </button>

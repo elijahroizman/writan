@@ -9,7 +9,8 @@ import { isLinux, isMac, isTauri } from './platform'
 
 const FIRST_CHECK = 10_000
 const CHECK_EVERY = 4 * 60 * 60_000
-const RELEASE_URL = 'https://api.github.com/repos/elijahroizman/writan/releases/latest'
+const RELEASES_URL = 'https://api.github.com/repos/elijahroizman/writan/releases?per_page=50'
+export const RELEASES_PAGE = 'https://github.com/elijahroizman/writan/releases'
 
 export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'current' | 'error'
 
@@ -22,12 +23,22 @@ export interface LinuxPackage {
 /** The package manager that installs updates for a Linux package format. */
 export const packageManager = (format: LinuxPackage['format']) => (format === 'rpm' ? 'dnf' : format === 'pacman' ? 'pacman' : 'apt')
 
+/** One GitHub release's notes. `releases` holds every release newer than this copy. */
+export interface ReleaseEntry {
+  version: string
+  notes: string
+  url: string
+}
+
 export interface ReleaseNotes {
   version: string
   name: string
   notes: string
   url: string
   publishedAt: string | null
+  releases: ReleaseEntry[]
+  /** The missed-version list is incomplete: the page cap was hit or a later page failed. */
+  truncated: boolean
 }
 
 interface UpdateSnapshot {
@@ -35,6 +46,9 @@ interface UpdateSnapshot {
   open: boolean
   version: string | null
   notes: string
+  releases: ReleaseEntry[]
+  /** `releases` is incomplete: the page cap was hit or a later page failed. */
+  truncated: boolean
   url: string | null
   publishedAt: string | null
   error: string | null
@@ -47,6 +61,8 @@ export const useUpdate = create<UpdateSnapshot>(() => ({
   open: false,
   version: null,
   notes: '',
+  releases: [],
+  truncated: false,
   url: null,
   publishedAt: null,
   error: null,
@@ -75,48 +91,130 @@ export function linuxPackage(): Promise<LinuxPackage> {
   return linuxSource
 }
 
-/** Whether version `a` is newer than `b` (both like 0.7.2). */
-export function newer(a: string, b: string): boolean {
+/** Orders versions (both like 0.7.2): negative, zero or positive as `a` is older, equal or newer. */
+export function compareVersions(a: string, b: string): number {
   const pa = a.split(/[.-]/).map((n) => parseInt(n, 10) || 0)
   const pb = b.split(/[.-]/).map((n) => parseInt(n, 10) || 0)
   for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    if ((pa[i] ?? 0) !== (pb[i] ?? 0)) return (pa[i] ?? 0) > (pb[i] ?? 0)
+    const x = pa[i] ?? 0
+    const y = pb[i] ?? 0
+    if (x !== y) return x > y ? 1 : -1
   }
-  return false
+  return 0
+}
+
+/** Whether version `a` is newer than `b` (both like 0.7.2). */
+export function newer(a: string, b: string): boolean {
+  return compareVersions(a, b) > 0
 }
 
 /** On Linux nothing downloads first: a newer release with the repository is ready for apt or dnf. */
 let packageReady = false
 
+interface GithubRelease {
+  tag_name?: string
+  name?: string
+  body?: string | null
+  html_url?: string
+  published_at?: string | null
+  draft?: boolean
+  prerelease?: boolean
+}
+
+const versionFromTag = (tag: string) => (/^v\d/.test(tag) ? tag.slice(1) : tag)
+
+// The release's version, for real releases only. Drafts never reach the API; pre-releases are
+// the pacman arch/* repositories, and a tag that isn't a version isn't one either.
+const realVersion = (release: GithubRelease): string | null => {
+  if (release.draft || release.prerelease) return null
+  const version = versionFromTag(release.tag_name ?? '')
+  return /^\d/.test(version) ? version : null
+}
+
+const releaseName = (release: GithubRelease, version: string) => release.name?.trim() || `Writan ${version}`
+
+// The release workflow ends every release's body with this pointer to CHANGELOG.md and the
+// install instructions. In a list of missed versions each entry links to GitHub instead.
+const stripTrailer = (body: string) =>
+  body
+    .split('\n')
+    .filter((line) => !line.trimStart().startsWith('Earlier versions:'))
+    .join('\n')
+    .trim()
+
+/** The releases list, newest first: the latest release's notes plus every release newer than this copy. */
+function releaseNotesFromList(data: GithubRelease[], current: string, truncated: boolean): ReleaseNotes {
+  const releases = data
+    .map((release) => ({ release, version: realVersion(release) }))
+    .filter((e): e is { release: GithubRelease; version: string } => e.version !== null)
+    .sort((a, b) => compareVersions(b.version, a.version))
+  const latest = releases[0]
+  if (!latest) throw new Error("Couldn't read the release notes.")
+  return {
+    version: latest.version,
+    name: releaseName(latest.release, latest.version),
+    notes: latest.release.body ?? '',
+    url: latest.release.html_url ?? RELEASES_URL,
+    publishedAt: latest.release.published_at ?? null,
+    releases: releases
+      .filter(({ version }) => compareVersions(version, current) > 0)
+      .map(({ release, version }) => ({
+        version,
+        notes: stripTrailer(release.body ?? ''),
+        url: release.html_url ?? RELEASES_URL,
+      })),
+    truncated,
+  }
+}
+
+/** GitHub's `rel="next"` pagination link, if there is another page. */
+function nextPage(link: string | null): string | null {
+  for (const part of link?.split(',') ?? []) {
+    const [url, rel] = part.split(';')
+    if (rel?.trim() === 'rel="next"') return url.trim().replace(/^<|>$/g, '')
+  }
+  return null
+}
+
 async function fetchRelease(): Promise<ReleaseNotes> {
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<ReleaseNotes>('latest_release')
+    return invoke<ReleaseNotes>('release_notes')
   }
-  const res = await fetch(RELEASE_URL, { headers: { Accept: 'application/vnd.github+json' } })
-  if (!res.ok) throw new Error("Couldn't reach GitHub. Check your connection and try again.")
-  const data = (await res.json()) as {
-    tag_name?: string
-    name?: string
-    body?: string | null
-    html_url?: string
-    published_at?: string | null
+  const current = __APP_VERSION__
+  const releases: GithubRelease[] = []
+  // The list runs newest first but not by version: a maintenance release for an old version
+  // lands on the first page, so every page is read. Ten pages of 50 is a bound, not a filter;
+  // `truncated` says it was hit.
+  let url: string | null = RELEASES_URL
+  for (let i = 0; url && i < 10; i++) {
+    let page: GithubRelease[]
+    let next: string | null
+    try {
+      const res: Response = await fetch(url, { headers: { Accept: 'application/vnd.github+json' } })
+      if (!res.ok) throw new Error('fetch')
+      next = nextPage(res.headers.get('link'))
+      page = (await res.json()) as GithubRelease[]
+    } catch {
+      // A later page can fail without losing the releases already fetched. Leaving `url` set
+      // marks the list truncated.
+      if (!releases.length) {
+        throw new Error("Couldn't reach GitHub. Check your connection and try again.")
+      }
+      break
+    }
+    releases.push(...page)
+    url = next
   }
-  const tag = data.tag_name ?? ''
-  const version = /^v\d/.test(tag) ? tag.slice(1) : tag
-  return {
-    version,
-    name: data.name?.trim() || `Writan ${version}`,
-    notes: data.body ?? '',
-    url: data.html_url ?? RELEASE_URL,
-    publishedAt: data.published_at ?? null,
-  }
+  return releaseNotesFromList(releases, current, url !== null)
 }
 
 function remember(release: ReleaseNotes | null, update: Update | null) {
   return {
     version: update?.version || release?.version || null,
     notes: release?.notes || update?.body || '',
+    releases: release?.releases ?? [],
+    truncated: release?.truncated ?? false,
     url: release?.url ?? null,
     publishedAt: release?.publishedAt ?? null,
   }

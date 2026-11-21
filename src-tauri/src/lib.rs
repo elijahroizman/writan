@@ -190,7 +190,7 @@ pub fn run() {
             cli::cli_install,
             cli::cli_uninstall,
             quit_app,
-            update::latest_release,
+            update::release_notes,
             update::relaunch_in_place,
             update::linux_package,
             update::package_upgrade,

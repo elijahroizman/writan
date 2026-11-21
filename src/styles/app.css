@@ -308,17 +308,15 @@ button {
   flex: none;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  width: 24px;
   height: 24px;
   margin-right: 2px;
-  padding: 0 8px;
+  padding: 0;
   border: 0;
   border-radius: 999px;
   background: transparent;
   color: var(--fg-muted);
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
 }
 
 .update-btn:hover {
@@ -401,6 +399,24 @@ button {
 
 .update-notes a {
   color: var(--accent);
+}
+
+.update-release + .update-release {
+  margin-top: 10px;
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.update-release-link {
+  margin: 6px 0 0;
+}
+
+.update-release-link a {
+  color: var(--fg-muted);
+}
+
+.update-release-link a:hover {
+  color: var(--fg);
 }
 
 .update-notes code {

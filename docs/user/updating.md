@@ -1,10 +1,10 @@
 # Updating
 
-The **Check for updates** button at the top right shows the latest release's notes, from [CHANGELOG.md](../../CHANGELOG.md), and whether there's something newer.
+The update button (↑) at the top right shows the release notes, from [CHANGELOG.md](../../CHANGELOG.md), for every version since this copy, and whether there's something newer.
 
 ## Mac and Windows
 
-New versions download in the background, checked after launch and every four hours, and install when you quit. To install one straight away, click **Update** in the tab bar. Updates are signed, and Writan refuses one whose signature doesn't match.
+New versions download in the background, checked after launch and every four hours, and install when you quit. To install one straight away, click the update button in the tab bar. Updates are signed, and Writan refuses one whose signature doesn't match.
 
 ## Debian and Ubuntu
 
@@ -15,13 +15,13 @@ Installing the .deb adds Writan's APT repository and its signing key:
 /usr/share/keyrings/writan-archive-keyring.gpg
 ```
 
-After that, new versions come with your system's other updates (Software Updater, or `sudo apt update && sudo apt upgrade`). The **Update** button can also install one: it asks for your password, runs apt for Writan alone, and reopens the app.
+After that, new versions come with your system's other updates (Software Updater, or `sudo apt update && sudo apt upgrade`). The update button can also install one: it asks for your password, runs apt for Writan alone, and reopens the app.
 
 The repository has packages for x86_64 (amd64) and ARM64 (arm64) machines, and apt picks yours.
 
 Copies installed from 0.7.1 or earlier don't have the repository. Install the newest .deb once by hand and they will. The .deb writes `writan.list` when that file is absent. If an older package wrote `workspace.list`, upgrading moves it to `writan.list` and updates the key path inside it. A `deb` line you commented out stays commented out. If you made the file yourself, check that its `deb` line matches the one below.
 
-To stop updates, put a `#` in front of the `deb` line in `writan.list`. Neither apt nor the **Update** button installs new versions after that (the button only shows the release notes). Upgrading Writan leaves that choice in place. Removing Writan deletes the list, along with the key.
+To stop updates, put a `#` in front of the `deb` line in `writan.list`. Neither apt nor the update button installs new versions after that (the button only shows the release notes). Upgrading Writan leaves that choice in place. Removing Writan deletes the list, along with the key.
 
 To add the repository by hand (for example on a machine that never had the .deb), install the key from this repository's `src-tauri/linux/writan-archive-keyring.gpg` to `/usr/share/keyrings/` and add:
 
@@ -38,7 +38,7 @@ Installing the .rpm adds Writan's dnf repository and its signing key (the same k
 /etc/pki/rpm-gpg/RPM-GPG-KEY-writan
 ```
 
-After that, new versions come with your system's other updates (GNOME Software, or `sudo dnf upgrade`). The first time, dnf asks you to accept the key. The **Update** button can also install one: it asks for your password, runs dnf for Writan alone, and reopens the app.
+After that, new versions come with your system's other updates (GNOME Software, or `sudo dnf upgrade`). The first time, dnf asks you to accept the key. The update button can also install one: it asks for your password, runs dnf for Writan alone, and reopens the app.
 
 The repository has packages for x86_64 and ARM64 (aarch64) machines, and dnf picks yours. The repository's index is signed, and dnf refuses an index whose signature doesn't match. The packages themselves aren't signed; the signed index holds their checksums, so a changed package doesn't install either.
 
@@ -61,7 +61,7 @@ SigLevel = Required
 Server = https://github.com/elijahroizman/writan/releases/download/arch/$arch
 ```
 
-After that, new versions come with your system's other updates (`sudo pacman -Syu`). The **Update** button can also install one: it asks for your password, runs `pacman -U` on the new package from Writan's repository (it doesn't refresh or upgrade the rest of the system), and reopens the app. pacman checks the signatures on the repository's database and on every package, and refuses either if it doesn't match.
+After that, new versions come with your system's other updates (`sudo pacman -Syu`). The update button can also install one: it asks for your password, runs `pacman -U` on the new package from Writan's repository (it doesn't refresh or upgrade the rest of the system), and reopens the app. pacman checks the signatures on the repository's database and on every package, and refuses either if it doesn't match.
 
 To stop updates, put a `#` before the three lines. Upgrading Writan leaves them commented out. Removing Writan deletes the lines, commented out or not, and leaves the rest of `pacman.conf` alone. Packages from 0.10.10 and earlier don't add the repository. Install the newest package once by hand and it will.
 
