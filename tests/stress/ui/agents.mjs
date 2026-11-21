@@ -224,6 +224,8 @@ try {
   await a.page.waitForFunction((n) => window.__slides.slides.length === n + 1, before)
   const deckText = await codex.call('read_document', { document: deck, slide: before + 1 })
   check('the new slide has its title and body', deckText.text.includes('From Codex') && deckText.text.includes('One / Two'), deckText.text)
+  const slideRepl = await codex.call('replace_text', { document: deck, find: 'from codex', replace: 'By Codex' })
+  check('replace_text in a presentation says what it changed', slideRepl.text.startsWith('Replaced in 1 shape'), slideRepl.text)
   if (shots) await a.page.screenshot({ path: `${shots}/agent-slides.png` })
 } catch (err) {
   check('the run finished', false, String(err?.stack ?? err))

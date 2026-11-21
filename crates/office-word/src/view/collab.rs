@@ -564,7 +564,7 @@ mod tests {
             p.props.align = Some(office_core::model::Align::Center);
         }
         let second = room.views[1].body()[1].clone();
-        assert!(room.views[0].delete_blocks(&[], 0, 0));
+        assert_eq!(room.views[0].delete_blocks(&[], 0, 0), Ok(()));
         room.sync();
         assert_eq!(room.agree(), ["Body", "Next"]);
         assert_eq!(room.views[1].body()[0], second);
@@ -573,16 +573,26 @@ mod tests {
         room.sync();
         assert_eq!(room.agree(), ["Title", "Body", "Next"]);
         // A list is never emptied, and blocks that aren't there aren't deleted.
-        assert!(!room.views[0].delete_blocks(&[], 0, 2));
-        assert!(!room.views[0].delete_blocks(&[], 2, 5));
+        assert_eq!(room.views[0].delete_blocks(&[], 0, 2), Err("all"));
+        assert_eq!(room.views[0].delete_blocks(&[], 2, 5), Err("missing"));
+        // Nor is a paragraph that ends a section, which holds its page setup.
+        let Body::Flow { blocks } = &mut room.views[0].doc.body else { panic!() };
+        let Block::Paragraph(p) = &mut blocks[1] else { panic!() };
+        let origin = office_core::xml::parse_element(
+            r#"<w:p xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:pPr><w:sectPr/></w:pPr></w:p>"#,
+        )
+        .unwrap();
+        p.origin = Origin::new(origin);
+        assert_eq!(room.views[0].delete_blocks(&[], 1, 1), Err("section"));
+        assert_eq!(room.views[0].delete_blocks(&[], 0, 2), Err("section"));
     }
 
     #[test]
     fn two_copies_deleting_the_last_blocks_at_once_leave_one() {
         for first in [0, 1] {
             let mut room = Room::new(&["One", "Two"], 2);
-            assert!(room.views[0].delete_blocks(&[], 0, 0));
-            assert!(room.views[1].delete_blocks(&[], 1, 1));
+            assert_eq!(room.views[0].delete_blocks(&[], 0, 0), Ok(()));
+            assert_eq!(room.views[1].delete_blocks(&[], 1, 1), Ok(()));
             room.send(first);
             room.send(1 - first);
             room.sync();

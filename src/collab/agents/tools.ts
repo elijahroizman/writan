@@ -478,8 +478,10 @@ function wordTool(e: WordEngine, name: string, args: Args): string {
       for (let i = fromN; i < toN; i++) if (!nextTo(paras[i - 1].path, paras[i].path)) throw new ToolError('Something that isn’t a paragraph is among them. Delete the paragraphs around it separately.')
       // The paragraphs go whole, as one change; the ones around them stay exactly as they were.
       const container = from.path.slice(0, -1)
-      const deleted = e.run<boolean>({ cmd: 'deleteBlocks', container, from: from.path[from.path.length - 1], to: to.path[to.path.length - 1] })
-      if (!deleted) {
+      const result = e.run<string>({ cmd: 'deleteBlocks', container, from: from.path[from.path.length - 1], to: to.path[to.path.length - 1] })
+      if (result === 'section') throw new ToolError('One of those paragraphs ends a section (it holds that section’s page setup), so it can’t be deleted. Delete the paragraphs around it.')
+      if (result === 'missing') throw new ToolError('Those paragraphs aren’t there any more. Read the document again.')
+      if (result === 'all') {
         // They're all there is in that list (a table cell, or the whole body): their text goes
         // and one empty paragraph stays.
         select(e, [from.path, 0], [to.path, to.text.length])
@@ -512,17 +514,13 @@ function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, mat
   if (matchCase) throw new ToolError('In a presentation, replace_text can’t match case. Leave match_case out, or use set_shape_text.')
   const found = e.run<{ slide: number; id: string }[]>({ cmd: 'find', query: find })
   if (!found.length) return `“${find}” isn’t in the presentation.`
-  const textOf = (m: { slide: number; id: string }) => elementsOf(e, m.slide).find((el) => el.id === m.id)?.text ?? ''
-  const before = found.map(textOf)
-  e.run({ cmd: 'replaceAll', text: by })
-  // Each shape's text should now read as if every match were replaced. Where it doesn't, some
-  // of it had formatting changing partway through and was left.
-  // The same matching as the presentation's own replace: the query trimmed, any case.
-  const every = new RegExp(find.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
-  const left = found.filter((m, i) => textOf(m) !== before[i].replace(every, () => by)).length
+  // The presentation says how many shapes it changed: a match whose formatting changes partway
+  // through it is left.
+  const { matched, changed } = e.run<{ matched: number; changed: number }>({ cmd: 'replaceAll', text: by })
+  const left = matched - changed
   return left
-    ? `Replaced in ${found.length - left} shape${found.length - left === 1 ? '' : 's'}. In ${left} more, some of it has formatting changing partway through and wasn’t replaced; use set_shape_text there.`
-    : `Replaced in ${found.length} shape${found.length === 1 ? '' : 's'}.`
+    ? `Replaced in ${changed} shape${changed === 1 ? '' : 's'}. In ${left} more, the text’s formatting changes partway through it, so it wasn’t replaced there; use set_shape_text.`
+    : `Replaced in ${changed} shape${changed === 1 ? '' : 's'}.`
 }
 
 // ── PowerPoint

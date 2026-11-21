@@ -705,7 +705,7 @@ impl WordDoc {
                 v.mark_saved();
                 serde_json::Value::Null
             }
-            Cmd::DeleteBlocks { container, from, to } => serde_json::json!(v.delete_blocks(&container, from, to)),
+            Cmd::DeleteBlocks { container, from, to } => serde_json::json!(v.delete_blocks(&container, from, to).err().unwrap_or("ok")),
             Cmd::ResolveRevisions { accept } => serde_json::json!(v.resolve_revisions(accept)),
             Cmd::Select { anchor, focus } => {
                 let blocks = v.current_blocks().to_vec();
