@@ -31,6 +31,8 @@ const sessions = new Set<AgentSession>()
 export class AgentSession {
   /** Its copies by the tab they follow, joining or joined. */
   readonly copies = new Map<string, Promise<Copy>>()
+  /** The copies that have joined, by tab. */
+  private readonly joined = new Map<string, Copy>()
   private ended = false
   constructor(readonly who: Agent | OtherAgent) {
     sessions.add(this)
@@ -47,6 +49,7 @@ export class AgentSession {
     const c = this.copies.get(tab)
     if (!c) return false
     this.copies.delete(tab)
+    this.joined.delete(tab)
     // A join still under way leaves once it's done.
     void c.then(close, () => {})
     return true
@@ -66,11 +69,17 @@ export class AgentSession {
       pending.catch(() => this.copies.get(tab) === pending && this.copies.delete(tab))
     }
     const c = await pending
+    this.joined.set(tab, c)
     const engine = await c.engine
     // The relay's welcome is applied when the copy goes live, just after the engine attaches.
     await live(c.id)
     if (this.ended || this.copies.get(tab) !== pending) throw new ToolError('You left the document.')
     return { copy: c, engine }
+  }
+
+  /** Whether `c` is still this agent's copy of its document. */
+  has(c: Copy): boolean {
+    return !this.ended && this.joined.get(c.tab) === c
   }
 
   private async join(tab: string): Promise<Copy> {
@@ -84,14 +93,20 @@ export class AgentSession {
       resolveEngine = res
       rejectEngine = rej
     })
-    engine.catch(() => {})
     const id = await followAsAgent(invite, { name: who.name, color: who.id ? AGENTS[who.id].color : '#6E56CF', agent: who.id ?? 'ai' }, (copyId, opened) => {
       void openEngine(opened).then((e) => {
         attach(copyId, e)
         resolveEngine(e)
       }, rejectEngine)
     })
-    return { id, tab, kind: doc.kind, engine }
+    const copy = { id, tab, kind: doc.kind, engine }
+    // A copy whose document didn't open leaves again, and the next call joins afresh.
+    engine.catch(() => {
+      leaveAsAgent(id)
+      const now = this.copies.get(tab)
+      if (now) void now.then((c) => c === copy && this.copies.delete(tab), () => {})
+    })
+    return copy
   }
 }
 
@@ -291,16 +306,16 @@ export async function runTool(session: AgentSession, name: string, args: Args): 
       const e = engine as { run(c: { cmd: string }): unknown; state: { canUndo: boolean } }
       if (!e.state.canUndo) return 'Nothing of yours to undo.'
       e.run({ cmd: 'undo' })
-      return 'Undone.'
+      return `Undone.${await delivered(session, copy, engine)}`
     }
     case 'wait_for_changes':
       return waitForChanges(copy, Math.min(60, Math.max(1, Number(args.seconds) || 30)))
     case 'replace_text':
       if (copy.kind === 'xlsx') throw new ToolError('In a workbook, use write_cells.')
-      return replaceText(engine as WordEngine | SlidesEngine, need(str(args, 'find'), 'find'), str(args, 'replace') ?? '', args.match_case === true)
+      return `${replaceText(engine as WordEngine | SlidesEngine, need(str(args, 'find'), 'find'), str(args, 'replace') ?? '', args.match_case === true)}${await delivered(session, copy, engine)}`
   }
   const text = copy.kind === 'docx' ? wordTool(engine as WordEngine, name, args) : copy.kind === 'pptx' ? slidesTool(engine as SlidesEngine, name, args) : sheetsTool(engine as SheetsEngine, name, args)
-  return `${text}${await delivered(engine)}`
+  return `${text}${await delivered(session, copy, engine)}`
 }
 
 /**
@@ -308,8 +323,11 @@ export async function runTool(session: AgentSession, name: string, args: Args): 
  * about the shared document. A change that met someone else's at the same spot can still lose;
  * then reading again shows theirs.
  */
-async function delivered(engine: Engine): Promise<string> {
-  for (let i = 0; i < 100 && engine.doc.collabPending(); i++) await new Promise((r) => setTimeout(r, 50))
+async function delivered(session: AgentSession, copy: Copy, engine: Engine): Promise<string> {
+  // A copy that left meanwhile has no document to ask any more.
+  const here = () => session.has(copy)
+  for (let i = 0; i < 100 && here() && engine.doc.collabPending(); i++) await new Promise((r) => setTimeout(r, 50))
+  if (!here()) return ' (You left the document before it reached the others.)'
   return engine.doc.collabPending() ? ' (Still on its way to the others.)' : ''
 }
 
@@ -355,6 +373,8 @@ interface Para {
 
 /** Whether two paragraphs are in the same list of blocks (the body, or one table cell). */
 const sameList = (a: number[], b: number[]) => a.length === b.length && a.slice(0, -1).every((x, i) => x === b[i])
+/** Whether paragraph `b` comes straight after `a` in the same list, with no other block between. */
+const nextTo = (a: number[], b: number[]) => sameList(a, b) && b[b.length - 1] === a[a.length - 1] + 1
 
 const paragraphsOf = (e: WordEngine) => JSON.parse(e.doc.paragraphs()) as Para[]
 const samePath = (a: number[], b: number[]) => a.length === b.length && a.every((x, i) => x === b[i])
@@ -453,14 +473,36 @@ function wordTool(e: WordEngine, name: string, args: Args): string {
       if (toN < fromN || paras.slice(fromN - 1, toN).some((p) => !sameList(p.path, from.path))) {
         throw new ToolError('Those paragraphs aren’t all in one place (a table is in between, or some are in a table cell). Delete them in parts.')
       }
+      // Nothing but paragraphs in between: a content control or other block the list skips
+      // would go too.
+      for (let i = fromN; i < toN; i++) if (!nextTo(paras[i - 1].path, paras[i].path)) throw new ToolError('Something that isn’t a paragraph is among them. Delete the paragraphs around it separately.')
       const after = paras[toN]
       const before = paras[fromN - 2]
-      if (after && sameList(after.path, to.path)) select(e, [from.path, 0], [after.path, 0])
-      else if (before && sameList(before.path, from.path)) select(e, [before.path, before.text.length], [to.path, to.text.length])
-      // Nothing else in that list (a table cell, or a body between tables): its text goes and an
-      // empty paragraph stays.
-      else select(e, [from.path, 0], [to.path, to.text.length])
-      e.run({ cmd: 'delete', word: false })
+      if (before && nextTo(before.path, from.path)) {
+        // From the end of the paragraph before: it stays as it was, and the next is untouched.
+        select(e, [before.path, before.text.length], [to.path, to.text.length])
+        e.run({ cmd: 'delete', word: false })
+      } else if (after && nextTo(to.path, after.path)) {
+        // The first in its list: the next paragraph takes its place, keeping its own style.
+        select(e, [after.path, 0])
+        // No style of its own is Normal.
+        let style = e.state.style
+        if (!style) {
+          try {
+            style = styleId(e, 'Normal')
+          } catch {
+            style = null
+          }
+        }
+        select(e, [from.path, 0], [after.path, 0])
+        e.run({ cmd: 'delete', word: false })
+        if (style) e.run({ cmd: 'style', id: style })
+      } else {
+        // Alone in its list (a table cell, or a body between tables): its text goes and an
+        // empty paragraph stays.
+        select(e, [from.path, 0], [to.path, to.text.length])
+        e.run({ cmd: 'delete', word: false })
+      }
       return `Deleted ${toN - fromN + 1} paragraph${toN === fromN ? '' : 's'}.`
     }
     case 'set_style': {
@@ -486,17 +528,17 @@ function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, mat
   }
   // Presentations find text whatever its case.
   if (matchCase) throw new ToolError('In a presentation, replace_text can’t match case. Leave match_case out, or use set_shape_text.')
-  const found = e.run<unknown[]>({ cmd: 'find', query: find })
-  const count = Array.isArray(found) ? found.length : 0
-  if (!count) return `“${find}” isn’t in the presentation.`
+  const found = e.run<{ slide: number; id: string }[]>({ cmd: 'find', query: find })
+  if (!found.length) return `“${find}” isn’t in the presentation.`
+  const textOf = (m: { slide: number; id: string }) => elementsOf(e, m.slide).find((el) => el.id === m.id)?.text
+  const before = found.map(textOf)
   e.run({ cmd: 'replaceAll', text: by })
-  // Text whose formatting changes partway through isn't replaced; say where it's left.
-  const left = e.run<unknown[]>({ cmd: 'find', query: find })
-  const still = Array.isArray(left) ? left.length : 0
-  const done = count - still
-  return still
-    ? `Replaced in ${done} shape${done === 1 ? '' : 's'}; ${still} still ${still === 1 ? 'has' : 'have'} it, with its formatting changing partway (use set_shape_text there).`
-    : `Replaced in ${count} shape${count === 1 ? '' : 's'}.`
+  // Text whose formatting changes partway through isn't replaced; say where that was.
+  const done = found.filter((m, i) => textOf(m) !== before[i]).length
+  const missed = found.length - done
+  return missed
+    ? `Replaced in ${done} shape${done === 1 ? '' : 's'}. In ${missed} more, the text’s formatting changes partway through it, so it wasn’t replaced there; use set_shape_text.`
+    : `Replaced in ${done} shape${done === 1 ? '' : 's'}.`
 }
 
 // ── PowerPoint

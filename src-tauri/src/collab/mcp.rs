@@ -36,6 +36,28 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// changes and the server's state starts over.
 static NEXT_CALL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+static NEXT_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// A request body has this long to arrive after its head.
+const BODY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// A socket whose reads all have to finish by `by`: each read waits only for what's left.
+struct Deadline<'a> {
+    stream: &'a TcpStream,
+    by: Instant,
+}
+
+impl Read for Deadline<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let left = self.by.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        self.stream.set_read_timeout(Some(left))?;
+        self.stream.read(buf)
+    }
+}
+
 /// How long a tool call may take in the page. Waiting for someone else's change can take a
 /// minute by itself.
 const CALL_TIMEOUT: Duration = Duration::from_secs(150);
@@ -62,6 +84,9 @@ struct Session {
 
 /// The MCP side of the server: the token in the URL, the page's bridge and agents' sessions.
 pub struct Mcp {
+    /// Which `Mcp` this is: a new address starts a new one, and a request checked against the
+    /// old one is turned away even if it was already being read.
+    generation: u64,
     token: String,
     bridge_key: String,
     /// The page's connection, while it's open.
@@ -77,6 +102,7 @@ pub type SharedMcp = Arc<Mutex<Option<Mcp>>>;
 impl Mcp {
     pub fn new(token: &str, bridge_key: &str) -> Mcp {
         Mcp {
+            generation: NEXT_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             token: token.to_owned(),
             bridge_key: bridge_key.to_owned(),
             bridge: None,
@@ -96,6 +122,11 @@ impl Mcp {
             }
         }
     }
+}
+
+/// The server's MCP state, if it's still the one a request was checked against.
+fn current(guard: &mut Option<Mcp>, generation: u64) -> Option<&mut Mcp> {
+    guard.as_mut().filter(|m| m.generation == generation)
 }
 
 /// Compares secrets in time that doesn't depend on where they differ.
@@ -161,6 +192,8 @@ pub fn bridge_closed(mcp: &SharedMcp, id: u64) {
 
 /// An HTTP request, as far as MCP needs it.
 struct Request {
+    /// The `Mcp` whose token it had.
+    generation: u64,
     method: String,
     query: String,
     headers: Vec<(String, String)>,
@@ -179,8 +212,13 @@ impl Request {
 /// Reads a request: its head (at most `MAX_HEAD` bytes, all within `REQUEST_TIMEOUT`), then,
 /// only for this server's address, its body. Fails with the status to answer.
 fn read_request(stream: &TcpStream, mcp: &SharedMcp) -> Result<Request, &'static str> {
-    let started = Instant::now();
-    let mut reader = BufReader::new(Read::take(stream, MAX_HEAD));
+    let mut reader = BufReader::new(Read::take(
+        Deadline {
+            stream,
+            by: Instant::now() + REQUEST_TIMEOUT,
+        },
+        MAX_HEAD,
+    ));
     let mut head = Vec::new();
     // The head ends with an empty line.
     loop {
@@ -191,9 +229,6 @@ fn read_request(stream: &TcpStream, mcp: &SharedMcp) -> Result<Request, &'static
         if n == 0 || !head.ends_with(b"\n") {
             return Err("400 Bad Request");
         }
-        if started.elapsed() > REQUEST_TIMEOUT {
-            return Err("408 Request Timeout");
-        }
         if head[start..] == *b"\r\n" || head[start..] == *b"\n" {
             break;
         }
@@ -203,16 +238,13 @@ fn read_request(stream: &TcpStream, mcp: &SharedMcp) -> Result<Request, &'static
     req.parse(&head).map_err(|_| "400 Bad Request")?;
     let target = req.path.ok_or("400 Bad Request")?.to_owned();
     let (path, query) = target.split_once('?').unwrap_or((&target, ""));
-    let token_ok = {
+    let generation = {
         let guard = mcp.lock().unwrap();
         match (guard.as_ref(), path.strip_prefix("/mcp/")) {
-            (Some(m), Some(token)) => same(token.trim_end_matches('/'), &m.token),
-            _ => false,
+            (Some(m), Some(token)) if same(token.trim_end_matches('/'), &m.token) => m.generation,
+            _ => return Err("404 Not Found"),
         }
     };
-    if !token_ok {
-        return Err("404 Not Found");
-    }
     let headers: Vec<(String, String)> = req
         .headers
         .iter()
@@ -224,6 +256,7 @@ fn read_request(stream: &TcpStream, mcp: &SharedMcp) -> Result<Request, &'static
         })
         .collect();
     let mut out = Request {
+        generation,
         method: req.method.ok_or("400 Bad Request")?.to_owned(),
         query: query.to_owned(),
         headers,
@@ -237,6 +270,7 @@ fn read_request(stream: &TcpStream, mcp: &SharedMcp) -> Result<Request, &'static
         return Err("413 Content Too Large");
     }
     reader.get_mut().set_limit(len as u64);
+    reader.get_mut().get_mut().by = Instant::now() + BODY_TIMEOUT;
     out.body = vec![0; len];
     reader
         .read_exact(&mut out.body)
@@ -306,7 +340,7 @@ pub fn serve_http(stream: TcpStream, mcp: &SharedMcp) {
         "POST" => post(&stream, mcp, &req),
         "DELETE" => {
             if let Some(id) = req.header("mcp-session-id") {
-                if let Some(m) = mcp.lock().unwrap().as_mut() {
+                if let Some(m) = current(&mut mcp.lock().unwrap(), req.generation) {
                     m.end(id);
                 }
             }
@@ -345,7 +379,9 @@ fn post(stream: &TcpStream, mcp: &SharedMcp, req: &Request) {
             .unwrap_or(&VERSIONS[0]);
         {
             let mut guard = mcp.lock().unwrap();
-            let Some(m) = guard.as_mut() else { return };
+            let Some(m) = current(&mut guard, req.generation) else {
+                return respond(stream, "404 Not Found", &[], "");
+            };
             let stale: Vec<String> = m
                 .sessions
                 .iter()
@@ -417,7 +453,7 @@ fn post(stream: &TcpStream, mcp: &SharedMcp, req: &Request) {
     };
     let who = {
         let mut guard = mcp.lock().unwrap();
-        guard.as_mut().and_then(|m| {
+        current(&mut guard, req.generation).and_then(|m| {
             m.sessions.get_mut(&session).map(|s| {
                 s.used = Instant::now();
                 (s.agent.clone(), s.client.clone())
@@ -437,9 +473,16 @@ fn post(stream: &TcpStream, mcp: &SharedMcp, req: &Request) {
     };
     let reply = match method {
         "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
-        "tools/list" | "tools/call" => {
-            call_page(mcp, &session, agent, &client, method, &msg["params"], &id)
-        }
+        "tools/list" | "tools/call" => call_page(
+            mcp,
+            req.generation,
+            &session,
+            agent,
+            &client,
+            method,
+            &msg["params"],
+            &id,
+        ),
         _ => json_rpc_error(&id, -32601, &format!("Writan doesn't know {method}.")),
     };
     respond(
@@ -451,8 +494,10 @@ fn post(stream: &TcpStream, mcp: &SharedMcp, req: &Request) {
 }
 
 /// Hands a call to the page and waits for its answer.
+#[allow(clippy::too_many_arguments)]
 fn call_page(
     mcp: &SharedMcp,
+    generation: u64,
     session: &str,
     agent: Option<String>,
     client: &str,
@@ -463,7 +508,7 @@ fn call_page(
     let (tx, rx) = channel();
     let call = {
         let mut guard = mcp.lock().unwrap();
-        let Some(m) = guard.as_mut() else {
+        let Some(m) = current(&mut guard, generation) else {
             return json_rpc_error(id, -32603, "Writan stopped letting agents in.");
         };
         let Some((_, bridge)) = &m.bridge else {

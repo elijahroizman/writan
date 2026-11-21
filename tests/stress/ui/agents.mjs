@@ -175,6 +175,11 @@ try {
   const across = await codex.call('delete_paragraphs', { document: docId, from: 1, to: 6 })
   check('deleting across a table is refused', across.error && across.text.includes('Delete them in parts'), across.text)
 
+  // Deleting the first paragraph (a heading) leaves the next one with its own style.
+  const first = await codex.call('delete_paragraphs', { document: docId, from: 1 })
+  const afterFirst = (await codex.call('read_document', { document: docId, from: 1, to: 1 })).text
+  check('the paragraph after a deleted heading keeps its own style', !first.error && /\[1\] Ada wrote this line\./.test(afterFirst), afterFirst)
+
   // A mistake comes back as an answer the agent can act on.
   const bad = await codex.call('replace_paragraphs', { document: docId, from: 99, text: 'x' })
   check('a wrong paragraph number is explained', bad.error && /has \d+ paragraphs/.test(bad.text), bad.text)

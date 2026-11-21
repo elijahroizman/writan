@@ -108,8 +108,10 @@ fn tilde(rel: &str) -> String {
     }
 }
 
-/// Writes a file whole or not at all: a config an agent reads is never left half written.
+/// Writes a file whole or not at all: a config an agent reads is never left half written. A
+/// config that's a link to a file elsewhere (dotfiles kept in a repository) is written there.
 fn write(path: &Path, text: &str) -> Result<(), String> {
+    let path = &std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let dir = path.parent().ok_or("No folder to write in.")?;
     std::fs::create_dir_all(dir).map_err(|e| format!("Couldn't make {}: {e}", dir.display()))?;
     let mut tmp = tempfile::NamedTempFile::new_in(dir)
@@ -170,7 +172,7 @@ fn is_our_table(line: &str) -> bool {
         .and_then(|l| l.strip_suffix(']'))
         .is_some_and(|name| {
             name.split('.')
-                .map(|p| p.trim().trim_matches('"'))
+                .map(|p| p.trim().trim_matches(['"', '\'']))
                 .eq(["mcp_servers", NAME])
         })
 }
@@ -355,6 +357,23 @@ mod tests {
         );
         assert!(has_server("c.toml", "[ mcp_servers.\"writan\" ]\n"));
         assert!(!has_server("c.toml", "[mcp_servers.writan2]\n"));
+        assert!(has_server("c.toml", "['mcp_servers'.'writan']\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_config_is_written_where_it_points() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("real.toml");
+        std::fs::write(&real, "model = \"x\"\n").unwrap();
+        let link = dir.path().join("config.toml");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write(&link, "new\n").unwrap();
+        assert!(std::fs::symlink_metadata(&link)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new\n");
     }
 
     #[test]
