@@ -966,6 +966,11 @@ pub(crate) fn put_cell(s: &mut Sheet, at: CellRef, cell: Option<SheetCell>) {
         None => {
             if let Ok(i) = s.rows.binary_search_by_key(&at.row, |r| r.index) {
                 s.rows[i].cells.retain(|c| c.col != at.col);
+                // A row made for the cell goes with it, so taking a change back leaves the sheet
+                // as it was. A row read from the file keeps its markup (its height).
+                if s.rows[i].cells.is_empty() && s.rows[i].origin.get().is_none() {
+                    s.rows.remove(i);
+                }
             }
         }
     }

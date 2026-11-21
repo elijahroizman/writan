@@ -17,6 +17,7 @@ import type { DocKind } from './lib/kinds'
 import { kindFromPath } from './lib/kinds'
 import * as platform from './lib/platform'
 import { flushAutosave, startAutosave } from './lib/autosave'
+import { resetNative } from './collab/transport'
 import { discardRecovery, resumeRecovery, startRecovery } from './lib/recovery'
 import { installUpdate, openUpdatePanel, startUpdateChecks } from './lib/updater'
 import { startPlugins } from './state/plugins'
@@ -533,6 +534,7 @@ export default function App() {
     // Shortcuts changed in Settings: the menu is built with the defaults.
     void syncMenu()
     const stopUpdateChecks = startUpdateChecks()
+    void resetNative()
     const stopAutosave = startAutosave()
     const stopRecovery = startRecovery()
     const stopFolderPalette = startFolderPalette()

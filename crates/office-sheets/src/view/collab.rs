@@ -7,12 +7,14 @@
 //! matches is dropped, on every copy alike.
 //!
 //! A cell's `style` is an index into the workbook's style sheet, which grows as formats are
-//! added — outside the undo steps — so two copies can give the same index to different
-//! formats. Cells go on the wire as their [`CellFormat`] instead, and the receiver turns it
-//! back into a local index, finding or adding it. A row's `s` and a column's `style` are
-//! indexes too, but they only ever hold what the file had: nothing adds them, and entries
-//! already in the style sheet never change, so they can stay inside the markup as they are.
-//! (The model never resolves them; only cells' own styles are shown.)
+//! added, outside the undo steps. So two copies can give the same new index to different
+//! formats. An index from before sharing started is the same on every copy and goes as it is,
+//! which keeps the file's own style entries exactly. A newer one goes as its [`CellFormat`],
+//! and the receiver finds or adds that format. A row's `s` and a column's `style` are indexes
+//! too, but nothing adds them, so they stay inside the markup as they are.
+//!
+//! A formula's result isn't part of the check: every copy works results out again after each
+//! change, but not between taking back a pending change and checking the next one.
 
 use office_core::model::{CellRef, Chart, Document, Origin, Range, Sheet, SheetCell, SheetPicture, SheetRow};
 use office_engine::collab::{self, fingerprint, send_content, take_content, Replica, Shared};
@@ -38,8 +40,16 @@ impl CStep {
     }
 }
 
-/// A cell as it's sent: the model's JSON, but `style` is the format its index resolves to
-/// (see the module notes).
+/// A cell's style as it's sent: an index every copy has (one from before sharing started), or
+/// the format a newer index resolves to (see the module notes).
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum SentStyle {
+    Index(u32),
+    Format(Box<CellFormat>),
+}
+
+/// A cell as it's sent: the model's JSON, but `style` is a [`SentStyle`].
 #[derive(Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SentCell {
@@ -47,10 +57,8 @@ struct SentCell {
     value: office_core::model::Value,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     formula: Option<String>,
-    /// `None` is the first format, as in the model: every copy's first one is the file's,
-    /// since style sheets only ever grow.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    style: Option<CellFormat>,
+    style: Option<SentStyle>,
     #[serde(default, skip_serializing_if = "office_core::model::wire::off", with = "office_core::model::wire::origin")]
     origin: Origin,
 }
@@ -129,6 +137,7 @@ impl SheetsView {
     /// Starts sharing: from now on changes are kept to send, and undo goes through the checks.
     pub fn collab_start(&mut self, client: &str) {
         self.replica = Some(Replica::new(client, &self.doc));
+        self.shared_styles = crate::excel(&self.doc).map_or(0, |x| x.styles.len());
         self.history = Default::default();
     }
 
@@ -185,16 +194,50 @@ impl SheetsView {
             col: c.col,
             value: c.value.clone(),
             formula: c.formula.clone(),
-            style: c.style.map(|i| self.cell_format(i)),
+            style: c.style.map(|i| {
+                if (i as usize) < self.shared_styles {
+                    SentStyle::Index(i)
+                } else {
+                    SentStyle::Format(Box::new(self.cell_format(i)))
+                }
+            }),
             origin: c.origin.clone(),
         }
     }
 
-    /// A sent cell back in this copy's terms: its format finds or takes a local index.
+    /// A cell as checked against a step's fingerprint: a formula's result is left out, since
+    /// it's worked out again after every change and a copy taking back its own pending change
+    /// doesn't work it out again before checking.
+    fn checked_cell(&self, c: &SheetCell) -> SentCell {
+        let mut sent = self.sent_cell(c);
+        if c.formula.is_some() || c.origin.get().is_some_and(|o| o.elements().any(|e| e.local == "f")) {
+            sent.value = office_core::model::Value::Empty;
+        }
+        sent
+    }
+
+    fn checked_sheet(&self, s: &Sheet) -> Value {
+        let mut sent = serde_json::to_value(self.sent_sheet(s)).unwrap_or(Value::Null);
+        let cells = s.rows.iter().flat_map(|r| r.cells.iter());
+        let sent_cells = sent["rows"].as_array_mut().into_iter().flatten().flat_map(|r| r["cells"].as_array_mut().into_iter().flatten());
+        for (sent, c) in sent_cells.zip(cells) {
+            *sent = serde_json::to_value(self.checked_cell(c)).unwrap_or(Value::Null);
+        }
+        sent
+    }
+
+    fn checked_sheets(&self, sheets: &[Sheet]) -> Vec<Value> {
+        sheets.iter().map(|s| self.checked_sheet(s)).collect()
+    }
+
+    /// A sent cell back in this copy's terms: a newer format finds or takes a local index.
     fn real_cell(&mut self, c: SentCell) -> SheetCell {
-        let style = c.style.and_then(|f| {
-            let i = crate::excel_mut(&mut self.doc).styles.add(&f);
-            (i != 0).then_some(i)
+        let style = c.style.and_then(|s| match s {
+            SentStyle::Index(i) => Some(i),
+            SentStyle::Format(f) => {
+                let i = crate::excel_mut(&mut self.doc).styles.add(&f);
+                (i != 0).then_some(i)
+            }
         });
         SheetCell { col: c.col, value: c.value, formula: c.formula, style, origin: c.origin }
     }
@@ -265,11 +308,10 @@ impl SheetsView {
             let s = self.sheets().get(sheet)?;
             for e in sent {
                 let at: CellRef = serde_json::from_value(e[0].clone()).ok()?;
-                let old = s.cell(at).map(|c| self.sent_cell(c));
-                if fingerprint(&old) != e[1].as_str()? {
+                if fingerprint(&s.cell(at).map(|c| self.checked_cell(c))) != e[1].as_str()? {
                     return None;
                 }
-                olds.push((at, old));
+                olds.push((at, s.cell(at).map(|c| self.sent_cell(c))));
             }
         }
         let mut cells = Vec::with_capacity(sent.len());
@@ -286,7 +328,7 @@ impl SheetsView {
     fn take_sheet(&mut self, step: &Value, since: &[&CStep]) -> Option<CStep> {
         let index = self.map_sheet(step["sheet"].as_u64()? as usize, since)?;
         let before = self.sheets().get(index)?.clone();
-        if fingerprint(&self.sent_sheet(&before)) != step["before"].as_str()? {
+        if fingerprint(&self.checked_sheet(&before)) != step["before"].as_str()? {
             return None;
         }
         let sent: SentSheet = take_content(&self.sent_sheet(&before), &step["after"])?;
@@ -297,7 +339,7 @@ impl SheetsView {
 
     fn take_book(&mut self, step: &Value) -> Option<CStep> {
         let before = self.sheets().to_vec();
-        if fingerprint(&self.sent_sheets(&before)) != step["before"].as_str()? {
+        if fingerprint(&self.checked_sheets(&before)) != step["before"].as_str()? {
             return None;
         }
         let sent: Vec<SentSheet> = take_content(&self.sent_sheets(&before), &step["after"])?;
@@ -363,19 +405,20 @@ impl Shared for SheetsView {
                 "k": "cells",
                 "sheet": sheet,
                 "cells": cells.iter().map(|(at, old, new)| {
+                    let check = fingerprint(&old.as_ref().map(|c| self.checked_cell(c)));
                     let old = old.as_ref().map(|c| self.sent_cell(c));
-                    json!([at, fingerprint(&old), send_content(&old, &new.as_ref().map(|c| self.sent_cell(c)))])
+                    json!([at, check, send_content(&old, &new.as_ref().map(|c| self.sent_cell(c)))])
                 }).collect::<Vec<_>>(),
             }),
             CStep::Sheet { sheet, before, after } => json!({
                 "k": "sheet",
                 "sheet": sheet,
-                "before": fingerprint(&self.sent_sheet(before)),
+                "before": fingerprint(&self.checked_sheet(before)),
                 "after": send_content(&self.sent_sheet(before), &self.sent_sheet(after)),
             }),
             CStep::Book { before, after } => json!({
                 "k": "book",
-                "before": fingerprint(&self.sent_sheets(before)),
+                "before": fingerprint(&self.checked_sheets(before)),
                 "after": send_content(&self.sent_sheets(before), &self.sent_sheets(after)),
             }),
             CStep::Charts { sheet, before, after } => json!({
@@ -401,7 +444,8 @@ impl Shared for SheetsView {
         }
     }
 
-    fn take_step(&mut self, step: &Value, since: &[&CStep]) -> Option<CStep> {
+    fn take_step(&mut self, step: &Value, since: Option<&[&CStep]>) -> Option<CStep> {
+        let since = since.unwrap_or(&[]);
         let s = match step["k"].as_str()? {
             "cells" => self.take_cells(step, since),
             "sheet" => self.take_sheet(step, since),
@@ -612,5 +656,35 @@ mod tests {
         assert_eq!(room.views[1].sheets()[1].name, "Data");
         assert_eq!(room.views[1].sheets()[1].value(CellRef::new(0, 0)), &Value::Number(42.0));
         room.agree();
+    }
+
+    #[test]
+    fn a_formulas_result_doesnt_decide_a_conflict() {
+        let mut room = Room::new(&book(), 2);
+        room.views[0].set_input(0, CellRef::new(0, 2), "=A1*2");
+        room.sync();
+        // Copy 0 changes what the formula reads while copy 1 replaces the formula; copy 0's
+        // result was worked out from its own pending change when copy 1's arrives.
+        room.views[0].set_input(0, CellRef::new(0, 0), "5");
+        room.views[1].set_input(0, CellRef::new(0, 2), "7");
+        room.send(1);
+        room.send(0);
+        room.deliver();
+        room.agree();
+        assert_eq!(room.views[0].sheets()[0].value(CellRef::new(0, 2)), &Value::Number(7.0));
+        assert_eq!(room.views[0].sheets()[0].value(CellRef::new(0, 0)), &Value::Number(5.0));
+    }
+
+    #[test]
+    fn taking_back_a_cell_in_a_new_row_leaves_no_row() {
+        let mut room = Room::new(&book(), 2);
+        room.views[0].set_input(0, CellRef::new(5, 0), "new row");
+        room.views[1].rename_sheet(0, "Renamed");
+        room.send(1);
+        room.send(0);
+        room.deliver();
+        room.agree();
+        assert_eq!(room.views[0].sheets()[0].name, "Renamed");
+        assert_eq!(room.views[0].sheets()[0].value(CellRef::new(5, 0)), &Value::Text("new row".into()));
     }
 }

@@ -129,6 +129,9 @@ pub struct SheetsView {
     /// The formulas in a circular reference, as of the last recalculation.
     pub(crate) circular: Vec<(usize, CellRef)>,
     /// Set while the workbook is shared with other copies (see `collab`).
+    /// While shared: style indexes below this were in the workbook when sharing started, so every
+    /// copy has them (see `collab`).
+    pub(crate) shared_styles: usize,
     pub(crate) replica: Option<office_engine::collab::Replica<CStep>>,
 }
 
@@ -213,6 +216,7 @@ impl SheetsView {
             pending_cut: None,
             now: None,
             circular,
+            shared_styles: 0,
             replica: None,
         }
     }
@@ -223,10 +227,13 @@ impl SheetsView {
 
     pub fn mark_saved(&mut self) {
         self.saved = self.history.version();
+        if let Some(r) = &mut self.replica {
+            r.saved();
+        }
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.history.version() != self.saved
+        self.history.version() != self.saved || self.replica.as_ref().is_some_and(|r| r.changed_by_others())
     }
 
     pub fn revision(&self) -> u64 {

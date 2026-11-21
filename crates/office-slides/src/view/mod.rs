@@ -207,10 +207,13 @@ impl SlidesView {
 
     pub fn mark_saved(&mut self) {
         self.saved = self.history.version();
+        if let Some(r) = &mut self.replica {
+            r.saved();
+        }
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.history.version() != self.saved
+        self.history.version() != self.saved || self.replica.as_ref().is_some_and(|r| r.changed_by_others())
     }
 
     pub fn slides(&self) -> &[Slide] {

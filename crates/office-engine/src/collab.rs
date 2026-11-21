@@ -38,9 +38,10 @@ pub trait Shared {
     /// A step as sent: where it applies, the fingerprint of what it replaced, the new content.
     fn send_step(&self, step: &Self::Step) -> Value;
     /// Applies a sent step if what it replaced is still there, moved past `since` (steps other
-    /// copies made that the sender hadn't seen). Returns the step as applied here. Neither
-    /// records nor sends it.
-    fn take_step(&mut self, step: &Value, since: &[&Self::Step]) -> Option<Self::Step>;
+    /// copies made that the sender hadn't seen). `None` is for undo, where what changed since
+    /// isn't known: the layer may look for the content nearby. Returns the step as applied
+    /// here. Neither records nor sends it.
+    fn take_step(&mut self, step: &Value, since: Option<&[&Self::Step]>) -> Option<Self::Step>;
     /// Takes back a step this copy applied, without recording or sending it.
     fn revert_step(&mut self, step: &Self::Step);
     fn doc(&mut self) -> &mut Document;
@@ -80,6 +81,9 @@ pub struct Replica<S> {
     recent: VecDeque<Applied<S>>,
     /// Pictures every copy has.
     media: HashSet<String>,
+    /// Another copy changed the document since it was last saved here. Their changes aren't in
+    /// this copy's undo history, which is what tells it has unsaved changes.
+    others: bool,
 }
 
 impl<S: Step> Replica<S> {
@@ -92,6 +96,7 @@ impl<S: Step> Replica<S> {
             pending: VecDeque::new(),
             recent: VecDeque::new(),
             media: doc.media.iter().map(|m| m.id.clone()).collect(),
+            others: false,
         }
     }
 
@@ -115,6 +120,15 @@ impl<S: Step> Replica<S> {
     /// copy can't pick the same name.
     pub fn tag(&self) -> String {
         self.client.chars().filter(|c| c.is_ascii_alphanumeric()).take(12).collect()
+    }
+
+    /// Whether another copy changed the document since [`Replica::saved`].
+    pub fn changed_by_others(&self) -> bool {
+        self.others
+    }
+
+    pub fn saved(&mut self) {
+        self.others = false;
     }
 
     pub fn has_pending(&self) -> bool {
@@ -146,13 +160,14 @@ pub fn add_media<S: Step>(doc: &mut Document, replica: Option<&Replica<S>>, cont
 pub fn take<V: Shared>(v: &mut V) -> Option<Value> {
     let mut r = v.replica().take()?;
     let out = (|| {
-        if r.outbox.is_empty() {
+        // A change to the layer's own tables (a new header) can come before any step does.
+        let extra = v.send_extra();
+        if r.outbox.is_empty() && extra.is_null() {
             return None;
         }
         let steps = std::mem::take(&mut r.outbox);
         let sent: Vec<Value> = steps.iter().map(|s| v.send_step(s)).collect();
         let media = send_media(v.doc(), &mut r.media);
-        let extra = v.send_extra();
         r.count += 1;
         let id = format!("{}:{}", r.client, r.count);
         let body = json!({ "steps": sent, "media": media, "extra": extra });
@@ -182,17 +197,18 @@ pub fn receive<V: Shared>(v: &mut V, op: &Value) -> bool {
         if mine && r.pending.front().is_some_and(|p| p.id == id) {
             r.pending.pop_front();
         }
-        let applied = apply(v, &op["steps"], &mut r.media, &since(&r.recent, base, &client));
+        let applied = apply(v, &op["steps"], &mut r.media, Some(&since(&r.recent, base, &client)));
         r.seq = seq;
         let moved = if mine { Vec::new() } else { applied.clone().unwrap_or_default() };
         if let Some(steps) = applied {
+            r.others |= !mine && !steps.is_empty();
             r.recent.push_back(Applied { seq, client, steps });
             if r.recent.len() > RECENT {
                 r.recent.pop_front();
             }
         }
         for p in r.pending.iter_mut() {
-            p.applied = apply(v, &p.sent, &mut r.media, &since(&r.recent, p.base, &r.client));
+            p.applied = apply(v, &p.sent, &mut r.media, Some(&since(&r.recent, p.base, &r.client)));
         }
         v.restore(mark, &moved);
         true
@@ -202,7 +218,7 @@ pub fn receive<V: Shared>(v: &mut V, op: &Value) -> bool {
 }
 
 /// Applies a change's steps, all or none.
-fn apply<V: Shared>(v: &mut V, body: &Value, media: &mut HashSet<String>, since: &[&V::Step]) -> Option<Vec<V::Step>> {
+fn apply<V: Shared>(v: &mut V, body: &Value, media: &mut HashSet<String>, since: Option<&[&V::Step]>) -> Option<Vec<V::Step>> {
     take_media(v.doc(), &body["media"], media);
     v.take_extra(&body["extra"]);
     let mut done = Vec::new();
@@ -227,7 +243,7 @@ pub fn replay<V: Shared>(v: &mut V, steps: &[V::Step]) -> Option<Vec<V::Step>> {
     let sent: Vec<Value> = steps.iter().map(|s| v.send_step(s)).collect();
     let mut done = Vec::new();
     for s in &sent {
-        match v.take_step(s, &[]) {
+        match v.take_step(s, None) {
             Some(step) => done.push(step),
             None => {
                 for s in done.iter().rev() {

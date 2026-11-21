@@ -111,6 +111,8 @@ try {
   await b.page.evaluate(() => window.__slides.run({ cmd: 'addSlide', after: 0, layout: null }))
   await a.page.waitForFunction((n) => window.__slides.slides.length === n + 1, before)
   check('a slide the guest adds shows up for the host', (await slidesOf(a.page)) === before + 1)
+  await a.page.waitForFunction(() => window.__workspace.useWorkspace.getState().tabs.some((t) => t.kind === 'pptx' && t.dirty))
+  check('the guest’s change leaves the host with unsaved changes', true)
   if (shots) await a.page.screenshot({ path: `${shots}/slides-host.png` })
 
   // ── Excel

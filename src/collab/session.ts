@@ -134,15 +134,15 @@ function flush(link: Link) {
   }
 }
 
+/** Goes live once the relay has welcomed this copy and its engine is open. */
 function start(link: Link) {
   const engine = link.engine
-  if (!engine || !link.welcomed || link.live) return
-  engine.doc.collabStart(link.client)
-  engine.collab = { changed: () => flush(link) }
+  if (!engine || !link.welcomed || link.live || link.closed) return
   link.live = true
   for (const op of link.queue) engine.doc.collabReceive(op)
   link.queue = []
   engine.refresh()
+  flush(link)
   update(link.tabId, { status: 'live' })
 }
 
@@ -221,29 +221,38 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
 
 /** Shares a tab's document on the network. */
 export async function share(tabId: string, name: string): Promise<void> {
-  const ws = useWorkspace.getState()
-  const tab = ws.tabs.find((t) => t.id === tabId)
-  const editor = getEditor(tabId)
-  if (!tab || !editor || !SHAREABLE.has(tab.kind) || links.has(tabId)) return
-  editor.prepareSave?.()
-  const bytes = await editor.getBytes()
-  const title = `${tab.title}.${tab.kind}`
-  const hosting = await host(title, tab.kind)
-  const link: Link = { tabId, role: 'host', client: newClient(), name, transport: null, session: hosting.session, engine: null, queue: [], welcomed: false, live: false, closed: false }
+  const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+  if (!tab || !getEditor(tabId) || !SHAREABLE.has(tab.kind) || links.has(tabId)) return
+  const link: Link = { tabId, role: 'host', client: newClient(), name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false }
   links.set(tabId, link)
-  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', invite: hosting.invite, addresses: hosting.addresses, peers: [], message: null } })
-  // Everyone starts from these bytes, the host too: reloading makes the host's document what
-  // the others read from them.
-  ws.reloadBytes(tabId, bytes)
+  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', invite: null, addresses: [], peers: [], message: null } })
+  const title = `${tab.title}.${tab.kind}`
   try {
-    link.transport = await connect(hosting.local.url, {
+    const hosting = await host(title, tab.kind)
+    link.session = hosting.session
+    update(tabId, { invite: hosting.invite, addresses: hosting.addresses })
+    const editor = getEditor(tabId)
+    if (link.closed || !editor) throw new Error('The tab closed before sharing started.')
+    // Everyone starts from these bytes, the host too: reloading makes the host's document what
+    // the others read from them. Taken last, so nothing typed while the relay started is lost.
+    editor.prepareSave?.()
+    const bytes = await editor.getBytes()
+    if (link.closed) throw new Error('Sharing was stopped.')
+    useWorkspace.getState().reloadBytes(tabId, bytes)
+    const transport = await connect(hosting.local.url, {
       message: (data) => onMessage(link, data),
       closed: (reason) => finish(link, 'disconnected', `Sharing stopped: ${reason}`),
     })
+    if (link.closed) {
+      transport.close()
+      return
+    }
+    link.transport = transport
     hello(link, hosting.local.token, { hostKey: hosting.hostKey, snapshot: { name: title, kind: tab.kind, bytes: toBase64(bytes) } })
   } catch (err) {
+    if (link.session) void unhost(link.session)
+    if (link.closed) return
     finish(link, 'disconnected', String((err as Error)?.message ?? err))
-    void unhost(hosting.session)
     throw err
   }
 }
@@ -317,6 +326,9 @@ export function attach(tabId: string, engine: CollabEngine): () => void {
   const link = links.get(tabId)
   if (!link || link.closed) return () => {}
   link.engine = engine
+  // From now on changes here are kept to send, even made before the relay's welcome.
+  engine.doc.collabStart(link.client)
+  engine.collab = { changed: () => flush(link) }
   start(link)
   return () => {
     if (link.engine !== engine) return
@@ -332,3 +344,12 @@ export function attach(tabId: string, engine: CollabEngine): () => void {
     }
   }
 }
+
+// A shared tab that closes, however it closes (before its document finished opening too), ends
+// its sharing.
+useWorkspace.subscribe((state, prev) => {
+  if (state.tabs === prev.tabs) return
+  for (const tabId of [...links.keys()]) {
+    if (!state.tabs.some((t) => t.id === tabId)) stop(tabId)
+  }
+})

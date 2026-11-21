@@ -19,7 +19,7 @@ use serde_json::{json, Value};
 use super::{Dirty, StoryId, WStep, WordView};
 use crate::{word, ListKind, StoryKind};
 
-/// How far a splice is looked for around where it was made, when it isn't there.
+/// How far undo looks for a splice's blocks around where they were, when they aren't there.
 const NEAR: i64 = 32;
 
 impl WStep {
@@ -128,7 +128,7 @@ impl WordView {
         }
     }
 
-    fn take_text(&mut self, step: &Value, since: &[&WStep]) -> Option<WStep> {
+    fn take_text(&mut self, step: &Value, since: Option<&[&WStep]>) -> Option<WStep> {
         let story = story_from(step["story"].as_str()?)?;
         if !self.has_story(story) {
             return None;
@@ -137,30 +137,40 @@ impl WordView {
         let mut index = step["index"].as_u64()? as i64;
         let n = step["n"].as_u64()? as usize;
         let before = step["before"].as_str()?;
-        // Past what others changed before it, in the same list or a list above.
-        for s in since {
+        // Past what others changed before it, in the same list or a list above. A change to the
+        // same blocks, or to a table they're in, means this one comes second and is dropped.
+        for s in since.unwrap_or(&[]) {
             let WStep::Text(st, s) = s else { continue };
             if *st != story {
                 continue;
             }
             let delta = s.inserted.len() as i64 - s.removed.len() as i64;
-            let end = (s.index as usize + s.removed.len()) as i64;
+            let (start, end) = (s.index as i64, (s.index as usize + s.removed.len()) as i64);
             if s.container == container {
                 if end <= index {
                     index += delta;
+                } else if start < index + n as i64 {
+                    return None;
                 }
             } else if container.len() > s.container.len() && container[..s.container.len()] == s.container[..] {
                 let at = &mut container[s.container.len()];
                 if end <= *at as i64 {
                     *at = (*at as i64 + delta).max(0) as u32;
+                } else if start <= *at as i64 {
+                    return None;
                 }
             }
         }
         let list = pos::blocks_at(self.blocks(story), &container)?;
         let fits = |i: i64| i >= 0 && (i as usize) + n <= list.len() && fingerprint(&list[i as usize..i as usize + n]) == before;
-        let index =
-            if n == 0 { index.clamp(0, list.len() as i64) } else { (0..=NEAR).flat_map(|d| [index + d, index - d]).find(|&i| fits(i))? }
-                as usize;
+        let index = if n == 0 {
+            index.clamp(0, list.len() as i64)
+        } else if since.is_some() {
+            Some(index).filter(|&i| fits(i))?
+        } else {
+            // Undo: other copies may have moved it since, by an unknown amount.
+            (0..=NEAR).flat_map(|d| [index + d, index - d]).find(|&i| fits(i))?
+        } as usize;
         let old = list[index..index + n].to_vec();
         let inserted: Vec<Block> = take_content(&old, &step["after"])?;
         let root = self.blocks_mut(story);
@@ -223,7 +233,7 @@ impl Shared for WordView {
         }
     }
 
-    fn take_step(&mut self, step: &Value, since: &[&WStep]) -> Option<WStep> {
+    fn take_step(&mut self, step: &Value, since: Option<&[&WStep]>) -> Option<WStep> {
         let s = match step["k"].as_str()? {
             "text" => self.take_text(step, since),
             "origin" => self.take_origin(step),
@@ -492,5 +502,27 @@ mod tests {
         let n = num(&room.views[0]).expect("a list");
         assert_eq!(num(&room.views[1]).as_deref(), Some(n.as_str()));
         assert!(word(&room.views[1].doc).unwrap().numbering.levels(&n).is_some());
+    }
+
+    #[test]
+    fn others_changes_are_unsaved_changes() {
+        let mut room = Room::new(&["One"], 2);
+        caret(&mut room.views[1], 0, 3);
+        room.views[1].insert_text("!");
+        room.sync();
+        assert!(room.views[0].is_dirty());
+        room.views[0].mark_saved();
+        assert!(!room.views[0].is_dirty());
+    }
+
+    #[test]
+    fn the_losing_edit_to_an_empty_paragraph_doesnt_land_on_its_neighbor() {
+        let mut room = Room::new(&["", "", "Third"], 2);
+        caret(&mut room.views[0], 1, 0);
+        room.views[0].insert_text("A");
+        caret(&mut room.views[1], 1, 0);
+        room.views[1].insert_text("B");
+        room.sync();
+        assert_eq!(room.agree(), ["", "A", "Third"]);
     }
 }

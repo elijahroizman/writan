@@ -144,6 +144,19 @@ pub fn collab_unshare(session: String) {
     }
 }
 
+/// Forgets what an earlier page started: its connections and the sessions it shared. The page
+/// calls it when it loads, so reloading it doesn't leave others editing a session no page
+/// follows.
+#[tauri::command]
+pub fn collab_reset() {
+    for (_, c) in CLIENTS.lock().unwrap().drain() {
+        c.close();
+    }
+    if let Some(server) = SERVER.lock().unwrap().take() {
+        server.end_all();
+    }
+}
+
 /// Opens a connection to a relay (`ws://` or `wss://`) and returns its id.
 #[tauri::command]
 pub async fn collab_connect<R: Runtime>(app: AppHandle<R>, url: String) -> Result<u32, String> {

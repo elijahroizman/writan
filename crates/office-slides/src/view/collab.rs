@@ -196,7 +196,7 @@ impl Shared for SlidesView {
         }
     }
 
-    fn take_step(&mut self, step: &Value, _since: &[&SStep]) -> Option<SStep> {
+    fn take_step(&mut self, step: &Value, _since: Option<&[&SStep]>) -> Option<SStep> {
         match step["k"].as_str()? {
             "slide" => self.take_slide(step),
             "deck" => self.take_deck(step),

@@ -67,8 +67,20 @@ export function browserRelay(): string {
   return (import.meta.env.VITE_COLLAB_RELAY as string | undefined) ?? 'ws://127.0.0.1:47812'
 }
 
+let reset: Promise<void> | null = null
+
+/**
+ * Forgets the connections and shared sessions a page loaded earlier left in Rust (a reload).
+ * Called once when the page starts; sharing and joining wait for it.
+ */
+export function resetNative() {
+  reset ??= isTauri ? import('@tauri-apps/api/core').then(({ invoke }) => invoke<void>('collab_reset')).catch(() => {}) : Promise.resolve()
+  return reset
+}
+
 /** Starts hosting a session for a document. */
 export async function host(name: string, kind: string): Promise<Hosting> {
+  await resetNative()
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core')
     const info = await invoke<{ session: string; token: string; hostKey: string; addresses: string[]; inviteUrl: string; localUrl: string }>('collab_share', { name, kind })
@@ -105,13 +117,19 @@ function listenOnce() {
 
 /** Opens a connection to a relay. */
 export async function connect(url: string, events: TransportEvents): Promise<Transport> {
+  await resetNative()
   if (isTauri) {
     await listenOnce()
     const { invoke } = await import('@tauri-apps/api/core')
     const conn = await invoke<number>('collab_connect', { url })
     routes.set(conn, events)
+    const fail = (err: unknown) => {
+      if (!routes.delete(conn)) return
+      void invoke('collab_close', { conn }).catch(() => {})
+      events.closed(String((err as Error)?.message ?? err))
+    }
     return {
-      send: (data) => void invoke('collab_send', { conn, data }).catch(() => {}),
+      send: (data) => void invoke('collab_send', { conn, data }).catch(fail),
       close: () => {
         routes.delete(conn)
         void invoke('collab_close', { conn }).catch(() => {})

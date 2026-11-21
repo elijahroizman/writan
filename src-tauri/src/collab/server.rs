@@ -118,6 +118,13 @@ impl Server {
         state.dispatch(out);
     }
 
+    /// Ends every session (see `Relay::end_all`).
+    pub fn end_all(&self) {
+        let mut state = self.state.lock().unwrap();
+        let out = state.relay.end_all();
+        state.dispatch(out);
+    }
+
     pub fn session_count(&self) -> usize {
         self.state.lock().unwrap().relay.session_count()
     }

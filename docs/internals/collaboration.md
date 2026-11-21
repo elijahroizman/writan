@@ -63,6 +63,14 @@ Only the relay's address would change. `relay.rs` uses no sockets and no Tauri, 
 - compaction. The relay keeps every change since the opening bytes, and a copy that joins late applies them all. Replacing them with new bytes needs every copy's document to equal what it reads back from those bytes, which hasn't been checked yet;
 - reconnecting. A copy that loses its connection stops following now, and joining again opens a new tab.
 
+## Known gaps
+
+These need two people to do the same rare thing within the time a change takes to reach the relay and back (milliseconds on a LAN):
+
+- Two new Word lists, or two new headers or footers, made at once can get the same id on different copies, and the copies then disagree about that list or header.
+- Notes typed on a slide while someone else reorders slides can land on the slide that took its place.
+- Two people editing different shapes on one slide at once: the second edit is dropped, since a slide is checked whole.
+
 ## Tests
 
 - Each layer's `view/collab.rs` has a `Room`: copies of a document and a relay in memory, driven through concurrent edits.

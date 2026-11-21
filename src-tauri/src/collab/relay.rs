@@ -286,6 +286,13 @@ impl Relay {
         self.sessions.len()
     }
 
+    /// Ends every session, as `end_session` does each.
+    pub fn end_all(&mut self) -> Vec<Outgoing> {
+        let mut ids: Vec<String> = self.sessions.keys().cloned().collect();
+        ids.sort_unstable();
+        ids.iter().flat_map(|id| self.end_session(id)).collect()
+    }
+
     /// A new connection, for the session named in its URL. Nothing is sent until its hello.
     pub fn connect(&mut self, conn: ConnId, session: &str) {
         self.conns.insert(
@@ -361,6 +368,10 @@ impl Relay {
             return out;
         };
         session.members.retain(|m| m.conn != conn);
+        // On the LAN the host's copy is the file: without it, edits would go nowhere.
+        if joined.host && self.policy == Policy::Registered {
+            return self.end_session(&c.session);
+        }
         broadcast(session, None, &leave(&joined.client), &mut out);
         out
     }
@@ -742,6 +753,30 @@ mod tests {
         // A connection that never joined leaves silently.
         r.connect(9, S);
         assert!(r.disconnect(9).is_empty());
+    }
+
+    #[test]
+    fn the_host_leaving_ends_a_lan_session() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h"));
+        join(&mut r, 2, &guest_hello("g"));
+        let out = r.disconnect(1);
+        assert_eq!(
+            to(&out, 2),
+            vec![json!({ "t": "end", "reason": "host-stopped" })]
+        );
+        assert!(closed(&out, 2));
+        assert!(!r.has_session(S));
+    }
+
+    #[test]
+    fn ending_all_ends_every_session() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h"));
+        join(&mut r, 2, &guest_hello("g"));
+        let out = r.end_all();
+        assert!(closed(&out, 1) && closed(&out, 2));
+        assert_eq!(r.session_count(), 0);
     }
 
     #[test]
