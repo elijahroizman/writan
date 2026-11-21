@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
 import { enabledKinds, usePlugins } from '../state/plugins'
-import { chooseTemplate, createNew, hasTemplates } from '../state/starters'
+import { useWorkspace } from '../state/workspace'
 import { DocBadge, Kbd, Modal } from './ui'
 
 export const useNewFile = create<{ open: boolean; setOpen(open: boolean): void }>((set) => ({
@@ -12,14 +12,9 @@ export const useNewFile = create<{ open: boolean; setOpen(open: boolean): void }
 /** ⌘N: pick the kind of file to create. Arrows and return, or the number beside it. */
 export function NewFilePicker() {
   const enabled = usePlugins((s) => s.enabled)
-  // Each kind, then the template galleries, last so every kind keeps its number.
-  const kinds = enabledKinds(enabled).filter((k) => k.create)
-  const items = [
-    ...kinds.map((k) => ({ id: k.id, kind: k.id, title: k.create!.title, hint: k.create!.hint, run: () => createNew(k.id) })),
-    ...kinds
-      .filter((k) => hasTemplates(k.id))
-      .map((k) => ({ id: `${k.id}-template`, kind: k.id, title: `${k.create!.title} from a template`, hint: 'Plain, Harbor, Graphite…', run: chooseTemplate })),
-  ]
+  const items = enabledKinds(enabled)
+    .filter((k) => k.create)
+    .map((k) => ({ id: k.id, kind: k.id, title: k.create!.title, hint: k.create!.hint, run: () => useWorkspace.getState().newDocument(k.id) }))
   const [index, setIndex] = useState(0)
   const list = useRef<HTMLDivElement>(null)
   const close = () => useNewFile.getState().setOpen(false)

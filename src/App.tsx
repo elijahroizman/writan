@@ -29,7 +29,6 @@ import { chooseFolder, useFolder } from './state/folder'
 import { useExtraFonts } from './state/fonts'
 import { useSettings } from './state/settings'
 import { useSetup } from './state/setup'
-import { useStarters } from './state/starters'
 import { useTex } from './state/tex'
 import type { Scope } from './state/shortcuts'
 import { engineKeysOf, keysFor, keysFromEvent, movedBuiltIn, shortcutFor, syncMenu } from './state/shortcuts'
@@ -96,7 +95,6 @@ function preloadOfficeEditors() {
 
 const SettingsPanel = lazy(() => import('./components/Settings'))
 const SetupScreen = lazy(() => import('./components/Setup'))
-const StarterPicker = lazy(() => import('./components/StarterPicker'))
 
 class EditorBoundary extends Component<{ name: string; children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
@@ -498,7 +496,6 @@ export default function App() {
   const settingsOpen = useSettings((s) => s.open)
   const setupOpen = useSetup((s) => s.open)
   const newFileOpen = useNewFile((s) => s.open)
-  const startersOpen = useStarters((s) => s.open)
   const paletteOpen = usePalette((s) => s.open)
   const historyOpen = useVersionHistory((s) => !!s.tabId)
   const texOffer = useTex((s) => s.offer)
@@ -519,7 +516,6 @@ export default function App() {
       useSettings.getState().setOpen(false)
       usePalette.getState().setOpen(false)
       useNewFile.getState().setOpen(false)
-      useStarters.getState().setOpen(false)
       useVersionHistory.getState().show(null)
       await useWorkspace.getState().openPaths(paths)
     }
@@ -583,7 +579,7 @@ export default function App() {
   useEffect(() => {
     const menuOwnsShortcuts = platform.isTauri && platform.isMac
     const onKey = (e: KeyboardEvent) => {
-      if (useSettings.getState().open || useSetup.getState().open || useNewFile.getState().open || useStarters.getState().open || useVersionHistory.getState().tabId || useSharePanel.getState().joining) return
+      if (useSettings.getState().open || useSetup.getState().open || useNewFile.getState().open || useVersionHistory.getState().tabId || useSharePanel.getState().joining) return
       // The palette answers its own keys; its shortcut still closes it.
       if (usePalette.getState().open && keysFromEvent(e) !== keysFor('command-palette')) return
       const mod = platform.isMac ? e.metaKey : e.ctrlKey
@@ -681,11 +677,6 @@ export default function App() {
         </Suspense>
       )}
       {newFileOpen && <NewFilePicker />}
-      {startersOpen && (
-        <Suspense fallback={null}>
-          <StarterPicker />
-        </Suspense>
-      )}
       {paletteOpen && <CommandPalette />}
       {historyOpen && <VersionHistory />}
       {setupOpen && (

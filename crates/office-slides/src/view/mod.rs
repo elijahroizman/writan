@@ -9,7 +9,6 @@ mod collab;
 mod commands;
 mod draw;
 mod elements;
-mod starters;
 mod table_style;
 mod templates;
 mod text;
@@ -29,7 +28,6 @@ use crate::Decks;
 pub use commands::{RangeBoxes, TextOverlay, TextPatch};
 pub use draw::{paint_diagram, Boxed};
 pub use elements::{Element, SlideInfo};
-pub use starters::{starter_bytes, STARTERS};
 
 /// Text being edited in a frame: which frame (and table cell), and the selection in its text.
 #[derive(Clone, Debug, PartialEq)]

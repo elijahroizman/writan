@@ -187,11 +187,6 @@ export class SlidesEngine {
     return e
   }
 
-  /** A starter deck (`plain`, `harbor`…; see state/starters.ts), as .pptx bytes. */
-  static async starter(id: string): Promise<Uint8Array> {
-    return (await loadEngine()).starterDeck(id)
-  }
-
   subscribe = (f: () => void) => {
     this.listeners.add(f)
     return () => {
