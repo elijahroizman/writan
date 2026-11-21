@@ -598,9 +598,9 @@ mod tests {
         room.views[0].set_input(0, CellRef::new(1, 0), "one");
         room.views[1].set_input(0, CellRef::new(1, 1), "two");
         room.sync();
-        for i in 0..2 {
-            assert_eq!(room.views[i].sheets()[0].value(CellRef::new(1, 0)), &Value::Text("one".into()));
-            assert_eq!(room.views[i].sheets()[0].value(CellRef::new(1, 1)), &Value::Text("two".into()));
+        for v in &room.views {
+            assert_eq!(v.sheets()[0].value(CellRef::new(1, 0)), &Value::Text("one".into()));
+            assert_eq!(v.sheets()[0].value(CellRef::new(1, 1)), &Value::Text("two".into()));
         }
         room.agree();
     }
@@ -631,8 +631,7 @@ mod tests {
             "same index, different format"
         );
         room.sync();
-        for i in 0..2 {
-            let v = &room.views[i];
+        for (i, v) in room.views.iter().enumerate() {
             assert!(crate::format_of(&v.doc, 0, CellRef::new(0, 0)).font.bold, "copy {i}: A1 bold");
             assert!(!crate::format_of(&v.doc, 0, CellRef::new(0, 0)).font.italic, "copy {i}: A1 not italic");
             assert!(crate::format_of(&v.doc, 0, CellRef::new(0, 1)).font.italic, "copy {i}: B1 italic");

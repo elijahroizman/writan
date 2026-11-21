@@ -359,8 +359,8 @@ mod tests {
         /// Every copy holds the same slides (parts included) and the same notes.
         fn agree(&self) -> Vec<String> {
             let first = state(&self.views[0]);
-            for i in 1..self.views.len() {
-                assert_eq!(state(&self.views[i]), first, "copy {i} differs");
+            for (i, v) in self.views.iter().enumerate().skip(1) {
+                assert_eq!(state(v), first, "copy {i} differs");
             }
             self.texts(0)
         }
