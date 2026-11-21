@@ -30,6 +30,8 @@ export interface Invite {
 export interface Hosting {
   session: string
   invite: string
+  /** Six digits guests on the network can join with instead of the link. None in a browser. */
+  code: string | null
   local: Invite
   hostKey: string
   /** This computer's addresses on the network, for showing. */
@@ -49,6 +51,22 @@ export function parseInvite(text: string): Invite | null {
   } catch {
     return null
   }
+}
+
+/** The six digits in what someone typed (`482 913`, `482-913`), or null if it isn't a code. */
+export function parseCode(text: string): string | null {
+  const digits = text.replace(/[\s-]/g, '')
+  return /^\d{6}$/.test(digits) ? digits : null
+}
+
+/**
+ * Finds the computer on the network sharing with `code` and returns its invite link. Rust
+ * broadcasts the code and asks the computers nearby (src-tauri/src/collab/codes.rs).
+ */
+export async function findInvite(code: string): Promise<string> {
+  if (!isTauri) throw new Error('In the browser, join with the link instead of a code.')
+  const { invoke } = await import('@tauri-apps/api/core')
+  return invoke<string>('collab_find', { code })
 }
 
 function randomId(bytes: number) {
@@ -83,13 +101,13 @@ export async function host(name: string, kind: string): Promise<Hosting> {
   await resetNative()
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core')
-    const info = await invoke<{ session: string; token: string; hostKey: string; addresses: string[]; inviteUrl: string; localUrl: string }>('collab_share', { name, kind })
-    return { session: info.session, invite: info.inviteUrl, local: { url: info.localUrl, token: info.token }, hostKey: info.hostKey, addresses: info.addresses }
+    const info = await invoke<{ session: string; token: string; hostKey: string; addresses: string[]; inviteUrl: string; code: string; localUrl: string }>('collab_share', { name, kind })
+    return { session: info.session, invite: info.inviteUrl, code: info.code, local: { url: info.localUrl, token: info.token }, hostKey: info.hostKey, addresses: info.addresses }
   }
   const session = randomId(12)
   const token = randomId(24)
   const url = `${browserRelay()}/v1/${session}`
-  return { session, invite: `${url}?token=${token}`, local: { url, token }, hostKey: randomId(24), addresses: [] }
+  return { session, invite: `${url}?token=${token}`, code: null, local: { url, token }, hostKey: randomId(24), addresses: [] }
 }
 
 /** Ends hosting: the relay tells everyone and forgets the session. */
