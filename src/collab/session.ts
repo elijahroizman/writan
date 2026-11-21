@@ -477,14 +477,15 @@ collabHooks.keeper = keeperOf
 async function settled(tabId: string): Promise<boolean> {
   const link = links.get(tabId)
   if (!link || link.role !== 'guest' || keeperOf(tabId) === null) return false
-  // What's being typed in a cell counts too: commit it, so it goes.
-  getEditor(tabId)?.prepareSave?.()
   const until = Date.now() + 3000
-  while (!link.closed && link.engine?.doc.collabPending()) {
+  for (;;) {
+    // What's being typed in a cell counts too: commit it, so it goes.
+    getEditor(tabId)?.prepareSave?.()
+    if (link.closed || !link.engine) return false
+    if (!link.engine.doc.collabPending()) return true
     if (Date.now() > until) return false
     await new Promise((r) => setTimeout(r, 50))
   }
-  return !link.closed && !!link.engine
 }
 collabHooks.settled = settled
 

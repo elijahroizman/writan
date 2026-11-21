@@ -261,9 +261,13 @@ export function JoinDialog() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [network, setNetwork] = useState<Network>(null)
+  /** Goes up when the dialog closes, so an attempt from before doesn't open anything. */
+  const attempts = useRef(0)
   if (!open) return null
   const close = () => {
     if (busy && network !== 'waiting') return
+    attempts.current++
+    setBusy(false)
     setError(null)
     setNetwork(null)
     useSharePanel.setState({ joining: false })
@@ -274,26 +278,28 @@ export function JoinDialog() {
     setDisplayName(who)
     setBusy(true)
     setError(null)
+    // Closing the dialog (or trying again) makes this attempt stale: it opens nothing then,
+    // and says nothing.
+    const attempt = ++attempts.current
+    const cancelled = () => attempts.current !== attempt || !useSharePanel.getState().joining
     try {
       await askForNetwork()
-      const cancelled = () => !useSharePanel.getState().joining
       const joined = await whileNetworkAllowed(
         () => join(link, who, cancelled).then(() => true),
-        (on) => setNetwork(on ? 'waiting' : null),
+        (on) => !cancelled() && setNetwork(on ? 'waiting' : null),
         cancelled,
       )
-      if (!joined) {
-        if (useSharePanel.getState().joining) setNetwork('denied')
-        return
-      }
+      if (cancelled()) return
+      if (!joined) return setNetwork('denied')
       setNetwork(null)
       setLink('')
       useSharePanel.setState({ joining: false })
     } catch (err) {
+      if (cancelled()) return
       setNetwork(null)
       setError(String((err as Error)?.message ?? err))
     } finally {
-      setBusy(false)
+      if (attempts.current === attempt) setBusy(false)
     }
   }
   return (

@@ -686,9 +686,11 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       // Autosaved tabs close without asking once their last changes are written. A tab following
       // someone else's shared document has nothing of its own to save once they have its changes.
       // (It waits even when nothing looks unsaved: an undo back to the start can still be on its way.)
-      const guestDone = collabHooks.keeper(tab.id) !== null && (await collabHooks.settled(tab.id))
-      const unsent = collabHooks.keeper(tab.id) !== null && !guestDone
-      if ((get().tabs.find((t) => t.id === tab.id)?.dirty || unsent) && !guestDone && !(await autosaveHooks.flush(tab.id))) {
+      const guest = collabHooks.keeper(tab.id) !== null
+      const guestDone = guest && (await collabHooks.settled(tab.id))
+      // A guest whose changes haven't gone is asked, whatever autosave would say.
+      const ask = guest ? !guestDone : !!get().tabs.find((t) => t.id === tab.id)?.dirty && !(await autosaveHooks.flush(tab.id))
+      if (ask) {
         get().activate(tab.id)
         const choice = await platform.askSaveChanges(tab.title)
         if (choice === 'cancel') return false
