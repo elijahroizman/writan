@@ -75,7 +75,7 @@ In **Settings › Autosave** you can turn it off, change the delay, or leave som
 
 ## Version history
 
-Each time a file is saved, by you or by autosave, Writan keeps a copy of that version. **File › Version History…** (or right-click a tab and pick **Version history…**) shows a version as a page, with a timeline of every version along the bottom. Drag along the timeline, click it, or press ← and → to scrub through them. **This save** marks what that save changed; **Compare with now** marks what going back to it would undo. Text, Markdown and LaTeX files compare line by line; Word documents and PowerPoint presentations compare their text paragraph by paragraph. PDFs and pictures can be opened or restored but not compared.
+Each time a file is saved, by you or by autosave, Writan keeps a copy of that version. **File › Version History…** (or right-click a tab and pick **Version history…**) shows a version as the document itself, with a timeline of every version along the bottom. Drag along the timeline, click it, or press ← and → to scrub through them. Word documents show their pages, presentations their slides, workbooks their sheets (switch sheets along the bottom; you can select and copy cells but not change them), PDFs their pages, Markdown as it reads, and text and LaTeX files as they are. HEIC pictures can be opened or restored but not shown.
 
 - **Restore** puts that version back. What the document was before is kept in the history too, so restoring can be undone.
 - Click a version's name to name it. Named versions are always kept, and show as darker dots on the timeline.

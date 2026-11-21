@@ -3715,6 +3715,7 @@ button.section-title:hover {
 /* Version history (components/VersionHistory.tsx): a slim header, the version as a page with its
    changes marked, and a timeline along the bottom to scrub through the versions. */
 .vh {
+  outline: none;
   display: flex;
   flex-direction: column;
   width: min(1040px, 100%);
@@ -3791,43 +3792,11 @@ button.section-title:hover {
   white-space: nowrap;
 }
 
-.vh-stats {
-  display: inline-flex;
-  gap: 10px;
-}
-
-.vh-sub > span + .vh-stats {
-  padding-left: 10px;
-  border-left: 1px solid var(--line);
-}
-
-.vh-stat::before {
-  content: '';
-  display: inline-block;
-  width: 7px;
-  height: 7px;
-  margin: 0 5px 1px 0;
-  border-radius: 50%;
-  background: color-mix(in srgb, var(--fg) 35%, transparent);
-}
-
-.vh-stat.add::before {
-  background: var(--success);
-}
-
-.vh-stat.del::before {
-  background: var(--danger);
-}
-
 .vh-actions {
   display: flex;
   flex: none;
   align-items: center;
   gap: 6px;
-}
-
-.vh-actions .segmented {
-  margin-right: 6px;
 }
 
 .vh-canvas {
@@ -3837,9 +3806,20 @@ button.section-title:hover {
   background: var(--canvas);
 }
 
-.vh-canvas[data-loading] .vh-page {
+.vh-canvas[data-fill] {
+  position: relative;
+  overflow: hidden;
+}
+
+/* While the next version opens, the last one stays up, dimmed. */
+.vh-canvas[data-loading] > :not(.vh-spinner) {
   opacity: 0.6;
   transition: opacity 0.15s 0.12s;
+}
+
+.vh-spinner {
+  position: absolute;
+  inset: 0;
 }
 
 .vh-center {
@@ -3898,116 +3878,120 @@ button.section-title:hover {
   line-height: 1.55;
 }
 
-.vh-p {
-  position: relative;
-  margin: 0 0 0.6em;
+/* Text files, as they are. */
+.vp-text {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  color: color-mix(in srgb, var(--fg) 72%, transparent);
 }
 
-/* Word headings and table rows. */
-.vh-p.heading {
-  margin: 1.2em 0 0.4em;
-  font-size: 1.2em;
-  font-weight: 650;
-  line-height: 1.35;
+/* Word pages and slides, one under another, scaled to fit. */
+.vp-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 20px;
+  padding: 28px 0 40px;
 }
 
-.vh-p.heading:first-child {
-  margin-top: 0;
-  font-size: 1.5em;
+.vp-page {
+  position: relative;
+  flex: none;
+  overflow: hidden;
+  background: #fff;
+  box-shadow: var(--page-shadow);
 }
 
-.vh-p.cells {
-  display: grid;
-  gap: 12px;
-  margin: 0;
-  padding: 5px 0;
-  border-bottom: 1px solid var(--line);
+.vp-slide {
+  position: relative;
+  flex: none;
+}
+
+.vp-slide .slide-preview {
+  border-radius: 4px;
+  box-shadow: var(--page-shadow);
+}
+
+.vp-slide[data-hidden] .slide-preview {
+  opacity: 0.45;
+}
+
+.vp-slide-number {
+  position: absolute;
+  top: 2px;
+  right: calc(100% + 10px);
+  color: var(--fg-faint);
+  font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
-.vh-p.cells + .vh-p:not(.cells) {
-  margin-top: 0.8em;
-}
-
-/* Markdown, text and LaTeX compare line by line: blank lines are the paragraph breaks. */
-.vh-page.lines .vh-p {
-  margin: 0;
-}
-
-.vh-p::before {
-  content: '';
+/* A workbook: its grid, and its sheets along the bottom. */
+.vp-sheets {
   position: absolute;
-  left: -20px;
-  top: 2px;
-  bottom: 2px;
-  width: 3px;
-  border-radius: 2px;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
 }
 
-.vh-p.add,
-.vh-p.del,
-.vh-p.change {
+.vp-grid {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+
+.vp-tabs {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 4px 8px;
+  overflow-x: auto;
+  border-top: 1px solid var(--line);
+  background: var(--panel);
+}
+
+.vp-tab {
+  flex: none;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.vp-tab:hover {
+  background: var(--hover);
   color: var(--fg);
 }
 
-.vh-p.add {
-  background: color-mix(in srgb, var(--success) 12%, transparent);
+.vp-tab[aria-selected='true'] {
+  background: var(--raised);
+  color: var(--fg);
+  box-shadow: 0 0 0 1px var(--line);
 }
 
-.vh-p.add::before {
-  background: var(--success);
+.vp-pdf {
+  position: absolute;
+  inset: 0;
+  display: flex;
 }
 
-.vh-p.del {
-  color: var(--fg-muted);
-  text-decoration: line-through;
-  text-decoration-color: color-mix(in srgb, var(--danger) 70%, transparent);
-  background: color-mix(in srgb, var(--danger) 8%, transparent);
+.vp-pdf > .pdf-stage {
+  flex: 1;
 }
 
-.vh-p.del::before {
-  background: var(--danger);
+.vp-picture {
+  display: grid;
+  place-items: center;
+  min-height: 100%;
+  padding: 28px;
 }
 
-.vh-p.change::before {
-  background: color-mix(in srgb, var(--fg) 25%, transparent);
-}
-
-.vh-p ins {
-  text-decoration: none;
-  border-radius: 2px;
-  background: color-mix(in srgb, var(--success) 22%, transparent);
-  box-decoration-break: clone;
-}
-
-.vh-p del {
-  border-radius: 2px;
-  color: color-mix(in srgb, var(--danger) 75%, var(--fg));
-  text-decoration-color: var(--danger);
-  background: color-mix(in srgb, var(--danger) 12%, transparent);
-  box-decoration-break: clone;
-}
-
-.vh-p del + ins {
-  margin-left: 3px;
-}
-
-.vh-slide {
-  margin: 1.4em 0 0.6em;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--line);
-  color: var(--fg-faint);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.vh-slide:first-child {
-  margin-top: 0;
+.vp-picture img {
+  max-width: 100%;
+  max-height: calc(100vh - 260px);
+  box-shadow: var(--page-shadow);
 }
 
 /* The timeline. */
