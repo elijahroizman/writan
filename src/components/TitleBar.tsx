@@ -1,9 +1,8 @@
-import { Check, CircleAlert, Columns2, Copy, FolderOpen, History, LayoutGrid, LayoutTemplate, Plus, Save, SaveOff, Users, X } from 'lucide-react'
+import { Check, CircleAlert, Columns2, Copy, FolderOpen, History, LayoutGrid, Plus, Save, SaveOff, Users, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { autosaveBlock, useAutosaveStatus } from '../lib/autosave'
 import { isMac, isTauri, revealInFinder, revealLabel, shortcut, tildify } from '../lib/platform'
 import { enabledKinds, usePlugins } from '../state/plugins'
-import { chooseTemplate, createNew, hasTemplates } from '../state/starters'
 import { useSettings } from '../state/settings'
 import { keysFor, withKeys } from '../state/shortcuts'
 import { HOME_TAB_ID, SPLIT_KINDS, useWorkspace } from '../state/workspace'
@@ -19,7 +18,7 @@ export function TitleBar() {
   const tabs = useWorkspace((s) => s.tabs)
   const activeId = useWorkspace((s) => s.activeId)
   const split = useWorkspace((s) => s.split)
-  const { activate, closeTab, moveTab, openDialog, duplicateTab, closeOthers, splitWith } = useWorkspace.getState()
+  const { activate, closeTab, moveTab, newDocument, openDialog, duplicateTab, closeOthers, splitWith } = useWorkspace.getState()
   const [menu, setMenu] = useState<{ x: number; y: number } | null>(null)
   const plugins = usePlugins((s) => s.enabled)
   const [tabMenu, setTabMenu] = useState<{ x: number; y: number; id: string } | null>(null)
@@ -193,10 +192,7 @@ export function TitleBar() {
           items={[
             ...enabledKinds(plugins)
               .filter((k) => k.create)
-              .flatMap((k) => [
-                { label: k.create!.title, icon: <KindIcon kind={k.id} />, onSelect: () => createNew(k.id) },
-                ...(hasTemplates(k.id) ? [{ label: `${k.create!.title} from a template…`, icon: <LayoutTemplate size={14} />, onSelect: chooseTemplate }] : []),
-              ]),
+              .map((k) => ({ label: k.create!.title, icon: <KindIcon kind={k.id} />, onSelect: () => newDocument(k.id) })),
             { label: 'Open…', icon: <FolderOpen size={14} />, shortcut: keysFor('open'), onSelect: () => void openDialog(), separatorBefore: true },
           ]}
         />

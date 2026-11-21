@@ -101,12 +101,6 @@ fn open_view(bytes: &[u8]) -> office_core::Result<SlidesView> {
     }
 }
 
-/// A new presentation from one of the starter decks (`plain`, `harbor`…), as .pptx bytes.
-#[wasm_bindgen(js_name = starterDeck)]
-pub fn starter_deck(id: &str) -> Result<Vec<u8>, JsError> {
-    office_slides::view::starter_bytes(id).ok_or_else(|| JsError::new(&format!("no starter deck called {id}")))?.map_err(err)
-}
-
 fn is_compound_file(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0])
 }

@@ -239,8 +239,7 @@ interface WorkspaceState {
    * state: sharing starts everyone, the sharer too, from the same bytes.
    */
   reloadBytes(id: string, bytes: Uint8Array): void
-  /** A new, untitled document: blank, or holding `bytes` (a starter deck). */
-  newDocument(kind: DocKind, bytes?: Uint8Array): void
+  newDocument(kind: DocKind): void
   markDirty(id: string, dirty: boolean): void
   /**
    * Save a tab. `to` saves to that path without asking. `quiet` throws on failure instead of
@@ -537,13 +536,13 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1 } : t)) })
     },
 
-    newDocument: (kind, bytes) => {
+    newDocument: (kind) => {
       // The first free name among the open tabs, so closing or saving an untitled one frees its number.
       const taken = new Set(get().tabs.filter((t) => t.kind === kind).map((t) => t.title))
       let n = 1
       while (taken.has(n === 1 ? KINDS[kind].untitled : `${KINDS[kind].untitled} ${n}`)) n++
       const title = n === 1 ? KINDS[kind].untitled : `${KINDS[kind].untitled} ${n}`
-      addTab({ id: newId(), kind, title, path: null, bytes: bytes ?? null, loadId: 0, dirty: false })
+      addTab({ id: newId(), kind, title, path: null, bytes: null, loadId: 0, dirty: false })
     },
 
     markDirty: (id, dirty) => {
