@@ -43,16 +43,26 @@ JSON text frames over WebSocket, at `/v1/<session>`:
 
 | From | Message | Meaning |
 | --- | --- | --- |
-| copy | `hello { v, token, client, name, color, hostKey?, snapshot? }` | First message. The host's carries the opening bytes (base64) and the host key. |
-| relay | `welcome { client, seq, session, snapshot, ops, peers }` | The opening bytes and every change so far. |
+| copy | `hello { v, token, client, name, color, hostKey?, snapshot? }` | First message. The host's carries the opening bytes (base64) and the host key. `color` is the one asked for. |
+| relay | `welcome { client, color, host, seq, session, snapshot, ops, peers }` | The opening bytes and every change so far. `color` is this copy's: the one asked for if nobody has it, else the first free one in `COLORS`. `peers` have `{ client, name, color, host, presence }`. |
 | copy | `op { id, base, steps }` | A change. `base` is the last change this copy had applied. |
 | relay | `op { seq, client, id, base, steps }` | The change in its place in the order, to everyone. |
-| copy | `presence { data }` | Sent on to the others. Not used yet. |
-| relay | `join`, `leave` | Someone arrived or left. |
+| copy | `presence { data }` | Where this copy's caret is. The relay keeps the last one for newcomers' `welcome` and sends it on as `presence { client, data }`. |
+| relay | `join { client, name, color, host }`, `leave { client }` | Someone arrived or left. |
 | host | `end` | The host stopped sharing. The relay tells everyone with `end` and forgets the session. |
 | relay | `error { code, message }` | `bad-token`, `not-ready`, `no-session`, `version`, `bad-message`, `not-host`. |
 
 The invite is the relay's address with the token as a query parameter: `ws://192.168.1.20:47811/v1/<session>?token=<token>`. The token is 192 random bits. Anyone with the link can edit while the host's tab is open.
+
+## Where everyone is
+
+Each copy sends `presence` when its caret or selection moves (at most every 50 ms), after each change it sends, and when someone joins. What's in it is the editor's:
+
+- **Word:** `{ s, a, f }`, the story (`b` for the body) and the selection's ends as `[path, byte offset]` (`WordView::collab_presence`).
+- **PowerPoint:** `{ slide, frames, e }`, the slide by part name, the frame ids picked, and while text is edited `{ frame, a, f }`.
+- **Excel:** `{ sheet, a, f }`, the sheet by name and the selection's corners as `[row, column]`.
+
+The receiving engine places it in its own document (`remote_overlay` in each layer's view): an end that isn't in this copy yet hides the caret, and an offset past a paragraph's end stops there. The sender sends again after its change, so the caret lands once both copies have it. The page draws them with `src/collab/cursors.tsx`. A person's color comes from the relay, which never gives two people the same one while there are free ones (`relay::COLORS`, the same list as `session.ts`). The color asked for comes from the name, so a person tends to keep theirs.
 
 ## Moving to a server
 

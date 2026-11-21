@@ -31,7 +31,7 @@ import { useTex } from './state/tex'
 import type { Scope } from './state/shortcuts'
 import { engineKeysOf, keysFor, keysFromEvent, movedBuiltIn, shortcutFor, syncMenu } from './state/shortcuts'
 import type { DocTab } from './state/workspace'
-import { getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWorkspace } from './state/workspace'
+import { collabHooks, getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWorkspace } from './state/workspace'
 
 export interface EditorProps {
   tab: DocTab
@@ -417,7 +417,12 @@ async function confirmDiscardAll(): Promise<boolean> {
   sessionFrozen = true
   // Autosaved tabs just save; only the rest need asking about.
   await flushAutosave()
-  for (const tab of useWorkspace.getState().tabs.filter((t) => t.dirty)) {
+  for (const tab of useWorkspace.getState().tabs) {
+    // Someone else's shared document: theirs to save, once they have what was done here, even
+    // when nothing looks unsaved (an undo back to the start can still be on its way).
+    const guest = collabHooks.keeper(tab.id) !== null
+    if (guest && (await collabHooks.settled(tab.id))) continue
+    if (!guest && !useWorkspace.getState().tabs.find((t) => t.id === tab.id)?.dirty) continue
     useWorkspace.getState().activate(tab.id)
     const choice = await platform.askSaveChanges(tab.title)
     if (choice === 'cancel' || (choice === 'save' && (!(await useWorkspace.getState().save(tab.id)) || useWorkspace.getState().tabs.find((t) => t.id === tab.id)?.dirty))) {

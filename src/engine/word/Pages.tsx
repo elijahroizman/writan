@@ -7,6 +7,8 @@ import type { MenuEntry } from '../../components/ui'
 import { PopoverMenu } from '../../components/ui'
 import { isMac, openExternal, shortcut } from '../../lib/platform'
 import { spellingMenu } from '../../lib/spelling'
+import { PeerCaret, PeerSelection, together } from '../../collab/cursors'
+import { usePlaces } from '../../collab/session'
 import { itemsHtml } from '../paint'
 import type { WordEngine } from './engine'
 import { spellingAt, watchSpelling } from './spelling'
@@ -72,6 +74,8 @@ export function Pages({ engine, zoom, scroller }: Props) {
 
   // Misspelled words get a wavy underline; right-clicking one offers corrections.
   useEffect(() => watchSpelling(engine), [engine])
+  // Where everyone else is, while the document is shared.
+  const places = usePlaces(engine)
 
   const sizes = engine.sizes
   const tops: number[] = []
@@ -497,6 +501,9 @@ export function Pages({ engine, zoom, scroller }: Props) {
   // paragraph has no text boxes, so the caret's line). Shown by CSS only while dimming is on.
   const c = overlay.caret
   const focusBoxes = overlay.paragraph?.length ? overlay.paragraph : c ? [[c[0], c[1], c[2], 1, c[3]] as const] : []
+  // Everyone else's carets and selections; people whose carets are at one place share a marker.
+  const remote = places.map((place) => ({ place, o: engine.remoteOverlay(place.at) }))
+  const peerCarets = together(remote.flatMap(({ place, o }) => (o.caret && sizes[o.caret[0]] ? [{ place, key: o.caret.join(), item: o.caret }] : [])))
 
   return (
     <div className="docx-content-mount" ref={mountRef} style={{ height, minWidth: width }} onMouseDown={onMouseDown} onMouseOver={onMouseOver} onContextMenu={onContextMenu}>
@@ -525,6 +532,10 @@ export function Pages({ engine, zoom, scroller }: Props) {
             selection band would reach above the picture by the line's spacing. */}
         {!overlay.image &&
           overlay.rects.map((r, k) => <div key={k} className="wp-sel" style={place(r[0], r[1], r[2], r[3], r[4])} />)}
+        {remote.map(({ place: { peer }, o }) => o.rects.map((r, k) => <PeerSelection key={`${peer.client}:${k}`} peer={peer} style={place(r[0], r[1], r[2], r[3], r[4])} />))}
+        {peerCarets.map(({ peers, moves, item: pc }) => (
+          <PeerCaret key={peers[0].client} peers={peers} moves={moves} style={{ ...place(pc[0], pc[1], pc[2], 0, pc[3]), width: undefined }} />
+        ))}
         {overlay.caret && !engine.state.hasSelection && !overlay.image && (
           <div key={`c${engine.tick}`} className="wp-caret" style={{ ...place(overlay.caret[0], overlay.caret[1], overlay.caret[2], 0, overlay.caret[3]), width: undefined }} />
         )}

@@ -43,6 +43,8 @@ import { FormulaHelp } from './FormulaHelp'
 import { registerEditor, useWorkspace } from '../../state/workspace'
 import './sheets.css'
 import { useShared } from '../../collab/useShared'
+import { PeerDots } from '../../collab/cursors'
+import { usePlaces } from '../../collab/session'
 
 const NUMBER_FORMATS = [
   { value: 'General', label: 'General' },
@@ -113,6 +115,8 @@ export default function SheetEditor({ tab, active }: EditorProps) {
 }
 
 function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
+  // Who's on which sheet, while the workbook is shared.
+  const places = usePlaces(engine)
   useSyncExternalStore(engine.subscribe, engine.getTick)
   const st = engine.state
   const cell = engine.cell
@@ -550,6 +554,7 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
           }}
         >
           <span className="label">{s.name}</span>
+          <PeerDots peers={places.filter((p) => (p.at as { sheet?: string } | null)?.sheet === s.name).map((p) => p.peer)} />
         </button>
       )))}
       {!st.csv && (

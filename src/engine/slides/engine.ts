@@ -240,6 +240,16 @@ export class SlidesEngine {
     return html
   }
 
+  /** Where this copy is, for the others while shared (collab/session.ts). */
+  presence(): string {
+    return this.doc.collabPresence()
+  }
+
+  /** Where someone else is on the slide shown, from their `presence`. */
+  remoteOverlay(at: unknown): { boxes: Box[]; text?: TextOverlay } {
+    return (JSON.parse(this.doc.remoteOverlay(JSON.stringify(at))) as { boxes: Box[]; text?: TextOverlay } | null) ?? { boxes: [] }
+  }
+
   save(): Uint8Array {
     return this.doc.save()
   }

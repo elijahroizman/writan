@@ -1,0 +1,111 @@
+/* Everyone else's place in a shared document (cursors.tsx). --peer is their color; --peer-scale
+   undoes the zoom of an overlay that's drawn scaled. */
+
+.peer-caret {
+  position: absolute;
+  width: calc(2px * var(--peer-scale, 1));
+  margin-left: calc(-1px * var(--peer-scale, 1));
+  background: var(--peer);
+  pointer-events: none;
+  z-index: 2;
+}
+
+/* A knob on top of the caret: always there, and the place to point at to see the name. */
+.peer-caret::before {
+  content: '';
+  position: absolute;
+  left: calc(-2px * var(--peer-scale, 1));
+  top: calc(-3px * var(--peer-scale, 1));
+  width: calc(6px * var(--peer-scale, 1));
+  height: calc(6px * var(--peer-scale, 1));
+  border-radius: calc(1.5px * var(--peer-scale, 1));
+  background: var(--peer);
+  pointer-events: auto;
+}
+
+.peer-tags {
+  position: absolute;
+  left: calc(-1px * var(--peer-scale, 1));
+  bottom: 100%;
+  margin-bottom: calc(3px * var(--peer-scale, 1));
+  display: flex;
+  gap: calc(2px * var(--peer-scale, 1));
+  pointer-events: none;
+  user-select: none;
+  /* Shows while they move, then fades; remounting on each move shows it again. */
+  animation: peer-tag-fade 0.4s ease 4s forwards;
+}
+
+.peer-tags.below {
+  bottom: auto;
+  top: 100%;
+  margin: calc(3px * var(--peer-scale, 1)) 0 0;
+}
+
+.peer-tag {
+  padding: 0 calc(5px * var(--peer-scale, 1));
+  border-radius: calc(3px * var(--peer-scale, 1));
+  background: var(--peer);
+  color: #fff;
+  font: 600 calc(11px * var(--peer-scale, 1)) / 1.6 var(--font-ui, system-ui, sans-serif);
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.peer-tags > .peer-tag:first-child {
+  border-bottom-left-radius: 0;
+}
+
+.peer-tags.below > .peer-tag:first-child {
+  border-bottom-left-radius: calc(3px * var(--peer-scale, 1));
+  border-top-left-radius: 0;
+}
+
+.peer-caret:hover .peer-tags {
+  animation: none;
+  opacity: 1;
+}
+
+@keyframes peer-tag-fade {
+  to {
+    opacity: 0;
+  }
+}
+
+.peer-sel {
+  position: absolute;
+  background: color-mix(in srgb, var(--peer) 24%, transparent);
+  pointer-events: none;
+}
+
+.peer-box {
+  position: absolute;
+  box-sizing: border-box;
+  border: calc(2px * var(--peer-scale, 1)) solid var(--peer);
+  pointer-events: none;
+  transform-origin: 50% 50%;
+}
+
+.peer-box > .peer-tags {
+  left: calc(-2px * var(--peer-scale, 1));
+  margin-bottom: 0;
+  /* An outline takes no clicks, so its names can't be brought back by pointing: they stay. */
+  animation: none;
+}
+
+.peer-box > .peer-tags.below {
+  margin-top: 0;
+}
+
+.peer-dots {
+  display: inline-flex;
+  gap: 2px;
+  align-items: center;
+}
+
+.peer-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1.5px var(--bg, #fff);
+}

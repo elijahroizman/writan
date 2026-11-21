@@ -9,7 +9,7 @@ import { keysFor, withKeys } from '../state/shortcuts'
 import { HOME_TAB_ID, SPLIT_KINDS, useWorkspace } from '../state/workspace'
 import type { DocKind } from '../lib/kinds'
 import { pickSplit } from '../App'
-import { useCollab } from '../collab/session'
+import { keeperOf, useCollab } from '../collab/session'
 import { canShare, ShareButton, showSharePanel } from './Share'
 import { UpdateButton } from './UpdateButton'
 import { showVersionHistory } from './VersionHistory'
@@ -97,6 +97,8 @@ export function TitleBar() {
           const active = tab.id === activeId
           const beside = !active && !!split?.includes(tab.id)
           const dragging = drag?.id === tab.id
+          // Someone else's shared document has nothing unsaved here: they have the changes.
+          const dirty = tab.dirty && !keeperOf(tab.id)
           return (
             <div
               key={tab.id}
@@ -106,7 +108,7 @@ export function TitleBar() {
               }}
               role="tab"
               aria-selected={active}
-              className={`tab ${active ? 'active' : ''} ${beside ? 'beside' : ''} ${tab.dirty ? 'dirty' : ''} ${dragging ? 'dragging' : ''}`}
+              className={`tab ${active ? 'active' : ''} ${beside ? 'beside' : ''} ${dirty ? 'dirty' : ''} ${dragging ? 'dragging' : ''}`}
               title={tab.path ?? tab.title}
               style={dragging ? { transform: `translateX(${drag.dx}px)` } : undefined}
               onPointerDown={(e) => startDrag(e, tab.id)}
@@ -131,14 +133,14 @@ export function TitleBar() {
               <button
                 type="button"
                 className="tab-close"
-                aria-label={tab.dirty ? `Close ${tab.title} (unsaved changes)` : `Close ${tab.title}`}
-                title={shortcut(withKeys(tab.dirty ? 'Unsaved changes — close' : 'Close', 'close-tab'))}
+                aria-label={dirty ? `Close ${tab.title} (unsaved changes)` : `Close ${tab.title}`}
+                title={shortcut(withKeys(dirty ? 'Unsaved changes — close' : 'Close', 'close-tab'))}
                 onClick={(e) => {
                   e.stopPropagation()
                   void closeTab(tab.id)
                 }}
               >
-                <span className="dirty-dot" style={tab.dirty ? undefined : { display: 'none' }} />
+                <span className="dirty-dot" style={dirty ? undefined : { display: 'none' }} />
                 <X size={13} className="x" />
               </button>
             </div>
@@ -232,7 +234,17 @@ function AutosaveChip() {
   const autosave = useSettings((s) => s.autosave)
   const status = useAutosaveStatus((s) => s[activeId])
   const tab = tabs.find((t) => t.id === activeId)
+  // Following someone else's shared document: the file is theirs.
+  const keeper = useCollab(() => keeperOf(activeId))
   if (!tab) return null
+  if (keeper !== null) {
+    return (
+      <span className="autosave-chip" role="status" title={`${keeper} has this document’s file and saves it. Your changes go to them as you make them.`}>
+        <Users size={14} />
+        <span>On {keeper}’s computer</span>
+      </span>
+    )
+  }
 
   const block = autosaveBlock(tab, autosave)
   let icon = <Save size={14} />

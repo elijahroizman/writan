@@ -100,6 +100,36 @@ fn lan_addresses() -> Vec<Ipv4Addr> {
     found
 }
 
+/// Makes macOS ask whether Writan may reach the local network, if nobody has answered yet.
+///
+/// macOS 15 and later ask the first time an app does something on the local network that
+/// macOS checks, and until the person allows it, connections to other machines there fail with
+/// "no route to host". Connecting to the router isn't checked, but sending to the mDNS group is,
+/// so sharing and joining start with an empty mDNS query (a header asking nothing, which
+/// responders ignore). That way the question comes when the person has just pressed Share or
+/// Join, with the reason from the app's Info.plist. macOS says nothing about the answer; a
+/// guest's connection failing with "no route to host" is how the page finds out. Other
+/// systems have no such permission.
+#[tauri::command]
+pub fn collab_local_network() {
+    #[cfg(target_os = "macos")]
+    if let Ok(socket) = UdpSocket::bind("0.0.0.0:0") {
+        let _ = socket.send_to(&[0u8; 12], "224.0.0.251:5353");
+    }
+}
+
+/// Opens System Settings at Privacy & Security › Local Network, where Writan can be allowed
+/// after someone said no. Only on macOS.
+#[tauri::command]
+pub fn collab_network_settings() {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("/usr/bin/open")
+            .arg("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork")
+            .spawn();
+    }
+}
+
 /// Shares a document: starts the relay if need be and makes a session for it. The page then
 /// connects to `localUrl` and says hello with `hostKey` and the document. `name` and `kind` are
 /// for the page's own records; guests see the ones in the host's hello.

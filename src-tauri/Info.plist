@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- Merged into the app's Info.plist by Tauri. macOS shows this when it asks whether Writan
+	     may reach the local network, which sharing a document needs (src-tauri/src/collab). -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Writan connects to computers on your network so you can edit documents together.</string>
+</dict>
+</plist>

@@ -394,6 +394,38 @@ mod tests {
     }
 
     #[test]
+    fn others_see_the_frames_picked_and_the_caret_in_text() {
+        let mut host = office_engine::measure::FixedMeasurer::default();
+        let mut room = Room::new(&[&["Hello world", "Below"], &["Second"]], 2);
+        room.views[1].set_active(0);
+        room.views[1].select_frames(vec![3]);
+        let presence = room.views[1].collab_presence();
+        let seen = room.views[0].remote_overlay(&mut host, &presence);
+        let own = room.views[1].selected_boxes(&mut host);
+        assert_eq!(seen.boxes.len(), 1);
+        assert_eq!((seen.boxes[0].id.as_str(), seen.boxes[0].x, seen.boxes[0].y), ("3", own[0].1.x, own[0].1.y));
+        assert!(seen.text.is_none());
+
+        // Editing text: the caret or selection shows where it does on that copy.
+        assert!(room.views[1].select_text(2, Selection { anchor: Pos::new(Path::top(0), 2), focus: Pos::new(Path::top(0), 7) }));
+        let presence = room.views[1].collab_presence();
+        let own = room.views[1].text_overlay(&mut host).unwrap();
+        let seen = room.views[0].remote_overlay(&mut host, &serde_json::from_str(&presence.to_string()).unwrap());
+        let text = seen.text.unwrap();
+        assert_eq!((text.frame.as_str(), text.rects.clone()), ("2", own.rects));
+        assert!(!text.rects.is_empty());
+
+        // Someone on another slide isn't drawn on this one.
+        room.views[1].set_active(1);
+        let presence = room.views[1].collab_presence();
+        let seen = room.views[0].remote_overlay(&mut host, &presence);
+        assert!(seen.boxes.is_empty() && seen.text.is_none());
+        room.views[0].set_active(1);
+        assert_eq!(room.views[0].remote_overlay(&mut host, &presence).boxes.len(), 0);
+        assert_eq!(presence["slide"], json!(room.views[0].slide_id(1)));
+    }
+
+    #[test]
     fn typing_in_a_text_box_reaches_every_copy() {
         let mut room = Room::new(&[&["Hello"], &["Second"]], 2);
         type_in(&mut room.views[0], 0, 2, 5, "!");

@@ -2,6 +2,8 @@
 // letters and row numbers that stay in view, the selection, and typing into cells.
 
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { PeerBox, together } from '../../collab/cursors'
+import { usePlaces } from '../../collab/session'
 import { isMac } from '../../lib/platform'
 import { ChartSvg } from './Chart'
 import type { ChartView, SheetsEngine } from './engine'
@@ -91,6 +93,8 @@ export function Grid({
   const [resize, setResize] = useState<{ kind: 'col' | 'row'; index: number; size: number } | null>(null)
 
   useEffect(() => engine.subscribe(() => setTick((t) => t + 1)), [engine])
+  // Where everyone else is, while the workbook is shared.
+  const places = usePlaces(engine)
   useEffect(() => {
     if (active && editing === null) inputRef.current?.focus({ preventScroll: true })
   }, [active, editing, engine])
@@ -142,6 +146,15 @@ export function Grid({
   })
 
   const range = engine.range
+  // Everyone else's selection on this sheet; people on the same cells share an outline.
+  const peerRanges = together(
+    places.flatMap((place) => {
+      const p = place.at as { sheet?: string; a?: [number, number]; f?: [number, number] } | null
+      if (!p?.a || !p.f || p.sheet !== engine.sheets[sheet]?.name) return []
+      const r = [Math.min(p.a[0], p.f[0]), Math.min(p.a[1], p.f[1]), Math.max(p.a[0], p.f[0]), Math.max(p.a[1], p.f[1])]
+      return [{ place, key: r.join(), item: r }]
+    }),
+  )
   const selX = g.x(range.c0) * z
   const selY = g.y(range.r0) * z
   const selW = (g.x(range.c1 + 1) - g.x(range.c0)) * z
@@ -530,6 +543,15 @@ export function Grid({
           <div className="sg-cells" ref={cellsRef} style={{ width: g.width, height: g.height, transform: `scale(${z})` }} />
           <div className="sg-sel" style={{ left: selX, top: selY, width: selW, height: selH }} />
           <div className="sg-cur" style={{ left: curX, top: curY, width: curW, height: curH }} />
+          {peerRanges.map(({ peers, moves, item: [pr0, pc0, pr1, pc1] }) => (
+            <PeerBox
+              key={peers[0].client}
+              peers={peers}
+              moves={moves}
+              below={pr0 === 0}
+              style={{ left: g.x(pc0) * z, top: g.y(pr0) * z, width: (g.x(pc1 + 1) - g.x(pc0)) * z, height: (g.y(pr1 + 1) - g.y(pr0)) * z }}
+            />
+          ))}
           {refBoxes.map((b, i) => (
             <div
               key={`ref${i}`}

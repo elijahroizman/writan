@@ -11,7 +11,7 @@
 
 import { create } from 'zustand'
 import { stripExtension } from '../lib/kinds'
-import { getEditor, useWorkspace } from '../state/workspace'
+import { collabHooks, getEditor, useWorkspace } from '../state/workspace'
 import { connect, host, parseInvite, unhost, type Transport } from './transport'
 
 export const SHAREABLE = new Set(['docx', 'pptx', 'xlsx'])
@@ -28,20 +28,35 @@ export interface CollabDoc {
 /** An open document's engine, as sharing sees it. */
 export interface CollabEngine {
   readonly doc: CollabDoc
-  /** Set while shared: told after every change, to send it. */
+  /** Set while shared: told after every change, selection included, to send it. */
   collab: { changed(): void } | null
   refresh(): void
+  /** Where the caret or selection is, as JSON, for the others to draw. */
+  presence(): string
 }
 
 export interface Peer {
   client: string
   name: string
   color: string
+  /** The person sharing, who keeps the file. */
+  host?: boolean
+}
+
+/** Where someone else is in a document: what their engine's `presence` gave. */
+export interface Place {
+  peer: Peer
+  /** Parsed `presence`. */
+  at: unknown
+  /** Goes up each time they move, so a name tag can show again. */
+  moves: number
 }
 
 export interface Share {
   role: 'host' | 'guest'
   status: 'connecting' | 'live' | 'ended' | 'disconnected'
+  /** This copy as the others see it, once the relay has welcomed it. */
+  you: Peer | null
   /** The link others join with (the host's to hand out; a guest's to rejoin). */
   invite: string | null
   /** The host's addresses on the network. */
@@ -55,6 +70,33 @@ export interface Share {
 /** Shared tabs, by tab id. */
 export const useCollab = create<Record<string, Share>>(() => ({}))
 
+/** Where everyone else is, by tab id and then client. Apart from `useCollab`, so the title bar
+ * doesn't draw again every time someone moves their caret. */
+export const usePresence = create<Record<string, Record<string, Place>>>(() => ({}))
+
+/** The tab each attached engine belongs to. */
+const engineTabs = new WeakMap<object, string>()
+
+/** Everyone else's place in the document an engine has open, while it's shared. */
+export function usePlaces(engine: object | null): Place[] {
+  // Looked up on each change: the engine is attached after the editor first draws.
+  const places = usePresence((s) => {
+    const tabId = engine ? engineTabs.get(engine) : undefined
+    return tabId ? s[tabId] : undefined
+  })
+  return places ? Object.values(places) : NO_PLACES
+}
+const NO_PLACES: Place[] = []
+
+function setPlaces(tabId: string, f: (now: Record<string, Place>) => Record<string, Place> | null) {
+  usePresence.setState((s) => {
+    const next = f(s[tabId] ?? {})
+    const { [tabId]: _old, ...rest } = s
+    return next ? { ...rest, [tabId]: next } : rest
+  }, true)
+}
+
+/** The relay hands these out so no two people match (src-tauri/src/collab/relay.rs, `COLORS`). */
 const COLORS = ['#e5484d', '#3e63dd', '#30a46c', '#f76b15', '#8e4ec6', '#12a594', '#d6409f', '#ad7f58']
 
 export function colorFor(client: string) {
@@ -99,6 +141,11 @@ function fromBase64(text: string) {
   return out
 }
 
+function newLink(name: string): Link {
+  const client = newClient()
+  return { tabId: '', role: 'guest', client, name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false, presence: null, presenceTimer: null }
+}
+
 /** One shared tab's connection. */
 interface Link {
   tabId: string
@@ -113,7 +160,13 @@ interface Link {
   welcomed: boolean
   live: boolean
   closed: boolean
+  /** The last presence sent, and a send waiting to go. */
+  presence: string | null
+  presenceTimer: number | null
 }
+
+/** Moving the caret sends where it is at most this often. */
+const PRESENCE_EVERY = 50
 
 const links = new Map<string, Link>()
 
@@ -123,15 +176,41 @@ function update(tabId: string, patch: Partial<Share>) {
 }
 
 function hello(link: Link, token: string, extra: Record<string, unknown> = {}) {
-  link.transport?.send(JSON.stringify({ t: 'hello', v: 1, token, client: link.client, name: link.name, color: colorFor(link.client), ...extra }))
+  // The color asked for, from the name so a person tends to keep theirs from one document to
+  // the next; the relay gives another if someone has it.
+  link.transport?.send(JSON.stringify({ t: 'hello', v: 1, token, client: link.client, name: link.name, color: colorFor(link.name || link.client), ...extra }))
 }
 
-/** Sends what changed here. */
+/** Sends what changed here, then where the caret is if that changed. */
 function flush(link: Link) {
   if (!link.live || !link.engine || link.closed) return
+  let sent = false
   for (let op = link.engine.doc.collabTake(); op; op = link.engine.doc.collabTake()) {
     link.transport?.send(`{"t":"op",${op.slice(1)}`)
+    sent = true
   }
+  // After a change the others get the caret again even if it didn't move: what they had was
+  // in a document without that change, and may not have fit theirs.
+  if (sent) link.presence = null
+  if (link.presenceTimer === null) link.presenceTimer = window.setTimeout(() => sendPresence(link), sent ? 0 : PRESENCE_EVERY)
+}
+
+function sendPresence(link: Link) {
+  link.presenceTimer = null
+  if (!link.live || !link.engine || link.closed) return
+  const at = link.engine.presence()
+  if (at === link.presence) return
+  link.presence = at
+  link.transport?.send(`{"t":"presence","data":${at}}`)
+}
+
+function peerOf(p: Record<string, unknown>): Peer {
+  return { client: p.client as string, name: p.name as string, color: p.color as string, host: !!p.host }
+}
+
+/** Someone's place, from a presence message or a welcome's peer. */
+function place(tabId: string, peer: Peer, at: unknown) {
+  setPlaces(tabId, (now) => ({ ...now, [peer.client]: { peer, at, moves: (now[peer.client]?.moves ?? 0) + 1 } }))
 }
 
 /** Goes live once the relay has welcomed this copy and its engine is open. */
@@ -157,7 +236,10 @@ function finish(link: Link, status: Share['status'], message: string | null) {
   }
   link.transport?.close()
   link.transport = null
+  if (link.presenceTimer !== null) window.clearTimeout(link.presenceTimer)
+  link.presenceTimer = null
   links.delete(link.tabId)
+  setPlaces(link.tabId, () => null)
   update(link.tabId, { status, message, peers: [] })
 }
 
@@ -177,17 +259,21 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
   }
   switch (msg.t) {
     case 'welcome': {
-      const peers = (msg.peers as Peer[]).map((p) => ({ client: p.client, name: p.name, color: p.color }))
+      const raw = msg.peers as Record<string, unknown>[]
+      const peers = raw.map(peerOf)
+      // An older relay doesn't hand out colors; then this copy keeps the one it asked for.
+      const you: Peer = { client: link.client, name: link.name, color: (msg.color as string) || colorFor(link.name || link.client), host: link.role === 'host' }
       if (opened) {
         const session = msg.session as { name: string; kind: string }
         const tabId = opened({ bytes: fromBase64(msg.snapshot as string), name: session.name, kind: session.kind })
         if (!tabId) return finish(link, 'disconnected', 'Writan can’t open this kind of document.')
         link.tabId = tabId
         links.set(tabId, link)
-        useCollab.setState({ [tabId]: { role: 'guest', status: 'connecting', invite: null, addresses: [], peers, message: null } })
+        useCollab.setState({ [tabId]: { role: 'guest', status: 'connecting', you, invite: null, addresses: [], peers, message: null } })
       } else {
-        update(link.tabId, { peers })
+        update(link.tabId, { peers, you })
       }
+      raw.forEach((p, i) => p.presence != null && place(link.tabId, peers[i], p.presence))
       link.queue.push(...(msg.ops as unknown[]).map((op) => JSON.stringify(op)))
       link.welcomed = true
       start(link)
@@ -204,13 +290,25 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       return
     case 'join': {
       const peers = useCollab.getState()[link.tabId]?.peers ?? []
-      const peer = { client: msg.client as string, name: msg.name as string, color: msg.color as string }
+      const peer = peerOf(msg)
       update(link.tabId, { peers: [...peers.filter((p) => p.client !== peer.client), peer] })
+      // Someone new hasn't seen where this copy is.
+      link.presence = null
+      if (link.live && link.presenceTimer === null) link.presenceTimer = window.setTimeout(() => sendPresence(link), 0)
       return
     }
     case 'leave':
       update(link.tabId, { peers: (useCollab.getState()[link.tabId]?.peers ?? []).filter((p) => p.client !== msg.client) })
+      setPlaces(link.tabId, (now) => {
+        const { [msg.client as string]: _gone, ...rest } = now
+        return rest
+      })
       return
+    case 'presence': {
+      const peer = useCollab.getState()[link.tabId]?.peers.find((p) => p.client === msg.client)
+      if (peer) place(link.tabId, peer, msg.data)
+      return
+    }
     case 'end':
       return finish(link, 'ended', 'Sharing has stopped. This is your own copy now; save it to keep it.')
     case 'error': {
@@ -225,9 +323,9 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
 export async function share(tabId: string, name: string): Promise<void> {
   const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
   if (!tab || !getEditor(tabId) || !SHAREABLE.has(tab.kind) || links.has(tabId)) return
-  const link: Link = { tabId, role: 'host', client: newClient(), name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false }
+  const link: Link = { ...newLink(name), tabId, role: 'host' }
   links.set(tabId, link)
-  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', invite: null, addresses: [], peers: [], message: null } })
+  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', you: null, invite: null, addresses: [], peers: [], message: null } })
   const title = `${tab.title}.${tab.kind}`
   try {
     const hosting = await host(title, tab.kind)
@@ -241,6 +339,12 @@ export async function share(tabId: string, name: string): Promise<void> {
       const editor = getEditor(tabId)
       if (link.closed || !editor) throw new Error('The tab closed before sharing started.')
       if (tries === 5) throw new Error('The document kept changing. Try sharing again.')
+      // What the others start from is what's saved: anything done since the panel saved it
+      // (while the relay started) is saved first.
+      const now = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+      if (now?.path && now.dirty && !((await useWorkspace.getState().save(tabId)) && !useWorkspace.getState().tabs.find((t) => t.id === tabId)?.dirty)) {
+        throw new Error('Save the document to share it. Everyone edits the saved file with you.')
+      }
       editor.prepareSave?.()
       const revision = editor.getRevision?.()
       const written = await editor.getBytes()
@@ -267,14 +371,19 @@ export async function share(tabId: string, name: string): Promise<void> {
 }
 
 /** Joins a document someone shared: opens it in a new tab once it arrives. */
-export async function join(inviteText: string, name: string): Promise<void> {
+export async function join(inviteText: string, name: string, cancelled: () => boolean = () => false): Promise<void> {
   const invite = parseInvite(inviteText)
   if (!invite) throw new Error('That isn’t an invite link. It starts with ws:// and has a token in it.')
-  const link: Link = { tabId: '', role: 'guest', client: newClient(), name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false }
+  const link = newLink(name)
   let first = true
   await new Promise<void>((resolve, reject) => {
     const opened = ({ bytes, name: fileName, kind }: { bytes: Uint8Array; name: string; kind: string }) => {
       first = false
+      // Given up on (the dialog closed) while connecting: leave without opening anything.
+      if (cancelled()) {
+        reject(new Error('Cancelled.'))
+        return null
+      }
       const file = fileName.endsWith(`.${kind}`) ? fileName : `${stripExtension(fileName)}.${kind}`
       const id = SHAREABLE.has(kind) ? useWorkspace.getState().openUnsaved(bytes, file) : null
       if (id) resolve()
@@ -335,6 +444,7 @@ export function attach(tabId: string, engine: CollabEngine): () => void {
   const link = links.get(tabId)
   if (!link || link.closed) return () => {}
   link.engine = engine
+  engineTabs.set(engine, tabId)
   // From now on changes here are kept to send, even made before the relay's welcome.
   engine.doc.collabStart(link.client)
   engine.collab = { changed: () => flush(link) }
@@ -353,6 +463,31 @@ export function attach(tabId: string, engine: CollabEngine): () => void {
     }
   }
 }
+
+/** Who keeps the file of a tab following someone else's shared document, while it follows. */
+export function keeperOf(tabId: string): string | null {
+  const share = useCollab.getState()[tabId]
+  if (share?.role !== 'guest' || (share.status !== 'live' && share.status !== 'connecting')) return null
+  return share.peers.find((p) => p.host)?.name || 'The person sharing'
+}
+collabHooks.keeper = keeperOf
+
+/** For a tab following someone else's shared document: waits up to a few seconds for every
+ * change made here to reach the relay, which sends it on to them. True once none is left. */
+async function settled(tabId: string): Promise<boolean> {
+  const link = links.get(tabId)
+  if (!link || link.role !== 'guest' || keeperOf(tabId) === null) return false
+  const until = Date.now() + 3000
+  for (;;) {
+    // What's being typed in a cell counts too: commit it, so it goes.
+    getEditor(tabId)?.prepareSave?.()
+    if (link.closed || !link.engine) return false
+    if (!link.engine.doc.collabPending()) return true
+    if (Date.now() > until) return false
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+collabHooks.settled = settled
 
 // A shared tab that closes, however it closes (before its document finished opening too), ends
 // its sharing.

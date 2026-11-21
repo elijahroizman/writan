@@ -362,3 +362,12 @@
   height: 100%;
   background: #000;
 }
+
+/* Who's on the slide, while shared: a dot each under the number. */
+.slide-number .peer-dots {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 3px;
+  margin-top: 5px;
+}

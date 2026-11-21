@@ -385,6 +385,20 @@ impl WordDoc {
         self.view.collab_pending()
     }
 
+    /// Where this copy's caret is, for the others (see the view's `collab_presence`).
+    #[wasm_bindgen(js_name = collabPresence)]
+    pub fn collab_presence(&self) -> String {
+        self.view.collab_presence().to_string()
+    }
+
+    /// Where another copy's caret and selection show here, from what its `collabPresence` gave.
+    #[wasm_bindgen(js_name = remoteOverlay)]
+    pub fn remote_overlay(&mut self, presence: &str) -> String {
+        let Ok(presence) = serde_json::from_str(presence) else { return "null".into() };
+        let mut m = JsMeasurer(&self.host);
+        json(&self.view.remote_overlay(&mut m, &presence))
+    }
+
     /// Whether the document has comments.
     #[wasm_bindgen(js_name = hasComments)]
     pub fn has_comments(&self) -> bool {

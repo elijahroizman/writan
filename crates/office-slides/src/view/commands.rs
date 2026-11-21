@@ -16,6 +16,7 @@ use office_engine::para::{self, Ctx, LineEnd};
 use office_engine::pos::{self, Path, Pos, Selection};
 use office_engine::text;
 use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
 
 use super::draw::{Boxed, Drawer, Map};
 use super::{find_frame, find_frame_mut, free_id, from_blocks, text_blocks, Editing, SStep, Sel, SlidesView};
@@ -37,6 +38,25 @@ pub struct TextOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub caret: Option<(f64, f64, f64)>,
     pub rects: Vec<Rect>,
+}
+
+/// Where someone else is on the slide shown (see `SlidesView::remote_overlay`).
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct RemoteOverlay {
+    pub boxes: Vec<FrameBox>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text: Option<TextOverlay>,
+}
+
+/// A frame's box on the slide, in pixels.
+#[derive(Clone, Debug, Serialize, PartialEq)]
+pub struct FrameBox {
+    pub id: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub rot: f64,
 }
 
 /// Where ranges of a frame's text are: the frame's box, and rectangles inside it tagged with
@@ -1715,24 +1735,82 @@ impl SlidesView {
     /// Where the caret and selection show in the editing frame.
     pub fn text_overlay(&mut self, host: &mut dyn Measurer) -> Option<TextOverlay> {
         let e = self.sel.editing.clone()?;
-        let (flow, ox, oy, b) = self.edit_flow(host, e.frame)?;
         let blocks = self.editing_blocks();
+        self.text_overlay_in(host, e.frame, &blocks, &e.sel)
+    }
+
+    /// The caret and selection `sel` in frame `id`'s text, `blocks`, on the current slide.
+    fn text_overlay_in(&mut self, host: &mut dyn Measurer, id: u32, blocks: &[Block], sel: &Selection) -> Option<TextOverlay> {
+        let (flow, ox, oy, b) = self.edit_flow(host, id)?;
         let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
-        let mut out =
-            TextOverlay { frame: e.frame.to_string(), x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot, caret: None, rects: Vec::new() };
-        let (from, to) = e.sel.ordered();
-        if !e.sel.is_collapsed() {
-            for path in pos::paras_between(&blocks, &from.path, &to.path) {
+        let mut out = TextOverlay { frame: id.to_string(), x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot, caret: None, rects: Vec::new() };
+        let (from, to) = sel.ordered();
+        if !sel.is_collapsed() {
+            for path in pos::paras_between(blocks, &from.path, &to.path) {
                 let Some((pb, dx, dy)) = flow.find(&path) else { continue };
-                let len = pos::para(&blocks, &path).map(text::len).unwrap_or(0);
+                let len = pos::para(blocks, &path).map(text::len).unwrap_or(0);
                 let a = if path == from.path { from.offset } else { 0 };
                 let bb = if path == to.path { to.offset } else { len };
                 out.rects.extend(display::selection_rects(&mut ctx, pb, ox + dx, oy + dy, a, bb, path != to.path));
             }
-        } else if let Some((pb, dx, dy)) = flow.find(&e.sel.focus.path) {
-            out.caret = Some(display::caret_rect(&mut ctx, pb, ox + dx, oy + dy, e.sel.focus.offset, false));
+        } else if let Some((pb, dx, dy)) = flow.find(&sel.focus.path) {
+            out.caret = Some(display::caret_rect(&mut ctx, pb, ox + dx, oy + dy, sel.focus.offset, false));
         }
         Some(out)
+    }
+
+    // ---- others' places, when shared ----
+
+    /// A slide's id, the same on every copy: its part's name, or for a slide not saved yet,
+    /// a name for this session.
+    pub fn slide_id(&self, index: usize) -> Option<String> {
+        let s = self.slides().get(index)?;
+        Some(s.part.clone().unwrap_or_else(|| format!("new-{}", self.revisions.get(index).copied().unwrap_or(0))))
+    }
+
+    /// Where this copy is, for the others to draw: the slide, the frames picked, and the caret
+    /// and selection in the text being edited (`[path, byte offset]` ends).
+    pub fn collab_presence(&self) -> Value {
+        let end = |p: &Pos| json!([p.path.0, p.offset]);
+        let editing = self.sel.editing.as_ref().map(|e| json!({ "frame": e.frame, "a": end(&e.sel.anchor), "f": end(&e.sel.focus) }));
+        json!({ "slide": self.slide_id(self.sel.active), "frames": self.sel.frames, "e": editing })
+    }
+
+    /// Where another copy (its `collab_presence`) is on the slide shown here: the boxes of the
+    /// frames it picked and its caret and selection in text. Nothing when it's on another slide.
+    /// A frame or paragraph this copy doesn't have yet is left out.
+    pub fn remote_overlay(&mut self, host: &mut dyn Measurer, presence: &Value) -> RemoteOverlay {
+        let mut out = RemoteOverlay::default();
+        let active = self.sel.active;
+        if presence["slide"].as_str().is_none() || presence["slide"].as_str() != self.slide_id(active).as_deref() {
+            return out;
+        }
+        let ids: Vec<u32> = presence["frames"].as_array().into_iter().flatten().filter_map(|v| v.as_u64().map(|n| n as u32)).collect();
+        out.boxes = self
+            .drawer_boxes(host, active)
+            .into_iter()
+            .filter(|(id, _)| ids.contains(id))
+            .map(|(id, b)| FrameBox { id: id.to_string(), x: b.x, y: b.y, w: b.w, h: b.h, rot: b.rot })
+            .collect();
+        let e = &presence["e"];
+        let Some(frame) = e["frame"].as_u64().map(|n| n as u32) else { return out };
+        let Some(blocks) = self.slides().get(active).and_then(|s| s.frames.iter().find(|f| f.id == frame && has_text(f))).map(frame_blocks)
+        else {
+            return out;
+        };
+        let end = |v: &Value| -> Option<Pos> {
+            let path = Path(v.get(0)?.as_array()?.iter().map(|n| n.as_u64().map(|n| n as u32)).collect::<Option<_>>()?);
+            let flat = text::flat(pos::para(&blocks, &path)?);
+            let mut offset = (v.get(1)?.as_u64()? as u32).min(flat.text.len() as u32);
+            while offset > 0 && !flat.text.is_char_boundary(offset as usize) {
+                offset -= 1;
+            }
+            Some(Pos::new(path, offset))
+        };
+        if let (Some(anchor), Some(focus)) = (end(&e["a"]), end(&e["f"])) {
+            out.text = self.text_overlay_in(host, frame, &blocks, &Selection { anchor, focus });
+        }
+        out
     }
 
     // ---- spelling ----

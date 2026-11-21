@@ -225,6 +225,8 @@ pub fn run() {
             collab::collab_send,
             collab::collab_close,
             collab::collab_reset,
+            collab::collab_local_network,
+            collab::collab_network_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Writan");
