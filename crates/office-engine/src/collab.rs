@@ -37,12 +37,12 @@ pub trait Shared {
     fn replica(&mut self) -> &mut Option<Replica<Self::Step>>;
     /// A step as sent: where it applies, the fingerprint of what it replaced, the new content.
     fn send_step(&self, step: &Self::Step) -> Value;
-    /// Applies a sent step if what it replaced is still there, moved past `since`: the steps
-    /// applied after the change the sender had last seen, in order, each marked `true` if the
-    /// sender made it (so the step was made after it) and `false` if another copy did (so the
-    /// sender hadn't seen it). `None` is for undo, where what changed since isn't known: the
-    /// layer may look for the content nearby. Returns the step as applied here. Neither records
-    /// nor sends it.
+    /// Applies a sent step if what it replaced is still there, moved past `since` in order:
+    /// other copies' steps the sender hadn't seen (`false`). Steps marked `true` are this copy's
+    /// own, made one after another before the step, from the document the others were applied
+    /// to; each other copy's step is moved past them first. `None` is for undo, where what
+    /// changed since isn't known: the layer may look for the content nearby. Returns the step
+    /// as applied here. Neither records nor sends it.
     fn take_step(&mut self, step: &Value, since: Option<&[(bool, &Self::Step)]>) -> Option<Self::Step>;
     /// Takes back a step this copy applied, without recording or sending it.
     fn revert_step(&mut self, step: &Self::Step);
@@ -57,13 +57,18 @@ pub trait Shared {
     fn take_extra(&mut self, _extra: &Value) {}
 }
 
+/// A change made here that the relay hasn't sent back yet. Only the first is ever out with the
+/// relay at a time; the rest wait, and are written for sending only when their turn comes. So a
+/// change always goes with the last change this copy had seen as its base, and every change the
+/// relay ordered between that and it came from other copies, one after another: moving it past
+/// them in order puts it where it belongs.
 struct Pending<S> {
     id: String,
     base: u64,
-    sent: Value,
-    /// Handed to the relay by [`take`]. A change still in the outbox when another arrives
-    /// becomes pending before it's sent, so it's taken back and put on again with the others.
-    out: bool,
+    /// As sent, once it's out with the relay.
+    sent: Option<Value>,
+    /// The layer's own changes that go with it (see [`Shared::send_extra`]).
+    extra: Value,
     /// The steps as they're applied here, or `None` while they don't fit.
     applied: Option<Vec<S>>,
 }
@@ -138,10 +143,10 @@ impl<S: Step> Replica<S> {
     }
 }
 
-/// The steps applied since `base`, each marked whether `author` made it (see
-/// [`Shared::take_step`]).
+/// The steps applied since `base` by copies other than `author`. With one change out at a time,
+/// that's every step since `base`.
 fn since<'a, S>(recent: &'a VecDeque<Applied<S>>, base: u64, author: &str) -> Vec<(bool, &'a S)> {
-    recent.iter().filter(|a| a.seq > base).flat_map(|a| a.steps.iter().map(move |s| (a.client == author, s))).collect()
+    recent.iter().filter(|a| a.seq > base && a.client != author).flat_map(|a| a.steps.iter().map(|s| (false, s))).collect()
 }
 
 /// Adds a picture to `doc` and returns its id. While shared, the id names this copy, so two
@@ -158,20 +163,36 @@ pub fn add_media<S: Step>(doc: &mut Document, replica: Option<&Replica<S>>, cont
     id
 }
 
-/// The changes made here since the last call, for the relay: `{ id, base, steps }`. `None` when
-/// there are none.
+/// The next change made here, for the relay: `{ id, base, steps }`. `None` when there's none, or
+/// while the last one sent hasn't come back.
 pub fn take<V: Shared>(v: &mut V) -> Option<Value> {
     let mut r = v.replica().take()?;
     stage(v, &mut r);
-    let out = r.pending.iter_mut().find(|p| !p.out).map(|p| {
-        p.out = true;
-        json!({ "id": p.id, "base": p.base, "steps": p.sent })
-    });
+    let mut out = None;
+    while let Some(p) = r.pending.front_mut() {
+        if p.sent.is_some() {
+            break;
+        }
+        // Changes that stopped fitting when others' arrived are dropped here, never sent.
+        let Some(steps) = &p.applied else {
+            r.pending.pop_front();
+            continue;
+        };
+        let steps: Vec<Value> = steps.iter().map(|s| v.send_step(s)).collect();
+        let media = send_media(v.doc(), &mut r.media);
+        r.count += 1;
+        p.id = format!("{}:{}", r.client, r.count);
+        p.base = r.seq;
+        let body = json!({ "steps": steps, "media": media, "extra": std::mem::take(&mut p.extra) });
+        out = Some(json!({ "id": p.id, "base": p.base, "steps": body }));
+        p.sent = Some(body);
+        break;
+    }
     *v.replica() = Some(r);
     out
 }
 
-/// Makes the steps in the outbox one pending change, not yet sent.
+/// Makes the steps in the outbox one pending change, to send in its turn.
 fn stage<V: Shared>(v: &mut V, r: &mut Replica<V::Step>) {
     // A change to the layer's own tables (a new header) can come before any step does.
     let extra = v.send_extra();
@@ -179,12 +200,7 @@ fn stage<V: Shared>(v: &mut V, r: &mut Replica<V::Step>) {
         return;
     }
     let steps = std::mem::take(&mut r.outbox);
-    let sent: Vec<Value> = steps.iter().map(|s| v.send_step(s)).collect();
-    let media = send_media(v.doc(), &mut r.media);
-    r.count += 1;
-    let id = format!("{}:{}", r.client, r.count);
-    let body = json!({ "steps": sent, "media": media, "extra": extra });
-    r.pending.push_back(Pending { id, base: r.seq, sent: body, out: false, applied: Some(steps) });
+    r.pending.push_back(Pending { id: String::new(), base: 0, sent: None, extra, applied: Some(steps) });
 }
 
 /// Applies a change from the relay: `{ seq, client, id, base, steps }`. Returns whether the
@@ -198,14 +214,19 @@ pub fn receive<V: Shared>(v: &mut V, op: &Value) -> bool {
         let base = op["base"].as_u64().unwrap_or(0);
         let mark = v.mark();
         stage(v, &mut r);
+        let mut before = Vec::with_capacity(r.pending.len());
         for p in r.pending.iter_mut().rev() {
-            for s in p.applied.take().unwrap_or_default().iter().rev() {
+            let steps = p.applied.take();
+            for s in steps.iter().flatten().rev() {
                 v.revert_step(s);
             }
+            before.push(steps);
         }
+        before.reverse();
         let mine = client == r.client;
-        if mine && r.pending.front().is_some_and(|p| p.id == id) {
+        if mine && r.pending.front().is_some_and(|p| p.sent.is_some() && p.id == id) {
             r.pending.pop_front();
+            before.remove(0);
         }
         let applied = apply(v, &op["steps"], &mut r.media, Some(&since(&r.recent, base, &client)));
         r.seq = seq;
@@ -217,8 +238,23 @@ pub fn receive<V: Shared>(v: &mut V, op: &Value) -> bool {
                 r.recent.pop_front();
             }
         }
-        for p in r.pending.iter_mut() {
-            p.applied = apply(v, &p.sent, &mut r.media, Some(&since(&r.recent, p.base, &r.client)));
+        // The change out with the relay goes back on past what arrived since its base. Those
+        // waiting were made after it, as it was before this arrival: they go past the arrival
+        // moved past those earlier changes of this copy's (`true` in `since`).
+        let mut earlier: Vec<V::Step> = Vec::new();
+        for (p, old) in r.pending.iter_mut().zip(before) {
+            p.applied = match &p.sent {
+                Some(sent) => {
+                    let others: Vec<(bool, &V::Step)> = since(&r.recent, p.base, &r.client);
+                    apply(v, sent, &mut r.media, Some(&others))
+                }
+                None => old.as_ref().and_then(|steps| {
+                    let body = json!({ "steps": steps.iter().map(|s| v.send_step(s)).collect::<Vec<_>>() });
+                    let past: Vec<(bool, &V::Step)> = moved.iter().map(|s| (false, s)).chain(earlier.iter().map(|s| (true, s))).collect();
+                    apply(v, &body, &mut r.media, Some(&past))
+                }),
+            };
+            earlier.extend(old.into_iter().flatten());
         }
         v.restore(mark, &moved);
         true

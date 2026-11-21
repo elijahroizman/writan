@@ -199,6 +199,8 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
         return
       }
       if (link.engine.doc.collabReceive(data)) link.engine.refresh()
+      // The next change made here goes once the last one is back.
+      flush(link)
       return
     case 'join': {
       const peers = useCollab.getState()[link.tabId]?.peers ?? []

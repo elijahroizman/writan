@@ -520,7 +520,7 @@ mod tests {
             Room { views, seq: 0, queue: Vec::new() }
         }
 
-        /// Sends everything copy `i` has to send.
+        /// Sends what copy `i` has to send now: its next change, unless one is still out.
         fn send(&mut self, i: usize) {
             while let Some(op) = self.views[i].collab_take() {
                 self.seq += 1;
@@ -537,11 +537,17 @@ mod tests {
             }
         }
 
+        /// Delivers what's queued, then sends and delivers until no copy has anything left.
         fn sync(&mut self) {
-            for i in 0..self.views.len() {
-                self.send(i);
+            loop {
+                self.deliver();
+                for i in 0..self.views.len() {
+                    self.send(i);
+                }
+                if self.queue.is_empty() {
+                    break;
+                }
             }
-            self.deliver();
         }
 
         /// Every sheet as sent on the wire, so copies agree even where their style sheets'

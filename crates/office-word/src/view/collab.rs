@@ -140,10 +140,8 @@ impl WordView {
         let mut index = step["index"].as_u64()? as i64;
         let n = step["n"].as_u64()? as usize;
         let before = step["before"].as_str()?;
-        // Past what others changed before it, in the same list or a list above. Their splices
-        // are where they applied them; the sender made this one after its own later splices, so
-        // each is first moved past those. A splice over the same blocks, or over a table they're
-        // in, means this one comes second and is dropped.
+        // Past what others changed before it, in the same list or a list above. A splice over the
+        // same blocks, or over a table they're in, means this one comes second and is dropped.
         let known = since.is_some();
         let since = since.unwrap_or(&[]);
         for (i, (own, s)) in since.iter().enumerate() {
@@ -315,26 +313,23 @@ impl Shared for WordView {
     }
 }
 
-/// Where another copy's splice `s` replaced blocks (`start..end`), as the sender saw the list:
-/// moved past the sender's own splices applied after it (`later`), which the sender had made
-/// before this step. `None` when one of those changed the same blocks, so `s` is already part of
-/// what the sender built on.
+/// Where another copy's splice `s` replaced blocks (`start..end`), in the frame this copy's
+/// own steps in `later` (`true` in `since`) were made in. Those were made one after another,
+/// starting from the document `s` was applied to, so `s` moves past each in turn. `None` when one
+/// of them changed the same blocks.
 fn sender_frame(s: &Splice, story: StoryId, later: &[(bool, &WStep)]) -> Option<(i64, i64)> {
     let (mut start, mut end) = (s.index as i64, s.index as i64 + s.removed.len() as i64);
-    let mut inserted_end = s.index as i64 + s.inserted.len() as i64;
     for (own, p) in later {
         let WStep::Text(st, p) = p else { continue };
         if !*own || *st != story || p.container != s.container {
             continue;
         }
-        let delta = p.inserted.len() as i64 - p.removed.len() as i64;
-        if p.index as i64 + p.removed.len() as i64 <= start {
+        let (p_start, p_end) = (p.index as i64, p.index as i64 + p.removed.len() as i64);
+        if p_end <= start && p_start < start {
+            let delta = p.inserted.len() as i64 - p.removed.len() as i64;
             start += delta;
             end += delta;
-            inserted_end += delta;
-        } else if p.index as i64 >= inserted_end {
-            continue;
-        } else {
+        } else if p_start < end || (p_start == start && p_end > start) {
             return None;
         }
     }
@@ -399,7 +394,7 @@ mod tests {
             Room { views, seq: 0, queue: Vec::new() }
         }
 
-        /// Sends everything copy `i` has to send.
+        /// Sends what copy `i` has to send now: its next change, unless one is still out.
         fn send(&mut self, i: usize) {
             while let Some(op) = self.views[i].collab_take() {
                 self.seq += 1;
@@ -416,11 +411,17 @@ mod tests {
             }
         }
 
+        /// Delivers what's queued, then sends and delivers until no copy has anything left.
         fn sync(&mut self) {
-            for i in 0..self.views.len() {
-                self.send(i);
+            loop {
+                self.deliver();
+                for i in 0..self.views.len() {
+                    self.send(i);
+                }
+                if self.queue.is_empty() {
+                    break;
+                }
             }
-            self.deliver();
         }
 
         fn texts(&self, i: usize) -> Vec<String> {
@@ -475,7 +476,7 @@ mod tests {
         room.views[0].insert_text("typed");
         room.send(1);
         room.send(0);
-        room.deliver();
+        room.sync();
         assert_eq!(room.agree(), ["", "", "typed", "Third"]);
         // Copy 0's caret followed its paragraph down.
         assert_eq!(room.views[0].sel.focus, Pos::new(Path::top(2), 5));
@@ -505,7 +506,7 @@ mod tests {
         room.views[1].insert_text(">");
         room.send(1);
         room.send(0);
-        room.deliver();
+        room.sync();
         assert_eq!(room.agree(), [">One", "Twoxy"]);
     }
 
@@ -574,7 +575,7 @@ mod tests {
         room.send(0);
         room.views[0].insert_text("x");
         room.send(0);
-        room.deliver();
+        room.sync();
         assert_eq!(room.agree(), ["One", "x", "Two!"]);
     }
 
@@ -649,5 +650,28 @@ mod tests {
             room.sync();
             room.agree();
         }
+    }
+
+    #[test]
+    fn typing_lands_where_it_was_made_past_several_changes() {
+        let mut room = Room::new(&["Alpha", "Bravo", "Charlie", "Delta", "Same", "Same"], 2);
+        // Copy 0 joins Charlie and Delta, then splits Alpha.
+        caret(&mut room.views[0], 3, 0);
+        room.views[0].backspace(false);
+        room.send(0);
+        caret(&mut room.views[0], 0, 2);
+        room.views[0].enter();
+        room.send(0);
+        // Before either arrives, copy 1 splits Bravo and types in the first Same.
+        caret(&mut room.views[1], 1, 2);
+        room.views[1].enter();
+        room.send(1);
+        caret(&mut room.views[1], 5, 4);
+        room.views[1].insert_text("!");
+        room.send(1);
+        room.sync();
+        room.sync();
+        let texts = room.agree();
+        assert_eq!(texts[texts.len() - 2..], ["Same!", "Same"]);
     }
 }
