@@ -92,7 +92,7 @@ Everyone's changes show on everyone's screen as they're made, and so does where 
 
 **Stop sharing** in the same panel ends it for everyone, and so does closing the tab or quitting. The others keep what they had as an unsaved copy. The panel lists who's in the document. Anyone with the link can edit while the tab is shared, so send it only to people you mean to.
 
-A note in the top left corner says when someone joins or leaves.
+A note in the top right corner, under **Share**, says when someone joins or leaves. It stays a few seconds, and clicks go through it.
 
 ## AI agents
 
