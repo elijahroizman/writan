@@ -162,6 +162,8 @@ export class SheetsEngine {
   sheets: { name: string; hidden: boolean }[] = []
   state: SheetState = { sheet: 0, anchor: [0, 0], focus: [0, 0], canUndo: false, canRedo: false, dirty: false, csv: false, circular: [] }
   cell: CellInfo | null = null
+  /** Only selecting cells and sheets works: every command that would change the workbook is ignored. */
+  readOnly = false
   revision = 0
   tick = 0
   private geometry = new Map<number, { revision: number; g: Geometry }>()
@@ -211,6 +213,8 @@ export class SheetsEngine {
   getTick = () => this.tick
 
   run<T = unknown>(cmd: Record<string, unknown> & { cmd: string }): T {
+    // A version in the history can be looked around, not changed.
+    if (this.readOnly && cmd.cmd !== 'select') return null as T
     const out = JSON.parse(this.doc.command(JSON.stringify(cmd))) as T
     this.refresh()
     return out

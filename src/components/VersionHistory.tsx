@@ -1,14 +1,15 @@
 import { ArchiveRestore, ChevronLeft, ChevronRight, MoreHorizontal, Pencil, X } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { create } from 'zustand'
-import type { DiffOp } from '../lib/diff'
-import { diffLines } from '../lib/diff'
 import { KINDS } from '../lib/kinds'
 import type { FileVersion } from '../lib/platform'
 import * as platform from '../lib/platform'
 import { useSettings } from '../state/settings'
-import { getEditor, useWorkspace } from '../state/workspace'
-import { Button, EmptyState, IconButton, KindIcon, Modal, PopoverMenu, Segmented, Spinner, TextField } from './ui'
+import { useWorkspace } from '../state/workspace'
+import { Button, EmptyState, IconButton, Modal, PopoverMenu, Spinner, TextField } from './ui'
+
+// The engines that draw a version load the first time history opens.
+const VersionPreview = lazy(() => import('./VersionPreview'))
 
 /** Which tab's history is showing, if any. */
 export const useVersionHistory = create<{ tabId: string | null; show(tabId: string | null): void }>((set) => ({
@@ -37,76 +38,6 @@ export function showVersionHistory(tabId = useWorkspace.getState().activeId) {
   useVersionHistory.getState().show(tabId)
 }
 
-const TEXT_KINDS = new Set(['md', 'txt', 'latex'])
-
-/** Marks a Word heading's line, so the page can draw it as one. */
-const HEADING = '\u0001'
-/** Separates the cells of a Word table row, which compares as one line. */
-const CELL = '\u0002'
-
-/** The text of a paragraph's runs, with tabs and line breaks. */
-const runText = (xml: string, tag: 'w' | 'a') =>
-  [...xml.matchAll(new RegExp(`<${tag}:t(?:\\s[^>]*)?>([^<]*)</${tag}:t>|<${tag}:(tab|br)\\b`, 'g'))]
-    .map((m) => (m[2] === 'tab' ? '\t' : m[2] === 'br' ? ' ' : decodeEntities(m[1])))
-    .join('')
-
-/** No runs of blank lines. */
-const tidy = (lines: string[]) => lines.filter((line, i, all) => line.trim() || (i > 0 && all[i - 1].trim()))
-
-/** A Word document's paragraphs, one line each: headings marked, and each table row one line of cells. */
-function docxLines(xml: string): string[] {
-  const out: string[] = []
-  let row: string[] | null = null
-  for (const chunk of xml.split('</w:p>')) {
-    const start = Math.max(chunk.lastIndexOf('<w:p>'), chunk.lastIndexOf('<w:p '))
-    // Tables open and close between paragraphs.
-    for (const t of (start < 0 ? chunk : chunk.slice(0, start)).matchAll(/<w:tr[\s>]|<\/w:tr>|<w:tc[\s>]/g)) {
-      if (t[0] === '</w:tr>') {
-        if (row) out.push(row.join(CELL))
-        row = null
-      } else if (t[0].startsWith('<w:tr')) row = []
-      else row?.push('')
-    }
-    const text = runText(chunk, 'w')
-    if (row && row.length) row[row.length - 1] = [row[row.length - 1], text].filter(Boolean).join(' ')
-    else if (start >= 0 || text) out.push(/<w:pStyle w:val="(Heading\d|Title)"/.test(chunk.slice(start)) && text.trim() ? HEADING + text : text)
-  }
-  if (row) out.push(row.join(CELL))
-  return tidy(out)
-}
-
-/** What a version says, as lines, for comparing. Null for files that aren't text (PDF, pictures). */
-async function readableText(kind: string, bytes: Uint8Array): Promise<string[] | null> {
-  if (TEXT_KINDS.has(kind)) return new TextDecoder().decode(bytes).replace(/\r\n?/g, '\n').split('\n')
-  if (kind !== 'docx' && kind !== 'pptx') return null
-  const { default: JSZip } = await import('jszip')
-  const zip = await JSZip.loadAsync(bytes)
-  if (kind === 'docx') {
-    const xml = await zip.file('word/document.xml')?.async('string')
-    return xml ? docxLines(xml) : null
-  }
-  const slides = Object.keys(zip.files)
-    .map((name) => /^ppt\/slides\/slide(\d+)\.xml$/.exec(name))
-    .filter((m): m is RegExpExecArray => !!m)
-    .sort((a, b) => Number(a[1]) - Number(b[1]))
-  const lines: string[] = []
-  for (const [name, n] of slides) {
-    lines.push(`── Slide ${n} ──`)
-    const xml = await zip.file(name)!.async('string')
-    lines.push(...xml.split('</a:p>').map((p) => runText(p, 'a')).filter((l) => l.trim()))
-  }
-  return lines
-}
-
-function decodeEntities(s: string) {
-  return s.replace(/&(amp|lt|gt|quot|apos|#\d+|#x[0-9a-f]+);/gi, (m, e: string) => {
-    const named: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" }
-    if (named[e.toLowerCase()]) return named[e.toLowerCase()]
-    const code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10)
-    return Number.isFinite(code) ? String.fromCodePoint(code) : m
-  })
-}
-
 const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString()
 
 /** "Today", "Yesterday", or the date, long ("Wednesday 18 November") or short ("18 Nov"). */
@@ -132,97 +63,6 @@ export function formatSize(n: number) {
   return `${(n / 1024 / 1024).toFixed(1)} MB`
 }
 
-/** 'save': what that save changed (the version before it → it). 'now': what restoring it would undo (it → the document now). */
-type Compare = 'save' | 'now'
-
-/** One paragraph (or line) of the page. `change` is a paragraph edited in place, word by word. */
-type Row = { type: 'same' | 'add' | 'del'; text: string } | { type: 'change'; parts: DiffOp[] }
-
-/** Words, numbers ("91,200"), runs of spaces, and punctuation on its own, so "approval." → "approval, along with…" only marks the new words. */
-const words = (s: string) => s.match(/\s+|\p{N}+(?:[.,:]\p{N}+)*|[\p{L}\p{N}_'’-]+|[^\s\p{L}\p{N}]/gu) ?? []
-
-/**
- * Each changed phrase as one removal then one addition: "~~is paused~~ runs as usual", not
- * "~~is~~ runs ~~paused~~ as usual". Spaces between changed words belong to the phrase.
- */
-function merge(parts: DiffOp[]): DiffOp[] {
-  const out: DiffOp[] = []
-  for (let i = 0; i < parts.length; ) {
-    if (parts[i].type === 'same') {
-      out.push({ ...parts[i++] })
-      continue
-    }
-    const del = { text: '', changed: false }
-    const add = { text: '', changed: false }
-    while (i < parts.length) {
-      const p = parts[i]
-      if (p.type !== 'same') {
-        const side = p.type === 'del' ? del : add
-        side.text += p.text
-        side.changed = true
-      }
-      // A space carries on the phrase only if another change follows it. Both versions have it.
-      else if (!p.text.trim() && parts[i + 1] && parts[i + 1].type !== 'same') {
-        del.text += p.text
-        add.text += p.text
-      } else break
-      i++
-    }
-    // A side with nothing of its own is just the space the two versions share.
-    for (const [type, side] of [['del', del], ['add', add]] as const) {
-      if (side.text) out.push({ type: side.changed ? type : 'same', text: side.text })
-    }
-  }
-  return out
-}
-
-/** A removed paragraph and an added one that mostly share their words are one edited paragraph. */
-function edited(before: string, after: string): DiffOp[] | null {
-  const parts = diffLines(words(before), words(after), 800)
-  if (!parts) return null
-  const kept = parts.reduce((n, p) => n + (p.type === 'same' && p.text.trim() ? p.text.length : 0), 0)
-  return kept >= 0.4 * Math.max(before.length, after.length) ? merge(parts) : null
-}
-
-/** Paragraph diff → the whole page, with removed and added paragraphs that are really one edit paired up. */
-function toRows(ops: DiffOp[]): Row[] {
-  const rows: Row[] = []
-  for (let i = 0; i < ops.length; ) {
-    if (ops[i].type === 'same') {
-      rows.push(ops[i++] as Row)
-      continue
-    }
-    const dels: string[] = []
-    const adds: string[] = []
-    while (i < ops.length && ops[i].type !== 'same') (ops[i].type === 'del' ? dels : adds).push(ops[i++].text)
-    const pairs = Math.min(dels.length, adds.length)
-    for (let j = 0; j < pairs; j++) {
-      const parts = edited(dels[j], adds[j])
-      if (parts) rows.push({ type: 'change', parts })
-      else rows.push({ type: 'del', text: dels[j] }, { type: 'add', text: adds[j] })
-    }
-    rows.push(...dels.slice(pairs).map((text) => ({ type: 'del' as const, text })), ...adds.slice(pairs).map((text) => ({ type: 'add' as const, text })))
-  }
-  return rows
-}
-
-interface Comparison {
-  rows: Row[] | null
-  added: number
-  removed: number
-  changed: number
-}
-
-function compareTexts(before: string[], after: string[]): Comparison {
-  const ops = diffLines(before, after)
-  if (!ops) return { rows: null, added: 0, removed: 0, changed: 0 }
-  const rows = toRows(ops)
-  const count = (type: Row['type']) => rows.filter((r) => r.type === type).length
-  return { rows, added: count('add'), removed: count('del'), changed: count('change') }
-}
-
-type View = Comparison | 'binary' | null
-
 const sourceNote = (v: FileVersion) => (v.source === 'original' ? 'Before Writan first saved it' : v.source === 'outside' ? 'Changed in another app' : null)
 
 export function VersionHistory() {
@@ -231,20 +71,21 @@ export function VersionHistory() {
   const close = useCallback(() => useVersionHistory.getState().show(null), [])
   const [versions, setVersions] = useState<FileVersion[] | null>(null)
   const [selected, setSelected] = useState<string | null>(null)
-  const [compare, setCompare] = useState<Compare>('save')
-  // What the page shows, and which version and comparison it's for: while the next one loads, the last stays up.
-  const [view, setView] = useState<{ key: string; view: View } | null>(null)
+  // The version on screen: while the next one loads, the last stays up.
+  const [shown, setShown] = useState<{ id: string; bytes: Uint8Array | null } | null>(null)
+  // The version whose preview has finished drawing.
+  const [drawn, setDrawn] = useState<string | null>(null)
   const [renaming, setRenaming] = useState(false)
   const [menu, setMenu] = useState<{ x: number; y: number; id: string; opener?: HTMLElement } | null>(null)
-  const canvasRef = useRef<HTMLDivElement>(null)
-  // Each version's text, read once, so scrubbing back and forth doesn't read and unzip it again.
-  const texts = useRef(new Map<string, Promise<string[] | null>>())
+  // Each version's bytes, read once, so scrubbing back and forth doesn't read them again.
+  const reads = useRef(new Map<string, Promise<Uint8Array>>())
+  const versionOf = useRef(new WeakMap<Uint8Array, string>())
+  const dialogRef = useRef<HTMLDivElement>(null)
   const path = tab?.path ?? null
 
   const refresh = useCallback(async () => {
     if (!path) return
     const list = await platform.listVersions(path).catch(() => [])
-    texts.current.delete('now')
     setVersions(list)
     setSelected((cur) => (cur && list.some((v) => v.id === cur) ? cur : (list[0]?.id ?? null)))
   }, [path])
@@ -253,6 +94,11 @@ export function VersionHistory() {
     void refresh()
   }, [refresh])
 
+  // Take the keyboard from the editor behind, which would otherwise still get what's typed.
+  useEffect(() => {
+    if (tabId) dialogRef.current?.focus()
+  }, [tabId])
+
   // The tab closed underneath us.
   useEffect(() => {
     if (tabId && !tab) close()
@@ -260,62 +106,40 @@ export function VersionHistory() {
 
   const version = versions?.find((v) => v.id === selected) ?? null
   const index = versions && version ? versions.indexOf(version) : -1
-  const kind = tab?.kind ?? ''
-  const key = version ? `${version.id}:${compare}` : ''
+  const name = path?.split(/[\\/]/).pop() ?? ''
 
-  const textOf = useCallback(
-    (id: string) => {
-      let hit = texts.current.get(id)
-      if (!hit) {
-        hit = (async () => {
-          if (id === 'now') {
-            const editor = tab && getEditor(tab.id)
-            return readableText(kind, editor ? await editor.getBytes() : await platform.readFile(path!))
-          }
-          return readableText(kind, await platform.readVersion(path!, id))
-        })()
-        hit.catch(() => texts.current.delete(id))
-        texts.current.set(id, hit)
-      }
-      return hit
-    },
-    [tab, kind, path],
-  )
-
-  // The page: this version, marked with what its save changed or with what's changed since.
+  // Read the version picked, then show it.
   useEffect(() => {
-    if (!path || !version || !versions) return
+    if (!path || !version) return
     let live = true
-    void (async () => {
-      let next: View
-      try {
-        const text = await textOf(version.id)
-        if (!text) next = 'binary'
-        else if (compare === 'save') {
-          const prev = versions[index + 1]
-          // The oldest version kept has nothing before it: show it as it was.
-          next = compareTexts(prev ? ((await textOf(prev.id)) ?? []) : text, text)
-        } else next = compareTexts(text, (await textOf('now')) ?? [])
-      } catch (err) {
-        console.warn('version diff', err)
-        next = 'binary'
-      }
-      if (live) setView({ key: `${version.id}:${compare}`, view: next })
-    })()
+    let read = reads.current.get(version.id)
+    if (!read) {
+      read = platform.readVersion(path, version.id)
+      read.catch(() => reads.current.delete(version.id))
+      reads.current.set(version.id, read)
+    }
+    read.then(
+      (bytes) => {
+        versionOf.current.set(bytes, version.id)
+        if (live) setShown({ id: version.id, bytes })
+      },
+      (err) => {
+        console.warn('version read', err)
+        if (!live) return
+        setShown({ id: version.id, bytes: null })
+        setDrawn(version.id)
+      },
+    )
     return () => {
       live = false
     }
-  }, [path, version, versions, index, compare, textOf])
+  }, [path, version])
 
-  // Bring the first change into view when the page changes, unless it's already showing.
-  useLayoutEffect(() => {
-    const canvas = canvasRef.current
-    const first = canvas?.querySelector<HTMLElement>('.vh-p.add, .vh-p.del, .vh-p.change')
-    if (!canvas || !first) return
-    const box = canvas.getBoundingClientRect()
-    const at = first.getBoundingClientRect()
-    if (at.top < box.top + 24 || at.bottom > box.bottom - 24) canvas.scrollTo({ top: canvas.scrollTop + at.top - box.top - box.height / 3, behavior: 'smooth' })
-  }, [view?.key])
+  // Which version a drawing is of: by the time one finishes, another may have been picked.
+  const onShown = useCallback((bytes: Uint8Array) => {
+    const id = versionOf.current.get(bytes)
+    if (id) setDrawn(id)
+  }, [])
 
   const step = useCallback(
     (to: number) => {
@@ -333,8 +157,10 @@ export function VersionHistory() {
         return
       }
       if (document.querySelector('.menu')) return
-      // The timeline runs oldest to newest, left to right; the list is newest first.
       if (e.key === 'Escape') close()
+      // In the version itself (a workbook's grid, a PDF), the arrow keys move around it.
+      else if (e.target instanceof Element && e.target.closest('.vh-canvas')) return
+      // The timeline runs oldest to newest, left to right; the list is newest first.
       else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') step(index + 1)
       else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') step(index - 1)
       else if (e.key === 'Home') step(Infinity)
@@ -349,9 +175,9 @@ export function VersionHistory() {
 
   if (!tab || !path) return null
   const ext = KINDS[tab.kind]?.extensions[0] ?? ''
-  const unit = tab.kind === 'docx' || tab.kind === 'pptx' ? 'paragraph' : 'line'
-  const shown = view?.view ?? null
-  const loading = !!version && view?.key !== key
+  const loading = !!version && drawn !== version.id
+  // Workbooks and PDFs scroll inside their own view.
+  const fills = ['xlsx', 'csv', 'pdf'].includes(tab.kind)
 
   const saveNow = async () => {
     if (!(await useWorkspace.getState().save(tab.id))) return
@@ -392,7 +218,7 @@ export function VersionHistory() {
     const ok = await platform.confirmDialog('This copy is deleted for good.', { title: 'Delete this version?', okLabel: 'Delete', danger: true })
     if (!ok) return
     await platform.deleteVersion(path, v.id)
-    texts.current.delete(v.id)
+    reads.current.delete(v.id)
     await refresh()
   }
 
@@ -404,10 +230,9 @@ export function VersionHistory() {
   }
 
   const menuVersion = menu && versions?.find((v) => v.id === menu.id)
-  const stats = shown && typeof shown === 'object' && shown.rows ? shown : null
   return (
     <Modal onClose={close}>
-      <div className="vh" role="dialog" aria-modal="true" aria-label={`Version history of ${tab.title}`}>
+      <div ref={dialogRef} tabIndex={-1} className="vh" role="dialog" aria-modal="true" aria-label={`Version history of ${tab.title}`}>
         <header className="vh-head">
           <div className="vh-title">
             {version && renaming ? (
@@ -433,24 +258,13 @@ export function VersionHistory() {
             {version && (
               <p className="vh-sub">
                 {(() => {
-                  const facts = [version.label && whenOf(version.time), index === 0 && 'Latest', sourceNote(version), index === versions!.length - 1 && compare === 'save' && 'Oldest kept'].filter(Boolean)
+                  const facts = [version.label && whenOf(version.time), index === 0 && 'Latest', sourceNote(version), index === versions!.length - 1 && 'Oldest kept'].filter(Boolean)
                   return facts.length > 0 && <span>{facts.join(' · ')}</span>
                 })()}
-                {stats && <Stats stats={stats} unit={unit} compare={compare} />}
               </p>
             )}
           </div>
           <div className="vh-actions">
-            {version && shown !== 'binary' && (
-              <Segmented
-                value={compare}
-                onChange={setCompare}
-                options={[
-                  { value: 'save', label: 'This save', title: 'What this save changed' },
-                  { value: 'now', label: 'Compare with now', title: 'What restoring this version would undo' },
-                ]}
-              />
-            )}
             {version && (
               <>
                 <IconButton
@@ -473,17 +287,28 @@ export function VersionHistory() {
           </div>
         </header>
 
-        <div className="vh-canvas" ref={canvasRef} data-loading={loading || undefined}>
+        <div className="vh-canvas" data-loading={loading || undefined} data-fill={fills || undefined}>
           {versions?.length === 0 ? (
             <div className="vh-center">
               <EmptyState>No versions yet. Each time you save (or autosave), Writan keeps a copy here.</EmptyState>
             </div>
-          ) : shown ? (
-            <Page view={shown} compare={compare} kind={tab.kind} unit={unit} />
-          ) : (
+          ) : shown && !shown.bytes ? (
             <div className="vh-center">
-              <Spinner />
+              <EmptyState>This version couldn’t be read.</EmptyState>
             </div>
+          ) : (
+            <>
+              {shown?.bytes && (
+                <Suspense fallback={null}>
+                  <VersionPreview kind={tab.kind} bytes={shown.bytes} name={name} onShown={onShown} />
+                </Suspense>
+              )}
+              {loading && drawn === null && (
+                <div className="vh-center vh-spinner">
+                  <Spinner />
+                </div>
+              )}
+            </>
           )}
         </div>
 
@@ -518,16 +343,6 @@ export function VersionHistory() {
       )}
     </Modal>
   )
-}
-
-function Stats({ stats, unit, compare }: { stats: Comparison; unit: string; compare: Compare }) {
-  const parts = [
-    stats.changed > 0 && <span key="c" className="vh-stat change">{`${stats.changed} edited`}</span>,
-    stats.added > 0 && <span key="a" className="vh-stat add">{`${stats.added} added`}</span>,
-    stats.removed > 0 && <span key="d" className="vh-stat del">{`${stats.removed} removed`}</span>,
-  ].filter(Boolean)
-  if (!parts.length) return <span className="vh-stats">{compare === 'now' ? 'Same as now' : `No ${unit}s changed`}</span>
-  return <span className="vh-stats">{parts}</span>
 }
 
 /**
@@ -627,78 +442,4 @@ function Timeline({ versions, index, onPick }: { versions: FileVersion[]; index:
       <span className="vh-count">{`${pos + 1} of ${n}`}</span>
     </div>
   )
-}
-
-function Page({ view, compare, kind, unit }: { view: Comparison | 'binary'; compare: Compare; kind: string; unit: string }) {
-  if (view === 'binary') {
-    return (
-      <div className="vh-center">
-        <div className="vh-note">
-          <span className="vh-note-icon">
-            <KindIcon kind={kind} size={22} />
-          </span>
-          <p>{KINDS[kind]?.label ?? 'This file'} versions can’t be shown here. Open one as a copy to look at it, or restore it.</p>
-        </div>
-      </div>
-    )
-  }
-  if (!view.rows) {
-    return (
-      <div className="vh-center">
-        <p className="muted">
-          {compare === 'now' ? 'This version and now' : 'This version and the one before it'} are too different to compare {unit} by {unit}. Open it as a copy to look at it.
-        </p>
-      </div>
-    )
-  }
-  return (
-    <div className={`vh-page ${unit === 'line' ? 'lines' : ''} ${kind === 'latex' ? 'mono' : ''}`} role="document" aria-label="This version">
-      {view.rows.map((r, i) => (
-        <PageRow key={i} row={r} />
-      ))}
-    </div>
-  )
-}
-
-/** A row as pieces of text, each kept, added or removed. */
-const partsOf = (row: Row): DiffOp[] => (row.type === 'change' ? row.parts : [{ type: 'same', text: row.text }])
-
-/** Pieces split at the table's cell breaks: one list of pieces per cell, in the newer version's columns. */
-function cellsOf(parts: DiffOp[]): DiffOp[][] {
-  const cells: DiffOp[][] = [[]]
-  for (const p of parts) {
-    // A removed cell break isn't a column any more.
-    const pieces = p.type === 'del' ? [p.text.replaceAll(CELL, ' ')] : p.text.split(CELL)
-    pieces.forEach((text, i) => {
-      if (i > 0) cells.push([])
-      if (text) cells[cells.length - 1].push({ type: p.type, text })
-    })
-  }
-  return cells
-}
-
-const Pieces = ({ parts }: { parts: DiffOp[] }) => parts.map((p, i) => (p.type === 'same' ? p.text : p.type === 'add' ? <ins key={i}>{p.text}</ins> : <del key={i}>{p.text}</del>))
-
-function PageRow({ row }: { row: Row }) {
-  if (row.type !== 'change') {
-    const slide = /^── Slide (\d+) ──$/.exec(row.text)
-    if (slide) return <h4 className={`vh-slide ${row.type}`}>Slide {slide[1]}</h4>
-  }
-  const parts = partsOf(row).map((p) => ({ ...p, text: p.text.replaceAll(HEADING, '') }))
-  const heading = partsOf(row)[0]?.text.startsWith(HEADING)
-  const cells = cellsOf(parts)
-  const className = `vh-p ${row.type}${heading ? ' heading' : ''}${cells.length > 1 ? ' cells' : ''}`
-  if (cells.length > 1) {
-    return (
-      <div className={className} style={{ gridTemplateColumns: `repeat(${cells.length}, minmax(0, 1fr))` }}>
-        {cells.map((c, i) => (
-          <span key={i}>
-            <Pieces parts={c} />
-          </span>
-        ))}
-      </div>
-    )
-  }
-  const Tag = heading ? 'h3' : 'p'
-  return <Tag className={className}>{cells[0].length ? <Pieces parts={cells[0]} /> : ' '}</Tag>
 }

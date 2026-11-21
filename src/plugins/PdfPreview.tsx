@@ -55,7 +55,8 @@ const Preview = forwardRef<PreviewHandle>(function Preview(_, ref) {
   }))
 
   const noop = useCallback(() => {}, [])
-  const renderPage = useCallback(({ index, page }: PageSlot) => storeRef.current && <TextLayer store={storeRef.current} index={index} page={page} />, [])
+  // Keyed by the page's revision: a new PDF can reuse a page's key, and its text must be read again.
+  const renderPage = useCallback(({ index, page }: PageSlot) => storeRef.current && <TextLayer key={storeRef.current.rev(page.key)} store={storeRef.current} index={index} page={page} />, [])
 
   return (
     <div className="pdf-stage tool-select pdf-preview">
