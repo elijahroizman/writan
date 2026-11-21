@@ -97,5 +97,5 @@ jobs:
               --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
               --prerelease --latest=false \
               --title "Plugin: $id $version" \
-              --notes "Optional plugin for Writan. Turn it on in Settings › Plugins; Writan downloads these files and checks their signature. You don't need to download them yourself."
+              --notes "Optional plugin for Writan. Turn it on in Settings › General; Writan downloads these files and checks their signature. You don't need to download them yourself."
           done

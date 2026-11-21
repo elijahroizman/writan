@@ -79,7 +79,7 @@ function load(): Settings {
   }
 }
 
-export type SettingsPage = 'general' | 'plugins' | 'autosave' | 'appearance' | 'ai' | 'shortcuts' | 'licenses'
+export type SettingsPage = 'general' | 'autosave' | 'appearance' | 'ai' | 'shortcuts' | 'licenses'
 
 interface SettingsState extends Settings {
   /** Whether the Settings window is showing. */

@@ -72,7 +72,6 @@ import { registerEditor, useWorkspace } from '../../state/workspace'
 import { useShared } from '../../collab/useShared'
 import { CommentPeek, CommentStore, CommentsSection } from './Comments'
 import { TrackedChangesSection } from './TrackedChanges'
-import { EXTRA_FONTS, useExtraFonts } from '../../state/fonts'
 import './docx.css'
 
 // The link popover; the page view shows it beside the pages.
@@ -431,10 +430,7 @@ function Inspector({
   onCrop: () => void
 }) {
   const style = useParagraphStyle()
-  // Downloaded extras (Michelangelus) join the font menu once they're on disk.
-  const installed = useExtraFonts((s) => s.installed)
-  const extraFamilies = useMemo(() => EXTRA_FONTS.filter((f) => installed[f.id]).map((f) => f.family), [installed])
-  const family = useFontFamily(extraFamilies)
+  const family = useFontFamily()
   const size = useEditorValueCommand('font.size')
   const color = useEditorValueCommand('text.color')
   const highlight = useEditorValueCommand('text.highlight')

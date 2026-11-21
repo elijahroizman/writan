@@ -85,7 +85,7 @@ const checksUpdates = isTauri && !import.meta.env.DEV && !import.meta.env.VITE_D
 const NO_PACKAGE: LinuxPackage = { format: null, repo: false }
 let linuxSource: Promise<LinuxPackage> | null = null
 /** How this Linux copy was installed. With its repository there, the Update button can use apt or dnf. */
-export function linuxPackage(): Promise<LinuxPackage> {
+function linuxPackage(): Promise<LinuxPackage> {
   if (!isLinux || !checksUpdates) return Promise.resolve(NO_PACKAGE)
   linuxSource ??= import('@tauri-apps/api/core').then(({ invoke }) => invoke<LinuxPackage>('linux_package')).catch(() => NO_PACKAGE)
   return linuxSource

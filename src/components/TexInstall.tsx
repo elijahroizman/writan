@@ -37,7 +37,7 @@ export function TexInstall() {
       <div className="tex-install" role="dialog" aria-modal="true" aria-labelledby="tex-install-title">
         <h2 id="tex-install-title">Install TeX for LaTeX documents?</h2>
         <p className="muted">
-          Writan compiles LaTeX with the TeX on your computer, and it doesn’t have one yet. You can install it now, or later from Settings › Plugins.
+          Writan compiles LaTeX with the TeX on your computer, and it doesn’t have one yet. You can install it now, or later from Settings › General.
         </p>
         {INSTALL_CHOICES.length === 0 && <p className="muted">Install TeX Live with your system’s package manager, then reopen the document.</p>}
         {!installing && (

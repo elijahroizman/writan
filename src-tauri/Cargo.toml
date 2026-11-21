@@ -28,8 +28,6 @@ ureq = { version = "3", default-features = false, features = ["native-tls"] }
 zip = { version = "4", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 minisign-verify = "0.3"
 base64 = "0.22"
-# Unpacks Microsoft's core fonts from the cabinets in their original installers (fonts.rs).
-cab = "0.6"
 # Checks the MiKTeX installer against the checksum MiKTeX publishes (it isn't code-signed).
 sha2 = "0.10"
 # Exclusive temporary files, removed even when a save fails.

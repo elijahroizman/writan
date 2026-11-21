@@ -188,7 +188,7 @@ export default function PluginEditor({ tab, active }: EditorProps) {
     return (
       <CenterState title={`Couldn’t start ${plugin.name}`}>
         <p className="muted">{error.message}</p>
-        <Button onClick={() => useSettings.getState().setOpen(true, 'plugins')}>Open Plugins settings</Button>
+        <Button onClick={() => useSettings.getState().setOpen(true, 'general')}>Open Settings</Button>
       </CenterState>
     )
   }

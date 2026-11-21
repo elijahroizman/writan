@@ -628,13 +628,13 @@ export function useParagraphStyle() {
 /** Fonts every Mac and Windows computer has, or the app brings an equivalent of. */
 const COMMON_FONTS = ['Calibri', 'Cambria', 'Arial', 'Times New Roman', 'Courier New', 'Georgia', 'Helvetica', 'Verdana', 'Trebuchet MS', 'Garamond', 'Aptos']
 
-export function useFontFamily(extras: string[] = []) {
+export function useFontFamily() {
   const engine = useDocxEditor()
   const font = useWordSelector((e) => e.state.font, null)
   const options = useMemo(() => {
     const doc = engine ? (JSON.parse(engine.doc.documentFonts()) as string[]) : []
-    return [...new Set([...COMMON_FONTS, ...doc, ...extras])]
-  }, [engine, extras])
+    return [...new Set([...COMMON_FONTS, ...doc])]
+  }, [engine])
   return { value: font, options, isEnabled: !!engine, setValue: (family: string) => engine?.run({ cmd: 'font', family }) }
 }
 

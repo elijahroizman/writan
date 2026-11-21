@@ -1,7 +1,6 @@
 import { ChevronRight, Search } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import { openExternal } from '../lib/platform'
-import { CORE_FONTS, useExtraFonts } from '../state/fonts'
 import { LinkButton, Spinner, TextField } from './ui'
 
 interface LicensedPackage {
@@ -27,8 +26,6 @@ export default function LicensesPage() {
   const [open, setOpen] = useState<string | null>(null)
   // Hundreds of packages: each group starts folded, and a search opens them all.
   const [unfolded, setUnfolded] = useState<Set<string>>(new Set())
-  const coreFonts = useExtraFonts((s) => !!s.installed[CORE_FONTS.id])
-  const [showEula, setShowEula] = useState(false)
 
   useEffect(() => {
     fetch(`${import.meta.env.BASE_URL}licenses.json`)
@@ -56,14 +53,6 @@ export default function LicensesPage() {
         <LinkButton onClick={() => void openExternal('https://github.com/pingdotgg/t3code')}>T3 Code</LinkButton>
         .
       </p>
-      {/* Not open source and not shipped: downloaded on this computer, under Microsoft's terms. */}
-      {coreFonts && (
-        <p className="settings-intro">
-          Microsoft’s core fonts (Arial, Times New Roman and the rest) aren’t part of Writan. You downloaded them from Microsoft’s installers after accepting its license, and a dated copy of it is kept with the fonts.{' '}
-          <LinkButton onClick={() => setShowEula(!showEula)}>{showEula ? 'Hide Microsoft’s license' : 'Read Microsoft’s license'}</LinkButton>
-        </p>
-      )}
-      {coreFonts && showEula && <pre className="license-text">{CORE_FONTS.license}</pre>}
       <TextField
         className="shortcut-search"
         icon={<Search size={13} className="faint" />}

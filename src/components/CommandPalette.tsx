@@ -207,7 +207,6 @@ const NEEDS_DOCUMENT = new Set(['share', 'save', 'save-as', 'print', 'close-tab'
 
 const SETTINGS_PAGES: { page: SettingsPage; label: string }[] = [
   { page: 'general', label: 'General' },
-  { page: 'plugins', label: 'Plugins' },
   { page: 'autosave', label: 'Autosave' },
   { page: 'appearance', label: 'Appearance' },
   { page: 'shortcuts', label: 'Keyboard Shortcuts' },

@@ -26,7 +26,6 @@ import { installUpdate, openUpdatePanel, startUpdateChecks } from './lib/updater
 import { startPlugins } from './state/plugins'
 import { dimming, useFocus } from './state/focus'
 import { chooseFolder, useFolder } from './state/folder'
-import { useExtraFonts } from './state/fonts'
 import { useSettings } from './state/settings'
 import { useSetup } from './state/setup'
 import { useTex } from './state/tex'
@@ -522,8 +521,8 @@ export default function App() {
     if (!started.current) {
       started.current = true
       void (async () => {
-        // Plugins (and downloaded fonts) first: a restored tab may need one.
-        await Promise.all([startPlugins(), useExtraFonts.getState().refresh()])
+        // Plugins first: a restored tab may need one.
+        await startPlugins()
         await restoreSession()
         await drainPending()
       })().finally(preloadOfficeEditors)

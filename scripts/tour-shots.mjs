@@ -67,21 +67,14 @@ const SHOTS = {
     async setup(page) {
       await page.keyboard.press('Control+,')
       await page.waitForTimeout(500)
-      await page.locator('.settings-nav-item').filter({ hasText: 'Plugins' }).click()
-      await page.waitForTimeout(500)
-      // As in the app: the hint the app shows, and two fonts turned on.
+      // As in the app: the LaTeX extension under General, turned on.
       await page.evaluate(() => {
-        const group = [...document.querySelectorAll('.plugin-group')].find((g) => g.querySelector('h4')?.textContent?.startsWith('Fonts'))
-        if (!group) throw new Error('No fonts group')
-        group.scrollIntoView({ block: 'start' })
-        group.querySelector('.plugin-group-hint').textContent = 'Downloaded when you turn one on, then in the font menus for Word and PowerPoint.'
-        const switches = [...group.querySelectorAll('.switch')]
-        for (const i of [0, 3]) {
-          switches[i].classList.add('on')
-          switches[i].setAttribute('aria-checked', 'true')
-        }
-        const h4 = group.querySelector('h4')
-        h4.innerHTML = h4.innerHTML.replace(/0 of/, '2 of')
+        const row = document.querySelector('.settings-scroll .plugin-row')
+        if (!row) throw new Error('No plugin row')
+        row.scrollIntoView({ block: 'start' })
+        const sw = row.querySelector('.switch')
+        sw.classList.add('on')
+        sw.setAttribute('aria-checked', 'true')
       })
       await page.waitForTimeout(300)
     },

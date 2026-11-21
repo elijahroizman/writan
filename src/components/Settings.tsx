@@ -1,18 +1,14 @@
-import { ArrowLeft, Blocks, Keyboard, Monitor, Moon, Palette, Pencil, Plus, RotateCcw, Save, Search, Settings2, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Keyboard, Monitor, Moon, Palette, Pencil, Plus, RotateCcw, Save, Search, Settings2, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canSetDefaults, defaultStatus, makeDefault, openDefaultAppsSettings } from '../lib/defaults'
 import type { CliStatus } from '../lib/platform'
-import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isLinux, isMac, isTauri, isWindows, openExternal, setCliInstalled, shortcut, showError } from '../lib/platform'
-import type { ExtraFont } from '../state/fonts'
-import { CORE_FONTS, EXTRA_FONTS, offerCoreFonts, useExtraFonts } from '../state/fonts'
+import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isMac, isTauri, isWindows, openExternal, setCliInstalled, shortcut, showError } from '../lib/platform'
 import type { Appearance, ThemeDef } from '../lib/themes'
 import { isHex, orbBackground } from '../lib/themes'
-import type { LinuxPackage } from '../lib/updater'
-import { linuxPackage, openUpdatePanel, packageManager, updatesInstallable } from '../lib/updater'
 import { PLUGINS, isBuiltIn } from '../plugins/catalog'
 import { allThemes, useAppearance } from '../state/appearance'
-import { enabledKinds, formatSize, usePlugins } from '../state/plugins'
+import { enabledKinds, usePlugins } from '../state/plugins'
 import type { SettingsPage } from '../state/settings'
 import { PREVIEW_DELAYS, RECENT_DAYS, useSettings } from '../state/settings'
 import { INSTALL_CHOICES, useTex } from '../state/tex'
@@ -22,7 +18,6 @@ import { SHORTCUTS, isValidKeys, keysFor, keysFromEvent, syncMenu, useShortcuts 
 import { useFolder } from '../state/folder'
 import { useWorkspace } from '../state/workspace'
 import { AiPage } from './AiSettings'
-import { CoreFontsOffer, NO_CALIBRI } from './CoreFonts'
 import { PluginRow } from './PluginList'
 import { formatSize as formatVersionSize } from './VersionHistory'
 import { Button, Checkbox, ChoiceTiles, DocBadge, IconButton, LinkButton, Logo, Modal, Segmented, SettingsRow, Spinner, Switch, TextField } from './ui'
@@ -38,7 +33,6 @@ const DELAYS = [
 
 const PAGES: { id: SettingsPage; label: string; icon: ReactNode }[] = [
   { id: 'general', label: 'General', icon: <Settings2 size={15} strokeWidth={1.75} /> },
-  { id: 'plugins', label: 'Plugins', icon: <Blocks size={15} strokeWidth={1.75} /> },
   { id: 'autosave', label: 'Autosave', icon: <Save size={15} strokeWidth={1.75} /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette size={15} strokeWidth={1.75} /> },
   { id: 'ai', label: 'AI', icon: <Sparkles size={15} strokeWidth={1.75} /> },
@@ -100,7 +94,6 @@ export default function SettingsPanel() {
           </header>
           <div className="settings-scroll" key={page}>
             {page === 'general' && <GeneralPage />}
-            {page === 'plugins' && <PluginsPage />}
             {page === 'autosave' && <AutosavePage />}
             {page === 'appearance' && <AppearancePage />}
             {page === 'ai' && <AiPage />}
@@ -117,25 +110,14 @@ export default function SettingsPanel() {
   )
 }
 
-/** How new versions arrive: by themselves, through the system's package manager, or by hand. */
-function updateHint(linux: LinuxPackage | null): string {
-  if (!isLinux) return updatesInstallable ? 'Updates download by themselves and install when you quit.' : 'Check for updates shows the latest release.'
-  if (linux?.format && linux.repo) return `New versions come through ${packageManager(linux.format)} with your system’s other updates.`
-  return 'Check for updates tells you when a new version is out.'
-}
-
 function GeneralPage() {
   const setOpen = useSettings((s) => s.setOpen)
   const setPage = useSettings((s) => s.setPage)
-  const [linux, setLinux] = useState<LinuxPackage | null>(null)
-  useEffect(() => void linuxPackage().then(setLinux), [])
   return (
     <>
-      <SettingsRow label={`Writan ${__APP_VERSION__}`} hint={updateHint(linux)}>
-        <Button onClick={() => (setOpen(false), openUpdatePanel())}>Check for updates</Button>
-      </SettingsRow>
-
       <DefaultAppsRow />
+
+      <OptionalPlugins />
 
       <RecentFilesRow />
 
@@ -347,141 +329,32 @@ function DefaultAppsRow() {
   )
 }
 
-/** Everything optional in one place: plugins for more file types, and fonts to download. */
-function PluginsPage() {
+/** The optional plugins (catalog.ts), each off until its switch downloads and turns it on. */
+function OptionalPlugins() {
   const enabled = usePlugins((s) => s.enabled)
   const progress = usePlugins((s) => s.progress)
-  const fonts = useExtraFonts((s) => s.installed)
-  const showCoreFonts = useExtraFonts(offerCoreFonts)
   const { enable, disable } = usePlugins.getState()
-  const optional = PLUGINS.filter((p) => !isBuiltIn(p))
-  const count = (on: number, all: number) => <span className="plugin-count">{`${on} of ${all} on`}</span>
   return (
     <>
-      <p className="settings-intro">Turn on only what you need. Word, PowerPoint, PDF, Markdown, text and image files always open.</p>
-      <section className="plugin-group">
-        <h4>
-          File types {count(optional.filter((p) => enabled[p.id]).length, optional.length)}
-        </h4>
-        {optional.map((p) => (
-          <PluginRow
-            key={p.id}
-            plugin={p}
-            control={
-              progress[p.id] ? (
-                <Spinner size={16} />
-              ) : (
-                <Switch
-                  label={`Use ${p.name}`}
-                  checked={!!enabled[p.id]}
-                  onChange={(on) => void (on ? enable(p.id) : disablePlugin(p.id, disable))}
-                />
-              )
-            }
-          >
-            <LinkButton title={p.homepage} onClick={() => void openExternal(p.homepage)}>
-              {linkText(p.homepage)}
-            </LinkButton>
-            {p.services?.includes('tex') && enabled[p.id] && <TexSettings />}
-          </PluginRow>
-        ))}
-      </section>
-      <section className="plugin-group">
-        <h4>
-          Fonts {count(EXTRA_FONTS.filter((f) => fonts[f.id]).length, EXTRA_FONTS.length)}
-        </h4>
-        <p className="settings-hint plugin-group-hint">
-          {isTauri ? 'Downloaded when you turn one on, then in the font menus for Word and PowerPoint.' : 'Fonts download in the app, not in the browser version.'}
-        </p>
-        {showCoreFonts && <CoreFontsRow />}
-        {EXTRA_FONTS.map((f) => (
-          <FontRow key={f.id} font={f} />
-        ))}
-      </section>
+      {PLUGINS.filter((p) => !isBuiltIn(p)).map((p) => (
+        <PluginRow
+          key={p.id}
+          plugin={p}
+          control={
+            progress[p.id] ? (
+              <Spinner size={16} />
+            ) : (
+              <Switch label={`Use ${p.name}`} checked={!!enabled[p.id]} onChange={(on) => void (on ? enable(p.id) : disablePlugin(p.id, disable))} />
+            )
+          }
+        >
+          <LinkButton title={p.homepage} onClick={() => void openExternal(p.homepage)}>
+            {linkText(p.homepage)}
+          </LinkButton>
+          {p.services?.includes('tex') && enabled[p.id] && <TexSettings />}
+        </PluginRow>
+      ))}
     </>
-  )
-}
-
-/** A font Writan downloads from its maker (state/fonts.ts): on downloads it, off removes it. */
-function FontRow({ font }: { font: ExtraFont }) {
-  const installed = useExtraFonts((s) => !!s.installed[font.id])
-  const busy = useExtraFonts((s) => !!s.busy[font.id])
-  const error = useExtraFonts((s) => s.errors[font.id])
-  const { install, remove } = useExtraFonts.getState()
-  // Shown in the font itself once it's there.
-  const face = installed ? `'${font.family}', ${font.fallback}` : undefined
-  return (
-    <div className="plugin-row">
-      <span className="font-badge" style={{ fontFamily: face }} aria-hidden="true">
-        Aa
-      </span>
-      <span className="plugin-text">
-        <span className="settings-label" style={{ fontFamily: face }}>
-          {font.family}
-        </span>
-        <span className="settings-hint">{font.about}</span>
-        <span className="settings-hint plugin-meta">
-          {font.maker} · {formatSize(font.size)} download ·{' '}
-          <LinkButton onClick={() => void openExternal(font.licenseUrl)}>License</LinkButton>
-        </span>
-        {error && <span className="plugin-error">{error}</span>}
-      </span>
-      <span className="plugin-control">
-        {busy ? (
-          <Spinner size={16} />
-        ) : (
-          <Switch label={`Use the ${font.family} font`} checked={installed} disabled={!isTauri} onChange={(on) => void (on ? install(font.id) : remove(font.id))} />
-        )}
-      </span>
-    </div>
-  )
-}
-
-/**
- * Microsoft's core fonts, on Linux (components/CoreFonts.tsx). Turning it on shows the license to
- * accept before anything downloads; off removes the fonts, and documents go back to the look-alikes.
- */
-function CoreFontsRow() {
-  const installed = useExtraFonts((s) => !!s.installed[CORE_FONTS.id])
-  const busy = useExtraFonts((s) => !!s.busy[CORE_FONTS.id])
-  const error = useExtraFonts((s) => s.errors[CORE_FONTS.id])
-  const [asking, setAsking] = useState(false)
-  const face = installed ? `'${CORE_FONTS.family}', ${CORE_FONTS.fallback}` : undefined
-  return (
-    <div className="plugin-row">
-      <span className="font-badge" style={{ fontFamily: face }} aria-hidden="true">
-        Aa
-      </span>
-      <span className="plugin-text">
-        <span className="settings-label">Microsoft’s core fonts</span>
-        <span className="settings-hint">
-          {installed
-            ? 'Word and PowerPoint files set in these fonts use them in place of the look-alikes. You accepted Microsoft’s license to download them.'
-            : `${CORE_FONTS.about} Documents use look-alikes with the same measurements until you download them.`}
-        </span>
-        <span className="settings-hint">{NO_CALIBRI}</span>
-        <span className="settings-hint plugin-meta">
-          {CORE_FONTS.maker} · {formatSize(CORE_FONTS.size)} download
-        </span>
-        {asking && !installed && (
-          <div className="plugin-extra">
-            <CoreFontsOffer />
-          </div>
-        )}
-        {error && !asking && <span className="plugin-error">{error}</span>}
-      </span>
-      <span className="plugin-control">
-        {busy ? (
-          <Spinner size={16} />
-        ) : (
-          <Switch
-            label="Use Microsoft’s core fonts"
-            checked={installed || asking}
-            onChange={(on) => (installed && !on ? (setAsking(false), void useExtraFonts.getState().remove(CORE_FONTS.id)) : setAsking(on))}
-          />
-        )}
-      </span>
-    </div>
   )
 }
 
