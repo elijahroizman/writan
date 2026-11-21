@@ -28,6 +28,13 @@ pub trait Layer: Send + Sync {
         Ok(())
     }
 
+    /// Whether [`Layer::before_write`] may change a document written as `to`. A layer that
+    /// keeps the default no-op says `false`: its `before_write` isn't called, and when no layer
+    /// edits, the core writes the document itself rather than a copy of it.
+    fn edits_before_write(&self, _to: Kind) -> bool {
+        true
+    }
+
     /// Runs after the core has written the package for a document of kind `to`: add or update
     /// the layer's own parts (styles, numbering, notes slides).
     fn write_parts(&self, _doc: &Document, _package: &mut Package, _to: Kind) -> Result<()> {

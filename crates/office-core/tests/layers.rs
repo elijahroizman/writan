@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use office_core::model::{Body, CellRef, Value};
+use office_core::model::{Block, Body, CellRef, Paragraph, Value};
 use office_core::{Compiler, Document, Error, Kind, Layer, Result};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -63,6 +63,62 @@ fn hooks_run_and_data_survives() {
 fn layer_errors_name_the_layer() {
     let err = Compiler::new().with_layer(Failing).read(b"a\n", Some("x.csv")).unwrap_err();
     assert!(matches!(err, Error::Layer { layer: "Failing", .. }), "{err}");
+}
+
+/// Adds a part of its own, and notes the address of the document it was handed to write.
+struct PartsOnly(std::sync::Arc<AtomicUsize>);
+
+impl Layer for PartsOnly {
+    fn name(&self) -> &'static str {
+        "PartsOnly"
+    }
+    fn kinds(&self) -> &[Kind] {
+        &[Kind::Word]
+    }
+    fn before_write(&self, _doc: &mut Document, _to: Kind) -> Result<()> {
+        panic!("a layer that doesn't edit before writing isn't asked to")
+    }
+    fn edits_before_write(&self, _to: Kind) -> bool {
+        false
+    }
+    fn write_parts(&self, doc: &Document, pkg: &mut office_core::opc::Package, _to: Kind) -> Result<()> {
+        self.0.store(doc as *const Document as usize, Ordering::Relaxed);
+        pkg.put("custom/note.txt", b"hi".to_vec(), "text/plain");
+        Ok(())
+    }
+}
+
+#[test]
+fn a_layer_that_doesnt_edit_is_handed_the_document_itself() {
+    let mut doc = Document::new(Kind::Word);
+    doc.body = Body::Flow { blocks: vec![Block::Paragraph(Paragraph::text("Hello"))] };
+    let wrote = std::sync::Arc::new(AtomicUsize::new(0));
+    let bytes = Compiler::new().with_layer(PartsOnly(wrote.clone())).write(&doc, Kind::Word).unwrap();
+    // Not a copy.
+    assert_eq!(wrote.load(Ordering::Relaxed), &doc as *const Document as usize);
+    let read = office_core::read(&bytes, None).unwrap();
+    assert_eq!(read.body, doc.body);
+    assert_eq!(read.package.unwrap().part("custom/note.txt").unwrap(), b"hi");
+    // A layer that edits still works on a copy, and the other is handed that copy too.
+    struct Titling;
+    impl Layer for Titling {
+        fn name(&self) -> &'static str {
+            "Titling"
+        }
+        fn kinds(&self) -> &[Kind] {
+            &[Kind::Word]
+        }
+        fn before_write(&self, doc: &mut Document, _to: Kind) -> Result<()> {
+            doc.properties.title = Some("Edited".into());
+            Ok(())
+        }
+    }
+    let wrote = std::sync::Arc::new(AtomicUsize::new(0));
+    let compiler = Compiler::new().with_layer(Titling).with_layer(PartsOnly(wrote.clone()));
+    let read = office_core::read(&compiler.write(&doc, Kind::Word).unwrap(), None).unwrap();
+    assert_eq!(read.properties.title.as_deref(), Some("Edited"));
+    assert_eq!(doc.properties.title, None);
+    assert_ne!(wrote.load(Ordering::Relaxed), &doc as *const Document as usize);
 }
 
 #[test]

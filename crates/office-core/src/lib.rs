@@ -27,6 +27,8 @@ pub use error::{Error, Result};
 pub use layer::Layer;
 pub use model::{Document, Kind};
 
+use std::borrow::Cow;
+
 use formats::Output;
 use opc::Package;
 
@@ -66,19 +68,16 @@ impl Compiler {
     /// Writes a document as `kind`: its own kind to save it, another to convert it (see
     /// [`convert::to_kind`]).
     pub fn write(&self, doc: &Document, kind: Kind) -> Result<Vec<u8>> {
-        let mut prepared;
-        let mut doc = doc;
-        if !convert::fits(doc, kind) || (doc.kind != kind && doc.package.is_some()) {
-            prepared = convert::to_kind(doc, kind)?;
-            doc = &prepared;
+        let mut doc = Cow::Borrowed(doc);
+        if !convert::fits(&doc, kind) || (doc.kind != kind && doc.package.is_some()) {
+            doc = Cow::Owned(convert::to_kind(&doc, kind)?);
         }
-        if self.layers_for(kind).next().is_some() {
-            prepared = doc.clone();
-            for layer in self.layers_for(kind) {
-                layer.before_write(&mut prepared, kind).map_err(|e| layer_error(layer, e))?;
-            }
-            doc = &prepared;
+        // Layers edit a copy, made only when one does: copying a big document is a good share
+        // of saving it.
+        for layer in self.layers_for(kind).filter(|l| l.edits_before_write(kind)) {
+            layer.before_write(doc.to_mut(), kind).map_err(|e| layer_error(layer, e))?;
         }
+        let doc = &*doc;
         match formats::write(doc, kind)? {
             Output::Bytes(bytes) => Ok(bytes),
             Output::Package(mut pkg) => {
