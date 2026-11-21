@@ -1,7 +1,7 @@
 // The LaTeX editor: source on the left, the compiled PDF on the right (drawn by Writan's own
 // PDF viewer), and the outline, problems and PDF actions in the sidebar. Typing `\` lists the
 // commands with what each does (complete.ts). It compiles with the
-// system's TeX (context.tex) a few seconds after typing stops (Settings › Plugins sets how many).
+// system's TeX (context.tex) a few seconds after typing stops (Settings › General sets how many).
 
 import { HighlightStyle, StreamLanguage } from '@codemirror/language'
 import { stex } from '@codemirror/legacy-modes/mode/stex'

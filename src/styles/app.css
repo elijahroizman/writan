@@ -3204,11 +3204,6 @@ button.section-title:hover {
   flex: 1;
 }
 
-.tour-text .hint {
-  font-size: 12px;
-  line-height: 1.45;
-}
-
 /* The tour's pictures: screenshots of the app, in the theme's mode. */
 .tour-shot {
   display: block;
