@@ -132,6 +132,9 @@ pub struct SheetsView {
     /// While shared: style indexes below this were in the workbook when sharing started, so every
     /// copy has them (see `collab`).
     pub(crate) shared_styles: usize,
+    /// Another copy changed the document since it was saved here, while shared. Their changes
+    /// aren't in the undo history, which [`Self::is_dirty`] otherwise goes by.
+    pub(crate) others_changed: bool,
     pub(crate) replica: Option<office_engine::collab::Replica<CStep>>,
 }
 
@@ -217,6 +220,7 @@ impl SheetsView {
             now: None,
             circular,
             shared_styles: 0,
+            others_changed: false,
             replica: None,
         }
     }
@@ -227,13 +231,11 @@ impl SheetsView {
 
     pub fn mark_saved(&mut self) {
         self.saved = self.history.version();
-        if let Some(r) = &mut self.replica {
-            r.saved();
-        }
+        self.others_changed = false;
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.history.version() != self.saved || self.replica.as_ref().is_some_and(|r| r.changed_by_others())
+        self.history.version() != self.saved || self.others_changed
     }
 
     pub fn revision(&self) -> u64 {

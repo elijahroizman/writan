@@ -105,6 +105,9 @@ pub struct SlidesView {
     /// Chart clipboard payloads can only refer to the deck they were copied from.
     pub(crate) chart_clipboard_scope: std::sync::OnceLock<Option<[u8; 16]>>,
     /// Set while the presentation is shared with other copies (see `collab`).
+    /// Another copy changed the document since it was saved here, while shared. Their changes
+    /// aren't in the undo history, which [`Self::is_dirty`] otherwise goes by.
+    pub(crate) others_changed: bool,
     pub(crate) replica: Option<office_engine::collab::Replica<SStep>>,
     /// Changes to the layer's own tables (copied notes) to send with the next shared change.
     pub(crate) collab_extra: Vec<serde_json::Value>,
@@ -196,6 +199,7 @@ impl SlidesView {
             goal_x: None,
             pending: None,
             chart_clipboard_scope: Default::default(),
+            others_changed: false,
             replica: None,
             collab_extra: Vec::new(),
         }
@@ -207,13 +211,11 @@ impl SlidesView {
 
     pub fn mark_saved(&mut self) {
         self.saved = self.history.version();
-        if let Some(r) = &mut self.replica {
-            r.saved();
-        }
+        self.others_changed = false;
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.history.version() != self.saved || self.replica.as_ref().is_some_and(|r| r.changed_by_others())
+        self.history.version() != self.saved || self.others_changed
     }
 
     pub fn slides(&self) -> &[Slide] {

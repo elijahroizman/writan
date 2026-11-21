@@ -154,6 +154,9 @@ pub struct WordView {
     /// Each body paragraph's list and level at the last layout.
     pub(crate) last_lists: Vec<Option<(String, u8)>>,
     /// Set while the document is shared with other copies (see `collab`).
+    /// Another copy changed the document since it was saved here, while shared. Their changes
+    /// aren't in the undo history, which [`Self::is_dirty`] otherwise goes by.
+    pub(crate) others_changed: bool,
     pub(crate) replica: Option<office_engine::collab::Replica<WStep>>,
     /// Changes to the layer's tables to send with the next shared change.
     pub(crate) collab_extra: Vec<serde_json::Value>,
@@ -298,6 +301,7 @@ impl WordView {
             unrecorded: false,
             list_memo: HashMap::new(),
             last_lists: Vec::new(),
+            others_changed: false,
             replica: None,
             collab_extra: Vec::new(),
         };
@@ -314,14 +318,12 @@ impl WordView {
 
     pub fn mark_saved(&mut self) {
         self.saved = self.history.version();
-        if let Some(r) = &mut self.replica {
-            r.saved();
-        }
+        self.others_changed = false;
     }
 
     /// Changed since it was opened or last saved.
     pub fn is_dirty(&self) -> bool {
-        self.history.version() != self.saved || self.replica.as_ref().is_some_and(|r| r.changed_by_others())
+        self.history.version() != self.saved || self.others_changed
     }
 
     // ---- stories ----

@@ -231,12 +231,19 @@ export async function share(tabId: string, name: string): Promise<void> {
     const hosting = await host(title, tab.kind)
     link.session = hosting.session
     update(tabId, { invite: hosting.invite, addresses: hosting.addresses })
-    const editor = getEditor(tabId)
-    if (link.closed || !editor) throw new Error('The tab closed before sharing started.')
     // Everyone starts from these bytes, the host too: reloading makes the host's document what
-    // the others read from them. Taken last, so nothing typed while the relay started is lost.
-    editor.prepareSave?.()
-    const bytes = await editor.getBytes()
+    // the others read from them. Taken last, and again if the document changed while they were
+    // written (Word adds its comments asynchronously), so nothing typed is lost.
+    let bytes: Uint8Array | null = null
+    for (let tries = 0; !bytes; tries++) {
+      const editor = getEditor(tabId)
+      if (link.closed || !editor) throw new Error('The tab closed before sharing started.')
+      if (tries === 5) throw new Error('The document kept changing. Try sharing again.')
+      editor.prepareSave?.()
+      const revision = editor.getRevision?.()
+      const written = await editor.getBytes()
+      if (getEditor(tabId) === editor && editor.getRevision?.() === revision) bytes = written
+    }
     if (link.closed) throw new Error('Sharing was stopped.')
     useWorkspace.getState().reloadBytes(tabId, bytes)
     const transport = await connect(hosting.local.url, {

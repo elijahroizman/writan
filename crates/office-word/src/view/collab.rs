@@ -76,6 +76,9 @@ impl WordView {
 
     pub fn collab_receive(&mut self, op: &Value) -> bool {
         let changed = collab::receive(self, op);
+        if self.replica.as_mut().is_some_and(|r| r.take_changed_by_others()) {
+            self.others_changed = true;
+        }
         if changed {
             self.stale = true;
             self.revision += 1;
@@ -137,27 +140,23 @@ impl WordView {
         let mut index = step["index"].as_u64()? as i64;
         let n = step["n"].as_u64()? as usize;
         let before = step["before"].as_str()?;
-        // Past what others changed before it, in the same list or a list above. A change to the
-        // same blocks, or to a table they're in, means this one comes second and is dropped.
+        // Past what others changed before it, in the same list or a list above. Then what it
+        // replaced must be exactly there: if someone changed those blocks first, it's dropped.
         for s in since.unwrap_or(&[]) {
             let WStep::Text(st, s) = s else { continue };
             if *st != story {
                 continue;
             }
             let delta = s.inserted.len() as i64 - s.removed.len() as i64;
-            let (start, end) = (s.index as i64, (s.index as usize + s.removed.len()) as i64);
+            let end = (s.index as usize + s.removed.len()) as i64;
             if s.container == container {
                 if end <= index {
                     index += delta;
-                } else if start < index + n as i64 {
-                    return None;
                 }
             } else if container.len() > s.container.len() && container[..s.container.len()] == s.container[..] {
                 let at = &mut container[s.container.len()];
                 if end <= *at as i64 {
                     *at = (*at as i64 + delta).max(0) as u32;
-                } else if start <= *at as i64 {
-                    return None;
                 }
             }
         }
@@ -298,6 +297,8 @@ impl Shared for WordView {
             }
         }
         if changed {
+            // Only another copy's change does anything here: this copy's own was done already.
+            self.others_changed = true;
             self.extras = super::read_extras(&self.doc);
             self.specs.clear();
             self.dirty = Dirty::Full;
@@ -524,5 +525,32 @@ mod tests {
         room.views[1].insert_text("B");
         room.sync();
         assert_eq!(room.agree(), ["", "A", "Third"]);
+    }
+
+    #[test]
+    fn typing_on_a_new_line_survives_an_edit_below_it() {
+        let mut room = Room::new(&["One", "Two"], 2);
+        caret(&mut room.views[1], 1, 3);
+        room.views[1].insert_text("!");
+        room.send(1);
+        // Copy 0 splits the first paragraph and types on the new line, both before copy 1's
+        // edit arrives; its typing has the same index copy 1's edit had.
+        caret(&mut room.views[0], 0, 3);
+        room.views[0].enter();
+        room.send(0);
+        room.views[0].insert_text("x");
+        room.send(0);
+        room.deliver();
+        assert_eq!(room.agree(), ["One", "x", "Two!"]);
+    }
+
+    #[test]
+    fn others_changes_stay_unsaved_after_sharing_stops() {
+        let mut room = Room::new(&["One"], 2);
+        caret(&mut room.views[1], 0, 3);
+        room.views[1].insert_text("!");
+        room.sync();
+        room.views[0].collab_stop();
+        assert!(room.views[0].is_dirty());
     }
 }

@@ -81,8 +81,7 @@ pub struct Replica<S> {
     recent: VecDeque<Applied<S>>,
     /// Pictures every copy has.
     media: HashSet<String>,
-    /// Another copy changed the document since it was last saved here. Their changes aren't in
-    /// this copy's undo history, which is what tells it has unsaved changes.
+    /// Another copy's change was applied since [`Replica::take_changed_by_others`].
     others: bool,
 }
 
@@ -122,13 +121,11 @@ impl<S: Step> Replica<S> {
         self.client.chars().filter(|c| c.is_ascii_alphanumeric()).take(12).collect()
     }
 
-    /// Whether another copy changed the document since [`Replica::saved`].
-    pub fn changed_by_others(&self) -> bool {
-        self.others
-    }
-
-    pub fn saved(&mut self) {
-        self.others = false;
+    /// Whether another copy's change was applied since the last call. Their changes aren't in
+    /// this copy's undo history, which is what tells a view it has unsaved changes, so the view
+    /// keeps this itself.
+    pub fn take_changed_by_others(&mut self) -> bool {
+        std::mem::take(&mut self.others)
     }
 
     pub fn has_pending(&self) -> bool {

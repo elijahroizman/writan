@@ -44,6 +44,9 @@ impl SlidesView {
 
     pub fn collab_receive(&mut self, op: &Value) -> bool {
         let changed = collab::receive(self, op);
+        if self.replica.as_mut().is_some_and(|r| r.take_changed_by_others()) {
+            self.others_changed = true;
+        }
         if changed {
             self.goal_x = None;
             self.sync_caret();
