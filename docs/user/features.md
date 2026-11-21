@@ -79,12 +79,12 @@ In **Settings › Autosave** you can turn it off, change the delay, or leave som
 
 ## Version history
 
-Each time a file is saved, by you or by autosave, Writan keeps a copy of that version. **File › Version History…** (or right-click a tab and pick **Version history…**) lists them by day. Pick one to see what's different: **Compare with now** shows what going back would undo, and **What changed in this save** shows that save's own changes. Text, Markdown and LaTeX files compare line by line; Word documents and PowerPoint presentations compare their text paragraph by paragraph. PDFs and pictures can be opened or restored but not compared.
+Each time a file is saved, by you or by autosave, Writan keeps a copy of that version. **File › Version History…** (or right-click a tab and pick **Version history…**) shows a version as a page, with a timeline of every version along the bottom. Drag along the timeline, click it, or press ← and → to scrub through them. **This save** marks what that save changed; **Compare with now** marks what going back to it would undo. Text, Markdown and LaTeX files compare line by line; Word documents and PowerPoint presentations compare their text paragraph by paragraph. PDFs and pictures can be opened or restored but not compared.
 
-- **Save version** saves now, with a description if you type one, like a commit message.
 - **Restore** puts that version back. What the document was before is kept in the history too, so restoring can be undone.
-- **Open copy** opens the old version in a new tab without touching the file.
-- Click a version's name to name it. Named versions are always kept.
+- Click a version's name to name it. Named versions are always kept, and show as darker dots on the timeline.
+- **⋯** opens the version as a copy in a new tab without touching the file, or deletes it.
+- **Save version** appears when the document has unsaved changes, and saves it now.
 
 Every save from the last hour is kept, then one per ten minutes for a day, one per day for a month and one per week after that. Identical versions are stored once. The copies live in Writan's own data folder on this computer, not next to your files. The first time Writan saves over a file, it also keeps the file as it was. **Settings › Autosave** turns version history off, shows how much space it takes, and can delete it all. A file that's moved or renamed outside Writan starts a new history.
 
