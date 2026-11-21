@@ -241,6 +241,10 @@ impl WordView {
         } as usize;
         let old = list[index..index + n].to_vec();
         let inserted: Vec<Block> = take_content(&old, &step["after"])?;
+        // Two copies deleting a list's last blocks at once (each leaving one) would leave it empty.
+        if inserted.is_empty() && n > 0 && n == list.len() {
+            return None;
+        }
         let root = self.blocks_mut(story);
         let list = pos::blocks_at_mut(root, &container)?;
         let removed: Vec<Block> = list.splice(index..index + n, inserted.iter().cloned()).collect();
@@ -571,6 +575,20 @@ mod tests {
         // A list is never emptied, and blocks that aren't there aren't deleted.
         assert!(!room.views[0].delete_blocks(&[], 0, 2));
         assert!(!room.views[0].delete_blocks(&[], 2, 5));
+    }
+
+    #[test]
+    fn two_copies_deleting_the_last_blocks_at_once_leave_one() {
+        for first in [0, 1] {
+            let mut room = Room::new(&["One", "Two"], 2);
+            assert!(room.views[0].delete_blocks(&[], 0, 0));
+            assert!(room.views[1].delete_blocks(&[], 1, 1));
+            room.send(first);
+            room.send(1 - first);
+            room.sync();
+            let left = room.agree();
+            assert_eq!(left.len(), 1, "{left:?}");
+        }
     }
 
     #[test]

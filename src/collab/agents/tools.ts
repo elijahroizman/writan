@@ -517,7 +517,8 @@ function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, mat
   e.run({ cmd: 'replaceAll', text: by })
   // Each shape's text should now read as if every match were replaced. Where it doesn't, some
   // of it had formatting changing partway through and was left.
-  const every = new RegExp(find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
+  // The same matching as the presentation's own replace: the query trimmed, any case.
+  const every = new RegExp(find.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi')
   const left = found.filter((m, i) => textOf(m) !== before[i].replace(every, () => by)).length
   return left
     ? `Replaced in ${found.length - left} shape${found.length - left === 1 ? '' : 's'}. In ${left} more, some of it has formatting changing partway through and wasn’t replaced; use set_shape_text there.`

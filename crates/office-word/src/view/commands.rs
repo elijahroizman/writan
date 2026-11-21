@@ -356,6 +356,13 @@ impl WordView {
         if to as usize >= list.len() || list.len() == (to - from + 1) as usize {
             return false;
         }
+        // A paragraph that ends a section holds that section's page setup: deleting it would
+        // join two sections.
+        let ends_section =
+            |b: &Block| matches!(b, Block::Paragraph(p) if p.origin.get().and_then(|o| o.path(ns::W, &["pPr", "sectPr"])).is_some());
+        if list[from as usize..=to as usize].iter().any(ends_section) {
+            return false;
+        }
         let removed: Vec<Block> = list.drain(from as usize..=to as usize).collect();
         let splice = Splice { container: container.to_vec(), index: from, removed, inserted: Vec::new() };
         // The caret goes where the blocks were.
