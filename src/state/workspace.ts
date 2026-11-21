@@ -149,6 +149,8 @@ export const collabHooks = {
   /** Who keeps the file, for a tab that follows a document someone else is sharing; null
    * otherwise. Such a tab isn't a file here: its changes go to them, and they save. */
   keeper: (_tabId: string): string | null => null,
+  /** For such a tab, waits a moment for what was done here to reach them; true once it has. */
+  settled: async (_tabId: string): Promise<boolean> => false,
 }
 
 /** An unsaved document crash recovery kept (see lib/recovery.ts). */
@@ -564,9 +566,20 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       const first = activeDoc(id)
       if (!first || !getEditor(first.id)) return false
       const keeper = collabHooks.keeper(first.id)
-      if (keeper !== null && !opts?.saveAs && !opts?.to) {
-        await platform.showMessage(`${keeper} has the file and saves it. Your changes are already with them. To keep a copy of your own, use Save As.`, 'Nothing to save here')
-        return false
+      if (keeper !== null && !opts?.to) {
+        if (!opts?.saveAs) {
+          await platform.showMessage(`${keeper} has the file and saves it. Your changes are already with them. To keep a copy of your own, use Save As.`, 'Nothing to save here')
+          return false
+        }
+        // A copy of your own, apart from the tab, which goes on following theirs.
+        const editor = getEditor(first.id)!
+        editor.prepareSave?.()
+        try {
+          return await platform.saveBytesAs(`${first.title}.${KINDS[first.kind].extensions[0]}`, await editor.getBytes())
+        } catch (err) {
+          await platform.showError(String(err))
+          return false
+        }
       }
       while (saving.has(first.id)) await saving.get(first.id)
       // Register without another await, so a waiting save sees this tab's new path and editor.
@@ -671,8 +684,8 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       const tab = get().tabs.find((t) => t.id === tabId)
       if (!tab) return true
       // Autosaved tabs close without asking once their last changes are written. A tab following
-      // someone else's shared document has nothing of its own to save: they have its changes.
-      if (tab.dirty && collabHooks.keeper(tab.id) === null && !(await autosaveHooks.flush(tab.id))) {
+      // someone else's shared document has nothing of its own to save once they have its changes.
+      if (tab.dirty && !(await collabHooks.settled(tab.id)) && !(await autosaveHooks.flush(tab.id))) {
         get().activate(tab.id)
         const choice = await platform.askSaveChanges(tab.title)
         if (choice === 'cancel') return false

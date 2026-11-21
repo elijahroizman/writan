@@ -31,7 +31,7 @@ import { useTex } from './state/tex'
 import type { Scope } from './state/shortcuts'
 import { engineKeysOf, keysFor, keysFromEvent, movedBuiltIn, shortcutFor, syncMenu } from './state/shortcuts'
 import type { DocTab } from './state/workspace'
-import { getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWorkspace } from './state/workspace'
+import { collabHooks, getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWorkspace } from './state/workspace'
 
 export interface EditorProps {
   tab: DocTab
@@ -418,6 +418,8 @@ async function confirmDiscardAll(): Promise<boolean> {
   // Autosaved tabs just save; only the rest need asking about.
   await flushAutosave()
   for (const tab of useWorkspace.getState().tabs.filter((t) => t.dirty)) {
+    // Someone else's shared document: theirs to save, once they have what was done here.
+    if (await collabHooks.settled(tab.id)) continue
     useWorkspace.getState().activate(tab.id)
     const choice = await platform.askSaveChanges(tab.title)
     if (choice === 'cancel' || (choice === 'save' && (!(await useWorkspace.getState().save(tab.id)) || useWorkspace.getState().tabs.find((t) => t.id === tab.id)?.dirty))) {

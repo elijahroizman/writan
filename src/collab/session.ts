@@ -461,6 +461,20 @@ export function keeperOf(tabId: string): string | null {
 }
 collabHooks.keeper = keeperOf
 
+/** For a tab following someone else's shared document: waits up to a few seconds for every
+ * change made here to reach the relay, which sends it on to them. True once none is left. */
+async function settled(tabId: string): Promise<boolean> {
+  const link = links.get(tabId)
+  if (!link || link.role !== 'guest' || keeperOf(tabId) === null) return false
+  const until = Date.now() + 3000
+  while (!link.closed && link.engine?.doc.collabPending()) {
+    if (Date.now() > until) return false
+    await new Promise((r) => setTimeout(r, 50))
+  }
+  return !link.closed && !!link.engine
+}
+collabHooks.settled = settled
+
 // A shared tab that closes, however it closes (before its document finished opening too), ends
 // its sharing.
 useWorkspace.subscribe((state, prev) => {

@@ -183,6 +183,17 @@ try {
   })
   check('the outline covers the guest’s range', !!box && Math.abs(box.width - b3.w) < 2 && Math.abs(box.height - b3.h) < 2, JSON.stringify([box, b3]))
   check('the sheet list shows the guest’s sheet', (await a.page.locator('nav[aria-label="Sheets"] .peer-dot').count()) === 1)
+
+  // A guest that closes its tab right after an edit isn't asked to save, and the edit still
+  // reaches the host.
+  const closed = await b.page.evaluate(async () => {
+    window.__sheets.run({ cmd: 'input', sheet: 0, row: 5, col: 0, text: 'last word' })
+    const ws = window.__workspace.useWorkspace.getState()
+    return ws.closeTab(ws.activeId)
+  })
+  check('the guest’s tab closes without asking', closed === true && (await b.page.locator('.dialog').count()) === 0)
+  await a.page.waitForFunction(() => JSON.parse(window.__sheets.doc.cell(0, 5, 0)).display === 'last word')
+  check('what the guest did just before closing reached the host', true)
   if (shots) await a.page.screenshot({ path: `${shots}/sheets-host.png` })
 } catch (err) {
   check('the run finished', false, String(err?.stack ?? err))

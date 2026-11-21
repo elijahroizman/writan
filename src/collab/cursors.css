@@ -23,33 +23,45 @@
   pointer-events: auto;
 }
 
-.peer-tag {
+.peer-tags {
   position: absolute;
   left: calc(-1px * var(--peer-scale, 1));
   bottom: 100%;
   margin-bottom: calc(3px * var(--peer-scale, 1));
-  padding: 0 calc(5px * var(--peer-scale, 1));
-  border-radius: calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) 0;
-  background: var(--peer);
-  color: #fff;
-  font: 600 calc(11px * var(--peer-scale, 1)) / 1.6 var(--font-ui, system-ui, sans-serif);
-  letter-spacing: 0;
-  white-space: nowrap;
+  display: flex;
+  gap: calc(2px * var(--peer-scale, 1));
   pointer-events: none;
   user-select: none;
   /* Shows while they move, then fades; remounting on each move shows it again. */
   animation: peer-tag-fade 0.4s ease 4s forwards;
 }
 
-.peer-tag.below {
+.peer-tags.below {
   bottom: auto;
   top: 100%;
   margin: calc(3px * var(--peer-scale, 1)) 0 0;
-  border-radius: 0 calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1));
 }
 
-.peer-caret:hover .peer-tag,
-.peer-box:hover > .peer-tag {
+.peer-tag {
+  padding: 0 calc(5px * var(--peer-scale, 1));
+  border-radius: calc(3px * var(--peer-scale, 1));
+  background: var(--peer);
+  color: #fff;
+  font: 600 calc(11px * var(--peer-scale, 1)) / 1.6 var(--font-ui, system-ui, sans-serif);
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.peer-tags > .peer-tag:first-child {
+  border-bottom-left-radius: 0;
+}
+
+.peer-tags.below > .peer-tag:first-child {
+  border-bottom-left-radius: calc(3px * var(--peer-scale, 1));
+  border-top-left-radius: 0;
+}
+
+.peer-caret:hover .peer-tags {
   animation: none;
   opacity: 1;
 }
@@ -74,24 +86,13 @@
   transform-origin: 50% 50%;
 }
 
-/* The box's top edge shows the name on hover. */
-.peer-box::before {
-  content: '';
-  position: absolute;
-  inset: calc(-4px * var(--peer-scale, 1)) 0 auto;
-  height: calc(6px * var(--peer-scale, 1));
-  pointer-events: auto;
-}
-
-.peer-box > .peer-tag {
+.peer-box > .peer-tags {
   left: calc(-2px * var(--peer-scale, 1));
   margin-bottom: 0;
-  border-radius: calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) 0;
 }
 
-.peer-box > .peer-tag.below {
-  margin: 0;
-  border-radius: 0 calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1)) calc(3px * var(--peer-scale, 1));
+.peer-box > .peer-tags.below {
+  margin-top: 0;
 }
 
 .peer-dots {

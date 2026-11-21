@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import { colorFor, displayName, join, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
-import { localNetworkAllowed, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings } from '../collab/network'
+import { askForNetwork, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings, whileNetworkAllowed } from '../collab/network'
 import { isMac, isTauri } from '../lib/platform'
 import { useWorkspace } from '../state/workspace'
 import { Button, Modal, Spinner, TextField } from './ui'
@@ -89,12 +89,6 @@ function NetworkNote({ state }: { state: Network }) {
   )
 }
 
-/** Waits for macOS to let Writan reach the network, saying so meanwhile. */
-async function networkFor(setNetwork: (n: Network) => void, cancelled: () => boolean): Promise<boolean> {
-  const ok = await localNetworkAllowed((on) => on && setNetwork('waiting'), cancelled)
-  setNetwork(ok || cancelled() ? null : 'denied')
-  return ok
-}
 
 function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<HTMLButtonElement | null> }) {
   const state = useCollab((s) => s[tabId])
@@ -104,15 +98,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
   const [name, setName] = useName()
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [network, setNetwork] = useState<Network>(null)
   const [copied, setCopied] = useState(false)
-  const gone = useRef(false)
-  useEffect(() => {
-    gone.current = false
-    return () => {
-      gone.current = true
-    }
-  }, [])
   const close = () => useSharePanel.setState({ tabId: null })
   // Others edit the file on disk with you, so it needs to be one, and what they start from is
   // what's saved.
@@ -151,13 +137,14 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
     setBusy(true)
     setError(null)
     try {
+      // On a Mac, macOS asks now whether Writan may reach the network, if it hasn't asked before.
+      await askForNetwork()
       const ws = useWorkspace.getState()
       const now = ws.tabs.find((t) => t.id === tabId)
       if (now && (!now.path || now.dirty)) {
         const saved = (await ws.save(tabId)) && !useWorkspace.getState().tabs.find((t) => t.id === tabId)?.dirty
         if (!saved) return setError('Save the document to share it. Everyone edits the saved file with you.')
       }
-      if (!(await networkFor(setNetwork, () => gone.current))) return
       await share(tabId, who)
     } catch (err) {
       setError(String((err as Error)?.message ?? err))
@@ -192,7 +179,6 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
         {(!state || state.role === 'host') && (
           <div className="share-body">
             <TextField label="Your name" value={name} placeholder="How others see you" autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void start()} />
-            <NetworkNote state={network} />
             {error && <p className="share-error">{error}</p>}
             {!isTauri && <p className="share-note">In the browser, sharing goes through the relay at the address in workspace.collabRelay.</p>}
           </div>
@@ -289,8 +275,17 @@ export function JoinDialog() {
     setBusy(true)
     setError(null)
     try {
-      if (!(await networkFor(setNetwork, () => !useSharePanel.getState().joining))) return
-      await join(link, who)
+      await askForNetwork()
+      const joined = await whileNetworkAllowed(
+        () => join(link, who).then(() => true),
+        (on) => setNetwork(on ? 'waiting' : null),
+        () => !useSharePanel.getState().joining,
+      )
+      if (!joined) {
+        if (useSharePanel.getState().joining) setNetwork('denied')
+        return
+      }
+      setNetwork(null)
       setLink('')
       useSharePanel.setState({ joining: false })
     } catch (err) {
