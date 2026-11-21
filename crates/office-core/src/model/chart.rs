@@ -132,6 +132,12 @@ pub struct Chart {
     pub grouping: ChartGrouping,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    /// The category axis's title (a scatter chart's x axis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cat_title: Option<String>,
+    /// The value axis's title (a scatter chart's y axis).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub val_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legend: Option<LegendPosition>,
     pub series: Vec<ChartSeries>,
@@ -158,6 +164,8 @@ impl Chart {
             r.kind == self.kind
                 && r.grouping == self.grouping
                 && r.title == self.title
+                && r.cat_title == self.cat_title
+                && r.val_title == self.val_title
                 && r.legend == self.legend
                 && r.series == self.series
         })

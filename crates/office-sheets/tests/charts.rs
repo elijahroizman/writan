@@ -192,6 +192,72 @@ fn a_chart_from_a_block_of_cells() {
 }
 
 #[test]
+fn axis_titles_read_and_write() {
+    let mut v = book();
+    v.add_chart(0, range("A1:C4"), ChartKind::Column).unwrap();
+    v.set_chart(0, 0, &ChartPatch { cat_title: Some("Month".into()), val_title: Some("Sales ($)".into()), ..Default::default() });
+    let shown = v.charts(0);
+    assert_eq!(shown[0].cat_title.as_deref(), Some("Month"));
+    assert_eq!(shown[0].val_title.as_deref(), Some("Sales ($)"));
+
+    // Written: each axis carries its title, the vertical one turned.
+    let bytes = v.save().unwrap();
+    let xml = part(&bytes, "xl/charts/chart1.xml").unwrap();
+    assert!(xml.contains("<c:catAx>") && xml.contains(">Month<") && xml.contains(">Sales ($)<"), "{xml}");
+    let at = |s: &str| xml.find(s).unwrap_or(usize::MAX);
+    assert!(at("<c:catAx>") < at(">Month<") && at(">Month<") < at("<c:valAx>") && at("<c:valAx>") < at(">Sales ($)<"), "{xml}");
+    assert_eq!(xml.matches("rot=\"-5400000\"").count(), 1, "{xml}");
+    assert!(at("<c:valAx>") < at("rot=\"-5400000\"") && at("rot=\"-5400000\"") < at(">Sales ($)<"), "{xml}");
+
+    // Read back: the same titles, and an untouched save keeps the part byte for byte.
+    let mut back = SheetsView::open(&bytes, "book.xlsx").unwrap();
+    let c = &back.sheets()[0].charts[0];
+    assert_eq!(c.cat_title.as_deref(), Some("Month"));
+    assert_eq!(c.val_title.as_deref(), Some("Sales ($)"));
+    assert!(c.untouched());
+    let again = back.save().unwrap();
+    assert_eq!(part(&again, "xl/charts/chart1.xml"), Some(xml.clone()));
+
+    // A group that lists its value axis first still reads each title by its axis' kind.
+    let mut pkg = Package::read(&bytes).unwrap();
+    let chart = "xl/charts/chart1.xml";
+    let xml = String::from_utf8(pkg.part(chart).unwrap().to_vec()).unwrap();
+    let swapped =
+        xml.replacen("<c:axId val=\"500000001\"/><c:axId val=\"500000002\"/>", "<c:axId val=\"500000002\"/><c:axId val=\"500000001\"/>", 1);
+    assert_ne!(swapped, xml);
+    pkg.replace(chart, swapped.into_bytes()).unwrap();
+    let mut back = SheetsView::open(&pkg.to_bytes().unwrap(), "book.xlsx").unwrap();
+    let c = &back.sheets()[0].charts[0];
+    assert_eq!(c.cat_title.as_deref(), Some("Month"));
+    assert_eq!(c.val_title.as_deref(), Some("Sales ($)"));
+
+    // A bar chart's axes swap sides: the value title lies along the bottom.
+    back.set_chart(0, 0, &ChartPatch { kind: Some(ChartKind::Bar), ..Default::default() });
+    let xml = part(&back.save().unwrap(), "xl/charts/chart1.xml").unwrap();
+    assert!(xml.contains(">Month<") && xml.contains(">Sales ($)<"), "{xml}");
+    let at = |s: &str| xml.find(s).unwrap_or(usize::MAX);
+    assert!(at("<c:catAx>") < at("rot=\"-5400000\"") && at("rot=\"-5400000\"") < at(">Month<"), "{xml}");
+    assert!(at("<c:valAx>") < at(">Sales ($)<"), "{xml}");
+
+    // A scatter chart's x axis is a valAx too; its title still reads back as the category one.
+    back.set_chart(0, 0, &ChartPatch { kind: Some(ChartKind::Scatter), ..Default::default() });
+    let bytes = back.save().unwrap();
+    let xml = part(&bytes, "xl/charts/chart1.xml").unwrap();
+    assert!(!xml.contains("<c:catAx>"), "{xml}");
+    let back = SheetsView::open(&bytes, "book.xlsx").unwrap();
+    let c = &back.sheets()[0].charts[0];
+    assert_eq!(c.cat_title.as_deref(), Some("Month"), "{xml}");
+    assert_eq!(c.val_title.as_deref(), Some("Sales ($)"), "{xml}");
+
+    // Empty clears a title.
+    let mut back = SheetsView::open(&bytes, "book.xlsx").unwrap();
+    back.set_chart(0, 0, &ChartPatch { cat_title: Some(String::new()), ..Default::default() });
+    assert_eq!(back.charts(0)[0].cat_title, None);
+    let xml = part(&back.save().unwrap(), "xl/charts/chart1.xml").unwrap();
+    assert!(!xml.contains(">Month<"), "{xml}");
+}
+
+#[test]
 fn charts_follow_rows_names_and_undo() {
     let mut v = book();
     v.add_chart(0, range("A1:C4"), ChartKind::Pie).unwrap();
@@ -296,6 +362,8 @@ fn every_kind_for_other_apps() {
         &ChartPatch {
             grouping: Some(office_core::model::ChartGrouping::Stacked),
             title: Some("Stacked & <titled>".into()),
+            cat_title: Some("Month".into()),
+            val_title: Some("Amount".into()),
             color: Some((1, "AA3355".into())),
             ..Default::default()
         },
