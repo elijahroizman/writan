@@ -127,7 +127,7 @@ function fakeTauri() {
           return 0
         case 'cloud_folders':
           return []
-        case 'latest_release':
+        case 'release_notes':
         case 'plugin:updater|check':
           throw 'offline'
         default:
