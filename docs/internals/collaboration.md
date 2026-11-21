@@ -65,6 +65,8 @@ Only the relay's address would change. `relay.rs` uses no sockets and no Tauri, 
 
 ## Known gaps
 
+Everything sharing doesn't do yet, with what's left to build, is in [limits and what's left](collaboration-todo.md). The rarest cases:
+
 These need two people to do the same rare thing within the time a change takes to reach the relay and back (milliseconds on a LAN):
 
 - Two new Word lists, or two new headers or footers, made at once can get the same id on different copies, and the copies then disagree about that list or header.
