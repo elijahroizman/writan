@@ -4,6 +4,7 @@
 //! again after each change, and sheets.
 
 mod charts;
+mod collab;
 mod commands;
 
 use std::collections::HashMap;
@@ -127,6 +128,8 @@ pub struct SheetsView {
     pending_cut: Option<commands::PendingCut>,
     /// The formulas in a circular reference, as of the last recalculation.
     pub(crate) circular: Vec<(usize, CellRef)>,
+    /// Set while the workbook is shared with other copies (see `collab`).
+    pub(crate) replica: Option<office_engine::collab::Replica<CStep>>,
 }
 
 /// A block of the grid drawn: items in grid pixels.
@@ -210,6 +213,7 @@ impl SheetsView {
             pending_cut: None,
             now: None,
             circular,
+            replica: None,
         }
     }
 

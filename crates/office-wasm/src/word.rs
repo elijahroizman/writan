@@ -356,6 +356,35 @@ impl WordDoc {
         self.view.insert_image(bytes, content_type, width, height);
     }
 
+    /// Starts sharing the document as copy `client` (see `office_engine::collab`).
+    #[wasm_bindgen(js_name = collabStart)]
+    pub fn collab_start(&mut self, client: &str) {
+        self.view.collab_start(client);
+    }
+
+    #[wasm_bindgen(js_name = collabStop)]
+    pub fn collab_stop(&mut self) {
+        self.view.collab_stop();
+    }
+
+    /// The changes made here since the last call, as JSON for the relay, if there are any.
+    #[wasm_bindgen(js_name = collabTake)]
+    pub fn collab_take(&mut self) -> Option<String> {
+        self.view.collab_take().map(|v| v.to_string())
+    }
+
+    /// Applies a change from the relay (JSON); returns whether the document changed.
+    #[wasm_bindgen(js_name = collabReceive)]
+    pub fn collab_receive(&mut self, op: &str) -> bool {
+        serde_json::from_str(op).is_ok_and(|op| self.view.collab_receive(&op))
+    }
+
+    /// Whether changes made here haven't come back from the relay yet.
+    #[wasm_bindgen(js_name = collabPending)]
+    pub fn collab_pending(&self) -> bool {
+        self.view.collab_pending()
+    }
+
     /// Whether the document has comments.
     #[wasm_bindgen(js_name = hasComments)]
     pub fn has_comments(&self) -> bool {

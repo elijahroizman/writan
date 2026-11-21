@@ -150,6 +150,8 @@ function serialNow() {
 }
 
 export class SheetsEngine {
+  /** Set while the document is shared (collab/session.ts): hears about every change, to send it. */
+  collab: { changed(): void } | null = null
   readonly doc: SheetsDoc
   readonly styles: StyleSheet
   readonly media: MediaCache
@@ -219,6 +221,7 @@ export class SheetsEngine {
     this.cell = JSON.parse(this.doc.cell(this.state.sheet, r, c))
     this.tick++
     for (const f of this.listeners) f()
+    this.collab?.changed()
   }
 
   geometryOf(sheet: number): Geometry {

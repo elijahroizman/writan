@@ -210,6 +210,11 @@ interface WorkspaceState {
    * tab is gone, or saved or edited (it's the user's now, so a rebuild must not overwrite it).
    */
   refreshUnsaved(id: string, bytes: Uint8Array): boolean
+  /**
+   * Load `bytes` into a tab's editor in place of what it has, keeping its file and unsaved
+   * state: sharing starts everyone, the sharer too, from the same bytes.
+   */
+  reloadBytes(id: string, bytes: Uint8Array): void
   /** A new, untitled document: blank, or holding `bytes` (a starter deck). */
   newDocument(kind: DocKind, bytes?: Uint8Array): void
   markDirty(id: string, dirty: boolean): void
@@ -486,6 +491,10 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       if (!tab || tab.path || tab.dirty) return false
       set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1 } : t)) })
       return true
+    },
+
+    reloadBytes: (id, bytes) => {
+      set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1 } : t)) })
     },
 
     newDocument: (kind, bytes) => {

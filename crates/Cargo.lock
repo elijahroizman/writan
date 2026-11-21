@@ -230,6 +230,7 @@ dependencies = [
  "office-core",
  "office-engine",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

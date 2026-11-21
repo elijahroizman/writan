@@ -89,7 +89,7 @@ pub struct SheetPicture {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     /// Where the drawing had it when read, so a picture that moved with its cells is found again.
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off")]
     pub read_as: Option<ChartAnchor>,
 }
 
@@ -137,12 +137,13 @@ pub struct Chart {
     pub series: Vec<ChartSeries>,
     pub anchor: ChartAnchor,
     /// Where it was read from, if it was.
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off")]
     pub source: Option<ChartSource>,
 }
 
 /// A chart's parts in the file it was read from, and the chart as read.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ChartSource {
     pub drawing: String,
     pub part: String,

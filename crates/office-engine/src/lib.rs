@@ -11,6 +11,7 @@
 //!
 //! See `docs/internals/office-engine.md` for the design.
 
+pub mod collab;
 pub mod display;
 pub mod edit;
 pub mod flow;

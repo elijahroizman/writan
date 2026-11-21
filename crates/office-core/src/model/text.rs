@@ -23,7 +23,7 @@ pub struct Paragraph {
     /// an empty paragraph's text looks like, and what typing at its end starts with.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mark: Option<RunProps>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 
@@ -37,7 +37,7 @@ pub enum Inline {
         kind: BreakKind,
         /// The run it was read from, so an untouched break (and its run's formatting) goes back
         /// as it was.
-        #[serde(skip)]
+        #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
         origin: Origin,
     },
     Image(Image),
@@ -63,7 +63,7 @@ pub struct Run {
     pub props: RunProps,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 

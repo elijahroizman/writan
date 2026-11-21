@@ -290,7 +290,7 @@ impl SlidesView {
             _ => return,
         }
         let layout = crate::layout(&self.doc, "blank").or_else(|| crate::layouts(&self.doc).first().copied()).map(|l| l.part.clone());
-        let part = Some(crate::free_part(&self.doc, &[]));
+        let part = Some(crate::free_part_in(&self.doc, &[], self.new_part_seed().as_deref()));
         let to = after.saturating_add(1).min(self.slides().len());
         let origin = Element::new(ns::P, "sld").with_child(Element::new(ns::P, "cSld").with_child(Element::new(ns::P, "bg").with_child(
             Element::new(ns::P, "bgPr").with_child(Element::new(ns::A, "solidFill").with_child(Color::scheme("bg1").to_drawingml())),

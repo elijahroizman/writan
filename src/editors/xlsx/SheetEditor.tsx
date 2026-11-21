@@ -42,6 +42,7 @@ import { usePinchZoom } from '../../lib/pinch'
 import { FormulaHelp } from './FormulaHelp'
 import { registerEditor, useWorkspace } from '../../state/workspace'
 import './sheets.css'
+import { useShared } from '../../collab/useShared'
 
 const NUMBER_FORMATS = [
   { value: 'General', label: 'General' },
@@ -79,6 +80,7 @@ const LEGENDS = [
 export default function SheetEditor({ tab, active }: EditorProps) {
   const [engine, setEngine] = useState<SheetsEngine | null>(null)
   const [error, setError] = useState<string | null>(null)
+  useShared(tab.id, engine)
   const name = useRef('')
   name.current = tab.path ?? `${tab.title}.${tab.kind}`
   useEffect(() => {

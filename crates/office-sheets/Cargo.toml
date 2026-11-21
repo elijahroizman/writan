@@ -9,3 +9,4 @@ publish.workspace = true
 office-core.workspace = true
 serde.workspace = true
 office-engine.workspace = true
+serde_json.workspace = true

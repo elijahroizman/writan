@@ -20,7 +20,8 @@ tauri-plugin-window-state = "2"
 tauri-plugin-updater = { version = "2", default-features = false, features = ["native-tls", "system-proxy", "zip"] }
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# raw_value: the collab relay passes edits through untouched, without parsing them.
+serde_json = { version = "1", features = ["raw_value"] }
 # Small blocking HTTP client for fetching video thumbnails; native TLS uses the macOS keychain roots.
 ureq = { version = "3", default-features = false, features = ["native-tls"] }
 # Plugin downloads: unpack the archive and check its signature against the updater key.
@@ -33,6 +34,10 @@ cab = "0.6"
 sha2 = "0.10"
 # Exclusive temporary files, removed even when a save fails.
 tempfile = "3"
+# Co-editing over the LAN (collab/): a blocking WebSocket server and client, wss:// through native TLS.
+tungstenite = { version = "0.30", default-features = false, features = ["handshake", "native-tls"] }
+# Session ids, invite tokens and host keys for shared documents (collab/).
+getrandom = "0.3"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSUserDefaults", "NSString", "NSObject", "NSArray", "NSURL", "NSEnumerator", "NSData", "NSRange"] }

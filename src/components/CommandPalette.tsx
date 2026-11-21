@@ -23,6 +23,7 @@ import {
   Fullscreen,
   Group,
   History,
+  LogIn,
   Italic,
   LayoutGrid,
   Link,
@@ -55,6 +56,7 @@ import {
   Trash2,
   Underline,
   Ungroup,
+  Users,
   X,
   ZoomIn,
   ZoomOut,
@@ -128,6 +130,8 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   'close-tab': X,
   'reopen-tab': RotateCcw,
   'version-history': History,
+  share: Users,
+  'join-shared': LogIn,
   'duplicate-tab': Copy,
   'next-tab': ChevronRight,
   'prev-tab': ChevronLeft,
@@ -191,6 +195,8 @@ const COMMAND_KEYWORDS: Record<string, string> = {
   replace: 'search',
   'split-view': 'side by side',
   'version-history': 'versions restore',
+  share: 'collaborate invite network lan co-edit',
+  'join-shared': 'collaborate invite network lan co-edit link',
   'focus-mode': 'distraction free',
   'view-read': 'preview',
   'view-split': 'preview source',
@@ -198,7 +204,7 @@ const COMMAND_KEYWORDS: Record<string, string> = {
 }
 
 /** Commands that only work on a document. From Home they show greyed out, so searching for one explains itself. */
-const NEEDS_DOCUMENT = new Set(['save', 'save-as', 'print', 'close-tab', 'duplicate-tab', 'version-history', 'find', 'replace', 'split-view', 'toggle-left', 'toggle-right', 'zoom-in', 'zoom-out', 'zoom-reset', 'focus-mode', 'typewriter', 'focus-dim'])
+const NEEDS_DOCUMENT = new Set(['share', 'save', 'save-as', 'print', 'close-tab', 'duplicate-tab', 'version-history', 'find', 'replace', 'split-view', 'toggle-left', 'toggle-right', 'zoom-in', 'zoom-out', 'zoom-reset', 'focus-mode', 'typewriter', 'focus-dim'])
 
 const SETTINGS_PAGES: { page: SettingsPage; label: string }[] = [
   { page: 'general', label: 'General' },

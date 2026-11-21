@@ -19,13 +19,13 @@ pub struct Slide {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
     /// For duplicated slides, the part that owns the original markup's relationship ids.
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off")]
     pub relationship_source: Option<String>,
     /// The layout part the slide is on (`ppt/slideLayouts/slideLayout2.xml`). A new slide
     /// without one goes on the layout of the slide before it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub layout: Option<String>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 
@@ -56,7 +56,7 @@ pub struct Frame {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
     pub content: FrameContent,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 
@@ -82,7 +82,7 @@ pub enum FrameContent {
     Raw {
         xml: Element,
         /// A copied chart's package part, independent of the destination slide's relationship ids.
-        #[serde(skip)]
+        #[serde(default, skip_serializing_if = "crate::model::wire::off")]
         chart_part: Option<String>,
     },
 }
@@ -103,7 +103,7 @@ pub struct Placeholder {
 #[serde(rename_all = "camelCase")]
 pub struct TextBody {
     pub paragraphs: Vec<Paragraph>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 

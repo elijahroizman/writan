@@ -17,7 +17,7 @@ pub struct Table {
     /// Word's table style id, or PowerPoint's table style GUID.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 
@@ -30,7 +30,7 @@ pub struct Row {
     /// Repeats at the top of each page (Word), or styled as the header (PowerPoint's first row).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub header: bool,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 
@@ -49,7 +49,7 @@ pub struct Cell {
     pub covered: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fill: Option<Color>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 

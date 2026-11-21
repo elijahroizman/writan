@@ -37,11 +37,11 @@ pub struct Sheet {
     /// The part the sheet was read from, so saving writes it back there.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub part: Option<String>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
     /// [`Sheet::fingerprint`] as read, so saving can leave an untouched sheet's part alone
     /// without reading it again.
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off")]
     pub read_as: Fingerprint,
 }
 
@@ -52,7 +52,7 @@ pub struct SheetRow {
     pub index: u32,
     /// Cells with something in them, in column order.
     pub cells: Vec<SheetCell>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 
@@ -68,7 +68,7 @@ pub struct SheetCell {
     /// Excel's cell format (an index into the style sheet's `cellXfs`), for the Excel layer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<u32>,
-    #[serde(skip)]
+    #[serde(default, skip_serializing_if = "crate::model::wire::off", with = "crate::model::wire::origin")]
     pub origin: Origin,
 }
 

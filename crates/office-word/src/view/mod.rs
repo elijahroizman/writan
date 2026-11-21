@@ -3,6 +3,7 @@
 //! engine breaks lines, lays out tables and edits text; this adds what only Word has: sections
 //! and pages, headers and footers, styles and lists, fields and page numbers.
 
+mod collab;
 mod commands;
 pub mod extras;
 mod fingerprint;
@@ -152,6 +153,10 @@ pub struct WordView {
     pub(crate) list_memo: ListMemo,
     /// Each body paragraph's list and level at the last layout.
     pub(crate) last_lists: Vec<Option<(String, u8)>>,
+    /// Set while the document is shared with other copies (see `collab`).
+    pub(crate) replica: Option<office_engine::collab::Replica<WStep>>,
+    /// Changes to the layer's tables to send with the next shared change.
+    pub(crate) collab_extra: Vec<serde_json::Value>,
 }
 
 /// What changed in the body since it was last laid out, so a layout pass can keep every other
@@ -293,6 +298,8 @@ impl WordView {
             unrecorded: false,
             list_memo: HashMap::new(),
             last_lists: Vec::new(),
+            replica: None,
+            collab_extra: Vec::new(),
         };
         if let Some(start) = pos::story_start(v.blocks(StoryId::Body)) {
             v.sel = Selection::caret(start);

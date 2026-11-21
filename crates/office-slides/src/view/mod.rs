@@ -5,6 +5,7 @@
 
 mod art;
 mod chart;
+mod collab;
 mod commands;
 mod draw;
 mod elements;
@@ -103,6 +104,10 @@ pub struct SlidesView {
     pub(crate) pending: Option<RunProps>,
     /// Chart clipboard payloads can only refer to the deck they were copied from.
     pub(crate) chart_clipboard_scope: std::sync::OnceLock<Option<[u8; 16]>>,
+    /// Set while the presentation is shared with other copies (see `collab`).
+    pub(crate) replica: Option<office_engine::collab::Replica<SStep>>,
+    /// Changes to the layer's own tables (copied notes) to send with the next shared change.
+    pub(crate) collab_extra: Vec<serde_json::Value>,
 }
 
 /// A slide drawn.
@@ -191,6 +196,8 @@ impl SlidesView {
             goal_x: None,
             pending: None,
             chart_clipboard_scope: Default::default(),
+            replica: None,
+            collab_extra: Vec::new(),
         }
     }
 

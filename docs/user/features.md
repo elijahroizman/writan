@@ -88,6 +88,14 @@ Each time a file is saved, by you or by autosave, Writan keeps a copy of that ve
 
 Every save from the last hour is kept, then one per ten minutes for a day, one per day for a month and one per week after that. Identical versions are stored once. The copies live in Writan's own data folder on this computer, not next to your files. The first time Writan saves over a file, it also keeps the file as it was. **Settings › Autosave** turns version history off, shows how much space it takes, and can delete it all. A file that's moved or renamed outside Writan starts a new history.
 
+## Sharing on your network
+
+Several people can edit a Word document, presentation or workbook at the same time, from computers on the same network. Click the people button at the right of the title bar (or **Share on your network…** in the command palette or a tab's right-click menu), type the name others will see, and press **Share**. Copy the link it gives and send it to the others. They click the people button on Home (or **Join a shared document…** in the command palette), paste the link and press **Join**. The document opens in a new tab.
+
+Everyone's changes show on everyone's screen as they're made. The person sharing keeps the file. Their tab saves and autosaves it as usual, with everyone's changes. Everyone else has a copy that follows it, and can save that copy too. When two people change the same paragraph, slide or cell at the same moment, the first change counts and the second is undone. Undo takes back only your own changes.
+
+**Stop sharing** in the same panel ends it for everyone, and so does closing the tab or quitting. The others keep what they had as an unsaved copy. The panel lists who's in the document. Anyone with the link can edit while the tab is shared, so send it only to people you mean to.
+
 ## Fonts
 
 Word documents use open-licensed stand-ins for Calibri, Cambria, Arial, Times New Roman and Courier New, with the same widths, so lines break where Word breaks them. Where the computer has the real font, documents use it. On Linux, which lacks Microsoft's fonts, Writan offers to download Arial, Times New Roman, Courier New, Georgia, Verdana and the rest of Microsoft's core fonts once you accept Microsoft's license; Calibri and Cambria can't be downloaded. See [Plugins › Microsoft's core fonts](plugins.md#microsofts-core-fonts-linux).

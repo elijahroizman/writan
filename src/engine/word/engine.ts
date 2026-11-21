@@ -108,6 +108,8 @@ function timer() {
 
 
 export class WordEngine {
+  /** Set while the document is shared (collab/session.ts): hears about every change, to send it. */
+  collab: { changed(): void } | null = null
   readonly doc: WordDoc
   readonly styles: StyleSheet
   readonly media: MediaCache
@@ -237,6 +239,7 @@ export class WordEngine {
     }
     this.tick++
     for (const f of this.listeners) f()
+    this.collab?.changed()
   }
 
   /** Draws a page: its items, with new paint styles added to the style sheet. `null` when it's

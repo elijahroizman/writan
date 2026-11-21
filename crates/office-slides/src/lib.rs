@@ -138,6 +138,11 @@ pub fn layout<'a>(doc: &'a Document, type_or_name: &str) -> Option<&'a Template>
 /// Adds a slide on `layout` (a layout's part) after the others, with a frame for each of the
 /// layout's placeholders except the date, footer and slide number, and returns its index.
 pub fn add_slide(doc: &mut Document, layout: &str) -> Option<usize> {
+    add_slide_in(doc, layout, None)
+}
+
+/// `add_slide`, naming the slide's part `seed`-wise (see [`free_part_in`]).
+pub(crate) fn add_slide_in(doc: &mut Document, layout: &str, seed: Option<&str>) -> Option<usize> {
     let t = template(doc, Some(layout))?.clone();
     let frames = t
         .placeholders
@@ -159,20 +164,26 @@ pub fn add_slide(doc: &mut Document, layout: &str) -> Option<usize> {
             origin: Origin::default(),
         })
         .collect();
-    let part = free_part(doc, &[]);
+    let part = free_part_in(doc, &[], seed);
     let Body::Slides { slides, .. } = &mut doc.body else { return None };
     slides.push(Slide { frames, part: Some(part), layout: Some(layout.to_string()), ..Default::default() });
     Some(slides.len() - 1)
 }
 
 /// A slide part name no slide, part in the package, speaker notes or name in `also` has. Notes
-/// of a deleted slide stay for undo, so its name isn't reused.
-fn free_part(doc: &Document, also: &[String]) -> String {
+/// of a deleted slide stay for undo, so its name isn't reused. With `seed` (a copy sharing the
+/// deck) the name is `slide-<seed>-<n>.xml` instead of `slide<n>.xml`, so copies naming parts
+/// at once — each with its own seed — don't collide.
+pub(crate) fn free_part_in(doc: &Document, also: &[String], seed: Option<&str>) -> String {
     let notes = ppt(doc).into_iter().flat_map(|p| p.notes.iter().map(|(s, _)| s.as_str()));
     let taken: Vec<&str> =
         slides(doc).iter().filter_map(|s| s.part.as_deref()).chain(also.iter().map(String::as_str)).chain(notes).collect();
     let in_pkg = |p: &str| doc.package.as_ref().is_some_and(|pkg| pkg.has(p));
-    (1..).map(|n| format!("ppt/slides/slide{n}.xml")).find(|p| !taken.contains(&p.as_str()) && !in_pkg(p)).unwrap()
+    let name = |n: u32| match seed {
+        Some(s) => format!("ppt/slides/slide-{s}-{n}.xml"),
+        None => format!("ppt/slides/slide{n}.xml"),
+    };
+    (1..).map(name).find(|p| !taken.contains(&p.as_str()) && !in_pkg(p)).unwrap()
 }
 
 // ---- inheritance ----
@@ -324,11 +335,17 @@ pub fn notes(doc: &Document, slide_index: usize) -> Vec<Paragraph> {
 /// Sets a slide's speaker notes. A slide added without a part name gets one, so the notes stay
 /// with it however the slides are arranged.
 pub fn set_notes(doc: &mut Document, slide_index: usize, paragraphs: Vec<Paragraph>) {
+    set_notes_in(doc, slide_index, paragraphs, None)
+}
+
+/// `set_notes`, naming a part the slide needs `seed`-wise (see [`free_part_in`]). A copy sharing
+/// the deck passes a seed it derives from the slide, so every copy picks the same name.
+pub(crate) fn set_notes_in(doc: &mut Document, slide_index: usize, paragraphs: Vec<Paragraph>, seed: Option<&str>) {
     if slides(doc).get(slide_index).is_none() {
         return;
     }
     if slides(doc)[slide_index].part.is_none() {
-        let part = free_part(doc, &[]);
+        let part = free_part_in(doc, &[], seed);
         if let Body::Slides { slides, .. } = &mut doc.body {
             slides[slide_index].part = Some(part);
         }
@@ -349,6 +366,11 @@ fn put_notes(doc: &mut Document, part: String, paragraphs: Vec<Paragraph>) {
 /// them stored under its copy's name. A copy of a slide without notes needs no name, and the
 /// copies' notes are their own however either slide's change.
 pub fn copy_notes(doc: &mut Document, indexes: &[usize]) -> Vec<Option<String>> {
+    copy_notes_in(doc, indexes, None)
+}
+
+/// `copy_notes`, naming the copies' parts `seed`-wise (see [`free_part_in`]).
+pub(crate) fn copy_notes_in(doc: &mut Document, indexes: &[usize], seed: Option<&str>) -> Vec<Option<String>> {
     let mut named = Vec::new();
     indexes
         .iter()
@@ -358,12 +380,17 @@ pub fn copy_notes(doc: &mut Document, indexes: &[usize]) -> Vec<Option<String>> 
             if paragraphs.is_empty() {
                 return None;
             }
-            let part = free_part(doc, &named);
+            let part = free_part_in(doc, &named, seed);
             named.push(part.clone());
             put_notes(doc, part.clone(), paragraphs);
             Some(part)
         })
         .collect()
+}
+
+/// The speaker notes stored under a slide part name: a slide's own, or a copy's new one.
+pub(crate) fn notes_for_part(doc: &Document, part: &str) -> Vec<Paragraph> {
+    ppt(doc).and_then(|p| p.notes.iter().find(|(s, _)| s == part)).map(|(_, n)| n.clone()).unwrap_or_default()
 }
 
 /// Drops markup in copied notes that names parts by relationship id, which a copy's own notes
