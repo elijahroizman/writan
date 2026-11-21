@@ -27,9 +27,17 @@ pub fn read(bytes: &[u8], kind: Kind, name: Option<&str>) -> Result<Document> {
             let tsv = name.is_some_and(|n| n.to_ascii_lowercase().ends_with(".tsv"));
             csv::read(bytes, stem.filter(|s| !s.is_empty()).unwrap_or("Sheet1"), tsv)
         }
-        Kind::Word => docx::read(Package::read(bytes)?),
-        Kind::Slides => pptx::read(Package::read(bytes)?),
-        Kind::Sheets => xlsx::read(Package::read(bytes)?),
+        Kind::Word | Kind::Slides | Kind::Sheets => read_package(Package::read(bytes)?, kind),
+    }
+}
+
+/// Reads a package already read from a file, known to be `kind` (Word, PowerPoint or Excel).
+pub(crate) fn read_package(pkg: Package, kind: Kind) -> Result<Document> {
+    match kind {
+        Kind::Word => docx::read(pkg),
+        Kind::Slides => pptx::read(pkg),
+        Kind::Sheets => xlsx::read(pkg),
+        Kind::Csv => Err(crate::Error::UnknownFormat),
     }
 }
 

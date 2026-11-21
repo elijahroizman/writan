@@ -49,8 +49,14 @@ impl Compiler {
     /// Reads a document. `name` is the file's name, if known; it helps tell CSV from other text
     /// and names a CSV file's sheet.
     pub fn read(&self, bytes: &[u8], name: Option<&str>) -> Result<Document> {
-        let kind = detect(bytes, name)?;
-        let mut doc = formats::read(bytes, kind, name)?;
+        // A zip is read once, both to tell its kind and for the front end.
+        let mut doc = if is_zip(bytes) {
+            let pkg = Package::read(bytes)?;
+            let kind = package_kind(&pkg)?;
+            formats::read_package(pkg, kind)?
+        } else {
+            formats::read(bytes, detect(bytes, name)?, name)?
+        };
         for layer in self.layers_for(doc.kind) {
             layer.after_read(&mut doc).map_err(|e| layer_error(layer, e))?;
         }
@@ -109,10 +115,8 @@ pub fn write(doc: &Document, kind: Kind) -> Result<Vec<u8>> {
 /// What kind of document `bytes` is. A zip is told apart by its main part's content type; other
 /// bytes are CSV if the name says so, or if there's no name and they look like text.
 pub fn detect(bytes: &[u8], name: Option<&str>) -> Result<Kind> {
-    if bytes.starts_with(b"PK\x03\x04") {
-        let pkg = Package::read(bytes)?;
-        let main = pkg.main_part()?;
-        return pkg.content_type(&main).and_then(Kind::from_main_content_type).ok_or(Error::UnknownFormat);
+    if is_zip(bytes) {
+        return package_kind(&Package::read(bytes)?);
     }
     if bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
         // Office saves a password-protected .docx, .pptx or .xlsx as a compound file too, holding
@@ -133,6 +137,16 @@ pub fn detect(bytes: &[u8], name: Option<&str>) -> Result<Kind> {
     }
 }
 
+fn is_zip(bytes: &[u8]) -> bool {
+    bytes.starts_with(b"PK\x03\x04")
+}
+
+/// What kind of document a package is, by its main part's content type.
+fn package_kind(pkg: &Package) -> Result<Kind> {
+    let main = pkg.main_part()?;
+    pkg.content_type(&main).and_then(Kind::from_main_content_type).ok_or(Error::UnknownFormat)
+}
+
 /// Whether a compound file has the stream an encrypted Office package is kept in: its name in
 /// the file's directory, which is UTF-16.
 fn is_encrypted_package(bytes: &[u8]) -> bool {
@@ -143,4 +157,46 @@ fn is_encrypted_package(bytes: &[u8]) -> bool {
 fn looks_like_text(bytes: &[u8]) -> bool {
     let sample = &bytes[..bytes.len().min(4096)];
     sample.starts_with(&[0xFF, 0xFE]) || sample.starts_with(&[0xFE, 0xFF]) || !sample.contains(&0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::opc::READS;
+
+    fn reads_while(f: impl FnOnce()) -> usize {
+        READS.with(|n| n.set(0));
+        f();
+        READS.with(|n| n.get())
+    }
+
+    #[test]
+    fn opening_reads_the_zip_once_and_tells_its_kind() {
+        for kind in [Kind::Word, Kind::Slides, Kind::Sheets] {
+            let bytes = write(&Document::new(kind), kind).unwrap();
+            for name in [None, Some("file.bin"), Some(if kind == Kind::Word { "x.xlsx" } else { "x.docx" })] {
+                let mut doc = None;
+                assert_eq!(reads_while(|| doc = Some(read(&bytes, name).unwrap())), 1, "{kind:?} named {name:?}");
+                let doc = doc.unwrap();
+                // The zip's content decides, not its name, as before.
+                assert_eq!(doc.kind, kind);
+                assert_eq!(detect(&bytes, name).unwrap(), kind);
+                assert_eq!(doc.body, formats::read(&bytes, kind, name).unwrap().body);
+            }
+        }
+        // Text isn't a zip, and is told by its name or, with none, by looking like text.
+        for (bytes, name) in [(&b"a,b\n1,2\n"[..], Some("list.csv")), (b"a\tb\n", Some("x.tsv")), (b"a,b\n", None)] {
+            let mut doc = None;
+            assert_eq!(reads_while(|| doc = Some(read(bytes, name).unwrap())), 0);
+            assert_eq!(doc.unwrap().kind, Kind::Csv);
+        }
+        assert!(matches!(read(b"plain", Some("report.docx")), Err(Error::Zip(_))));
+        assert!(matches!(read(b"\x00\x01binary", None), Err(Error::UnknownFormat)));
+        // A zip that isn't an Office file.
+        let mut pkg = Package::new();
+        pkg.put("hello.txt", b"hi".to_vec(), "text/plain");
+        let zip = pkg.to_bytes().unwrap();
+        assert!(read(&zip, Some("hello.zip")).is_err());
+        assert_eq!(detect(&zip, None).map_err(|e| e.to_string()).err(), read(&zip, None).map_err(|e| e.to_string()).err());
+    }
 }
