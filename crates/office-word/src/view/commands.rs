@@ -1838,12 +1838,7 @@ impl WordView {
             else {
                 continue;
             };
-            if let Some(mut tbl_el) = table.origin.get().cloned() {
-                if let Some(pr) = tbl_el.child_mut(ns::W, "tblPr") {
-                    pr.children.retain(|n| !matches!(n, office_core::xml::Node::Element(e) if e.is(ns::W, "tblDescription")));
-                }
-                table.origin = Origin::new(tbl_el);
-            }
+            strip_link_tag_in_table(&mut table, tag);
             let root = self.blocks_mut(StoryId::Body);
             splices.push(edit::replace(root, path.container(), path.block(), 1, vec![Block::Table(table)]));
         }
@@ -2316,6 +2311,36 @@ fn build_linked_table(tag: &str, rows: &[Vec<LinkedCell>], width: Emu) -> Table 
         rows: built_rows,
         style: None,
         origin: Origin::new(Element::new(ns::W, "tbl").with_child(tbl_pr)),
+    }
+}
+
+fn strip_link_tag_in_table(table: &mut Table, tag: &str) {
+    if table_link_tag(table).as_deref() == Some(tag) {
+        if let Some(mut tbl_el) = table.origin.get().cloned() {
+            if let Some(pr) = tbl_el.child_mut(ns::W, "tblPr") {
+                pr.children.retain(|n| !matches!(n, office_core::xml::Node::Element(e) if e.is(ns::W, "tblDescription")));
+            }
+            table.origin = Origin::new(tbl_el);
+        }
+    }
+    for row in &mut table.rows {
+        for cell in &mut row.cells {
+            for b in &mut cell.blocks {
+                match b {
+                    Block::Table(nested) => strip_link_tag_in_table(nested, tag),
+                    Block::Paragraph(p) => {
+                        for inline in &mut p.content {
+                            if let Inline::Image(img) = inline {
+                                if img.description.as_deref() == Some(tag) {
+                                    img.description = None;
+                                }
+                            }
+                        }
+                    }
+                    Block::Raw { .. } => {}
+                }
+            }
+        }
     }
 }
 
