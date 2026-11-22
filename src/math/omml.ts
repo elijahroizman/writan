@@ -167,6 +167,121 @@ function emitMathRun(
   return `<m:r>${mRPrXml}${hostRPr}<m:t${spaceAttr}>${escapeXml(text)}</m:t></m:r>`
 }
 
+const DOUBLE_STRUCK_EXCEPTIONS: Record<string, string> = {
+  C: '\u2102',
+  H: '\u210D',
+  N: '\u2115',
+  P: '\u2119',
+  Q: '\u211A',
+  R: '\u211D',
+  Z: '\u2124',
+}
+
+const SCRIPT_EXCEPTIONS: Record<string, string> = {
+  B: '\u212C',
+  E: '\u2130',
+  F: '\u2131',
+  H: '\u210B',
+  I: '\u2110',
+  L: '\u2112',
+  M: '\u2133',
+  R: '\u211B',
+  e: '\u212F',
+  g: '\u210A',
+  o: '\u2134',
+}
+
+const FRAKTUR_EXCEPTIONS: Record<string, string> = {
+  C: '\u212D',
+  H: '\u210C',
+  I: '\u2111',
+  R: '\u211C',
+  Z: '\u2128',
+}
+
+/** Maps ASCII letters/digits to Unicode Mathematical Alphanumeric Symbols for OMML alphabets. */
+function mapMathVariantChars(text: string, variant?: string): { text: string; mapped: boolean } {
+  if (!variant) return { text, mapped: false }
+  let upperBase = 0
+  let lowerBase = 0
+  let digitBase = 0
+  let exceptions: Record<string, string> | null = null
+  switch (variant) {
+    case 'double-struck':
+      upperBase = 0x1d538
+      lowerBase = 0x1d552
+      digitBase = 0x1d7d8
+      exceptions = DOUBLE_STRUCK_EXCEPTIONS
+      break
+    case 'script':
+      upperBase = 0x1d49c
+      lowerBase = 0x1d4b6
+      exceptions = SCRIPT_EXCEPTIONS
+      break
+    case 'bold-script':
+      upperBase = 0x1d4d0
+      lowerBase = 0x1d4ea
+      break
+    case 'fraktur':
+      upperBase = 0x1d504
+      lowerBase = 0x1d51e
+      exceptions = FRAKTUR_EXCEPTIONS
+      break
+    case 'bold-fraktur':
+      upperBase = 0x1d56c
+      lowerBase = 0x1d586
+      break
+    case 'sans-serif':
+      upperBase = 0x1d5a0
+      lowerBase = 0x1d5ba
+      digitBase = 0x1d7e2
+      break
+    case 'bold-sans-serif':
+      upperBase = 0x1d5d4
+      lowerBase = 0x1d5ee
+      digitBase = 0x1d7ec
+      break
+    case 'sans-serif-italic':
+      upperBase = 0x1d608
+      lowerBase = 0x1d622
+      break
+    case 'sans-serif-bold-italic':
+      upperBase = 0x1d63c
+      lowerBase = 0x1d656
+      break
+    case 'monospace':
+      upperBase = 0x1d670
+      lowerBase = 0x1d68a
+      digitBase = 0x1d7f6
+      break
+    default:
+      return { text, mapped: false }
+  }
+  let out = ''
+  let anyMapped = false
+  for (const ch of text) {
+    if (exceptions && exceptions[ch]) {
+      out += exceptions[ch]
+      anyMapped = true
+      continue
+    }
+    const code = ch.charCodeAt(0)
+    if (upperBase && code >= 0x41 && code <= 0x5a) {
+      out += String.fromCodePoint(upperBase + (code - 0x41))
+      anyMapped = true
+    } else if (lowerBase && code >= 0x61 && code <= 0x7a) {
+      out += String.fromCodePoint(lowerBase + (code - 0x61))
+      anyMapped = true
+    } else if (digitBase && code >= 0x30 && code <= 0x39) {
+      out += String.fromCodePoint(digitBase + (code - 0x30))
+      anyMapped = true
+    } else {
+      out += ch
+    }
+  }
+  return { text: out, mapped: anyMapped }
+}
+
 function styleFromMathVariant(variant: string | undefined, defaultKind: 'mi' | 'mn' | 'mo' | 'mtext'): { normal?: boolean; style?: 'p' | 'b' | 'i' | 'bi' } {
   if (defaultKind === 'mtext') {
     if (variant === 'bold') return { normal: true, style: 'b' }
@@ -311,21 +426,25 @@ function convertNode(node: MmlNodeLike, ctx: ConvertCtx): string {
     }
 
     case 'mi': {
-      const text = nodeText(node)
+      const rawText = nodeText(node)
       const variant = attrStr(node, 'mathvariant')
+      const { text, mapped } = mapMathVariantChars(rawText, variant)
       // Multi-character identifiers like "sin", "cos", "lim" should be upright.
-      const style = variant
-        ? styleFromMathVariant(variant, 'mi')
-        : text.length > 1
-          ? { style: 'p' as const }
-          : {}
+      const style = mapped
+        ? { style: 'p' as const }
+        : variant
+          ? styleFromMathVariant(variant, 'mi')
+          : text.length > 1
+            ? { style: 'p' as const }
+            : {}
       return emitMathRun(text, activeCtx, style)
     }
 
     case 'mn': {
-      const text = nodeText(node)
+      const rawText = nodeText(node)
       const variant = attrStr(node, 'mathvariant')
-      return emitMathRun(text, activeCtx, styleFromMathVariant(variant, 'mn'))
+      const { text, mapped } = mapMathVariantChars(rawText, variant)
+      return emitMathRun(text, activeCtx, mapped ? { style: 'p' } : styleFromMathVariant(variant, 'mn'))
     }
 
     case 'mo': {
