@@ -106,6 +106,12 @@ impl WordView {
         let flat = text::flat(p);
         match count {
             2 => {
+                // Double-clicking a picture keeps only the picture selected instead of expanding
+                // into adjacent punctuation via word selection.
+                if let Some(sel) = self.image_at(host, page, x, y) {
+                    self.set_selection(sel);
+                    return true;
+                }
                 let (a, b) = para::word_at(&flat.text, at.offset);
                 self.set_selection(Selection { anchor: Pos::new(at.path.clone(), a), focus: Pos::new(at.path, b) });
             }

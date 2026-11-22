@@ -1441,3 +1441,23 @@ fn inline_latex_math_insert_update_undo_and_round_trip() {
     reopened.set_selection(Selection { anchor: Pos::new(Path(vec![0]), 10), focus: Pos::new(Path(vec![0]), 13) });
     assert_eq!(reopened.state().math_tag.as_deref(), Some(tag2.as_str()));
 }
+
+#[test]
+fn double_click_math_image_beside_punctuation_keeps_math_tag() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&["()"])).unwrap();
+    // Insert equation between "(" and ")".
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 1)));
+    let tag = format!("{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"E=mc^2\",\"display\":false,\"fontSizePt\":12,\"color\":\"#000000\"}}");
+    let png = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+    v.insert_math_image(&tag, png, "image/png", 64.0, 20.0);
+    v.layout(&mut host);
+
+    let page = v.pages[0].clone();
+    // "(" is ~7.33 px wide, so x = body_x + 30 lands squarely on the 64 px wide equation image.
+    let x = page.body_x + 30.0;
+    let y = page.body_y + 10.0;
+    assert!(v.click(&mut host, 0, x, y, false, 2));
+    assert_eq!(v.selection().ordered(), (Pos::new(Path::top(0), 1), Pos::new(Path::top(0), 4)));
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag.as_str()));
+}
