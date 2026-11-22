@@ -1367,6 +1367,10 @@ fn inline_latex_math_insert_update_undo_and_round_trip() {
     let pkg = office_core::opc::Package::read(&saved).unwrap();
     let slide_xml = String::from_utf8(pkg.part("ppt/slides/slide1.xml").unwrap().to_vec()).unwrap();
     assert!(slide_xml.contains("<mc:AlternateContent"), "saved pptx should wrap equation in mc:AlternateContent: {slide_xml}");
+    assert!(
+        slide_xml.contains(r#"<mc:Choice Requires="a14" xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main""#),
+        "mc:Choice must declare xmlns:a14 in scope for Requires=\"a14\": {slide_xml}"
+    );
     assert!(slide_xml.contains("<a14:m"), "saved pptx should contain native PowerPoint a14:m: {slide_xml}");
     assert!(slide_xml.contains("<m:oMathPara"), "saved pptx should contain m:oMathPara: {slide_xml}");
     assert!(slide_xml.contains("<m:nary>"), "saved pptx should contain m:nary: {slide_xml}");

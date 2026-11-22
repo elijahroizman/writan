@@ -2788,7 +2788,14 @@ fn build_slide_math_body(omml_xml: &str, fallback_text: &str) -> Option<TextBody
     }
     let math_para = if omml.is(ns::M, "oMathPara") { omml } else { Element::new(ns::M, "oMathPara").with_child(omml) };
     let a14_m = Element::new(ns::A14, "m").with_child(math_para);
-    let choice = Element::new(ns::MC, "Choice").with_attr("", "Requires", "a14").with_child(a14_m);
+    let mut choice = Element::new(ns::MC, "Choice").with_attr("", "Requires", "a14").with_child(a14_m);
+    // ECMA-376 Part 3 requires the prefix named in mc:Choice/@Requires to be declared in scope on mc:Choice itself.
+    choice.attrs.push(office_core::xml::Attr {
+        prefix: Some("xmlns".into()),
+        local: "a14".into(),
+        ns: None,
+        value: ns::A14.into(),
+    });
     let fallback_run = Element::new(ns::A, "r")
         .with_child(Element::new(ns::A, "rPr").with_attr("", "lang", "en-US"))
         .with_child(Element::new(ns::A, "t").with_text(fallback_text));
