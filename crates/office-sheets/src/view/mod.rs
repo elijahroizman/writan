@@ -757,6 +757,68 @@ impl SheetsView {
             validation: crate::validation::at(&self.doc, sheet, at).map(|v| v.info(&self.doc, sheet, at, self.now)),
         }
     }
+
+    /// Evaluated display text and basic styling for every cell in `range` (clamped to 200x63),
+    /// for embedding a linked Excel range into Word or Slides.
+    pub fn range_snapshot(&self, sheet: usize, range: Range) -> Option<RangeSnapshot> {
+        let s = self.sheets().get(sheet)?;
+        let r0 = range.start.row.min(range.end.row);
+        let c0 = range.start.col.min(range.end.col);
+        let r1 = range.start.row.max(range.end.row).min(r0 + 199);
+        let c1 = range.start.col.max(range.end.col).min(c0 + 62);
+        let theme = self.doc.theme.clone();
+        let css = |c: &office_core::drawing::Color| c.resolve(&|n| theme.as_ref()?.scheme_color(n)).rgb.hex();
+        let mut rows = Vec::with_capacity((r1 - r0 + 1) as usize);
+        for row in r0..=r1 {
+            let mut cells = Vec::with_capacity((c1 - c0 + 1) as usize);
+            for col in c0..=c1 {
+                let at = CellRef::new(row, col);
+                let f = format_of(&self.doc, sheet, at);
+                let val = s.value(at);
+                let align = f.alignment.horizontal.clone().or_else(|| match val {
+                    Value::Number(_) => Some("right".into()),
+                    Value::Bool(_) | Value::Error(_) => Some("center".into()),
+                    _ => None,
+                });
+                cells.push(RangeCellSnapshot {
+                    text: crate::display(&self.doc, sheet, at),
+                    bold: f.font.bold,
+                    italic: f.font.italic,
+                    color: f.font.color.as_ref().map(css),
+                    fill: if f.fill.pattern == "solid" { f.fill.fg.as_ref().map(css) } else { None },
+                    align,
+                });
+            }
+            rows.push(cells);
+        }
+        let norm = Range { start: CellRef::new(r0, c0), end: CellRef::new(r1, c1) };
+        Some(RangeSnapshot { sheet: s.name.clone(), range: norm.to_string(), rows })
+    }
+}
+
+/// One cell of a linked Excel range, ready to populate a Word or Slides table.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeCellSnapshot {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub bold: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub italic: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fill: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub align: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RangeSnapshot {
+    pub sheet: String,
+    pub range: String,
+    pub rows: Vec<Vec<RangeCellSnapshot>>,
 }
 
 fn spec_align_left(flow: &FlowLayout) -> bool {

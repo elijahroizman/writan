@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::sections::Section;
 use crate::{word, StoryKind, Words};
-pub use commands::{image_size, BorderScope, Move, TableOp, Toggle};
+pub use commands::{image_size, BorderScope, LinkedCell, Move, TableOp, Toggle, EXCEL_LINK_PREFIX};
 use extras::Extras;
 use resolve::{emu_px, PageFields, WordResolver};
 pub use state::*;

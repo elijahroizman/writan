@@ -38,6 +38,9 @@ import { usePinchZoom } from '../../lib/pinch'
 import * as platform from '../../lib/platform'
 import { keysFor, withKeys } from '../../state/shortcuts'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { LinkExcelModal } from '../../links/LinkExcelModal'
+import type { ExcelLink, LinkedDocumentTarget } from '../../links/excelLinks'
+import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
 import type { Restack } from './arrange'
 import { Inspector } from './Inspector'
 import { NotesPane } from './Notes'
@@ -157,6 +160,33 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
   const elements = engine.elements
   const selectedIds = st.frames
   const selectedElement = selectedIds.length === 1 ? (elements.find((e) => e.id === selectedIds[0]) ?? null) : null
+  const [excelModalOpen, setExcelModalOpen] = useState(false)
+  const excelTarget = useMemo<LinkedDocumentTarget>(
+    () => ({
+      insertLinkedTable: (tag, rows, name) => {
+        engine.insertLinkedTable(tag, rows, name)
+      },
+      updateLinkedTable: (tag, rows) => engine.updateLinkedTable(tag, rows),
+      insertLinkedImage: (tag, bytes, contentType, width, height, name) => {
+        engine.insertLinkedImage(tag, bytes, contentType, width, height, name)
+      },
+      updateLinkedImage: (tag, bytes, contentType) => engine.updateLinkedImage(tag, bytes, contentType),
+      clearLinkTag: (tag) => engine.clearLinkTag(tag),
+      linkedTags: () => engine.linkedTags().map((t) => t.tag),
+    }),
+    [engine],
+  )
+  const excelLinks = useExcelLinks(excelTarget, tab.bytes, () => markDirty(tab.id, true))
+  const excelLinksRef = useRef(excelLinks)
+  excelLinksRef.current = excelLinks
+  useEffect(() => {
+    if (import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) Object.assign(window, { __slidesLinks: excelLinks })
+  }, [excelLinks])
+  const openExcelSource = (link: ExcelLink) => {
+    const open = findOpenWorkbook(link)
+    if (open) useWorkspace.getState().activate(open.tabId)
+    else if (link.workbookPath) void useWorkspace.getState().openPaths([link.workbookPath])
+  }
 
   // ── A video link playing over its poster while editing. It plays while its frame, with that link, is the one picked.
   const [playing, setPlaying] = useState<{ slide: string; id: string; url: string; embed: string } | null>(null)
@@ -460,7 +490,7 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
     () =>
       registerEditor(tab.id, {
         getRevision: () => engine.slidesVersion,
-        getBytes: async () => engine.save(),
+        getBytes: async () => excelLinksRef.current.writeToBytes(engine.save()),
         markSaved: () => {
           engine.run({ cmd: 'markSaved' })
           markDirty(tab.id, false)
@@ -534,6 +564,9 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
           canArrange={canArrange}
           onCrop={croppable(selectedElement, selectedIds.length) ? startCrop : null}
           onPlayVideo={(id) => void playVideo(id)}
+          excelLinks={excelLinks}
+          onOpenExcelModal={() => setExcelModalOpen(true)}
+          onOpenExcelSource={openExcelSource}
         />
       }
     >
@@ -596,6 +629,7 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
       )}
       {menu && <PopoverMenu anchor={menu} items={menu.items} onClose={() => setMenu(null)} />}
       {crop && <CropOverlay src={crop.src} frame={crop.frame} image={crop.image} onDone={endCrop} onCancel={() => endCrop()} />}
+      <LinkExcelModal open={excelModalOpen} onClose={() => setExcelModalOpen(false)} controller={excelLinks} targetLabel="Slides" />
       {presenting !== null && (
         <PresentMode
           engine={engine}

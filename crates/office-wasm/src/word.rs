@@ -361,6 +361,45 @@ impl WordDoc {
         self.view.insert_image(bytes, content_type, width, height);
     }
 
+    /// Inserts a linked Excel table tagged with `tag`. `rows_json` is `RangeCellSnapshot[][]`.
+    #[wasm_bindgen(js_name = insertLinkedTable)]
+    pub fn insert_linked_table(&mut self, tag: &str, rows_json: &str) -> Result<(), JsError> {
+        let rows: Vec<Vec<office_word::view::LinkedCell>> = serde_json::from_str(rows_json).map_err(err)?;
+        self.view.insert_linked_table(tag, &rows);
+        Ok(())
+    }
+
+    /// Updates a linked Excel table in place; returns whether it was found.
+    #[wasm_bindgen(js_name = updateLinkedTable)]
+    pub fn update_linked_table(&mut self, tag: &str, rows_json: &str) -> Result<bool, JsError> {
+        let rows: Vec<Vec<office_word::view::LinkedCell>> = serde_json::from_str(rows_json).map_err(err)?;
+        Ok(self.view.update_linked_table(tag, &rows))
+    }
+
+    /// Inserts a linked Excel chart picture tagged with `tag`.
+    #[wasm_bindgen(js_name = insertLinkedImage)]
+    pub fn insert_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64, name: &str) {
+        self.view.insert_linked_image(tag, bytes, content_type, width, height, name);
+    }
+
+    /// Replaces the image bytes of a linked Excel chart in place; returns whether it was found.
+    #[wasm_bindgen(js_name = updateLinkedImage)]
+    pub fn update_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str) -> bool {
+        self.view.update_linked_image(tag, bytes, content_type)
+    }
+
+    /// Removes a link tag from its table or image without deleting the content.
+    #[wasm_bindgen(js_name = clearLinkTag)]
+    pub fn clear_link_tag(&mut self, tag: &str) -> bool {
+        self.view.clear_link_tag(tag)
+    }
+
+    /// JSON array of all `writan:excel-link:*` tags currently in the document.
+    #[wasm_bindgen(js_name = linkedTags)]
+    pub fn linked_tags(&self) -> String {
+        json(&self.view.linked_tags())
+    }
+
     /// Starts sharing the document as copy `client` (see `office_engine::collab`).
     #[wasm_bindgen(js_name = collabStart)]
     pub fn collab_start(&mut self, client: &str) {

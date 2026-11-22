@@ -5,7 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use office_core::drawing::{Color, Fill, Line, Rgb, Xfrm};
 use office_core::formats::{common::names_parts, dml::PPR, pptx, xlsx::chart::CHART_TYPE};
-use office_core::model::{Block, Cell, Frame, FrameContent, Image, Origin, Paragraph, Row, RunProps, Slide, Strike, Table, TextBody};
+use office_core::model::{Align, Block, Cell, Frame, FrameContent, Image, Inline, Origin, ParaProps, Paragraph, Row, Run, RunProps, Slide, Strike, Table, TextBody};
 use office_core::units::{Angle, Emu, FontSize};
 use office_core::xml::{ns, Element};
 use office_engine::display::{self, Rect};
@@ -1267,6 +1267,138 @@ impl SlidesView {
         self.insert_frame(f)
     }
 
+    // ---- linked Excel ranges & charts ----
+
+    /// Inserts a table populated from a linked Excel range, tagged in `frame.description`.
+    pub fn insert_linked_table(&mut self, tag: &str, rows: &[Vec<LinkedCell>], name: &str) -> u32 {
+        let (w, h) = self.size();
+        let row_count = rows.len().clamp(1, 50);
+        let col_count = rows.iter().map(Vec::len).max().unwrap_or(1).clamp(1, 20);
+        let bw = w * 0.8;
+        let row_h = (34.0_f64).min((h * 0.7) / row_count as f64).max(20.0);
+        let table = build_linked_slide_table(rows, bw, row_h, None, None);
+        let th = row_h * row_count as f64;
+        let xf = Xfrm {
+            x: px_emu((w - bw) / 2.0),
+            y: px_emu(((h - th) / 2.0).max(24.0)),
+            width: px_emu(bw),
+            height: px_emu(th),
+            ..Default::default()
+        };
+        let f = Frame {
+            id: 0,
+            name: if name.is_empty() { format!("Linked Table ({row_count}x{col_count})") } else { name.into() },
+            description: Some(tag.into()),
+            hidden: false,
+            shape: office_core::drawing::ShapeProps { xfrm: Some(xf), ..Default::default() },
+            placeholder: None,
+            link: None,
+            content: FrameContent::Table { table },
+            origin: Origin::default(),
+        };
+        self.insert_frame(f)
+    }
+
+    /// Updates the table frame carrying `tag` in place across all slides, preserving position and style.
+    pub fn update_linked_table(&mut self, tag: &str, rows: &[Vec<LinkedCell>]) -> bool {
+        if rows.is_empty() {
+            return false;
+        }
+        let found = self.slides().iter().enumerate().find_map(|(si, s)| {
+            s.frames.iter().find(|f| f.description.as_deref() == Some(tag) && matches!(f.content, FrameContent::Table { .. })).map(|f| (si, f.id))
+        });
+        let Some((slide_index, frame_id)) = found else { return false };
+        let rows = rows.to_vec();
+        self.change_slide(slide_index, None, |s| {
+            let Some(f) = s.frames.iter_mut().find(|f| f.id == frame_id) else { return };
+            let FrameContent::Table { table } = &mut f.content else { return };
+            let bw = f.shape.xfrm.as_ref().map(|x| x.width.0 as f64 / 9525.0).filter(|&w| w > 10.0).unwrap_or(900.0);
+            let row_h = table.rows.first().and_then(|r| r.height).map(|e| e.0 as f64 / 9525.0).filter(|&h| h > 10.0).unwrap_or(32.0);
+            let style = table.style.clone();
+            let origin = table.origin.get().cloned();
+            let next = build_linked_slide_table(&rows, bw, row_h, style, origin);
+            let next_h = row_h * next.rows.len() as f64;
+            if let Some(xf) = f.shape.xfrm.as_mut() {
+                xf.height = px_emu(next_h);
+            }
+            *table = next;
+        });
+        true
+    }
+
+    /// Inserts a picture tagged with `tag` in `frame.description` (for linked Excel charts).
+    pub fn insert_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64, name: &str) -> u32 {
+        let (w, h) = self.size();
+        let k = (w * 0.65 / width.max(1.0)).min(h * 0.65 / height.max(1.0)).min(1.0);
+        let (bw, bh) = (width * k, height * k);
+        let media = self.add_media(content_type, bytes);
+        let xf = Xfrm { x: px_emu((w - bw) / 2.0), y: px_emu((h - bh) / 2.0), width: px_emu(bw), height: px_emu(bh), ..Default::default() };
+        let f = Frame {
+            id: 0,
+            name: if name.is_empty() { "Linked Chart".into() } else { name.into() },
+            description: Some(tag.into()),
+            hidden: false,
+            shape: office_core::drawing::ShapeProps { xfrm: Some(xf.clone()), preset: Some("rect".into()), ..Default::default() },
+            placeholder: None,
+            link: None,
+            content: FrameContent::Picture {
+                image: Image {
+                    media,
+                    width: xf.width,
+                    height: xf.height,
+                    name: String::new(),
+                    description: None,
+                    origin: Origin::default(),
+                },
+            },
+            origin: Origin::default(),
+        };
+        self.insert_frame(f)
+    }
+
+    /// Replaces the image bytes of the picture frame carrying `tag` in place, preserving position and size.
+    pub fn update_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str) -> bool {
+        let found = self.slides().iter().enumerate().find_map(|(si, s)| {
+            s.frames.iter().find(|f| f.description.as_deref() == Some(tag) && matches!(f.content, FrameContent::Picture { .. })).map(|f| (si, f.id))
+        });
+        let Some((slide_index, frame_id)) = found else { return false };
+        let media = self.add_media(content_type, bytes);
+        self.change_slide(slide_index, None, |s| {
+            let Some(f) = s.frames.iter_mut().find(|f| f.id == frame_id) else { return };
+            if let FrameContent::Picture { image } = &mut f.content {
+                image.media = media.clone();
+            }
+        });
+        true
+    }
+
+    /// Clears `tag` from its frame without deleting the frame.
+    pub fn clear_link_tag(&mut self, tag: &str) -> bool {
+        let found = self.slides().iter().enumerate().find_map(|(si, s)| {
+            s.frames.iter().find(|f| f.description.as_deref() == Some(tag)).map(|f| (si, f.id))
+        });
+        let Some((slide_index, frame_id)) = found else { return false };
+        self.change_slide(slide_index, None, |s| {
+            if let Some(f) = s.frames.iter_mut().find(|f| f.id == frame_id) {
+                f.description = None;
+            }
+        });
+        true
+    }
+
+    /// Every `(slide_index, frame_id, tag)` for linked Excel frames in the deck.
+    pub fn linked_tags(&self) -> Vec<(usize, u32, String)> {
+        let mut out = Vec::new();
+        for (si, s) in self.slides().iter().enumerate() {
+            for f in &s.frames {
+                if let Some(tag) = f.description.as_deref().filter(|t| t.starts_with(EXCEL_LINK_PREFIX)) {
+                    out.push((si, f.id, tag.to_string()));
+                }
+            }
+        }
+        out
+    }
+
     /// Changes the selected table: `header`/`banded` turn those looks on or off, `rows`/`cols`
     /// set the counts, `style` sets its table style.
     pub fn table_op(&mut self, op: &str, value: Option<&str>) {
@@ -2305,4 +2437,83 @@ fn same_origins(a: &[Frame], b: &[Frame]) -> bool {
                     _ => true,
                 }
         })
+}
+
+/// Prefix stored in `frame.description` (`p:cNvPr/@descr`) for linked Excel objects.
+pub const EXCEL_LINK_PREFIX: &str = "writan:excel-link:";
+
+/// One cell of a linked Excel range, deserialized from `SheetsDoc::rangeSnapshot`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedCell {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub fill: Option<String>,
+    #[serde(default)]
+    pub align: Option<String>,
+}
+
+fn parse_align(a: Option<&str>) -> Option<Align> {
+    match a {
+        Some("center") => Some(Align::Center),
+        Some("right") => Some(Align::Right),
+        Some("left") => Some(Align::Left),
+        _ => None,
+    }
+}
+
+fn build_linked_slide_table(
+    rows: &[Vec<LinkedCell>],
+    width_px: f64,
+    row_h_px: f64,
+    style: Option<String>,
+    origin_el: Option<Element>,
+) -> Table {
+    let row_count = rows.len().clamp(1, 50);
+    let col_count = rows.iter().map(Vec::len).max().unwrap_or(1).clamp(1, 20);
+    let col = px_emu(width_px / col_count as f64);
+    let tbl_origin = origin_el.unwrap_or_else(|| {
+        Element::new(ns::A, "tbl").with_child(Element::new(ns::A, "tblPr").with_attr("", "firstRow", "1").with_attr("", "bandRow", "1"))
+    });
+    let built_rows = rows
+        .iter()
+        .take(row_count)
+        .map(|r| Row {
+            cells: (0..col_count)
+                .map(|ci| {
+                    let c = r.get(ci);
+                    let text = c.map(|x| x.text.as_str()).unwrap_or("");
+                    let props = RunProps {
+                        bold: c.is_some_and(|x| x.bold).then_some(true),
+                        italic: c.is_some_and(|x| x.italic).then_some(true),
+                        color: c.and_then(|x| x.color.as_deref()).and_then(Rgb::parse).map(Color::rgb),
+                        ..Default::default()
+                    };
+                    let p = Paragraph {
+                        props: ParaProps { align: parse_align(c.and_then(|x| x.align.as_deref())), ..Default::default() },
+                        content: if text.is_empty() { Vec::new() } else { vec![Inline::Text(Run { text: text.into(), props, ..Default::default() })] },
+                        ..Default::default()
+                    };
+                    let fill = c.and_then(|x| x.fill.as_deref()).and_then(Rgb::parse).map(Color::rgb);
+                    Cell { blocks: vec![Block::Paragraph(p)], fill, ..Default::default() }
+                })
+                .collect(),
+            height: Some(px_emu(row_h_px)),
+            header: false,
+            origin: Origin::default(),
+        })
+        .collect();
+    Table {
+        columns: vec![col; col_count],
+        rows: built_rows,
+        style: style.or_else(|| Some("{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}".into())),
+        origin: Origin::new(tbl_origin),
+    }
 }

@@ -165,6 +165,13 @@ impl SheetsDoc {
         json(&serde_json::json!({ "text": text, "clipboard": clipboard }))
     }
 
+    /// Evaluated display text and styling for a range (e.g. `A1:C5`) on `sheet`, for linked tables.
+    #[wasm_bindgen(js_name = rangeSnapshot)]
+    pub fn range_snapshot(&self, sheet: usize, range_a1: &str) -> String {
+        let out = Range::parse(range_a1).and_then(|r| self.view.range_snapshot(sheet, r));
+        json(&out)
+    }
+
     /// What NOW() and TODAY() give, as a serial number (days since 1900, with the time as a fraction).
     #[wasm_bindgen(js_name = setNow)]
     pub fn set_now(&mut self, serial: f64) {

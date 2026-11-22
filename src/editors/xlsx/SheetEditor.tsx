@@ -41,6 +41,7 @@ import { showDialog } from '../../lib/dialogs'
 import { usePinchZoom } from '../../lib/pinch'
 import { FormulaHelp } from './FormulaHelp'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { registerOpenWorkbook, updateOpenWorkbookMeta } from '../../links/excelLinks'
 import './sheets.css'
 import { useShared } from '../../collab/useShared'
 import { PeerDots } from '../../collab/cursors'
@@ -145,6 +146,11 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
       }
     })
   }, [engine, markDirty, tab.id])
+
+  useEffect(() => registerOpenWorkbook({ tabId: tab.id, name: tab.title, path: tab.path, engine }), [tab.id, engine])
+  useEffect(() => {
+    updateOpenWorkbookMeta(tab.id, tab.title, tab.path)
+  }, [tab.id, tab.title, tab.path])
 
   // A formula that comes to depend on itself gets a warning, as in Excel: once when the file
   // opens with one, and again whenever an edit makes a new one.
@@ -776,6 +782,7 @@ function Book({ tab, active, engine }: EditorProps & { engine: SheetsEngine }) {
             selectedChart={chartSel}
             onSelectChart={setChartSel}
             onChartMenu={chartMenu}
+            workbookSource={{ tabId: tab.id, name: tab.title, path: tab.path }}
           />
         </div>
       </div>

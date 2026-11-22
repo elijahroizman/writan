@@ -8,6 +8,7 @@ import { isMac } from '../../lib/platform'
 import { ChartSvg } from './Chart'
 import type { ChartView, SheetsEngine } from './engine'
 import { columnName } from './engine'
+import { EXCEL_LINK_CLIPBOARD, selectionToA1 } from '../../links/excelLinks'
 import './grid.css'
 
 const HEAD_W = 46
@@ -43,6 +44,7 @@ interface Props {
   selectedChart?: number | null
   onSelectChart?: (index: number | null) => void
   onChartMenu?: (index: number, x: number, y: number) => void
+  workbookSource?: { tabId: string; name: string; path: string | null }
 }
 
 export interface EditorHooks {
@@ -72,6 +74,7 @@ export function Grid({
   selectedChart = null,
   onSelectChart,
   onChartMenu,
+  workbookSource,
 }: Props) {
   const scroller = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
@@ -432,6 +435,21 @@ export function Grid({
     e.preventDefault()
     e.clipboardData.setData('text/plain', data.text)
     if (data.spreadsheet) e.clipboardData.setData(SHEETS_CLIPBOARD, data.spreadsheet)
+    if (workbookSource && !cut) {
+      const sheetName = engine.sheets[sheet]?.name
+      if (sheetName) {
+        e.clipboardData.setData(
+          EXCEL_LINK_CLIPBOARD,
+          JSON.stringify({
+            workbookTabId: workbookSource.tabId,
+            workbookName: workbookSource.name,
+            workbookPath: workbookSource.path,
+            sheet: sheetName,
+            range: selectionToA1([rr.r0, rr.c0], [rr.r1, rr.c1]),
+          }),
+        )
+      }
+    }
     if (moveId) {
       // WebKit can send two cut events for one keypress. Both must write the pre-cut data.
       if (gesture) gesture.data = data

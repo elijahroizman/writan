@@ -47,6 +47,9 @@ pub struct WordState {
     /// The footnote or endnote being edited, by index.
     pub note: Option<usize>,
     pub link: Option<String>,
+    /// Tag (`writan:excel-link:<id>`) when the caret is in a linked Excel table or a linked chart is selected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_tag: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -209,8 +212,12 @@ impl WordView {
         if let Some((_, _, _, t)) = self.table_at_caret() {
             st.table =
                 Some(TableState { rows: t.rows.len(), columns: t.columns.len().max(t.rows.first().map(|r| r.cells.len()).unwrap_or(0)) });
+            st.link_tag = super::commands::table_link_tag(t).filter(|tag| tag.starts_with(super::EXCEL_LINK_PREFIX));
         }
         if let Some((_, _, img)) = self.selected_image() {
+            if let Some(tag) = img.description.as_deref().filter(|t| t.starts_with(super::EXCEL_LINK_PREFIX)) {
+                st.link_tag = Some(tag.to_string());
+            }
             let crop = image_crop(img).unwrap_or([0.0; 4]);
             let rot = img
                 .origin

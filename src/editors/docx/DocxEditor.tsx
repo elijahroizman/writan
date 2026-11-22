@@ -9,6 +9,7 @@ import {
   ArrowUpToLine,
   Bold,
   Crop,
+  FileSpreadsheet,
   FileStack,
   Hash,
   Image as ImageIcon,
@@ -44,6 +45,10 @@ import { Button, ColorField, IconButton, NumberField, Section, Segmented, Select
 import type { CommentEditor } from '../../engine/word/comments'
 import { commentEditor } from '../../engine/word/comments'
 import type { WordEngine } from '../../engine/word/engine'
+import { LinkExcelModal } from '../../links/LinkExcelModal'
+import { LinkedExcelSection } from '../../links/LinkedExcelSection'
+import type { ExcelLink, ExcelLinksController, LinkedDocumentTarget } from '../../links/excelLinks'
+import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
 import { itemsHtml } from '../../engine/paint'
 import {
   DocxEditor,
@@ -142,6 +147,33 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
   const rightOpen = useWorkspace((s) => (s.split?.includes(tab.id) ? !!s.splitPanels[tab.id]?.right : s.rightOpen.docx))
   const rightOpenRef = useRef(rightOpen)
   rightOpenRef.current = rightOpen
+  const markDirty = useWorkspace((s) => s.markDirty)
+  const [excelModalOpen, setExcelModalOpen] = useState(false)
+  const excelTarget = useMemo<LinkedDocumentTarget | null>(
+    () =>
+      editor
+        ? {
+            insertLinkedTable: (tag, rows) => editor.insertLinkedTable(tag, rows),
+            updateLinkedTable: (tag, rows) => editor.updateLinkedTable(tag, rows),
+            insertLinkedImage: (tag, bytes, contentType, width, height, name) => editor.insertLinkedImage(tag, bytes, contentType, width, height, name),
+            updateLinkedImage: (tag, bytes, contentType) => editor.updateLinkedImage(tag, bytes, contentType),
+            clearLinkTag: (tag) => editor.clearLinkTag(tag),
+            linkedTags: () => editor.linkedTags(),
+          }
+        : null,
+    [editor],
+  )
+  const excelLinks = useExcelLinks(excelTarget, tab.bytes, () => markDirty(tab.id, true))
+  const excelLinksRef = useRef(excelLinks)
+  excelLinksRef.current = excelLinks
+  useEffect(() => {
+    if (import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) Object.assign(window, { __docxLinks: excelLinks })
+  }, [excelLinks])
+  const openExcelSource = (link: ExcelLink) => {
+    const open = findOpenWorkbook(link)
+    if (open) useWorkspace.getState().activate(open.tabId)
+    else if (link.workbookPath) void useWorkspace.getState().openPaths([link.workbookPath])
+  }
   usePinchZoom(stageRef, {
     getZoom: () => zoomRef.current.zoom,
     setZoom: (z) => zoomRef.current.setZoom(z),
@@ -158,7 +190,8 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
           const ed = editorRef.current
           const h = hostRef.current
           if (!ed || !h) throw new Error('The document is still loading.')
-          return comments.write(h, ed.save())
+          const withComments = await comments.write(h, ed.save())
+          return excelLinksRef.current.writeToBytes(withComments)
         },
         markSaved: () => {
           editorRef.current?.run({ cmd: 'markSaved' })
@@ -244,7 +277,18 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
       tab={tab}
       left={<Outline />}
       leftFooter={footer ? <span>{footer}</span> : undefined}
-      right={<Inspector tab={tab} comments={comments} host={host} onHeaderFooter={(position) => openHeaderFooter(editorRef.current, position)} onCrop={startCrop} />}
+      right={
+        <Inspector
+          tab={tab}
+          comments={comments}
+          host={host}
+          onHeaderFooter={(position) => openHeaderFooter(editorRef.current, position)}
+          onCrop={startCrop}
+          excelLinks={excelLinks}
+          onOpenExcelModal={() => setExcelModalOpen(true)}
+          onOpenExcelSource={openExcelSource}
+        />
+      }
     >
       <div
         className={`docx-stage ${crop ? 'cropping' : ''}`}
@@ -268,6 +312,7 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
       </div>
       {peek && <CommentPeek store={comments} id={peek.id} at={peek.at} />}
       {crop && <CropOverlay src={crop.src} frame={crop.frame} image={crop.image} onDone={endCrop} onCancel={() => endCrop()} />}
+      <LinkExcelModal open={excelModalOpen} onClose={() => setExcelModalOpen(false)} controller={excelLinks} targetLabel="Word" />
       <FindBar
         open={!!findOpen}
         replacing={findOpen === 'replace'}
@@ -422,12 +467,18 @@ function Inspector({
   host,
   onHeaderFooter,
   onCrop,
+  excelLinks,
+  onOpenExcelModal,
+  onOpenExcelSource,
 }: {
   tab: EditorProps['tab']
   comments: CommentStore
   host: CommentEditor | null
   onHeaderFooter: (position: 'header' | 'footer') => void
   onCrop: () => void
+  excelLinks: ExcelLinksController
+  onOpenExcelModal: () => void
+  onOpenExcelSource: (link: ExcelLink) => void
 }) {
   const style = useParagraphStyle()
   const family = useFontFamily()
@@ -589,6 +640,14 @@ function Inspector({
             onMouseDown={(e) => e.preventDefault()}
             onClick={() => onHeaderFooter('footer')}
           />
+          <ToolButton
+            icon={<FileSpreadsheet size={15} />}
+            label="Excel"
+            title="Link a live range or chart from an open Excel workbook"
+            disabled={!editor}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onOpenExcelModal}
+          />
         </div>
         {tableOpen && (
           <TableSizePicker
@@ -610,6 +669,15 @@ function Inspector({
       <TrackedChangesSection />
 
       <TableSection />
+
+      <Section title="Linked Excel" collapsible defaultOpen={excelLinks.links.length > 0 || !!editor?.state.linkTag}>
+        <LinkedExcelSection
+          controller={excelLinks}
+          activeTag={editor?.state.linkTag}
+          onOpenInsert={onOpenExcelModal}
+          onOpenSource={onOpenExcelSource}
+        />
+      </Section>
 
       <PageSection />
       <Section title="File" collapsible defaultOpen={false}>
