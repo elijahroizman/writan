@@ -2329,6 +2329,7 @@ fn find_all_linked_tables(blocks: &[Block], tag: &str) -> Vec<(Path, Emu)> {
                     let total: i64 = t.columns.iter().map(|c| c.0).sum();
                     let width = if total > 0 { Emu(total) } else { Emu::from_inches(6.27) };
                     out.push((Path(p), width));
+                    continue;
                 }
                 for (ri, row) in t.rows.iter().enumerate() {
                     for (ci, cell) in row.cells.iter().enumerate() {
