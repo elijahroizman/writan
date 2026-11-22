@@ -130,12 +130,17 @@ export function findOpenWorkbook(link: Pick<ExcelLink, 'workbookPath' | 'workboo
   if (link.workbookPath) {
     const byPath = all.find((w) => w.path === link.workbookPath)
     if (byPath) return byPath
+    if (link.workbookTabId) {
+      const byTab = all.find((w) => w.tabId === link.workbookTabId && w.path === link.workbookPath)
+      if (byTab) return byTab
+    }
+    return null
   }
   if (link.workbookTabId) {
     const byTab = all.find((w) => w.tabId === link.workbookTabId)
     if (byTab) return byTab
   }
-  return all.find((w) => w.name === link.workbookName) ?? null
+  return all.find((w) => !w.path && w.name === link.workbookName) ?? all.find((w) => w.name === link.workbookName) ?? null
 }
 
 // ---- Snapshot extraction (live workbook or disk fallback) ----
@@ -171,24 +176,19 @@ async function withWorkbookEngine<T>(
 function findChartOnSheet(engine: SheetsEngine, sheetIdx: number, chartIndex?: number, chartTitle?: string): ChartView | null {
   const charts = engine.chartsOf(sheetIdx)
   if (!charts.length) return null
-  if (chartIndex != null && charts[chartIndex]) {
-    const c = charts[chartIndex]
-    if (!chartTitle || !c.title || c.title === chartTitle) return c
-  }
   if (chartTitle) {
-    const byTitle = charts.find((c) => c.title === chartTitle)
-    if (byTitle) return byTitle
+    if (chartIndex != null && charts[chartIndex]?.title === chartTitle) return charts[chartIndex]
+    return charts.find((c) => c.title === chartTitle) ?? null
   }
-  return charts[chartIndex ?? 0] ?? charts[0] ?? null
+  if (chartIndex != null) return charts[chartIndex] ?? null
+  return charts[0] ?? null
 }
 
 export async function resolveExcelLink(link: ExcelLink): Promise<ResolvedLinkData | null> {
   return withWorkbookEngine(link, async (engine) => {
-    const sheetIdx = Math.max(
-      0,
-      engine.sheets.findIndex((s) => s.name === link.sheet),
-    )
-    const resolvedSheet = engine.sheets[sheetIdx]?.name ?? link.sheet
+    const sheetIdx = engine.sheets.findIndex((s) => s.name === link.sheet)
+    if (sheetIdx < 0) return null
+    const resolvedSheet = engine.sheets[sheetIdx].name
     if (link.kind === 'range') {
       const snap = engine.rangeSnapshot(sheetIdx, link.range || 'A1')
       if (!snap || !snap.rows.length) return null
