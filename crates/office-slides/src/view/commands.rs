@@ -2641,7 +2641,7 @@ fn update_linked_tables_in_frames(frames: &mut [Frame], tag: &str, rows: &[Vec<L
         if f.description.as_deref() == Some(tag) {
             if let FrameContent::Table { table } = &mut f.content {
                 let bw = f.shape.xfrm.as_ref().map(|x| x.width.0 as f64 / 9525.0).filter(|&w| w > 10.0).unwrap_or(900.0);
-                let row_h = table.rows.first().and_then(|r| r.height).map(|e| e.0 as f64 / 9525.0).filter(|&h| h > 10.0).unwrap_or(32.0);
+                let row_h = table.rows.first().and_then(|r| r.height).map(|e| e.0 as f64 / 9525.0).filter(|&h| h >= 1.0).unwrap_or(32.0);
                 let style = table.style.clone();
                 let origin = table.origin.get().cloned();
                 let next = build_linked_slide_table(rows, bw, row_h, style, origin);

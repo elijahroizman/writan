@@ -1392,14 +1392,15 @@ fn linked_excel_placement_avoids_title_and_subtitle_overlap() {
         assert!(img.y >= 0.0 && img.y + img.height <= slide_h + 0.5, "slide {slide_idx}: chart within bounds");
     }
 
-    // Tall table (18 rows) on a title slide must stay within slide bounds instead of overflowing off the bottom.
+    // Tall table (30 rows) on a title slide must stay within slide bounds on insert and refresh.
     let mut v_tall = SlidesView::blank();
-    let tall_rows: Vec<Vec<LinkedCell>> = (0..18)
+    let tall_tag = format!("{EXCEL_LINK_PREFIX}tall");
+    let tall_rows: Vec<Vec<LinkedCell>> = (0..30)
         .map(|i| {
             vec![LinkedCell { text: format!("R{i}"), ..Default::default() }, LinkedCell { text: format!("{i}"), ..Default::default() }]
         })
         .collect();
-    let tid = v_tall.insert_linked_table(&format!("{EXCEL_LINK_PREFIX}tall"), &tall_rows, "Sheet1!A1:B18");
+    let tid = v_tall.insert_linked_table(&tall_tag, &tall_rows, "Sheet1!A1:B30");
     let els = v_tall.elements(&mut host, 0);
     let tbl = els.iter().find(|e| e.id == tid.to_string()).unwrap();
     assert!(
@@ -1407,5 +1408,14 @@ fn linked_excel_placement_avoids_title_and_subtitle_overlap() {
         "tall table overflows slide: {}..{} > {slide_h}",
         tbl.y,
         tbl.y + tbl.height
+    );
+    assert!(v_tall.update_linked_table(&tall_tag, &tall_rows));
+    let els_after = v_tall.elements(&mut host, 0);
+    let tbl_after = els_after.iter().find(|e| e.id == tid.to_string()).unwrap();
+    assert!(
+        tbl_after.y >= 0.0 && tbl_after.y + tbl_after.height <= slide_h + 0.5,
+        "tall table overflows slide after refresh: {}..{} > {slide_h}",
+        tbl_after.y,
+        tbl_after.y + tbl_after.height
     );
 }
