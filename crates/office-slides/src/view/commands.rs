@@ -1277,11 +1277,12 @@ impl SlidesView {
         let (w, h) = self.size();
         let row_count = rows.len().clamp(1, 50);
         let col_count = rows.iter().map(Vec::len).max().unwrap_or(1).clamp(1, 20);
-        let bw = w * 0.72;
-        let row_h = (32.0_f64).min((h * 0.45) / row_count as f64).max(20.0);
+        let pref_w = w * 0.72;
+        let pref_row_h = (32.0_f64).min((h * 0.45) / row_count as f64).max(20.0);
+        let pref_h = pref_row_h * row_count as f64;
+        let (x, y, bw, th) = self.place_linked_frame(pref_w, pref_h, false);
+        let row_h = (th / row_count as f64).max(1.0);
         let table = build_linked_slide_table(rows, bw, row_h, None, None);
-        let th = row_h * row_count as f64;
-        let (x, y) = self.next_linked_frame_origin(bw, th);
         let xf = Xfrm { x: px_emu(x), y: px_emu(y), width: px_emu(bw), height: px_emu(th), ..Default::default() };
         let f = Frame {
             id: 0,
@@ -1297,31 +1298,85 @@ impl SlidesView {
         self.insert_frame(f)
     }
 
-    /// Computes a non-overlapping `(x, y)` in pixels for a newly inserted linked object on the active slide.
-    fn next_linked_frame_origin(&self, bw: f64, bh: f64) -> (f64, f64) {
+    /// Computes a non-overlapping `(x, y, width, height)` in pixels for a newly inserted linked object
+    /// on the active slide, keeping clear of title/subtitle frames and existing linked objects.
+    fn place_linked_frame(&self, pref_w: f64, pref_h: f64, preserve_aspect: bool) -> (f64, f64, f64, f64) {
         let (w, h) = self.size();
+        let margin_x = 24.0;
         let margin_y = 24.0;
-        let default_y = (h * 0.24).max(margin_y);
-        let mut lowest_bottom = 0.0_f64;
+        let gap = 16.0;
+        let max_w = (w - 2.0 * margin_x).max(40.0);
+        let bw = pref_w.min(max_w).max(40.0);
+        let bh = pref_h.max(24.0);
+        let center_x = |width: f64| ((w - width) / 2.0).max(margin_x);
+
+        let mut header_top: Option<f64> = None;
+        let mut header_bottom: Option<f64> = None;
+        let mut linked_spans: Vec<(f64, f64)> = Vec::new();
+
         if let Some(slide) = self.slides().get(self.sel.active) {
             for f in &slide.frames {
+                if f.hidden {
+                    continue;
+                }
+                let Some(xf) = crate::resolve(&self.doc, slide, f).xfrm else { continue };
+                let top = xf.y.0 as f64 / 9525.0;
+                let bottom = (xf.y.0 + xf.height.0) as f64 / 9525.0;
+                if bottom <= top {
+                    continue;
+                }
                 if f.description.as_deref().is_some_and(|t| t.starts_with(EXCEL_LINK_PREFIX)) {
-                    if let Some(xf) = &f.shape.xfrm {
-                        let bottom = (xf.y.0 + xf.height.0) as f64 / 9525.0;
-                        if bottom > lowest_bottom {
-                            lowest_bottom = bottom;
-                        }
-                    }
+                    linked_spans.push((top, bottom));
+                } else if is_title_or_subtitle_frame(f) {
+                    header_top = Some(header_top.map_or(top, |t| t.min(top)));
+                    header_bottom = Some(header_bottom.map_or(bottom, |b| b.max(bottom)));
                 }
             }
         }
-        let x = ((w - bw) / 2.0).max(24.0);
-        let y = if lowest_bottom > 0.0 {
-            (lowest_bottom + 18.0).min((h - bh - margin_y).max(margin_y))
-        } else {
-            default_y.min((h - bh - margin_y).max(margin_y))
-        };
-        (x, y)
+
+        let mut bands: Vec<(f64, f64)> = Vec::new();
+        if let (Some(ht), Some(hb)) = (header_top, header_bottom) {
+            let below_top = hb + gap;
+            let below_bottom = h - margin_y;
+            if below_bottom > below_top + 40.0 {
+                bands.push((below_top, below_bottom));
+            }
+            let above_top = margin_y;
+            let above_bottom = ht - gap;
+            if above_bottom > above_top + 40.0 {
+                bands.push((above_top, above_bottom));
+            }
+        }
+        if bands.is_empty() {
+            bands.push(((h * 0.12).max(margin_y), (h - margin_y).max(margin_y + 40.0)));
+        }
+
+        let mut best_fit: Option<(f64, f64)> = None;
+        for &(band_top, band_bottom) in &bands {
+            let lowest =
+                linked_spans.iter().filter(|&&(t, b)| b > band_top - 1.0 && t < band_bottom + 1.0).map(|&(_, b)| b).reduce(f64::max);
+            let start_y = lowest.map_or(band_top, |lb| lb + gap);
+            let avail_h = band_bottom - start_y;
+            if avail_h >= bh {
+                return (center_x(bw), start_y, bw, bh);
+            }
+            if best_fit.is_none_or(|(_, ah)| ah < 100.0 && avail_h > ah) {
+                best_fit = Some((start_y, avail_h));
+            }
+        }
+
+        if let Some((start_y, avail_h)) = best_fit.filter(|&(_, ah)| ah >= 60.0) {
+            let fit_h = avail_h.min(bh);
+            let fit_w = if preserve_aspect { (bw * (fit_h / bh)).min(max_w).max(40.0) } else { bw };
+            return (center_x(fit_w), start_y, fit_w, fit_h);
+        }
+
+        let (band_top, band_bottom) =
+            bands.iter().copied().max_by(|a, b| (a.1 - a.0).total_cmp(&(b.1 - b.0))).unwrap_or((margin_y, h - margin_y));
+        let band_h = (band_bottom - band_top).max(40.0);
+        let fit_h = bh.min(band_h);
+        let fit_w = if preserve_aspect { (bw * (fit_h / bh)).min(max_w).max(40.0) } else { bw };
+        (center_x(fit_w), band_top, fit_w, fit_h)
     }
 
     /// Updates every table frame carrying `tag` in place across all slides (including inside groups), preserving position and style.
@@ -1360,9 +1415,9 @@ impl SlidesView {
     pub fn insert_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64, name: &str) -> u32 {
         let (w, h) = self.size();
         let k = (w * 0.55 / width.max(1.0)).min(h * 0.45 / height.max(1.0)).min(1.0);
-        let (bw, bh) = (width * k, height * k);
+        let (pref_w, pref_h) = (width * k, height * k);
         let media = self.add_media(content_type, bytes);
-        let (x, y) = self.next_linked_frame_origin(bw, bh);
+        let (x, y, bw, bh) = self.place_linked_frame(pref_w, pref_h, true);
         let xf = Xfrm { x: px_emu(x), y: px_emu(y), width: px_emu(bw), height: px_emu(bh), ..Default::default() };
         let f = Frame {
             id: 0,
@@ -2665,7 +2720,7 @@ fn update_linked_tables_in_frames(frames: &mut [Frame], tag: &str, rows: &[Vec<L
         if f.description.as_deref() == Some(tag) {
             if let FrameContent::Table { table } = &mut f.content {
                 let bw = f.shape.xfrm.as_ref().map(|x| x.width.0 as f64 / 9525.0).filter(|&w| w > 10.0).unwrap_or(900.0);
-                let row_h = table.rows.first().and_then(|r| r.height).map(|e| e.0 as f64 / 9525.0).filter(|&h| h > 10.0).unwrap_or(32.0);
+                let row_h = table.rows.first().and_then(|r| r.height).map(|e| e.0 as f64 / 9525.0).filter(|&h| h >= 1.0).unwrap_or(32.0);
                 let style = table.style.clone();
                 let origin = table.origin.get().cloned();
                 let next = build_linked_slide_table(rows, bw, row_h, style, origin);
@@ -2715,4 +2770,16 @@ fn collect_linked_tags_in_frames(frames: &[Frame], slide_index: usize, out: &mut
             collect_linked_tags_in_frames(children, slide_index, out);
         }
     }
+}
+
+fn is_title_or_subtitle_frame(f: &Frame) -> bool {
+    if f.hidden {
+        return false;
+    }
+    if let Some(ph) = &f.placeholder {
+        if matches!(ph.kind.as_deref(), Some("title" | "ctrTitle" | "subTitle")) {
+            return true;
+        }
+    }
+    matches!(f.name.trim().to_ascii_lowercase().as_str(), "title" | "subtitle")
 }

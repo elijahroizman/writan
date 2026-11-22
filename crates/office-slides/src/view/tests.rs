@@ -1363,3 +1363,89 @@ fn inline_latex_math_insert_update_undo_and_round_trip() {
     let el3 = reopened.elements(&mut host, 0).into_iter().find(|e| e.math_tag.is_some()).unwrap();
     assert_eq!(el3.math_tag.as_deref(), Some(tag2.as_str()));
 }
+
+#[test]
+fn linked_excel_placement_avoids_title_and_subtitle_overlap() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::blank();
+    let (_, slide_h) = v.size();
+    let rows = vec![
+        vec![LinkedCell { text: "Item".into(), bold: true, ..Default::default() }, LinkedCell { text: "Val".into(), ..Default::default() }],
+        vec![LinkedCell { text: "A".into(), ..Default::default() }, LinkedCell { text: "100".into(), ..Default::default() }],
+        vec![LinkedCell { text: "Total".into(), ..Default::default() }, LinkedCell { text: "200".into(), ..Default::default() }],
+    ];
+
+    for slide_idx in [0usize, 1usize] {
+        v.sel.active = slide_idx;
+        let tbl_tag = format!("{EXCEL_LINK_PREFIX}tbl-{slide_idx}");
+        let img_tag = format!("{EXCEL_LINK_PREFIX}img-{slide_idx}");
+        let tid = v.insert_linked_table(&tbl_tag, &rows, "Sheet1!A1:B3");
+        let iid = v.insert_linked_image(&img_tag, CLIPBOARD_PNG.to_vec(), "image/png", 600.0, 360.0, "Chart 1");
+
+        let els = v.elements(&mut host, slide_idx);
+        let tbl = els.iter().find(|e| e.id == tid.to_string()).unwrap();
+        let img = els.iter().find(|e| e.id == iid.to_string()).unwrap();
+        let headers: Vec<_> = els.iter().filter(|e| matches!(e.name.trim().to_ascii_lowercase().as_str(), "title" | "subtitle")).collect();
+        assert!(!headers.is_empty(), "slide {slide_idx} should have header frames");
+
+        for h in &headers {
+            let h_top = h.y;
+            let h_bot = h.y + h.height;
+            assert!(
+                tbl.y + tbl.height <= h_top || tbl.y >= h_bot,
+                "slide {slide_idx}: linked table ({}..{}) overlaps {} ({}..{})",
+                tbl.y,
+                tbl.y + tbl.height,
+                h.name,
+                h_top,
+                h_bot
+            );
+            assert!(
+                img.y + img.height <= h_top || img.y >= h_bot,
+                "slide {slide_idx}: linked chart ({}..{}) overlaps {} ({}..{})",
+                img.y,
+                img.y + img.height,
+                h.name,
+                h_top,
+                h_bot
+            );
+        }
+        assert!(
+            tbl.y + tbl.height <= img.y || img.y + img.height <= tbl.y,
+            "slide {slide_idx}: linked table ({}..{}) overlaps linked chart ({}..{})",
+            tbl.y,
+            tbl.y + tbl.height,
+            img.y,
+            img.y + img.height
+        );
+        assert!(tbl.y >= 0.0 && tbl.y + tbl.height <= slide_h + 0.5, "slide {slide_idx}: table within bounds");
+        assert!(img.y >= 0.0 && img.y + img.height <= slide_h + 0.5, "slide {slide_idx}: chart within bounds");
+    }
+
+    // Tall table (30 rows) on a title slide must stay within slide bounds on insert and refresh.
+    let mut v_tall = SlidesView::blank();
+    let tall_tag = format!("{EXCEL_LINK_PREFIX}tall");
+    let tall_rows: Vec<Vec<LinkedCell>> = (0..30)
+        .map(|i| {
+            vec![LinkedCell { text: format!("R{i}"), ..Default::default() }, LinkedCell { text: format!("{i}"), ..Default::default() }]
+        })
+        .collect();
+    let tid = v_tall.insert_linked_table(&tall_tag, &tall_rows, "Sheet1!A1:B30");
+    let els = v_tall.elements(&mut host, 0);
+    let tbl = els.iter().find(|e| e.id == tid.to_string()).unwrap();
+    assert!(
+        tbl.y >= 0.0 && tbl.y + tbl.height <= slide_h + 0.5,
+        "tall table overflows slide: {}..{} > {slide_h}",
+        tbl.y,
+        tbl.y + tbl.height
+    );
+    assert!(v_tall.update_linked_table(&tall_tag, &tall_rows));
+    let els_after = v_tall.elements(&mut host, 0);
+    let tbl_after = els_after.iter().find(|e| e.id == tid.to_string()).unwrap();
+    assert!(
+        tbl_after.y >= 0.0 && tbl_after.y + tbl_after.height <= slide_h + 0.5,
+        "tall table overflows slide after refresh: {}..{} > {slide_h}",
+        tbl_after.y,
+        tbl_after.y + tbl_after.height
+    );
+}
