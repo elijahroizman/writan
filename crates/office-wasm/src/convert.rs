@@ -947,15 +947,36 @@ fn slide_frame_markdown(f: &Frame, out: &mut String) {
 fn slide_para_inline_markdown(p: &Paragraph) -> String {
     let mut out = String::new();
     for inline in &p.content {
-        if let Inline::Text(r) = inline {
-            let fmt = InlineFmt {
-                bold: r.props.bold == Some(true),
-                italic: r.props.italic == Some(true),
-                strike: matches!(r.props.strike, Some(Strike::Single | Strike::Double)),
-                code: is_monospace_font(r.props.font.as_deref()),
-                link: r.link.as_ref().and_then(|l| l.url.clone()).filter(|u| !u.is_empty()),
-            };
-            out.push_str(&format_inline_span(&r.text, &fmt));
+        match inline {
+            Inline::Text(r) => {
+                let fmt = InlineFmt {
+                    bold: r.props.bold == Some(true),
+                    italic: r.props.italic == Some(true),
+                    strike: matches!(r.props.strike, Some(Strike::Single | Strike::Double)),
+                    code: is_monospace_font(r.props.font.as_deref()),
+                    link: r.link.as_ref().and_then(|l| l.url.clone()).filter(|u| !u.is_empty()),
+                };
+                out.push_str(&format_inline_span(&r.text, &fmt));
+            }
+            Inline::Raw { xml } => {
+                let math_el = if math::is_math(xml) {
+                    Some(xml)
+                } else {
+                    xml.descendant(ns::M, "oMathPara").or_else(|| xml.descendant(ns::M, "oMath"))
+                };
+                if let Some(m) = math_el {
+                    let eq = math::linear(m);
+                    let eq = eq.trim();
+                    if !eq.is_empty() {
+                        if m.is(ns::M, "oMathPara") {
+                            out.push_str(&format!("$${eq}$$"));
+                        } else {
+                            out.push_str(&format!("${eq}$"));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     out
