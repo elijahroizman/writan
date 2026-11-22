@@ -401,9 +401,11 @@ function convertNode(node: MmlNodeLike, ctx: ConvertCtx): string {
     case 'TeXAtom':
     case 'mstyle':
     case 'mpadded':
-    case 'mphantom':
     case 'semantics':
       return convertChildren(children, activeCtx)
+
+    case 'mphantom':
+      return `<m:phant><m:phantPr><m:show m:val="0"/></m:phantPr><m:e>${convertChildren(children, activeCtx)}</m:e></m:phant>`
 
     case 'mrow': {
       // Detect \left( ... \right) delimiter groups: first child OPEN mo, last child CLOSE mo.
