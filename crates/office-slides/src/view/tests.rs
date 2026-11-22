@@ -1345,6 +1345,8 @@ fn inline_latex_math_insert_update_undo_and_round_trip() {
     let el1 = v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).unwrap();
     assert_eq!(el1.math_tag.as_deref(), Some(tag1.as_str()));
     assert_eq!(el1.name, "Equation");
+    // Raw text editing must not overwrite a native Office Math frame.
+    assert!(!v.begin_edit(&mut host, id, None));
 
     let tag2 = format!(
         "{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"\\\\int_0^1 x^2 dx\",\"display\":true,\"fontSizePt\":32,\"color\":\"#FFFFFF\",\"w\":200,\"h\":64}}"

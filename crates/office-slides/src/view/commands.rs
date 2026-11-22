@@ -1679,6 +1679,10 @@ impl SlidesView {
         if !matches!(&f.content, FrameContent::Shape { .. } | FrameContent::Table { .. }) {
             return false;
         }
+        // Native OMML equation frames are edited through the LaTeX modal, never raw text editing.
+        if f.description.as_deref().is_some_and(|d| d.starts_with(LATEX_MATH_PREFIX)) {
+            return false;
+        }
         let blocks = frame_blocks(f);
         let is_table = matches!(f.content, FrameContent::Table { .. });
         let sel = match at.and_then(|(x, y)| self.text_hit(host, id, x, y)) {
