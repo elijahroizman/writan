@@ -1281,10 +1281,9 @@ impl SlidesView {
         let pref_row_h = (32.0_f64).min((h * 0.45) / row_count as f64).max(20.0);
         let pref_h = pref_row_h * row_count as f64;
         let (x, y, bw, th) = self.place_linked_frame(pref_w, pref_h, false);
-        let row_h = (th / row_count as f64).max(16.0);
-        let actual_h = row_h * row_count as f64;
+        let row_h = (th / row_count as f64).max(1.0);
         let table = build_linked_slide_table(rows, bw, row_h, None, None);
-        let xf = Xfrm { x: px_emu(x), y: px_emu(y), width: px_emu(bw), height: px_emu(actual_h), ..Default::default() };
+        let xf = Xfrm { x: px_emu(x), y: px_emu(y), width: px_emu(bw), height: px_emu(th), ..Default::default() };
         let f = Frame {
             id: 0,
             name: if name.is_empty() { format!("Linked Table ({row_count}x{col_count})") } else { name.into() },
