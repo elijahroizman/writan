@@ -1,7 +1,7 @@
 import { AlertCircle, Sigma, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { isMac } from '../lib/platform'
+import { shortcut } from '../lib/platform'
 import type { LatexMathSpec } from './latexMath'
 import { LATEX_SNIPPETS, normalizeHexColor, renderLatexToPng, renderLatexToSvg } from './latexMath'
 
@@ -195,7 +195,7 @@ export function LatexMathModal({ open, mode, targetLabel, initialSpec, onClose, 
               <label htmlFor="writan-latex-input" style={{ fontSize: 12, fontWeight: 500, color: 'var(--muted)' }}>
                 LaTeX expression
               </label>
-              <span style={{ fontSize: 11, color: 'var(--faint)' }}>{isMac ? '⌘↩' : 'Ctrl+Enter'} to {mode === 'edit' ? 'update' : 'insert'}</span>
+              <span style={{ fontSize: 11, color: 'var(--faint)' }}>{shortcut('⌘↩')} to {mode === 'edit' ? 'update' : 'insert'}</span>
             </div>
             <textarea
               id="writan-latex-input"
