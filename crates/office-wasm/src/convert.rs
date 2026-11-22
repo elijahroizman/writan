@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use office_core::convert::{plain_text, to_kind};
 use office_core::model::{
     Block, Body, BreakKind, Document, Frame, FrameContent, Inline, Kind, Link, ParaProps, Paragraph, Run, RunProps, Slide, Strike, Table,
+    Value,
 };
 use office_core::units::{Emu, FontSize};
 use office_core::xml::{ns, Element};
@@ -59,9 +60,51 @@ fn open_document(bytes: &[u8], name: &str) -> office_core::Result<Document> {
         comp.read(bytes, Some(name))?
     };
     if doc.kind == Kind::Sheets {
-        office_sheets::recalculate(&mut doc, None);
+        recalculate_missing_formulas(&mut doc);
     }
     Ok(doc)
+}
+
+fn recalculate_missing_formulas(doc: &mut Document) {
+    let has_uncached = match &doc.body {
+        Body::Workbook { sheets } => {
+            sheets.iter().any(|s| s.rows.iter().any(|r| r.cells.iter().any(|c| c.formula.is_some() && matches!(c.value, Value::Empty))))
+        }
+        _ => false,
+    };
+    if !has_uncached {
+        return;
+    }
+    let saved: Vec<(usize, u32, u32, Value)> = match &doc.body {
+        Body::Workbook { sheets } => sheets
+            .iter()
+            .enumerate()
+            .flat_map(|(si, s)| {
+                s.rows.iter().flat_map(move |r| {
+                    let row_idx = r.index;
+                    r.cells
+                        .iter()
+                        .filter(|c| c.formula.is_some() && !matches!(c.value, Value::Empty))
+                        .map(move |c| (si, row_idx, c.col, c.value.clone()))
+                })
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    office_sheets::recalculate(doc, None);
+    if let Body::Workbook { sheets } = &mut doc.body {
+        for (si, row_idx, col, val) in saved {
+            if let Some(cell) = sheets
+                .get_mut(si)
+                .and_then(|s| s.rows.iter_mut().find(|r| r.index == row_idx))
+                .and_then(|r| r.cells.iter_mut().find(|c| c.col == col))
+            {
+                if matches!(cell.value, Value::Error(_) | Value::Empty) {
+                    cell.value = val;
+                }
+            }
+        }
+    }
 }
 
 fn convert_inner(bytes: &[u8], name: &str, target: &str) -> office_core::Result<Vec<u8>> {
@@ -374,9 +417,7 @@ fn visible_paragraph_text(doc: &Document, p: &Paragraph) -> String {
                 }
                 out.push_str(&r.text);
             }
-            Inline::Break { kind: BreakKind::Page | BreakKind::Column, .. } => {}
-            Inline::Break { .. } => out.push('\n'),
-            Inline::Image(_) | Inline::Raw { .. } => {}
+            Inline::Break { .. } | Inline::Image(_) | Inline::Raw { .. } => {}
         }
     }
     out
