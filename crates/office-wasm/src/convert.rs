@@ -284,7 +284,23 @@ fn word_to_markdown(doc: &Document, blocks: &[Block]) -> String {
                     out.push_str("\n\n");
                 }
             }
-            Block::Raw { .. } => {}
+            Block::Raw { xml, .. } => {
+                if in_code_block {
+                    out.push_str("```\n\n");
+                    in_code_block = false;
+                }
+                if let Some(extra) = raw_block_markdown(xml, &mut referenced_footnotes, &mut referenced_endnotes) {
+                    let trimmed = extra.trim();
+                    if !trimmed.is_empty() {
+                        if prev_was_list {
+                            out.push('\n');
+                            prev_was_list = false;
+                        }
+                        out.push_str(trimmed);
+                        out.push_str("\n\n");
+                    }
+                }
+            }
         }
     }
 
@@ -533,7 +549,48 @@ fn render_paragraph_inlines(
     (out, has_page_break)
 }
 
+fn raw_block_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut Vec<String>) -> Option<String> {
+    if el.is(ns::W, "del") || el.is(ns::W, "moveFrom") {
+        return None;
+    }
+    if el.is(ns::W, "sdt") {
+        if let Some(content) = el.child(ns::W, "sdtContent") {
+            let mut paras = Vec::new();
+            for c in content.elements() {
+                if let Some(s) = raw_block_markdown(c, footnotes, endnotes) {
+                    let t = s.trim();
+                    if !t.is_empty() {
+                        paras.push(t.to_string());
+                    }
+                }
+            }
+            return (!paras.is_empty()).then(|| paras.join("\n\n"));
+        }
+        return None;
+    }
+    if el.is(ns::W, "p") {
+        let mut line = String::new();
+        for c in el.elements() {
+            if let Some(s) = raw_inline_markdown(c, footnotes, endnotes) {
+                line.push_str(&s);
+            }
+        }
+        return (!line.trim().is_empty()).then_some(line);
+    }
+    raw_inline_markdown(el, footnotes, endnotes)
+}
+
+fn raw_run_is_vanished(run_el: &Element) -> bool {
+    run_el
+        .child(ns::W, "rPr")
+        .and_then(|rpr| rpr.child(ns::W, "vanish"))
+        .is_some_and(|v| !matches!(v.attr_ns(ns::W, "val"), Some("0" | "false" | "off")))
+}
+
 fn raw_inline_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut Vec<String>) -> Option<String> {
+    if el.is(ns::W, "del") || el.is(ns::W, "moveFrom") {
+        return None;
+    }
     if math::is_math(el) {
         let eq = math::linear(el);
         let eq = eq.trim();
@@ -558,19 +615,43 @@ fn raw_inline_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut
             return Some(format!("[^e{id}]"));
         }
     }
-    // Check inside content controls (w:sdt/w:sdtContent) for equations.
-    if el.is(ns::W, "sdt") {
-        if let Some(content) = el.child(ns::W, "sdtContent") {
-            let mut parts = Vec::new();
-            for c in content.elements() {
-                if let Some(s) = raw_inline_markdown(c, footnotes, endnotes) {
-                    parts.push(s);
-                }
-            }
-            if !parts.is_empty() {
-                return Some(parts.join(" "));
+    if el.is(ns::W, "r") {
+        if raw_run_is_vanished(el) {
+            return None;
+        }
+        let mut text = String::new();
+        for c in el.elements() {
+            if c.is(ns::W, "t") {
+                text.push_str(&c.text());
+            } else if c.is(ns::W, "tab") {
+                text.push(' ');
+            } else if c.is(ns::W, "br") || c.is(ns::W, "cr") {
+                text.push('\n');
             }
         }
+        return (!text.is_empty()).then_some(text);
+    }
+    // Check inside content controls (w:sdt/w:sdtContent) for equations and visible text.
+    if el.is(ns::W, "sdt") {
+        if let Some(content) = el.child(ns::W, "sdtContent") {
+            let mut out = String::new();
+            for c in content.elements() {
+                if let Some(s) = raw_inline_markdown(c, footnotes, endnotes) {
+                    out.push_str(&s);
+                }
+            }
+            return (!out.is_empty()).then_some(out);
+        }
+        return None;
+    }
+    if el.is(ns::W, "ins") || el.is(ns::W, "smartTag") || el.is(ns::W, "hyperlink") || el.is(ns::W, "moveTo") {
+        let mut out = String::new();
+        for c in el.elements() {
+            if let Some(s) = raw_inline_markdown(c, footnotes, endnotes) {
+                out.push_str(&s);
+            }
+        }
+        return (!out.is_empty()).then_some(out);
     }
     None
 }
