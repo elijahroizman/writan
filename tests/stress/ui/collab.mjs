@@ -121,10 +121,15 @@ try {
   await a.page.waitForFunction(() => !document.querySelector('.docx-pages')?.textContent?.includes('Bo was here.'))
   check('undo takes back the guest’s typing everywhere', (await bodyText(a.page)).includes('Ada again.') && (await bodyText(a.page)) === (await bodyText(b.page)))
 
-  // The host stops; the guest keeps a copy.
+  // The host stops; the guest is told, and keeps a copy.
   await a.page.getByRole('button', { name: 'Shared on your network' }).click()
   await a.page.getByRole('button', { name: 'Stop sharing' }).click()
   await b.page.waitForFunction(() => !document.querySelector('.tab-shared'))
+  const stopped = b.page.getByRole('dialog', { name: /Ada stopped sharing/ })
+  await stopped.waitFor()
+  if (shots) await b.page.screenshot({ path: `${shots}/word-host-stopped.png` })
+  await stopped.getByRole('button', { name: 'Keep a Copy' }).click()
+  check('the guest keeps its copy when it asks to', await b.page.locator('.docx-pages').isVisible())
   await b.page.getByRole('button', { name: 'Share on your network' }).click()
   const ended = await b.page.locator('.share-panel').innerText()
   check('the guest is told sharing stopped', /Sharing has stopped/.test(ended), ended)
@@ -159,6 +164,20 @@ try {
   await a.page.waitForFunction(() => document.querySelector('.sc-overlay .peer-box'))
   check('the frame the guest picked is outlined for the host', (await peerTags(a.page, '.sc-overlay')).join() === 'Bo', (await peerTags(a.page, '.sc-overlay')).join())
   if (shots) await a.page.screenshot({ path: `${shots}/slides-host.png` })
+
+  // The host closes the shared tab: the guest is told, and its tab closes.
+  const guestTabs = await b.page.evaluate(() => window.__workspace.useWorkspace.getState().tabs.length)
+  await a.page.evaluate(async () => {
+    const ws = window.__workspace.useWorkspace.getState()
+    ws.markDirty(ws.activeId, false)
+    await ws.closeTab(ws.activeId)
+  })
+  const closedDeck = b.page.getByRole('dialog', { name: /Ada stopped sharing/ })
+  await closedDeck.waitFor()
+  check('the guest is told the host stopped sharing', /changes that reached them/.test(await closedDeck.innerText()), await closedDeck.innerText())
+  await closedDeck.getByRole('button', { name: 'Close' }).click()
+  await b.page.waitForFunction((n) => window.__workspace.useWorkspace.getState().tabs.length === n - 1, guestTabs)
+  check('the guest’s tab closes, without asking to save', (await b.page.locator('.dialog').count()) === 0)
 
   // ── Excel
   await a.page.getByRole('tab', { name: 'Home' }).click()

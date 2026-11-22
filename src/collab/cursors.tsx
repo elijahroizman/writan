@@ -45,6 +45,7 @@ export function together<T>(items: { place: Place; key: string; item: T }[]): { 
 export function PeerCaret({ peers, moves, style, scale = 1 }: { peers: Peer[]; moves: number; style: CSSProperties; scale?: number }) {
   return (
     <div className="peer-caret" data-peer={peers[0].client} style={{ ...style, '--peer': peers[0].color, '--peer-scale': scale } as CSSProperties}>
+      <span key={`knob-${moves}`} className="peer-knob" />
       <PeerTags peers={peers} moves={moves} scale={scale} />
     </div>
   )

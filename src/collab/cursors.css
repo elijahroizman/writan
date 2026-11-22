@@ -10,9 +10,9 @@
   z-index: 2;
 }
 
-/* A knob on top of the caret: always there, and the place to point at to see the name. */
-.peer-caret::before {
-  content: '';
+/* A knob on top of the caret, once the name has faded: the place to point at to see it again.
+   Until then it's there but invisible, under the name. */
+.peer-knob {
   position: absolute;
   left: calc(-2px * var(--peer-scale, 1));
   top: calc(-3px * var(--peer-scale, 1));
@@ -21,13 +21,26 @@
   border-radius: calc(1.5px * var(--peer-scale, 1));
   background: var(--peer);
   pointer-events: auto;
+  opacity: 0;
+  animation: peer-knob-show 0.2s ease 4.3s forwards;
 }
 
+.peer-caret:hover .peer-knob {
+  animation: none;
+  opacity: 0;
+}
+
+@keyframes peer-knob-show {
+  to {
+    opacity: 1;
+  }
+}
+
+/* The name sits on top of the caret like a flag, its square corner on the caret. */
 .peer-tags {
   position: absolute;
-  left: calc(-1px * var(--peer-scale, 1));
+  left: 0;
   bottom: 100%;
-  margin-bottom: calc(3px * var(--peer-scale, 1));
   display: flex;
   gap: calc(2px * var(--peer-scale, 1));
   pointer-events: none;
@@ -39,7 +52,6 @@
 .peer-tags.below {
   bottom: auto;
   top: 100%;
-  margin: calc(3px * var(--peer-scale, 1)) 0 0;
 }
 
 .peer-tag {
@@ -88,13 +100,8 @@
 
 .peer-box > .peer-tags {
   left: calc(-2px * var(--peer-scale, 1));
-  margin-bottom: 0;
   /* An outline takes no clicks, so its names can't be brought back by pointing: they stay. */
   animation: none;
-}
-
-.peer-box > .peer-tags.below {
-  margin-top: 0;
 }
 
 .peer-dots {

@@ -1,8 +1,8 @@
 //! Starter slides, sized in the same reference coordinates as the original editor templates.
 //! Frames use theme colors and theme fonts so a template follows its destination deck.
 
-use office_core::drawing::{Color, Fill, Line, ShapeProps, Xfrm};
-use office_core::model::{Align, Frame, FrameContent, LineSpacing, Origin, Paragraph, RunProps, Slide};
+use office_core::drawing::{Color, Fill, Line, Rgb, ShapeProps, Xfrm};
+use office_core::model::{Align, Frame, FrameContent, Inline, LineSpacing, Origin, Paragraph, Run, RunProps, Slide};
 use office_core::units::{Emu, FontSize};
 use office_core::xml::{ns, Element};
 
@@ -105,11 +105,64 @@ impl Builder {
         }
     }
 
+    /// The plain heading a new deck's content slide has.
     fn title(&mut self) {
-        self.text((MARGIN, 420_000.0, CONTENT, 900_000.0), "Title", "Slide Title", 32.0, "tx1", true, Align::Left, "b");
-        self.heading();
-        self.shape((MARGIN, 1_420_000.0, 1_600_000.0, 60_000.0), "Title Rule", "accent1", false);
+        let mut heading = plain_content(self.sx, self.sy);
+        heading.truncate(1);
+        self.frames.extend(heading);
     }
+}
+
+/// A text box for the plain slides, `x`, `y`, `w` and `h` in inches on a 16:9 slide, scaled by
+/// `sx` and `sy` to the deck's size.
+fn plain_box(id: u32, name: &str, (sx, sy): (f64, f64), (x, y, w, h): Rect, paragraphs: Vec<Paragraph>) -> Frame {
+    let inch = |v: f64, s: f64| Emu::from_inches(v * s);
+    let mut f = Frame::text_box(
+        id,
+        Xfrm { x: inch(x, sx), y: inch(y, sy), width: inch(w, sx), height: inch(h, sy), ..Default::default() },
+        paragraphs,
+    );
+    f.name = name.into();
+    // A text box, as it reads back from the file.
+    f.origin = Origin::new(
+        Element::new(ns::P, "sp")
+            .with_child(Element::new(ns::P, "nvSpPr").with_child(Element::new(ns::P, "cNvSpPr").with_attr("", "txBox", "1"))),
+    );
+    f
+}
+
+fn plain_text(s: &str, pt: f64, bold: bool, color: &str) -> Paragraph {
+    let mut p = Paragraph::default();
+    p.content.push(Inline::Text(Run::new(s).with_props(RunProps {
+        size: Some(FontSize::from_points(pt)),
+        bold: bold.then_some(true),
+        color: Rgb::parse(color).map(Color::rgb),
+        font: Some("Helvetica Neue".into()),
+        ..Default::default()
+    })));
+    p
+}
+
+/// A new deck's title slide: a title and a subtitle, black and grey, nothing else.
+pub(super) fn plain_title(sx: f64, sy: f64) -> Vec<Frame> {
+    vec![
+        plain_box(2, "Title", (sx, sy), (0.9, 2.6, 11.5, 1.2), vec![plain_text("Presentation title", 48.0, true, "111111")]),
+        plain_box(3, "Subtitle", (sx, sy), (0.9, 3.8, 11.5, 0.7), vec![plain_text("Subtitle or presenter", 22.0, false, "6B6B70")]),
+    ]
+}
+
+/// A new deck's content slide: a heading and three bullet points.
+pub(super) fn plain_content(sx: f64, sy: f64) -> Vec<Frame> {
+    let mut bullets = Vec::new();
+    for s in ["First point", "Second point", "Third point"] {
+        let mut p = plain_text(s, 24.0, false, "333333");
+        set_bullet(&mut p, Some(false));
+        bullets.push(p);
+    }
+    vec![
+        plain_box(2, "Title", (sx, sy), (0.9, 0.6, 11.5, 1.0), vec![plain_text("Slide title", 34.0, true, "111111")]),
+        plain_box(3, "Content", (sx, sy), (0.9, 1.9, 11.5, 4.2), bullets),
+    ]
 }
 
 /// Relative luminance (WCAG), 0 for black to 1 for white.
@@ -147,40 +200,9 @@ impl SlidesView {
         let mut b = Builder { sx: w * 9525.0 / 12_192_000.0, sy: h * 9525.0 / 6_858_000.0, frames: Vec::new() };
         let on_accent1 = self.ink_on(after, "accent1");
         match template {
-            "title" => {
-                b.text((MARGIN, 2_300_000.0, CONTENT, 1_300_000.0), "Title", "Presentation Title", 44.0, "tx1", true, Align::Left, "b");
-                b.heading();
-                b.shape((MARGIN, 3_760_000.0, 2_200_000.0, 80_000.0), "Accent Bar", "accent1", false);
-                b.text(
-                    (MARGIN, 3_980_000.0, CONTENT, 640_000.0),
-                    "Subtitle",
-                    "Subtitle or speaker name",
-                    20.0,
-                    "tx2",
-                    false,
-                    Align::Left,
-                    "t",
-                );
-            }
-            "titleAndContent" => {
-                b.title();
-                b.text(
-                    (MARGIN, 1_720_000.0, CONTENT, 4_400_000.0),
-                    "Content",
-                    "First key point\nSecond key point\nThird key point",
-                    18.0,
-                    "tx1",
-                    false,
-                    Align::Left,
-                    "t",
-                );
-                if let FrameContent::Shape { text: Some(body), .. } = &mut b.frames.last_mut().unwrap().content {
-                    for p in &mut body.paragraphs {
-                        set_bullet(p, Some(false));
-                        p.props.line_spacing = Some(LineSpacing::Multiple(office_core::units::Percent(160_000)));
-                    }
-                }
-            }
+            // The plain slides a new deck starts with.
+            "title" => b.frames = plain_title(b.sx, b.sy),
+            "titleAndContent" => b.frames = plain_content(b.sx, b.sy),
             "sectionHeader" => {
                 b.shape((0.0, 0.0, 4_000_000.0, 6_858_000.0), "Section Panel", "accent1", false);
                 b.text(
