@@ -142,7 +142,7 @@ fn word_to_markdown(doc: &Document, blocks: &[Block]) -> String {
                         out.push_str("```\n");
                         in_code_block = true;
                     }
-                    let line = p.plain_text().replace('\u{c}', "");
+                    let line = visible_paragraph_text(doc, p).replace('\u{c}', "");
                     out.push_str(line.trim_end());
                     out.push('\n');
                     continue;
@@ -362,6 +362,24 @@ fn is_monospace_font(font: Option<&str>) -> bool {
         || l.contains("source code")
         || l.contains("inconsolata")
         || l.contains("lucida console")
+}
+
+fn visible_paragraph_text(doc: &Document, p: &Paragraph) -> String {
+    let mut out = String::new();
+    for inline in &p.content {
+        match inline {
+            Inline::Text(r) => {
+                if office_word::resolved_word_run(doc, p, r).toggles.vanish == Some(true) {
+                    continue;
+                }
+                out.push_str(&r.text);
+            }
+            Inline::Break { kind: BreakKind::Page | BreakKind::Column, .. } => {}
+            Inline::Break { .. } => out.push('\n'),
+            Inline::Image(_) | Inline::Raw { .. } => {}
+        }
+    }
+    out
 }
 
 fn is_code_paragraph(doc: &Document, p: &Paragraph) -> bool {
