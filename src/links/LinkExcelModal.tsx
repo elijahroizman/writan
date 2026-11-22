@@ -1,5 +1,6 @@
 import { BarChart3, FileSpreadsheet, Link2, RefreshCw, Table2, X } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ChartSvg } from '../engine/sheets/Chart'
 import type { ExcelLinksController, OpenWorkbook } from './excelLinks'
 import { selectionToA1 } from './excelLinks'
@@ -37,6 +38,15 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
     setChartIndex(0)
     setError(null)
   }, [open, selectedWb?.tabId])
+
+  useEffect(() => {
+    if (!open) return
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [open, onClose])
 
   const sheetIdx = useMemo(() => {
     if (!selectedWb) return 0
@@ -92,9 +102,24 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
     }
   }
 
-  return (
+  const inputStyle: React.CSSProperties = {
+    width: '100%',
+    height: 32,
+    padding: '0 10px',
+    borderRadius: 6,
+    border: '1px solid var(--line)',
+    background: 'var(--field)',
+    color: 'var(--fg)',
+    fontSize: 12,
+    outline: 'none',
+    boxSizing: 'border-box',
+  }
+
+  const canInsert = !busy && !!selectedWb && (kind === 'range' ? !!rangePreview : chartsOnSheet.length > 0)
+
+  const dialog = (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+      className="modal-backdrop modal-layer-dialog"
       role="dialog"
       aria-modal="true"
       aria-label="Link from Excel"
@@ -102,39 +127,78 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
         if (e.target === e.currentTarget) onClose()
       }}
     >
-      <div className="w-full max-w-lg rounded-xl border border-black/10 bg-[var(--bg-surface,#fff)] text-[var(--ink,#18181b)] shadow-2xl dark:border-white/10">
-        <div className="flex items-center justify-between border-b border-black/10 px-4 py-3 dark:border-white/10">
-          <div className="flex items-center gap-2 font-medium text-sm">
-            <Link2 size={16} />
+      <div
+        style={{
+          width: '100%',
+          maxWidth: 500,
+          borderRadius: 12,
+          border: '1px solid var(--line)',
+          background: 'var(--panel)',
+          color: 'var(--fg)',
+          boxShadow: 'var(--shadow-pop)',
+          overflow: 'hidden',
+          fontFamily: 'var(--font-ui)',
+        }}
+      >
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            padding: '12px 16px',
+            borderBottom: '1px solid var(--line)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13.5, fontWeight: 600 }}>
+            <Link2 size={15} />
             <span>Link from Excel into {targetLabel}</span>
           </div>
           <button
             type="button"
             onClick={onClose}
             aria-label="Close"
-            className="rounded p-1 opacity-70 hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/10"
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 26,
+              height: 26,
+              borderRadius: 6,
+              border: 'none',
+              background: 'transparent',
+              color: 'var(--fg-muted)',
+              cursor: 'pointer',
+            }}
           >
-            <X size={16} />
+            <X size={15} />
           </button>
         </div>
 
-        <div className="space-y-3 p-4 text-xs">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 16, fontSize: 12 }}>
           {!workbooks.length ? (
-            <div className="rounded-lg border border-dashed border-black/15 p-6 text-center opacity-80 dark:border-white/15">
-              <FileSpreadsheet size={24} className="mx-auto mb-2 opacity-60" />
-              <div className="font-medium">No Excel workbooks open</div>
-              <div className="mt-1 opacity-75">
+            <div
+              style={{
+                borderRadius: 8,
+                border: '1px dashed var(--line)',
+                padding: '24px 16px',
+                textAlign: 'center',
+                color: 'var(--fg-muted)',
+              }}
+            >
+              <FileSpreadsheet size={24} style={{ margin: '0 auto 8px', opacity: 0.7 }} />
+              <div style={{ fontWeight: 600, color: 'var(--fg)', marginBottom: 4 }}>No Excel workbooks open</div>
+              <div>
                 Open a spreadsheet tab in Writan first, then pick a cell range or chart here to keep it synced live.
               </div>
             </div>
           ) : (
             <>
-              <div className="grid grid-cols-2 gap-2">
-                <label className="block">
-                  <span className="mb-1 block font-medium opacity-75">Workbook</span>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontWeight: 500, color: 'var(--fg-muted)' }}>Workbook</span>
                   <select
                     data-testid="excel-link-workbook"
-                    className="w-full rounded-md border border-black/15 bg-transparent px-2 py-1.5 text-xs dark:border-white/15"
+                    style={inputStyle}
                     value={selectedWb?.tabId ?? ''}
                     onChange={(e) => {
                       const next = workbooks.find((w) => w.tabId === e.target.value)
@@ -153,11 +217,11 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
                   </select>
                 </label>
 
-                <label className="block">
-                  <span className="mb-1 block font-medium opacity-75">Sheet</span>
+                <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                  <span style={{ fontWeight: 500, color: 'var(--fg-muted)' }}>Sheet</span>
                   <select
                     data-testid="excel-link-sheet"
-                    className="w-full rounded-md border border-black/15 bg-transparent px-2 py-1.5 text-xs dark:border-white/15"
+                    style={inputStyle}
                     value={selectedWb?.engine.sheets[sheetIdx]?.name ?? ''}
                     onChange={(e) => {
                       setSheet(e.target.value)
@@ -173,16 +237,36 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
                 </label>
               </div>
 
-              <div className="flex gap-1 rounded-lg bg-black/5 p-1 dark:bg-white/5">
+              <div
+                style={{
+                  display: 'flex',
+                  gap: 4,
+                  padding: 3,
+                  borderRadius: 8,
+                  background: 'var(--field)',
+                  border: '1px solid var(--line)',
+                }}
+              >
                 <button
                   type="button"
                   data-testid="excel-link-kind-range"
                   onClick={() => setKind('range')}
-                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 font-medium transition ${
-                    kind === 'range'
-                      ? 'bg-[var(--bg-surface,#fff)] shadow-sm'
-                      : 'opacity-70 hover:opacity-100'
-                  }`}
+                  style={{
+                    flex: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: 'none',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    background: kind === 'range' ? 'var(--panel)' : 'transparent',
+                    color: kind === 'range' ? 'var(--fg)' : 'var(--fg-muted)',
+                    boxShadow: kind === 'range' ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
+                  }}
                 >
                   <Table2 size={14} />
                   Cell range
@@ -191,11 +275,22 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
                   type="button"
                   data-testid="excel-link-kind-chart"
                   onClick={() => setKind('chart')}
-                  className={`flex flex-1 items-center justify-center gap-1.5 rounded-md px-2.5 py-1.5 font-medium transition ${
-                    kind === 'chart'
-                      ? 'bg-[var(--bg-surface,#fff)] shadow-sm'
-                      : 'opacity-70 hover:opacity-100'
-                  }`}
+                  style={{
+                    flex: 1,
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: 6,
+                    padding: '6px 10px',
+                    borderRadius: 6,
+                    border: 'none',
+                    fontSize: 12,
+                    fontWeight: 500,
+                    cursor: 'pointer',
+                    background: kind === 'chart' ? 'var(--panel)' : 'transparent',
+                    color: kind === 'chart' ? 'var(--fg)' : 'var(--fg-muted)',
+                    boxShadow: kind === 'chart' ? '0 1px 2px rgba(0,0,0,0.12)' : 'none',
+                  }}
                 >
                   <BarChart3 size={14} />
                   Chart ({chartsOnSheet.length})
@@ -203,32 +298,46 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
               </div>
 
               {kind === 'range' ? (
-                <div className="space-y-2">
-                  <label className="block">
-                    <span className="mb-1 block font-medium opacity-75">Range (A1 notation)</span>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <label style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    <span style={{ fontWeight: 500, color: 'var(--fg-muted)' }}>Range (A1 notation)</span>
                     <input
                       data-testid="excel-link-range"
                       type="text"
                       value={range}
                       onChange={(e) => setRange(e.target.value)}
                       placeholder="A1:C5"
-                      className="w-full rounded-md border border-black/15 bg-transparent px-2.5 py-1.5 font-mono text-xs dark:border-white/15"
+                      style={{ ...inputStyle, fontFamily: 'var(--font-mono)' }}
                     />
                   </label>
                   {rangePreview ? (
-                    <div className="max-h-40 overflow-auto rounded-md border border-black/10 p-2 dark:border-white/10">
-                      <div className="mb-1 text-[11px] opacity-65">
+                    <div
+                      style={{
+                        maxHeight: 160,
+                        overflow: 'auto',
+                        borderRadius: 6,
+                        border: '1px solid var(--line)',
+                        padding: 8,
+                        background: 'var(--raised)',
+                      }}
+                    >
+                      <div style={{ marginBottom: 6, fontSize: 11, color: 'var(--fg-muted)' }}>
                         Preview: {rangePreview.rows.length} × {rangePreview.rows[0]?.length ?? 0} cells ({rangePreview.sheet}!{rangePreview.range})
                       </div>
-                      <table className="w-full border-collapse text-[11px]">
+                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                         <tbody>
                           {rangePreview.rows.slice(0, 6).map((row, ri) => (
                             <tr key={ri}>
                               {row.slice(0, 6).map((cell, ci) => (
                                 <td
                                   key={ci}
-                                  className="max-w-[96px] truncate border border-black/10 px-1.5 py-0.5 dark:border-white/10"
                                   style={{
+                                    maxWidth: 96,
+                                    overflow: 'hidden',
+                                    textOverflow: 'ellipsis',
+                                    whiteSpace: 'nowrap',
+                                    border: '1px solid var(--line)',
+                                    padding: '3px 6px',
                                     fontWeight: cell.bold ? 600 : undefined,
                                     fontStyle: cell.italic ? 'italic' : undefined,
                                   }}
@@ -242,18 +351,26 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
                       </table>
                     </div>
                   ) : (
-                    <div className="text-[11px] text-red-500">Enter a valid A1 range like A1:C4.</div>
+                    <div style={{ fontSize: 11, color: 'var(--danger)' }}>Enter a valid A1 range like A1:C4.</div>
                   )}
                 </div>
               ) : chartsOnSheet.length === 0 ? (
-                <div className="rounded-md border border-dashed border-black/15 p-5 text-center opacity-75 dark:border-white/15">
+                <div
+                  style={{
+                    borderRadius: 6,
+                    border: '1px dashed var(--line)',
+                    padding: '20px 14px',
+                    textAlign: 'center',
+                    color: 'var(--fg-muted)',
+                  }}
+                >
                   No charts on &ldquo;{selectedWb?.engine.sheets[sheetIdx]?.name}&rdquo;. Insert a chart in the spreadsheet first.
                 </div>
               ) : (
-                <div className="space-y-2">
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <select
                     data-testid="excel-link-chart-select"
-                    className="w-full rounded-md border border-black/15 bg-transparent px-2 py-1.5 text-xs dark:border-white/15"
+                    style={inputStyle}
                     value={chartIndex}
                     onChange={(e) => setChartIndex(Number(e.target.value))}
                   >
@@ -264,42 +381,79 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
                     ))}
                   </select>
                   {chartsOnSheet[chartIndex] && (
-                    <div className="flex justify-center overflow-hidden rounded-md border border-black/10 bg-white p-2 dark:border-white/10">
-                      <ChartSvg chart={chartsOnSheet[chartIndex]} width={420} height={220} />
+                    <div
+                      style={{
+                        display: 'flex',
+                        justifyContent: 'center',
+                        overflow: 'hidden',
+                        borderRadius: 6,
+                        border: '1px solid var(--line)',
+                        background: '#ffffff',
+                        padding: 8,
+                      }}
+                    >
+                      <ChartSvg chart={chartsOnSheet[chartIndex]} width={420} height={210} />
                     </div>
                   )}
                 </div>
               )}
 
-              <label className="flex items-center gap-2 pt-1 text-xs">
+              <label style={{ display: 'flex', alignItems: 'center', gap: 8, paddingTop: 2, fontSize: 12, cursor: 'pointer' }}>
                 <input
                   type="checkbox"
                   checked={autoUpdate}
                   onChange={(e) => setAutoUpdate(e.target.checked)}
                 />
-                <RefreshCw size={12} className="opacity-70" />
+                <RefreshCw size={12} style={{ color: 'var(--fg-muted)' }} />
                 <span>Update automatically whenever the workbook changes</span>
               </label>
 
-              {error && <div className="text-xs text-red-500">{error}</div>}
+              {error && <div style={{ fontSize: 12, color: 'var(--danger)' }}>{error}</div>}
             </>
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 border-t border-black/10 px-4 py-2.5 dark:border-white/10">
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'flex-end',
+            gap: 8,
+            padding: '10px 16px',
+            borderTop: '1px solid var(--line)',
+          }}
+        >
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md px-3 py-1.5 text-xs hover:bg-black/5 dark:hover:bg-white/10"
+            style={{
+              padding: '6px 12px',
+              borderRadius: 6,
+              border: '1px solid var(--line)',
+              background: 'transparent',
+              color: 'var(--fg)',
+              fontSize: 12,
+              cursor: 'pointer',
+            }}
           >
             Cancel
           </button>
           <button
             type="button"
             data-testid="excel-link-insert-btn"
-            disabled={busy || !selectedWb || (kind === 'range' && !rangePreview) || (kind === 'chart' && chartsOnSheet.length === 0)}
+            disabled={!canInsert}
             onClick={() => void handleInsert()}
-            className="rounded-md bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-700 disabled:opacity-40"
+            style={{
+              padding: '6px 14px',
+              borderRadius: 6,
+              border: 'none',
+              background: 'var(--accent)',
+              color: 'var(--accent-fg)',
+              fontSize: 12,
+              fontWeight: 500,
+              cursor: canInsert ? 'pointer' : 'not-allowed',
+              opacity: canInsert ? 1 : 0.45,
+            }}
           >
             {busy ? 'Inserting…' : kind === 'range' ? 'Insert Linked Range' : 'Insert Linked Chart'}
           </button>
@@ -307,4 +461,6 @@ export function LinkExcelModal({ open, onClose, controller, targetLabel }: LinkE
       </div>
     </div>
   )
+
+  return createPortal(dialog, document.body)
 }

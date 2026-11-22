@@ -14,27 +14,74 @@ function linkLabel(link: ExcelLink): string {
   return link.chartTitle || `Chart ${(link.chartIndex ?? 0) + 1}`
 }
 
+const smallBtnStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  gap: 4,
+  padding: '4px 8px',
+  borderRadius: 6,
+  border: '1px solid var(--line)',
+  background: 'var(--field)',
+  color: 'var(--fg)',
+  fontSize: 11,
+  cursor: 'pointer',
+}
+
+const iconBtnStyle: React.CSSProperties = {
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+  width: 22,
+  height: 22,
+  borderRadius: 5,
+  border: 'none',
+  background: 'transparent',
+  color: 'var(--fg-muted)',
+  cursor: 'pointer',
+}
+
 export function LinkedExcelSection({ controller, activeTag, onOpenInsert, onOpenSource }: LinkedExcelSectionProps) {
   const active = controller.getByTag(activeTag)
   const { links, updating } = controller
 
   return (
-    <div className="space-y-2 text-xs" data-testid="linked-excel-section">
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }} data-testid="linked-excel-section">
       {active && (
-        <div className="rounded-md border border-blue-500/30 bg-blue-500/5 p-2 space-y-1.5" data-testid="active-excel-link">
-          <div className="flex items-center justify-between gap-1">
-            <span className="flex items-center gap-1 font-medium text-blue-600 dark:text-blue-400">
+        <div
+          data-testid="active-excel-link"
+          style={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 6,
+            padding: 8,
+            borderRadius: 8,
+            border: '1px solid color-mix(in srgb, var(--accent) 40%, transparent)',
+            background: 'var(--accent-soft)',
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, fontWeight: 600, color: 'var(--accent)' }}>
               <FileSpreadsheet size={13} />
               Selected Linked {active.kind === 'range' ? 'Range' : 'Chart'}
             </span>
-            <span className="text-[10px] opacity-65">
+            <span style={{ fontSize: 10.5, color: 'var(--fg-muted)' }}>
               {findOpenWorkbook(active) ? 'Live' : active.workbookPath ? 'On disk' : 'Offline'}
             </span>
           </div>
-          <div className="truncate font-mono text-[11px] opacity-85" title={`${active.workbookName} · ${linkLabel(active)}`}>
+          <div
+            style={{
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              fontFamily: 'var(--font-mono)',
+              fontSize: 11,
+              color: 'var(--fg)',
+            }}
+            title={`${active.workbookName} · ${linkLabel(active)}`}
+          >
             {active.workbookName} · {linkLabel(active)}
           </div>
-          <label className="flex items-center gap-1.5 text-[11px] opacity-85">
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--fg-muted)', cursor: 'pointer' }}>
             <input
               type="checkbox"
               checked={active.autoUpdate}
@@ -42,13 +89,13 @@ export function LinkedExcelSection({ controller, activeTag, onOpenInsert, onOpen
             />
             Auto-update
           </label>
-          <div className="flex flex-wrap gap-1 pt-0.5">
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, paddingTop: 2 }}>
             <button
               type="button"
               data-testid="active-excel-link-update"
               disabled={updating}
               onClick={() => void controller.updateLink(active.id)}
-              className="inline-flex items-center gap-1 rounded border border-black/15 px-2 py-1 text-[11px] hover:bg-black/5 disabled:opacity-50 dark:border-white/15 dark:hover:bg-white/10"
+              style={{ ...smallBtnStyle, opacity: updating ? 0.5 : 1 }}
             >
               <RefreshCw size={11} />
               Update
@@ -57,7 +104,7 @@ export function LinkedExcelSection({ controller, activeTag, onOpenInsert, onOpen
               <button
                 type="button"
                 onClick={() => onOpenSource(active)}
-                className="inline-flex items-center gap-1 rounded border border-black/15 px-2 py-1 text-[11px] hover:bg-black/5 dark:border-white/15 dark:hover:bg-white/10"
+                style={smallBtnStyle}
               >
                 <ExternalLink size={11} />
                 Source
@@ -67,7 +114,7 @@ export function LinkedExcelSection({ controller, activeTag, onOpenInsert, onOpen
               type="button"
               data-testid="active-excel-link-unlink"
               onClick={() => controller.unlink(active.id)}
-              className="inline-flex items-center gap-1 rounded border border-black/15 px-2 py-1 text-[11px] text-red-600 hover:bg-red-500/10 dark:border-white/15 dark:text-red-400"
+              style={{ ...smallBtnStyle, color: 'var(--danger)' }}
             >
               <Unlink size={11} />
               Unlink
@@ -76,12 +123,18 @@ export function LinkedExcelSection({ controller, activeTag, onOpenInsert, onOpen
         </div>
       )}
 
-      <div className="flex items-center gap-1.5">
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
         <button
           type="button"
           data-testid="open-link-excel-modal"
           onClick={onOpenInsert}
-          className="inline-flex flex-1 items-center justify-center gap-1 rounded-md border border-black/15 px-2 py-1.5 text-[11px] font-medium hover:bg-black/5 dark:border-white/15 dark:hover:bg-white/10"
+          style={{
+            ...smallBtnStyle,
+            flex: 1,
+            justifyContent: 'center',
+            padding: '6px 8px',
+            fontWeight: 500,
+          }}
         >
           <Link2 size={12} />
           Link from Excel
@@ -93,38 +146,60 @@ export function LinkedExcelSection({ controller, activeTag, onOpenInsert, onOpen
             disabled={updating}
             onClick={() => void controller.updateAll()}
             title="Update all linked Excel ranges and charts"
-            className="inline-flex items-center gap-1 rounded-md border border-black/15 px-2 py-1.5 text-[11px] hover:bg-black/5 disabled:opacity-50 dark:border-white/15 dark:hover:bg-white/10"
+            style={{
+              ...smallBtnStyle,
+              padding: '6px 8px',
+              opacity: updating ? 0.5 : 1,
+            }}
           >
-            <RefreshCw size={12} className={updating ? 'animate-spin' : ''} />
+            <RefreshCw size={12} />
             Update all
           </button>
         )}
       </div>
 
       {links.length > 0 && (
-        <div className="space-y-1">
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
           {links.map((link) => {
             const live = !!findOpenWorkbook(link)
             return (
               <div
                 key={link.id}
-                className="flex items-center justify-between gap-1 rounded border border-black/10 px-2 py-1 text-[11px] dark:border-white/10"
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: 6,
+                  padding: '6px 8px',
+                  borderRadius: 6,
+                  border: '1px solid var(--line)',
+                  background: 'var(--raised)',
+                  fontSize: 11,
+                }}
               >
-                <div className="min-w-0 flex-1">
-                  <div className="truncate font-medium">
+                <div style={{ minWidth: 0, flex: 1 }}>
+                  <div
+                    style={{
+                      overflow: 'hidden',
+                      textOverflow: 'ellipsis',
+                      whiteSpace: 'nowrap',
+                      fontWeight: 500,
+                      color: 'var(--fg)',
+                    }}
+                  >
                     {link.workbookName} · {linkLabel(link)}
                   </div>
-                  <div className="text-[10px] opacity-60">
+                  <div style={{ fontSize: 10, color: 'var(--fg-muted)' }}>
                     {link.kind === 'range' ? 'Range' : 'Chart'} · {live ? 'Live' : link.workbookPath ? 'On disk' : 'Offline'}
                   </div>
                 </div>
-                <div className="flex shrink-0 items-center gap-0.5">
+                <div style={{ display: 'flex', alignItems: 'center', gap: 2, flexShrink: 0 }}>
                   <button
                     type="button"
                     title="Update now"
                     disabled={updating}
                     onClick={() => void controller.updateLink(link.id)}
-                    className="rounded p-1 opacity-75 hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/10"
+                    style={iconBtnStyle}
                   >
                     <RefreshCw size={11} />
                   </button>
@@ -133,7 +208,7 @@ export function LinkedExcelSection({ controller, activeTag, onOpenInsert, onOpen
                       type="button"
                       title="Open source workbook"
                       onClick={() => onOpenSource(link)}
-                      className="rounded p-1 opacity-75 hover:bg-black/5 hover:opacity-100 dark:hover:bg-white/10"
+                      style={iconBtnStyle}
                     >
                       <ExternalLink size={11} />
                     </button>
@@ -142,7 +217,7 @@ export function LinkedExcelSection({ controller, activeTag, onOpenInsert, onOpen
                     type="button"
                     title="Unlink"
                     onClick={() => controller.unlink(link.id)}
-                    className="rounded p-1 opacity-75 hover:bg-red-500/10 hover:text-red-500 hover:opacity-100"
+                    style={{ ...iconBtnStyle, color: 'var(--danger)' }}
                   >
                     <Unlink size={11} />
                   </button>
