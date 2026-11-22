@@ -123,6 +123,30 @@ fn build_with<R: Runtime>(app: &AppHandle<R>, keys: &Shortcuts) -> tauri::Result
             None,
         )?)
         .separator()
+        .item(&item(app, keys, "convert-file", "Convert File…", None)?)
+        .item(&item(
+            app,
+            keys,
+            "copy-markdown",
+            "Copy as Markdown (for LLMs)",
+            None,
+        )?)
+        .item(&item(
+            app,
+            keys,
+            "export-markdown",
+            "Export as Markdown (.md)",
+            None,
+        )?)
+        .item(&item(app, keys, "export-pdf", "Export as PDF", None)?)
+        .item(&item(
+            app,
+            keys,
+            "bundle-pdf",
+            "Bundle Open Files to PDF…",
+            None,
+        )?)
+        .separator()
         .item(&item(app, keys, "print", "Print…", Some("CmdOrCtrl+P"))?)
         .separator()
         .item(&item(app, keys, "reveal", reveal_label, None)?)

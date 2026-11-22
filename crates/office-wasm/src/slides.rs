@@ -101,11 +101,11 @@ fn open_view(bytes: &[u8]) -> office_core::Result<SlidesView> {
     }
 }
 
-fn is_compound_file(bytes: &[u8]) -> bool {
+pub(crate) fn is_compound_file(bytes: &[u8]) -> bool {
     bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0])
 }
 
-fn legacy_ppt_to_pptx(bytes: &[u8]) -> office_core::Result<Vec<u8>> {
+pub(crate) fn legacy_ppt_to_pptx(bytes: &[u8]) -> office_core::Result<Vec<u8>> {
     let doc = office_oxide::Document::from_reader(std::io::Cursor::new(bytes.to_vec()), office_oxide::DocumentFormat::Ppt)
         .map_err(|e| office_core::Error::Invalid(format!("couldn't read this PowerPoint file: {e}")))?;
     if doc.format() != office_oxide::DocumentFormat::Ppt {

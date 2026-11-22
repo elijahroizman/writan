@@ -118,7 +118,7 @@ export interface Api {
   move(key: number, to: number): PageInfo[]
   duplicate(key: number): PageInfo[]
   insertBlank(at: number, width: number, height: number): PageInfo[]
-  insertPdf(at: number, bytes: ArrayBuffer): { pages: PageInfo[]; count: number }
+  insertPdf(at: number, bytes: ArrayBuffer, password?: string): { pages: PageInfo[]; count: number }
   /** Delete pages; the returned token puts them back (see restorePages). */
   deletePages(keys: number[]): { pages: PageInfo[]; token: number }
   restorePages(token: number): PageInfo[]

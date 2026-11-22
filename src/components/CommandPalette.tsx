@@ -2,19 +2,23 @@ import type { LucideIcon } from 'lucide-react'
 import {
   ArrowDown,
   ArrowRight,
+  ArrowRightLeft,
   ArrowUp,
   BookOpen,
   Bold,
   BringToFront,
   ChevronLeft,
   ChevronRight,
+  ClipboardCopy,
   Clock,
   Code,
   Columns2,
   Copy,
   CopyPlus,
   Eye,
+  FileOutput,
   FilePlus,
+  FileStack,
   FileText,
   Focus,
   FolderOpen,
@@ -125,6 +129,11 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   'close-folder': FolderX,
   save: Save,
   'save-as': Save,
+  'convert-file': ArrowRightLeft,
+  'copy-markdown': ClipboardCopy,
+  'export-markdown': FileText,
+  'export-pdf': FileOutput,
+  'bundle-pdf': FileStack,
   print: Printer,
   'close-tab': X,
   'reopen-tab': RotateCcw,
@@ -200,10 +209,15 @@ const COMMAND_KEYWORDS: Record<string, string> = {
   'view-read': 'preview',
   'view-split': 'preview source',
   'view-write': 'source',
+  'convert-file': 'export transform docx markdown md pdf pptx xlsx csv llm',
+  'copy-markdown': 'llm ai prompt markdown md docx clipboard export',
+  'export-markdown': 'llm ai markdown md docx convert',
+  'export-pdf': 'convert print render document',
+  'bundle-pdf': 'merge combine join tabs pdf all open files',
 }
 
 /** Commands that only work on a document. From Home they show greyed out, so searching for one explains itself. */
-const NEEDS_DOCUMENT = new Set(['share', 'save', 'save-as', 'print', 'close-tab', 'duplicate-tab', 'version-history', 'find', 'replace', 'split-view', 'toggle-left', 'toggle-right', 'zoom-in', 'zoom-out', 'zoom-reset', 'focus-mode', 'typewriter', 'focus-dim'])
+const NEEDS_DOCUMENT = new Set(['share', 'save', 'save-as', 'convert-file', 'copy-markdown', 'export-markdown', 'export-pdf', 'bundle-pdf', 'print', 'close-tab', 'duplicate-tab', 'version-history', 'find', 'replace', 'split-view', 'toggle-left', 'toggle-right', 'zoom-in', 'zoom-out', 'zoom-reset', 'focus-mode', 'typewriter', 'focus-dim'])
 
 const SETTINGS_PAGES: { page: SettingsPage; label: string }[] = [
   { page: 'general', label: 'General' },

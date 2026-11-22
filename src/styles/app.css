@@ -3007,6 +3007,259 @@ button.section-title:hover {
   letter-spacing: 0;
 }
 
+/* Convert & Bundle PDF dialog */
+.convert-dialog {
+  width: min(440px, calc(100% - 32px));
+}
+
+.convert-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 8px;
+}
+
+.convert-head-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.convert-head-text h2 {
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.convert-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.convert-switch:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+
+.convert-copy-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  margin-bottom: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.convert-copy-btn:hover {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+}
+
+.convert-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 8px 4px;
+  margin-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.convert-mode {
+  display: inline-flex;
+  gap: 4px;
+  padding: 2px;
+  border-radius: 7px;
+  background: var(--bg);
+  border: 1px solid var(--line);
+}
+
+.convert-mode button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 8px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--fg-muted);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.convert-mode button.on {
+  background: var(--raised);
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.convert-empty {
+  padding: 12px 8px;
+  margin: 0;
+  font-size: 13px;
+}
+
+.convert-status {
+  margin: 6px 8px 0;
+  font-size: 12px;
+}
+
+.convert-error {
+  margin: 6px 8px 2px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: rgba(220, 38, 38, 0.12);
+  color: #ef4444;
+  font-size: 12px;
+}
+
+.bundle-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  overflow-y: auto;
+  padding: 2px 4px 6px;
+}
+
+.bundle-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+}
+
+.bundle-row.checked {
+  background: var(--bg);
+  border-color: var(--line);
+}
+
+.bundle-check {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.bundle-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bundle-kind {
+  font-size: 11px;
+}
+
+.bundle-order {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.bundle-order button {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--fg-muted);
+  cursor: pointer;
+}
+
+.bundle-order button:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg);
+}
+
+.bundle-order button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bundle-name {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 8px 4px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+}
+
+.bundle-name-field {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--bg);
+}
+
+.bundle-name-field input {
+  flex: 1;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-size: 13px;
+  outline: none;
+}
+
+.bundle-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 8px 8px 4px;
+}
+
+.bundle-actions .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.bundle-actions .btn.primary {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.bundle-actions .btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
 /* ── The welcome tour (components/Setup.tsx) */
 
 .welcome {

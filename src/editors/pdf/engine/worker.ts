@@ -535,11 +535,11 @@ function insertBlank(at: number, width: number, height: number) {
   return readPages()
 }
 
-function insertPdf(at: number, bytes: ArrayBuffer) {
+function insertPdf(at: number, bytes: ArrayBuffer, password = '') {
   const src = new Uint8Array(bytes)
   const filePtr = scratch(src.length)
   heap().HEAPU8.set(src, filePtr)
-  const srcDoc = mod.FPDF_LoadMemDocument(filePtr, src.length, '')
+  const srcDoc = mod.FPDF_LoadMemDocument(filePtr, src.length, password)
   try {
     if (!srcDoc) {
       throw new Error(mod.FPDF_GetLastError() === 4 ? 'That PDF is password protected, so its pages can’t be inserted.' : 'That file isn’t a PDF Writan can read.')
