@@ -1448,6 +1448,82 @@ impl SlidesView {
         out
     }
 
+    // ---- inline LaTeX math ----
+
+    /// Inserts an inline LaTeX math equation picture on the active slide, tagged with `tag`.
+    pub fn insert_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> u32 {
+        let (w, h) = self.size();
+        let k = (w * 0.8 / width.max(1.0)).min(h * 0.6 / height.max(1.0)).min(1.0);
+        let (bw, bh) = ((width * k).max(8.0), (height * k).max(8.0));
+        let media = self.add_media(content_type, bytes);
+        let x = ((w - bw) / 2.0).max(24.0);
+        let y = ((h - bh) / 2.0).max(24.0);
+        let xf = Xfrm { x: px_emu(x), y: px_emu(y), width: px_emu(bw), height: px_emu(bh), ..Default::default() };
+        let f = Frame {
+            id: 0,
+            name: "Equation".into(),
+            description: Some(tag.into()),
+            hidden: false,
+            shape: office_core::drawing::ShapeProps { xfrm: Some(xf.clone()), preset: Some("rect".into()), ..Default::default() },
+            placeholder: None,
+            link: None,
+            content: FrameContent::Picture {
+                image: Image {
+                    media,
+                    width: xf.width,
+                    height: xf.height,
+                    name: "Equation".into(),
+                    description: Some(tag.into()),
+                    origin: Origin::default(),
+                },
+            },
+            origin: Origin::default(),
+        };
+        self.insert_frame(f)
+    }
+
+    /// Replaces a LaTeX math picture frame's image, tag, and dimensions in place while preserving its center position.
+    pub fn update_math_image(&mut self, id: u32, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> bool {
+        let active = self.sel.active;
+        let Some(slide) = self.slides().get(active) else {
+            return false;
+        };
+        if !matches!(find_frame(&slide.frames, id).map(|f| &f.content), Some(FrameContent::Picture { .. })) {
+            return false;
+        }
+        let (w, h) = self.size();
+        let k = (w * 0.8 / width.max(1.0)).min(h * 0.6 / height.max(1.0)).min(1.0);
+        let (bw, bh) = ((width * k).max(8.0), (height * k).max(8.0));
+        let media = self.add_media(content_type, bytes);
+        let tag = tag.to_string();
+        let new_w = px_emu(bw);
+        let new_h = px_emu(bh);
+        self.change_slide(active, None, |s| {
+            if let Some(f) = find_frame_mut(&mut s.frames, id) {
+                f.description = Some(tag.clone());
+                f.name = "Equation".into();
+                if let Some(xf) = f.shape.xfrm.as_mut() {
+                    let cx = xf.x.0 + xf.width.0 / 2;
+                    let cy = xf.y.0 + xf.height.0 / 2;
+                    xf.width = new_w;
+                    xf.height = new_h;
+                    xf.x = Emu((cx - new_w.0 / 2).max(0));
+                    xf.y = Emu((cy - new_h.0 / 2).max(0));
+                }
+                if let FrameContent::Picture { image } = &mut f.content {
+                    image.media = media.clone();
+                    image.width = new_w;
+                    image.height = new_h;
+                    image.name = "Equation".into();
+                    image.description = Some(tag.clone());
+                    image.origin = Origin::default();
+                }
+                f.origin = Origin::default();
+            }
+        });
+        true
+    }
+
     /// Changes the selected table: `header`/`banded` turn those looks on or off, `rows`/`cols`
     /// set the counts, `style` sets its table style.
     pub fn table_op(&mut self, op: &str, value: Option<&str>) {
@@ -2490,6 +2566,9 @@ fn same_origins(a: &[Frame], b: &[Frame]) -> bool {
 
 /// Prefix stored in `frame.description` (`p:cNvPr/@descr`) for linked Excel objects.
 pub const EXCEL_LINK_PREFIX: &str = "writan:excel-link:";
+
+/// Prefix stored in `frame.description` (`p:cNvPr/@descr`) for editable inline LaTeX math equations.
+pub const LATEX_MATH_PREFIX: &str = "writan:latex:";
 
 /// One cell of a linked Excel range, deserialized from `SheetsDoc::rangeSnapshot`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]

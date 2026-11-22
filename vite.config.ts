@@ -5,6 +5,7 @@ import { cpSync, existsSync, readFileSync, readdirSync, statSync } from 'node:fs
 import { extname, join, normalize, resolve } from 'node:path'
 
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
+const { version: mathjaxVersion } = JSON.parse(readFileSync(new URL('./node_modules/mathjax-full/package.json', import.meta.url), 'utf8')) as { version: string }
 
 const host = process.env.TAURI_DEV_HOST
 
@@ -52,7 +53,7 @@ function bundledPlugins(): Plugin {
 
 export default defineConfig({
   plugins: [react(), servePlugins(), bundledPlugins()],
-  define: { __APP_VERSION__: JSON.stringify(version) },
+  define: { __APP_VERSION__: JSON.stringify(version), PACKAGE_VERSION: JSON.stringify(mathjaxVersion) },
   clearScreen: false,
   server: {
     port: 1420,

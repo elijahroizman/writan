@@ -1869,6 +1869,53 @@ impl WordView {
         out
     }
 
+    // ---- inline LaTeX math ----
+
+    /// Inserts an inline LaTeX math equation image tagged with `tag` in its `description`.
+    pub fn insert_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) {
+        let max_w = self.sections.first().map(|s| emu_px(s.section.text_width())).unwrap_or(600.0);
+        let k = if width > max_w && width > 0.0 { max_w / width } else { 1.0 };
+        let media = self.add_media(content_type, bytes);
+        let img = Image {
+            media,
+            width: Emu::from_pixels((width * k).max(1.0)),
+            height: Emu::from_pixels((height * k).max(1.0)),
+            name: "Equation".into(),
+            description: Some(tag.into()),
+            origin: Origin::default(),
+        };
+        let sel = self.sel.clone();
+        let e = self.replace_sel(&sel, |root, at| edit::insert_inline(root, at, Inline::Image(img)));
+        self.apply_edit(e, None);
+    }
+
+    /// Replaces the currently selected inline LaTeX math image in place with updated bytes, dimensions, and tag.
+    pub fn update_selected_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> bool {
+        let Some((path, i, _)) = self.selected_image() else {
+            return false;
+        };
+        let max_w = self.sections.first().map(|s| emu_px(s.section.text_width())).unwrap_or(600.0);
+        let k = if width > max_w && width > 0.0 { max_w / width } else { 1.0 };
+        let media = self.add_media(content_type, bytes);
+        let w_emu = Emu::from_pixels((width * k).max(1.0));
+        let h_emu = Emu::from_pixels((height * k).max(1.0));
+        let root = self.blocks_mut(self.story);
+        let Some(s) = edit::change_para(root, &path, |p| {
+            if let Some(Inline::Image(img)) = p.content.get_mut(i) {
+                img.media = media.clone();
+                img.width = w_emu;
+                img.height = h_emu;
+                img.name = "Equation".into();
+                img.description = Some(tag.into());
+                img.origin = Origin::default();
+            }
+        }) else {
+            return false;
+        };
+        self.record(vec![s], None, None);
+        true
+    }
+
     // ---- page setup ----
 
     /// The page setup of the caret's section.
@@ -2217,6 +2264,9 @@ pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
 
 /// Prefix stored in `w:tblDescription` (tables) or `docPr/@descr` (images) for linked Excel objects.
 pub const EXCEL_LINK_PREFIX: &str = "writan:excel-link:";
+
+/// Prefix stored in `docPr/@descr` (images) for editable inline LaTeX math equations.
+pub const LATEX_MATH_PREFIX: &str = "writan:latex:";
 
 /// One cell of a linked Excel range, deserialized from `SheetsDoc::rangeSnapshot`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]

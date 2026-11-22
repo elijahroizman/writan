@@ -79,6 +79,7 @@ export interface Element {
   type: 'text' | 'shape' | 'connector' | 'image' | 'table' | 'group' | 'other'
   name: string
   linkTag?: string
+  mathTag?: string
   x: number
   y: number
   width: number
@@ -275,6 +276,18 @@ export class SlidesEngine {
 
   linkedTags(): { slide: number; frameId: string; tag: string }[] {
     return JSON.parse(this.doc.linkedTags()) as { slide: number; frameId: string; tag: string }[]
+  }
+
+  insertMathImage(tag: string, bytes: Uint8Array, contentType: string, width: number, height: number): string {
+    const id = this.doc.insertMathImage(tag, bytes, contentType, width, height)
+    this.refresh()
+    return id
+  }
+
+  updateMathImage(id: number, tag: string, bytes: Uint8Array, contentType: string, width: number, height: number): boolean {
+    const ok = this.doc.updateMathImage(id, tag, bytes, contentType, width, height)
+    if (ok) this.refresh()
+    return ok
   }
 
   /** Where this copy is, for the others while shared (collab/session.ts). */

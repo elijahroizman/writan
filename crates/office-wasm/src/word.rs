@@ -400,6 +400,18 @@ impl WordDoc {
         json(&self.view.linked_tags())
     }
 
+    /// Inserts an inline LaTeX math equation image tagged with `tag`.
+    #[wasm_bindgen(js_name = insertMathImage)]
+    pub fn insert_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) {
+        self.view.insert_math_image(tag, bytes, content_type, width, height);
+    }
+
+    /// Updates the currently selected inline LaTeX math image in place.
+    #[wasm_bindgen(js_name = updateSelectedMathImage)]
+    pub fn update_selected_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> bool {
+        self.view.update_selected_math_image(tag, bytes, content_type, width, height)
+    }
+
     /// Starts sharing the document as copy `client` (see `office_engine::collab`).
     #[wasm_bindgen(js_name = collabStart)]
     pub fn collab_start(&mut self, client: &str) {

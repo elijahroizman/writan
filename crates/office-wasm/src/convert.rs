@@ -538,7 +538,11 @@ fn render_paragraph_inlines(
             Inline::Image(img) => {
                 if let Some(desc) = img.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                     flush(&mut out, &mut cur_fmt, &mut cur_buf);
-                    out.push_str(&format!("![{}]()", desc.replace(['[', ']'], "")));
+                    if let Some(math_md) = latex_tag_markdown(desc) {
+                        out.push_str(&math_md);
+                    } else {
+                        out.push_str(&format!("![{}]()", desc.replace(['[', ']'], "")));
+                    }
                 }
             }
             Inline::Raw { xml } => {
@@ -551,6 +555,17 @@ fn render_paragraph_inlines(
     }
     flush(&mut out, &mut cur_fmt, &mut cur_buf);
     (out, has_page_break)
+}
+
+fn latex_tag_markdown(desc: &str) -> Option<String> {
+    let raw = desc.strip_prefix("writan:latex:")?.trim();
+    let val: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let latex = val.get("latex")?.as_str()?.trim();
+    if latex.is_empty() {
+        return None;
+    }
+    let display = val.get("display").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    Some(if display { format!("$${latex}$$") } else { format!("${latex}$") })
 }
 
 fn raw_block_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut Vec<String>) -> Option<String> {
@@ -856,7 +871,12 @@ fn slide_frame_markdown(f: &Frame, out: &mut String) {
         }
         FrameContent::Picture { image } => {
             if let Some(desc) = image.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                out.push_str(&format!("![{}]()\n\n", desc.replace(['[', ']'], "")));
+                if let Some(math_md) = latex_tag_markdown(desc) {
+                    out.push_str(&math_md);
+                    out.push_str("\n\n");
+                } else {
+                    out.push_str(&format!("![{}]()\n\n", desc.replace(['[', ']'], "")));
+                }
             }
         }
         FrameContent::Group { frames } => {

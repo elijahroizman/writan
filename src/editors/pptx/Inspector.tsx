@@ -36,6 +36,7 @@ import {
   RectangleHorizontal,
   SendToBack,
   Shapes,
+  Sigma,
   Square,
   Star,
   Strikethrough,
@@ -66,6 +67,7 @@ import type { Deck, Element, Transition } from './types'
 import type { ShapeLook, TextLook } from '../../engine/slides/engine'
 import { LinkedExcelSection } from '../../links/LinkedExcelSection'
 import type { ExcelLink, ExcelLinksController } from '../../links/excelLinks'
+import { MathInspectorSection } from '../../math/MathInspectorSection'
 import { hasText } from './types'
 
 type TextStyle = Partial<TextLook>
@@ -101,6 +103,8 @@ export function Inspector({
   excelLinks,
   onOpenExcelModal,
   onOpenExcelSource,
+  onOpenMathModal,
+  onEditMathModal,
 }: {
   deck: Deck
   onInsertImage: () => void
@@ -118,6 +122,8 @@ export function Inspector({
   excelLinks: ExcelLinksController
   onOpenExcelModal: () => void
   onOpenExcelSource: (link: ExcelLink) => void
+  onOpenMathModal: () => void
+  onEditMathModal: (id: string) => void
 }) {
   const { engine, slides, activeIndex, selectedSlides } = deck
   const [shapeMenu, setShapeMenu] = useState<{ x: number; y: number } | null>(null)
@@ -148,6 +154,7 @@ export function Inspector({
           <ToolButton icon={<Table size={15} />} label="Table" active={tableOpen} onMouseDown={(e) => e.preventDefault()} onClick={() => setTableOpen(!tableOpen)} />
           <ToolButton icon={<ImageIcon size={15} />} label="Image" onMouseDown={(e) => e.preventDefault()} onClick={onInsertImage} />
           <ToolButton icon={<FileSpreadsheet size={15} />} label="Excel" title="Link a live range or chart from an open Excel workbook" onMouseDown={(e) => e.preventDefault()} onClick={onOpenExcelModal} />
+          <ToolButton icon={<Sigma size={15} />} label="Math" title={platform.shortcut(withKeys('Insert LaTeX math', 'pptx.math'))} onMouseDown={(e) => e.preventDefault()} onClick={onOpenMathModal} />
           <ToolButton icon={<Video size={15} />} label="Video" active={videoOpen} onMouseDown={(e) => e.preventDefault()} onClick={() => setVideoOpen(!videoOpen)} />
           <ToolButton
             icon={<Plus size={15} />}
@@ -193,6 +200,7 @@ export function Inspector({
         <MultiSelection deck={deck} count={count} onArrange={onArrange} canArrange={canArrange} />
       ) : el ? (
         <>
+          <MathInspectorSection mathTag={el.mathTag} onEdit={() => onEditMathModal(el.id)} />
           {isTable(el) && <TableSection deck={deck} el={el} />}
           {el.type === 'group' && <GroupTextSection deck={deck} />}
           {hasText(el) && <TextSection deck={deck} el={el} />}

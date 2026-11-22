@@ -44,6 +44,7 @@ export interface WordState {
   note: number | null
   link: string | null
   linkTag?: string
+  mathTag?: string
   page: { current: number; total: number }
 }
 
@@ -300,6 +301,17 @@ export class WordEngine {
 
   linkedTags(): string[] {
     return JSON.parse(this.doc.linkedTags()) as string[]
+  }
+
+  insertMathImage(tag: string, bytes: Uint8Array, contentType: string, width: number, height: number) {
+    this.doc.insertMathImage(tag, bytes, contentType, width, height)
+    this.refresh()
+  }
+
+  updateSelectedMathImage(tag: string, bytes: Uint8Array, contentType: string, width: number, height: number): boolean {
+    const ok = this.doc.updateSelectedMathImage(tag, bytes, contentType, width, height)
+    if (ok) this.refresh()
+    return ok
   }
 
   dispose() {

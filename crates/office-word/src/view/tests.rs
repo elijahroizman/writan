@@ -1408,3 +1408,36 @@ fn linked_excel_table_and_image_round_trip_update_and_unlink() {
     assert!(!reopened.linked_tags().contains(&tag));
     assert!(!reopened.update_linked_table(&tag, &[]));
 }
+
+#[test]
+fn inline_latex_math_insert_update_undo_and_round_trip() {
+    let mut v = WordView::open(&doc_bytes(&["Equation: "])).unwrap();
+    // Move caret to end of paragraph.
+    v.set_selection(Selection::caret(Pos::new(Path(vec![0]), 10)));
+    let tag1 = format!("{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"E=mc^2\",\"display\":false,\"fontSizePt\":12,\"color\":\"#000000\"}}");
+    let png1 = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+    v.insert_math_image(&tag1, png1, "image/png", 64.0, 20.0);
+
+    // Select the inserted inline image (at UTF-8 offset 10..13 since U+FFFC is 3 bytes).
+    v.set_selection(Selection { anchor: Pos::new(Path(vec![0]), 10), focus: Pos::new(Path(vec![0]), 13) });
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag1.as_str()));
+
+    let tag2 =
+        format!("{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"\\\\frac{{1}}{{x}}\",\"display\":true,\"fontSizePt\":16,\"color\":\"#112233\"}}");
+    let png2 = vec![0x89, b'P', b'N', b'G', 5, 6, 7, 8];
+    assert!(v.update_selected_math_image(&tag2, png2, "image/png", 80.0, 36.0));
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag2.as_str()));
+
+    // Undo restores the first equation tag.
+    assert!(v.undo());
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag1.as_str()));
+    // Redo restores the updated equation tag.
+    assert!(v.redo());
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag2.as_str()));
+
+    // Save and reopen preserves the math tag in OOXML docPr/@descr.
+    let saved = v.save().unwrap();
+    let mut reopened = WordView::open(&saved).unwrap();
+    reopened.set_selection(Selection { anchor: Pos::new(Path(vec![0]), 10), focus: Pos::new(Path(vec![0]), 13) });
+    assert_eq!(reopened.state().math_tag.as_deref(), Some(tag2.as_str()));
+}

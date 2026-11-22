@@ -291,6 +291,18 @@ impl SlidesDoc {
         json(&items)
     }
 
+    /// Inserts an inline LaTeX math equation picture on the active slide, returning its frame id.
+    #[wasm_bindgen(js_name = insertMathImage)]
+    pub fn insert_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> String {
+        self.view.insert_math_image(tag, bytes, content_type, width, height).to_string()
+    }
+
+    /// Updates a LaTeX math picture frame in place on the active slide.
+    #[wasm_bindgen(js_name = updateMathImage)]
+    pub fn update_math_image(&mut self, id: u32, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> bool {
+        self.view.update_math_image(id, tag, bytes, content_type, width, height)
+    }
+
     pub fn dirty(&self) -> bool {
         self.view.is_dirty()
     }

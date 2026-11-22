@@ -50,6 +50,9 @@ pub struct WordState {
     /// Tag (`writan:excel-link:<id>`) when the caret is in a linked Excel table or a linked chart is selected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_tag: Option<String>,
+    /// Tag (`writan:latex:{...}`) when an inline LaTeX math image is selected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub math_tag: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -217,6 +220,9 @@ impl WordView {
         if let Some((_, _, img)) = self.selected_image() {
             if let Some(tag) = img.description.as_deref().filter(|t| t.starts_with(super::EXCEL_LINK_PREFIX)) {
                 st.link_tag = Some(tag.to_string());
+            }
+            if let Some(tag) = img.description.as_deref().filter(|t| t.starts_with(super::LATEX_MATH_PREFIX)) {
+                st.math_tag = Some(tag.to_string());
             }
             let crop = image_crop(img).unwrap_or([0.0; 4]);
             let rot = img
