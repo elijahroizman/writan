@@ -2794,12 +2794,7 @@ fn build_slide_math_body(omml_xml: &str, fallback_text: &str) -> Option<TextBody
     let a14_m = Element::new(ns::A14, "m").with_child(math_para);
     let mut choice = Element::new(ns::MC, "Choice").with_attr("", "Requires", "a14").with_child(a14_m);
     // ECMA-376 Part 3 requires the prefix named in mc:Choice/@Requires to be declared in scope on mc:Choice itself.
-    choice.attrs.push(office_core::xml::Attr {
-        prefix: Some("xmlns".into()),
-        local: "a14".into(),
-        ns: None,
-        value: ns::A14.into(),
-    });
+    choice.attrs.push(office_core::xml::Attr { prefix: Some("xmlns".into()), local: "a14".into(), ns: None, value: ns::A14.into() });
     let fallback_run = Element::new(ns::A, "r")
         .with_child(Element::new(ns::A, "rPr").with_attr("", "lang", "en-US"))
         .with_child(Element::new(ns::A, "t").with_text(fallback_text));
@@ -2809,4 +2804,30 @@ fn build_slide_math_body(omml_xml: &str, fallback_text: &str) -> Option<TextBody
     para.props.align = Some(Align::Center);
     para.content.push(Inline::Raw { xml: alt });
     Some(TextBody { paragraphs: vec![para], ..Default::default() })
+}
+
+/// Returns the `writan:latex:...` tag on `f` only when its OMML text fingerprint (if recorded)
+/// still matches the live `<m:t>` text inside the frame's native PowerPoint equation.
+pub(crate) fn frame_math_tag(f: &Frame) -> Option<&str> {
+    let tag = f.description.as_deref().filter(|t| t.starts_with(LATEX_MATH_PREFIX))?;
+    if let Some(raw) = tag.strip_prefix(LATEX_MATH_PREFIX) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.trim()) {
+            if let Some(expected_fp) = val.get("f").and_then(|v| v.as_str()) {
+                if let FrameContent::Shape { text: Some(body), .. } = &f.content {
+                    let mut live_fp = String::new();
+                    for p in &body.paragraphs {
+                        for inline in &p.content {
+                            if let Inline::Raw { xml } = inline {
+                                live_fp.push_str(&office_core::xml::omml_text_fingerprint(xml));
+                            }
+                        }
+                    }
+                    if live_fp != expected_fp {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+    Some(tag)
 }

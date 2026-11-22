@@ -361,10 +361,10 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
           setMathModal(null)
           editorRef.current?.focus()
         }}
-        onCommit={({ spec, omml, width, height }) => {
+        onCommit={({ spec, omml, fingerprint, width, height }) => {
           const ed = editorRef.current
           if (!ed) return
-          const tag = encodeLatexTag(spec, { width, height })
+          const tag = encodeLatexTag(spec, { width, height, fingerprint })
           if (mathModal?.mode === 'edit') {
             ed.updateSelectedMath(tag, omml)
           } else {

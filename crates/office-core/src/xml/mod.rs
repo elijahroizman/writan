@@ -401,6 +401,23 @@ pub fn parse_element(xml: &str) -> Result<Element, String> {
     parse(xml.as_bytes()).map(|d| d.root)
 }
 
+/// Concatenates all `<m:t>` text runs inside an Office Math subtree so Writan can detect whether
+/// Microsoft Word or PowerPoint modified a saved equation natively.
+pub fn omml_text_fingerprint(el: &Element) -> String {
+    fn walk(el: &Element, out: &mut String) {
+        if el.is(ns::M, "t") {
+            out.push_str(&el.text());
+            return;
+        }
+        for c in el.elements() {
+            walk(c, out);
+        }
+    }
+    let mut out = String::new();
+    walk(el, &mut out);
+    out
+}
+
 // Raw XML shows up in the model's JSON as its source text, which is readable and self-contained.
 impl serde::Serialize for Element {
     fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {

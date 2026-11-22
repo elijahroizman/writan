@@ -225,7 +225,7 @@ impl Drawer<'_, '_, '_> {
                 items.extend(kids);
             }
             FrameContent::Shape { text, connector } => {
-                if let Some(tag) = f.description.as_deref().filter(|t| t.starts_with(super::LATEX_MATH_PREFIX)) {
+                if let Some(tag) = super::commands::frame_math_tag(f) {
                     items.push(Item::Image { x: 0.0, y: 0.0, w: r(b.w), h: r(b.h), media: tag.to_string(), crop: None, id: None });
                     let look = self.look(slide, f);
                     if let Some((color, w, dash)) = look.line.filter(|_| f.shape.line.is_some()) {

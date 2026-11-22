@@ -23,7 +23,7 @@ export interface LatexMathModalProps {
   targetLabel: 'Word' | 'Slides'
   initialSpec: LatexMathSpec
   onClose: () => void
-  onCommit: (result: { spec: LatexMathSpec; omml: string; linear: string; width: number; height: number }) => void
+  onCommit: (result: { spec: LatexMathSpec; omml: string; linear: string; fingerprint: string; width: number; height: number }) => void
 }
 
 export function LatexMathModal({ open, mode, targetLabel, initialSpec, onClose, onCommit }: LatexMathModalProps) {
@@ -106,8 +106,8 @@ export function LatexMathModal({ open, mode, targetLabel, initialSpec, onClose, 
     setSubmitError(null)
     try {
       const target = targetLabel === 'Word' ? 'word' : 'slides'
-      const { omml, linear } = latexToOmml(spec, target)
-      onCommit({ spec, omml, linear, width: preview.width, height: preview.height })
+      const { omml, linear, fingerprint } = latexToOmml(spec, target)
+      onCommit({ spec, omml, linear, fingerprint, width: preview.width, height: preview.height })
       onClose()
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err))

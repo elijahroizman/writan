@@ -30,10 +30,11 @@ interface StoredLatexPayload {
   color?: string
   w?: number
   h?: number
+  f?: string
 }
 
 /** Encodes a LaTeX equation specification (and optional rendered CSS-px size) into an OOXML metadata tag. */
-export function encodeLatexTag(spec: LatexMathSpec, dims?: { width: number; height: number }): string {
+export function encodeLatexTag(spec: LatexMathSpec, dims?: { width: number; height: number; fingerprint?: string }): string {
   const payload: StoredLatexPayload = {
     v: 1,
     latex: spec.latex,
@@ -44,6 +45,9 @@ export function encodeLatexTag(spec: LatexMathSpec, dims?: { width: number; heig
   if (dims && Number.isFinite(dims.width) && dims.width > 0 && Number.isFinite(dims.height) && dims.height > 0) {
     payload.w = Math.round(dims.width * 10) / 10
     payload.h = Math.round(dims.height * 10) / 10
+  }
+  if (dims?.fingerprint !== undefined) {
+    payload.f = dims.fingerprint
   }
   return `${LATEX_MATH_PREFIX}${JSON.stringify(payload)}`
 }

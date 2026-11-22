@@ -568,6 +568,40 @@ fn latex_tag_markdown(desc: &str) -> Option<String> {
     Some(if display { format!("$${latex}$$") } else { format!("${latex}$") })
 }
 
+fn latex_tag_matches_omml(tag: &str, el: &Element) -> bool {
+    let Some(raw) = tag.strip_prefix("writan:latex:") else {
+        return true;
+    };
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
+        return true;
+    };
+    match val.get("f").and_then(serde_json::Value::as_str) {
+        Some(expected_fp) => office_core::xml::omml_text_fingerprint(el) == expected_fp,
+        None => true,
+    }
+}
+
+fn slide_body_matches_latex_tag(tag: &str, body: &office_core::model::TextBody) -> bool {
+    let Some(raw) = tag.strip_prefix("writan:latex:") else {
+        return true;
+    };
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
+        return true;
+    };
+    let Some(expected_fp) = val.get("f").and_then(serde_json::Value::as_str) else {
+        return true;
+    };
+    let mut live_fp = String::new();
+    for p in &body.paragraphs {
+        for inline in &p.content {
+            if let Inline::Raw { xml } = inline {
+                live_fp.push_str(&office_core::xml::omml_text_fingerprint(xml));
+            }
+        }
+    }
+    live_fp == expected_fp
+}
+
 fn raw_block_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut Vec<String>) -> Option<String> {
     if el.is(ns::W, "del") || el.is(ns::W, "moveFrom") {
         return None;
@@ -612,8 +646,10 @@ fn raw_inline_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut
     }
     if el.is(ns::W, "sdt") {
         if let Some(tag) = el.child(ns::W, "sdtPr").and_then(|pr| pr.child(ns::W, "tag")).and_then(|t| t.attr_ns(ns::W, "val")) {
-            if let Some(math_md) = latex_tag_markdown(tag) {
-                return Some(math_md);
+            if latex_tag_matches_omml(tag, el) {
+                if let Some(math_md) = latex_tag_markdown(tag) {
+                    return Some(math_md);
+                }
             }
         }
     }
@@ -848,10 +884,16 @@ fn slide_reading_order(frames: &[Frame]) -> Vec<&Frame> {
 
 fn slide_frame_markdown(f: &Frame, out: &mut String) {
     if let Some(desc) = f.description.as_deref().map(str::trim) {
-        if let Some(math_md) = latex_tag_markdown(desc) {
-            out.push_str(&math_md);
-            out.push_str("\n\n");
-            return;
+        let omml_matches = match &f.content {
+            FrameContent::Shape { text: Some(body), .. } => slide_body_matches_latex_tag(desc, body),
+            _ => true,
+        };
+        if omml_matches {
+            if let Some(math_md) = latex_tag_markdown(desc) {
+                out.push_str(&math_md);
+                out.push_str("\n\n");
+                return;
+            }
         }
     }
     match &f.content {

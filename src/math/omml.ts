@@ -30,6 +30,7 @@ interface ConvertCtx {
   fontSizePt: number
   colorHex: string // 6 uppercase hex digits, no '#'
   display: boolean
+  tokens: string[]
 }
 
 const NARY_OPS = new Set([
@@ -154,6 +155,7 @@ function emitMathRun(
   opts?: { normal?: boolean; style?: 'p' | 'b' | 'i' | 'bi' },
 ): string {
   if (!text) return ''
+  ctx.tokens.push(text)
   let mRPr = ''
   if (opts?.normal) {
     mRPr += '<m:nor/>'
@@ -567,7 +569,7 @@ function convertNode(node: MmlNodeLike, ctx: ConvertCtx): string {
  * - For `word`: `<m:oMath>` (inline) or `<m:oMathPara><m:oMath>...</m:oMath></m:oMathPara>` (display)
  * - For `slides`: `<m:oMathPara><m:oMath>...</m:oMath></m:oMathPara>` with DrawingML `<a:rPr>` run formatting
  */
-export function latexToOmml(spec: LatexMathSpec, target: OmmlTarget): { omml: string; linear: string } {
+export function latexToOmml(spec: LatexMathSpec, target: OmmlTarget): { omml: string; linear: string; fingerprint: string } {
   const source = spec.latex.trim()
   if (!source) {
     throw new Error('Enter a LaTeX expression.')
@@ -576,7 +578,7 @@ export function latexToOmml(spec: LatexMathSpec, target: OmmlTarget): { omml: st
   const colorHex = normalizeHexColor(spec.color).slice(1)
   const doc = ensureMmlDoc()
   const root = doc.convert(source, { display: spec.display, end: STATE.CONVERT })
-  const ctx: ConvertCtx = { target, fontSizePt, colorHex, display: spec.display }
+  const ctx: ConvertCtx = { target, fontSizePt, colorHex, display: spec.display, tokens: [] }
   const body = convertNode(root, ctx)
   const hostNs = target === 'word' ? ` xmlns:w="${NS_W}"` : ` xmlns:a="${NS_A}"`
   const oMath = `<m:oMath xmlns:m="${NS_M}"${hostNs}>${body}</m:oMath>`
@@ -585,5 +587,5 @@ export function latexToOmml(spec: LatexMathSpec, target: OmmlTarget): { omml: st
       ? `<m:oMathPara xmlns:m="${NS_M}"${hostNs}>${oMath}</m:oMathPara>`
       : oMath
   const linear = nodeText(root).replace(/\s+/g, ' ').trim() || source
-  return { omml, linear }
+  return { omml, linear, fingerprint: ctx.tokens.join('') }
 }

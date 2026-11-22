@@ -674,8 +674,8 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
         targetLabel="Slides"
         initialSpec={mathModal?.initialSpec ?? { latex: '', display: true, fontSizePt: 28, color: '#000000' }}
         onClose={() => setMathModal(null)}
-        onCommit={({ spec, omml, linear, width, height }) => {
-          const tag = encodeLatexTag(spec, { width, height })
+        onCommit={({ spec, omml, linear, fingerprint, width, height }) => {
+          const tag = encodeLatexTag(spec, { width, height, fingerprint })
           if (mathModal?.mode === 'edit' && mathModal.frameId != null) {
             engine.updateMath(mathModal.frameId, tag, omml, linear, width, height)
           } else {

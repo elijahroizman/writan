@@ -245,11 +245,23 @@ pub(crate) fn inline_latex_math(el: &Element) -> Option<(&str, f64, f64)> {
 }
 
 /// Extracts the `writan:latex:...` tag from a `<w:sdt><w:sdtPr><w:tag w:val="..."/>` wrapper.
+/// Returns `None` if the tag carries an OMML text fingerprint (`"f"`) that no longer matches the
+/// live `<m:oMath>` text (meaning Word edited the equation natively after Writan saved it).
 pub(crate) fn inline_latex_math_tag(el: &Element) -> Option<&str> {
     if !el.is(ns::W, "sdt") {
         return None;
     }
-    el.child(ns::W, "sdtPr")?.child(ns::W, "tag")?.attr_ns(ns::W, "val").filter(|v| v.starts_with(super::LATEX_MATH_PREFIX))
+    let tag = el.child(ns::W, "sdtPr")?.child(ns::W, "tag")?.attr_ns(ns::W, "val").filter(|v| v.starts_with(super::LATEX_MATH_PREFIX))?;
+    if let Some(raw) = tag.strip_prefix(super::LATEX_MATH_PREFIX) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.trim()) {
+            if let Some(expected_fp) = val.get("f").and_then(|v| v.as_str()) {
+                if office_core::xml::omml_text_fingerprint(el) != expected_fp {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(tag)
 }
 
 /// A run holding a SmartArt diagram in the text (`wp:inline`): its `a:graphicData` and size.

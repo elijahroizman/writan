@@ -282,7 +282,7 @@ fn element(d: &Drawer, slide: &office_core::model::Slide, f: &Frame, map: Map) -
         kind,
         name: f.name.clone(),
         link_tag: f.description.as_deref().filter(|t| t.starts_with(super::EXCEL_LINK_PREFIX)).map(str::to_string),
-        math_tag: f.description.as_deref().filter(|t| t.starts_with(super::LATEX_MATH_PREFIX)).map(str::to_string),
+        math_tag: super::commands::frame_math_tag(f).map(str::to_string),
         link: f.link.clone(),
         x: r2(b.x),
         y: r2(b.y),
