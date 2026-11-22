@@ -18,6 +18,7 @@ import {
   Crop,
   Diamond,
   EyeOff,
+  FileSpreadsheet,
   FlipHorizontal2,
   FlipVertical2,
   Group,
@@ -63,6 +64,8 @@ import { DIRECTIONS, TRANSITIONS, changeTransition } from './transitions'
 import { parseVideoLink } from './video'
 import type { Deck, Element, Transition } from './types'
 import type { ShapeLook, TextLook } from '../../engine/slides/engine'
+import { LinkedExcelSection } from '../../links/LinkedExcelSection'
+import type { ExcelLink, ExcelLinksController } from '../../links/excelLinks'
 import { hasText } from './types'
 
 type TextStyle = Partial<TextLook>
@@ -95,6 +98,9 @@ export function Inspector({
   canArrange,
   onCrop,
   onPlayVideo,
+  excelLinks,
+  onOpenExcelModal,
+  onOpenExcelSource,
 }: {
   deck: Deck
   onInsertImage: () => void
@@ -109,6 +115,9 @@ export function Inspector({
   onCrop: (() => void) | null
   /** Play a frame's video link on the slide. */
   onPlayVideo: (id: string) => void
+  excelLinks: ExcelLinksController
+  onOpenExcelModal: () => void
+  onOpenExcelSource: (link: ExcelLink) => void
 }) {
   const { engine, slides, activeIndex, selectedSlides } = deck
   const [shapeMenu, setShapeMenu] = useState<{ x: number; y: number } | null>(null)
@@ -138,6 +147,7 @@ export function Inspector({
           />
           <ToolButton icon={<Table size={15} />} label="Table" active={tableOpen} onMouseDown={(e) => e.preventDefault()} onClick={() => setTableOpen(!tableOpen)} />
           <ToolButton icon={<ImageIcon size={15} />} label="Image" onMouseDown={(e) => e.preventDefault()} onClick={onInsertImage} />
+          <ToolButton icon={<FileSpreadsheet size={15} />} label="Excel" title="Link a live range or chart from an open Excel workbook" onMouseDown={(e) => e.preventDefault()} onClick={onOpenExcelModal} />
           <ToolButton icon={<Video size={15} />} label="Video" active={videoOpen} onMouseDown={(e) => e.preventDefault()} onClick={() => setVideoOpen(!videoOpen)} />
           <ToolButton
             icon={<Plus size={15} />}
@@ -168,6 +178,15 @@ export function Inspector({
             }}
           />
         )}
+      </Section>
+
+      <Section title="Linked Excel" collapsible defaultOpen={excelLinks.links.length > 0 || !!el?.linkTag}>
+        <LinkedExcelSection
+          controller={excelLinks}
+          activeTag={el?.linkTag}
+          onOpenInsert={onOpenExcelModal}
+          onOpenSource={onOpenExcelSource}
+        />
       </Section>
 
       {count > 1 ? (

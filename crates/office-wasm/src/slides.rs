@@ -247,6 +247,50 @@ impl SlidesDoc {
         self.view.insert_image(bytes, content_type, width, height, name).to_string()
     }
 
+    /// Inserts a linked Excel table on the active slide, tagged with `tag`. Returns its frame id.
+    #[wasm_bindgen(js_name = insertLinkedTable)]
+    pub fn insert_linked_table(&mut self, tag: &str, rows_json: &str, name: &str) -> Result<String, JsError> {
+        let rows: Vec<Vec<office_slides::view::LinkedCell>> = serde_json::from_str(rows_json).map_err(err)?;
+        Ok(self.view.insert_linked_table(tag, &rows, name).to_string())
+    }
+
+    /// Updates a linked Excel table in place across all slides; returns whether it was found.
+    #[wasm_bindgen(js_name = updateLinkedTable)]
+    pub fn update_linked_table(&mut self, tag: &str, rows_json: &str) -> Result<bool, JsError> {
+        let rows: Vec<Vec<office_slides::view::LinkedCell>> = serde_json::from_str(rows_json).map_err(err)?;
+        Ok(self.view.update_linked_table(tag, &rows))
+    }
+
+    /// Inserts a linked Excel chart picture on the active slide, tagged with `tag`. Returns its frame id.
+    #[wasm_bindgen(js_name = insertLinkedImage)]
+    pub fn insert_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64, name: &str) -> String {
+        self.view.insert_linked_image(tag, bytes, content_type, width, height, name).to_string()
+    }
+
+    /// Replaces the image bytes of a linked Excel chart across all slides; returns whether it was found.
+    #[wasm_bindgen(js_name = updateLinkedImage)]
+    pub fn update_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str) -> bool {
+        self.view.update_linked_image(tag, bytes, content_type)
+    }
+
+    /// Removes `tag` from its frame without deleting the frame.
+    #[wasm_bindgen(js_name = clearLinkTag)]
+    pub fn clear_link_tag(&mut self, tag: &str) -> bool {
+        self.view.clear_link_tag(tag)
+    }
+
+    /// JSON array of `{ slide, frameId, tag }` for every linked Excel frame in the deck.
+    #[wasm_bindgen(js_name = linkedTags)]
+    pub fn linked_tags(&self) -> String {
+        let items: Vec<_> = self
+            .view
+            .linked_tags()
+            .into_iter()
+            .map(|(slide, frame_id, tag)| serde_json::json!({ "slide": slide, "frameId": frame_id.to_string(), "tag": tag }))
+            .collect();
+        json(&items)
+    }
+
     pub fn dirty(&self) -> bool {
         self.view.is_dirty()
     }

@@ -1239,3 +1239,21 @@ fn rules_rebase_onto_a_range_in_another_column() {
     v.shift_rows(0, 1, -1);
     assert!(on(&v, "C4"));
 }
+
+#[test]
+fn range_snapshot_evaluates_formulas_and_preserves_alignment() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.set_input(0, CellRef::new(0, 0), "Item");
+    v.set_input(0, CellRef::new(0, 1), "Price");
+    v.set_input(0, CellRef::new(1, 0), "Apple");
+    v.set_input(0, CellRef::new(1, 1), "12");
+    v.set_input(0, CellRef::new(2, 0), "Total");
+    v.set_input(0, CellRef::new(2, 1), "=B2*2");
+    let snap = v.range_snapshot(0, Range::parse("A1:B3").unwrap()).unwrap();
+    assert_eq!(snap.range, "A1:B3");
+    assert_eq!(snap.rows.len(), 3);
+    assert_eq!(snap.rows[0][0].text, "Item");
+    assert_eq!(snap.rows[1][1].text, "12");
+    assert_eq!(snap.rows[1][1].align.as_deref(), Some("right"));
+    assert_eq!(snap.rows[2][1].text, "24");
+}

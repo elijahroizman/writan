@@ -43,6 +43,7 @@ export interface WordState {
   /** The footnote or endnote being edited, by index. */
   note: number | null
   link: string | null
+  linkTag?: string
   page: { current: number; total: number }
 }
 
@@ -267,6 +268,38 @@ export class WordEngine {
 
   save(): Uint8Array {
     return this.doc.save()
+  }
+
+  insertLinkedTable(tag: string, rows: import('../sheets/engine').RangeCellSnapshot[][]) {
+    this.doc.insertLinkedTable(tag, JSON.stringify(rows))
+    this.refresh()
+  }
+
+  updateLinkedTable(tag: string, rows: import('../sheets/engine').RangeCellSnapshot[][]): boolean {
+    const ok = this.doc.updateLinkedTable(tag, JSON.stringify(rows))
+    if (ok) this.refresh()
+    return ok
+  }
+
+  insertLinkedImage(tag: string, bytes: Uint8Array, contentType: string, width: number, height: number, name: string) {
+    this.doc.insertLinkedImage(tag, bytes, contentType, width, height, name)
+    this.refresh()
+  }
+
+  updateLinkedImage(tag: string, bytes: Uint8Array, contentType: string): boolean {
+    const ok = this.doc.updateLinkedImage(tag, bytes, contentType)
+    if (ok) this.refresh()
+    return ok
+  }
+
+  clearLinkTag(tag: string): boolean {
+    const ok = this.doc.clearLinkTag(tag)
+    if (ok) this.refresh()
+    return ok
+  }
+
+  linkedTags(): string[] {
+    return JSON.parse(this.doc.linkedTags()) as string[]
   }
 
   dispose() {

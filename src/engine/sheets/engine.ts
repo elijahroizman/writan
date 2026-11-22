@@ -145,6 +145,21 @@ export interface SheetState {
   circular: { sheet: number; row: number; col: number }[]
 }
 
+export interface RangeCellSnapshot {
+  text: string
+  bold?: boolean
+  italic?: boolean
+  color?: string
+  fill?: string
+  align?: string
+}
+
+export interface RangeSnapshot {
+  sheet: string
+  range: string
+  rows: RangeCellSnapshot[][]
+}
+
 let sheets = 0
 
 /** Today, as a spreadsheet serial number (days since 30 December 1899, time as a fraction). */
@@ -261,6 +276,11 @@ export class SheetsEngine {
     const charts = JSON.parse(this.doc.charts(sheet)) as ChartView[]
     this.chartCache.set(sheet, { revision: this.revision, charts })
     return charts
+  }
+
+  /** Evaluated display text and basic styling for `rangeA1` on `sheet`, for linked tables. */
+  rangeSnapshot(sheet: number, rangeA1: string): RangeSnapshot | null {
+    return JSON.parse(this.doc.rangeSnapshot(sheet, rangeA1)) as RangeSnapshot | null
   }
 
   /** A block of cells drawn as HTML, in grid pixels. */

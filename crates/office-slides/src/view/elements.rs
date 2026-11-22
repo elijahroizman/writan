@@ -59,6 +59,8 @@ pub struct Element {
     pub kind: &'static str,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub link_tag: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<office_core::model::Link>,
     pub x: f64,
     pub y: f64,
@@ -277,6 +279,7 @@ fn element(d: &Drawer, slide: &office_core::model::Slide, f: &Frame, map: Map) -
         id: f.id.to_string(),
         kind,
         name: f.name.clone(),
+        link_tag: f.description.as_deref().filter(|t| t.starts_with(super::EXCEL_LINK_PREFIX)).map(str::to_string),
         link: f.link.clone(),
         x: r2(b.x),
         y: r2(b.y),

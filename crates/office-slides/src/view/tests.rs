@@ -1296,3 +1296,40 @@ fn cropping_a_picture_without_moving_its_frame_is_a_change() {
     let el = v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).unwrap();
     assert!(el.crop.is_none_or(|c| c == [0.0; 4]), "undo takes the crop back: {:?}", el.crop);
 }
+
+#[test]
+fn linked_excel_table_and_image_round_trip_update_and_unlink() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::open(&deck(&[&[]])).unwrap();
+    let tbl_tag = format!("{EXCEL_LINK_PREFIX}s-tbl-1");
+    let rows1 = vec![vec![
+        LinkedCell { text: "Rev".into(), bold: true, ..Default::default() },
+        LinkedCell { text: "42".into(), ..Default::default() },
+    ]];
+    let tid = v.insert_linked_table(&tbl_tag, &rows1, "Sheet1!A1:B1");
+    let els = v.elements(&mut host, 0);
+    assert_eq!(els.iter().find(|e| e.id == tid.to_string()).and_then(|e| e.link_tag.as_deref()), Some(tbl_tag.as_str()));
+
+    let rows2 = vec![vec![
+        LinkedCell { text: "Rev".into(), bold: true, ..Default::default() },
+        LinkedCell { text: "99".into(), ..Default::default() },
+    ]];
+    assert!(v.update_linked_table(&tbl_tag, &rows2));
+
+    let img_tag = format!("{EXCEL_LINK_PREFIX}s-chart-1");
+    let iid = v.insert_linked_image(&img_tag, CLIPBOARD_PNG.to_vec(), "image/png", 300.0, 200.0, "Chart 1");
+    assert!(v.update_linked_image(&img_tag, CLIPBOARD_PNG.to_vec(), "image/png"));
+    assert_eq!(
+        v.elements(&mut host, 0).iter().find(|e| e.id == iid.to_string()).and_then(|e| e.link_tag.as_deref()),
+        Some(img_tag.as_str())
+    );
+
+    let saved = v.save().unwrap();
+    let mut reopened = SlidesView::open(&saved).unwrap();
+    let tags: Vec<String> = reopened.linked_tags().into_iter().map(|(_, _, t)| t).collect();
+    assert!(tags.contains(&tbl_tag), "slide table tag survives save/reload: {tags:?}");
+    assert!(tags.contains(&img_tag), "slide chart tag survives save/reload: {tags:?}");
+
+    assert!(reopened.clear_link_tag(&tbl_tag));
+    assert!(!reopened.linked_tags().iter().any(|(_, _, t)| t == &tbl_tag));
+}

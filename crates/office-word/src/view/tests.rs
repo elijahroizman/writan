@@ -1374,3 +1374,37 @@ fn cropping_a_picture_put_in_here_shows_and_saves() {
     assert_eq!(image_crop(&img), Some([0.0, 0.0, 0.5, 0.0]));
     assert_eq!(img.width.0, 952_500);
 }
+
+#[test]
+fn linked_excel_table_and_image_round_trip_update_and_unlink() {
+    let mut v = WordView::open(&doc_bytes(&["Intro"])).unwrap();
+    let tag = format!("{EXCEL_LINK_PREFIX}tbl-1");
+    let rows1 = vec![vec![
+        LinkedCell { text: "Q1".into(), bold: true, ..Default::default() },
+        LinkedCell { text: "100".into(), align: Some("right".into()), ..Default::default() },
+    ]];
+    v.insert_linked_table(&tag, &rows1);
+    assert_eq!(v.linked_tags(), vec![tag.clone()]);
+
+    let rows2 = vec![vec![
+        LinkedCell { text: "Q1".into(), bold: true, ..Default::default() },
+        LinkedCell { text: "250".into(), align: Some("right".into()), ..Default::default() },
+    ]];
+    assert!(v.update_linked_table(&tag, &rows2));
+
+    let img_tag = format!("{EXCEL_LINK_PREFIX}chart-1");
+    let png1 = vec![0x89, b'P', b'N', b'G', 1, 2, 3, 4];
+    let png2 = vec![0x89, b'P', b'N', b'G', 9, 8, 7, 6];
+    v.insert_linked_image(&img_tag, png1, "image/png", 320.0, 180.0, "Sales Chart");
+    assert!(v.update_linked_image(&img_tag, png2, "image/png"));
+
+    let saved = v.save().unwrap();
+    let mut reopened = WordView::open(&saved).unwrap();
+    let tags = reopened.linked_tags();
+    assert!(tags.contains(&tag), "table tag survives save/reload: {tags:?}");
+    assert!(tags.contains(&img_tag), "image tag survives save/reload: {tags:?}");
+
+    assert!(reopened.clear_link_tag(&tag));
+    assert!(!reopened.linked_tags().contains(&tag));
+    assert!(!reopened.update_linked_table(&tag, &[]));
+}

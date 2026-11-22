@@ -2,7 +2,7 @@
 //! page setup, headers and footers, find and replace, undo.
 
 use office_core::drawing::{Color, ColorBase, Rgb};
-use office_core::model::{Block, Body, Cell, Image, Inline, Link, Origin, Paragraph, Row, RunProps, Strike, Table};
+use office_core::model::{Align, Block, Body, Cell, Image, Inline, Link, Origin, ParaProps, Paragraph, Row, Run, RunProps, Strike, Table};
 use office_core::units::{Emu, FontSize, Percent};
 use office_core::xml::{ns, Element};
 use office_engine::edit::{self, Edit, Splice};
@@ -11,6 +11,7 @@ use office_engine::measure::Measurer;
 use office_engine::para::{self, Ctx, LineEnd};
 use office_engine::pos::{self, Path, Pos, Selection};
 use office_engine::text;
+use serde::Deserialize;
 
 use super::resolve::emu_px;
 use super::{StoryId, WStep, WordView};
@@ -1727,6 +1728,147 @@ impl WordView {
         self.set_image_size(Emu::from_pixels(w as f64 * k).0, Emu::from_pixels(h as f64 * k).0);
     }
 
+    // ---- linked Excel ranges & charts ----
+
+    /// Inserts a Word table populated from a linked Excel range, tagged in `w:tblPr/w:tblDescription`.
+    pub fn insert_linked_table(&mut self, tag: &str, rows: &[Vec<LinkedCell>]) {
+        if rows.is_empty() {
+            return;
+        }
+        let width = self
+            .sections
+            .iter()
+            .find(|s| self.sel.focus.path.0[0] >= s.first && self.sel.focus.path.0[0] <= s.last)
+            .map(|s| s.section.text_width())
+            .unwrap_or(Emu::from_inches(6.27));
+        let table = build_linked_table(tag, rows, width);
+        let sel = self.sel.clone();
+        let mut e = self
+            .replace_sel(&sel, |root, at| edit::insert_blocks(root, at, vec![Block::Table(table), Block::Paragraph(Paragraph::default())]));
+        if let Some(Splice { container, index, inserted, .. }) = e.splices.last() {
+            if let Some(off) = inserted.iter().position(|b| matches!(b, Block::Table(_))) {
+                let mut c = container.clone();
+                c.push(index + off as u32 + 1);
+                e.selection = Some(Selection::caret(Pos::new(Path(c), 0)));
+            }
+        }
+        self.apply_edit(e, None);
+    }
+
+    /// Updates every Word table carrying `tag` in place; returns whether any was found.
+    pub fn update_linked_table(&mut self, tag: &str, rows: &[Vec<LinkedCell>]) -> bool {
+        if rows.is_empty() {
+            return false;
+        }
+        let matches = find_all_linked_tables(self.blocks(StoryId::Body), tag);
+        if matches.is_empty() {
+            return false;
+        }
+        let mut splices = Vec::with_capacity(matches.len());
+        let mut sel_after = None;
+        for (path, width) in matches {
+            let table = build_linked_table(tag, rows, width);
+            let root = self.blocks_mut(StoryId::Body);
+            splices.push(edit::replace(root, path.container(), path.block(), 1, vec![Block::Table(table)]));
+            if self.sel.focus.path.0.starts_with(&path.0) {
+                let mut c = path.0.clone();
+                c.extend([0, 0, 0]);
+                sel_after = Some(Selection::caret(Pos::new(Path(c), 0)));
+            }
+        }
+        let prev_story = self.story;
+        self.story = StoryId::Body;
+        self.record(splices, sel_after, None);
+        self.story = prev_story;
+        true
+    }
+
+    /// Inserts a picture tagged with `tag` in its `description` (for linked Excel charts).
+    pub fn insert_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64, name: &str) {
+        let max_w = self.sections.first().map(|s| emu_px(s.section.text_width())).unwrap_or(600.0);
+        let k = if width > max_w && width > 0.0 { max_w / width } else { 1.0 };
+        let media = self.add_media(content_type, bytes);
+        let img = Image {
+            media,
+            width: Emu::from_pixels(width * k),
+            height: Emu::from_pixels(height * k),
+            name: if name.is_empty() { "Linked Chart".into() } else { name.into() },
+            description: Some(tag.into()),
+            origin: Origin::default(),
+        };
+        let sel = self.sel.clone();
+        let e = self.replace_sel(&sel, |root, at| edit::insert_inline(root, at, Inline::Image(img)));
+        self.apply_edit(e, None);
+    }
+
+    /// Replaces the image bytes of every inline picture carrying `tag` in place, keeping its display size.
+    pub fn update_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str) -> bool {
+        let matches = find_all_linked_images(self.blocks(StoryId::Body), tag);
+        if matches.is_empty() {
+            return false;
+        }
+        let media = self.add_media(content_type, bytes);
+        let mut splices = Vec::new();
+        for (path, inline_index) in matches {
+            let root = self.blocks_mut(StoryId::Body);
+            if let Some(s) = edit::change_para(root, &path, |p| {
+                if let Some(Inline::Image(img)) = p.content.get_mut(inline_index) {
+                    img.media = media.clone();
+                }
+            }) {
+                splices.push(s);
+            }
+        }
+        if splices.is_empty() {
+            return false;
+        }
+        let prev_story = self.story;
+        self.story = StoryId::Body;
+        self.record(splices, None, None);
+        self.story = prev_story;
+        true
+    }
+
+    /// Removes `tag` from every table or image carrying it so the objects stay in the document as normal content.
+    pub fn clear_link_tag(&mut self, tag: &str) -> bool {
+        let mut splices = Vec::new();
+        for (path, _) in find_all_linked_tables(self.blocks(StoryId::Body), tag) {
+            let Some(Block::Table(mut table)) =
+                pos::blocks_at(self.blocks(StoryId::Body), path.container()).and_then(|b| b.get(path.block() as usize)).cloned()
+            else {
+                continue;
+            };
+            strip_link_tag_in_table(&mut table, tag);
+            let root = self.blocks_mut(StoryId::Body);
+            splices.push(edit::replace(root, path.container(), path.block(), 1, vec![Block::Table(table)]));
+        }
+        for (path, inline_index) in find_all_linked_images(self.blocks(StoryId::Body), tag) {
+            let root = self.blocks_mut(StoryId::Body);
+            if let Some(s) = edit::change_para(root, &path, |p| {
+                if let Some(Inline::Image(img)) = p.content.get_mut(inline_index) {
+                    img.description = None;
+                }
+            }) {
+                splices.push(s);
+            }
+        }
+        if splices.is_empty() {
+            return false;
+        }
+        let prev_story = self.story;
+        self.story = StoryId::Body;
+        self.record(splices, None, None);
+        self.story = prev_story;
+        true
+    }
+
+    /// Every `writan:excel-link:*` tag currently present in the body (tables and images).
+    pub fn linked_tags(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        collect_linked_tags(self.blocks(StoryId::Body), &mut out);
+        out
+    }
+
     // ---- page setup ----
 
     /// The page setup of the caret's section.
@@ -2071,4 +2213,220 @@ pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
         }
     }
     None
+}
+
+/// Prefix stored in `w:tblDescription` (tables) or `docPr/@descr` (images) for linked Excel objects.
+pub const EXCEL_LINK_PREFIX: &str = "writan:excel-link:";
+
+/// One cell of a linked Excel range, deserialized from `SheetsDoc::rangeSnapshot`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LinkedCell {
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub fill: Option<String>,
+    #[serde(default)]
+    pub align: Option<String>,
+}
+
+pub(crate) fn table_link_tag(table: &Table) -> Option<String> {
+    table
+        .origin
+        .get()
+        .and_then(|o| o.path(ns::W, &["tblPr", "tblDescription"]))
+        .and_then(|e| e.attr_ns(ns::W, "val").or_else(|| e.attr("val")))
+        .map(str::to_string)
+}
+
+fn parse_align(a: Option<&str>) -> Option<Align> {
+    match a {
+        Some("center") => Some(Align::Center),
+        Some("right") => Some(Align::Right),
+        Some("left") => Some(Align::Left),
+        _ => None,
+    }
+}
+
+fn build_linked_table(tag: &str, rows: &[Vec<LinkedCell>], width: Emu) -> Table {
+    let row_count = rows.len().clamp(1, 200);
+    let col_count = rows.iter().map(Vec::len).max().unwrap_or(1).clamp(1, 63);
+    let col = Emu(width.0 / col_count as i64);
+    let border = |side: &str| {
+        Element::new(ns::W, side).with_attr(ns::W, "val", "single").with_attr(ns::W, "sz", "4").with_attr(ns::W, "space", "0").with_attr(
+            ns::W,
+            "color",
+            "D9D9D9",
+        )
+    };
+    let mut borders = Element::new(ns::W, "tblBorders");
+    for side in ["top", "left", "bottom", "right", "insideH", "insideV"] {
+        borders.push(border(side));
+    }
+    let tbl_pr = Element::new(ns::W, "tblPr")
+        .with_child(Element::new(ns::W, "tblW").with_attr(ns::W, "w", "0").with_attr(ns::W, "type", "auto"))
+        .with_child(borders)
+        .with_child(Element::new(ns::W, "tblLook").with_attr(ns::W, "val", "04A0"))
+        .with_child(Element::new(ns::W, "tblDescription").with_attr(ns::W, "val", tag));
+    let built_rows = rows
+        .iter()
+        .take(row_count)
+        .enumerate()
+        .map(|(ri, r)| Row {
+            header: ri == 0 && row_count > 1,
+            cells: (0..col_count)
+                .map(|ci| {
+                    let c = r.get(ci);
+                    let text = c.map(|x| x.text.as_str()).unwrap_or("");
+                    let props = RunProps {
+                        bold: c.is_some_and(|x| x.bold).then_some(true),
+                        italic: c.is_some_and(|x| x.italic).then_some(true),
+                        color: c.and_then(|x| x.color.as_deref()).and_then(Rgb::parse).map(Color::rgb),
+                        ..Default::default()
+                    };
+                    let p = Paragraph {
+                        props: ParaProps { align: parse_align(c.and_then(|x| x.align.as_deref())), ..Default::default() },
+                        content: if text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![Inline::Text(Run { text: text.into(), props, ..Default::default() })]
+                        },
+                        ..Default::default()
+                    };
+                    let fill = c.and_then(|x| x.fill.as_deref()).and_then(Rgb::parse).map(Color::rgb);
+                    Cell { blocks: vec![Block::Paragraph(p)], fill, ..Default::default() }
+                })
+                .collect(),
+            ..Default::default()
+        })
+        .collect();
+    Table {
+        columns: vec![col; col_count],
+        rows: built_rows,
+        style: None,
+        origin: Origin::new(Element::new(ns::W, "tbl").with_child(tbl_pr)),
+    }
+}
+
+fn strip_link_tag_in_table(table: &mut Table, tag: &str) {
+    if table_link_tag(table).as_deref() == Some(tag) {
+        if let Some(mut tbl_el) = table.origin.get().cloned() {
+            if let Some(pr) = tbl_el.child_mut(ns::W, "tblPr") {
+                pr.children.retain(|n| !matches!(n, office_core::xml::Node::Element(e) if e.is(ns::W, "tblDescription")));
+            }
+            table.origin = Origin::new(tbl_el);
+        }
+    }
+    for row in &mut table.rows {
+        for cell in &mut row.cells {
+            for b in &mut cell.blocks {
+                match b {
+                    Block::Table(nested) => strip_link_tag_in_table(nested, tag),
+                    Block::Paragraph(p) => {
+                        for inline in &mut p.content {
+                            if let Inline::Image(img) = inline {
+                                if img.description.as_deref() == Some(tag) {
+                                    img.description = None;
+                                }
+                            }
+                        }
+                    }
+                    Block::Raw { .. } => {}
+                }
+            }
+        }
+    }
+}
+
+fn find_all_linked_tables(blocks: &[Block], tag: &str) -> Vec<(Path, Emu)> {
+    fn walk(blocks: &[Block], prefix: &mut Vec<u32>, tag: &str, out: &mut Vec<(Path, Emu)>) {
+        for (i, b) in blocks.iter().enumerate() {
+            if let Block::Table(t) = b {
+                if table_link_tag(t).as_deref() == Some(tag) {
+                    let mut p = prefix.clone();
+                    p.push(i as u32);
+                    let total: i64 = t.columns.iter().map(|c| c.0).sum();
+                    let width = if total > 0 { Emu(total) } else { Emu::from_inches(6.27) };
+                    out.push((Path(p), width));
+                    continue;
+                }
+                for (ri, row) in t.rows.iter().enumerate() {
+                    for (ci, cell) in row.cells.iter().enumerate() {
+                        prefix.extend([i as u32, ri as u32, ci as u32]);
+                        walk(&cell.blocks, prefix, tag, out);
+                        prefix.truncate(prefix.len() - 3);
+                    }
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(blocks, &mut Vec::new(), tag, &mut out);
+    out
+}
+
+fn find_all_linked_images(blocks: &[Block], tag: &str) -> Vec<(Path, usize)> {
+    fn walk(blocks: &[Block], prefix: &mut Vec<u32>, tag: &str, out: &mut Vec<(Path, usize)>) {
+        for (i, b) in blocks.iter().enumerate() {
+            match b {
+                Block::Paragraph(p) => {
+                    for (ii, inline) in p.content.iter().enumerate() {
+                        if let Inline::Image(img) = inline {
+                            if img.description.as_deref() == Some(tag) {
+                                let mut path = prefix.clone();
+                                path.push(i as u32);
+                                out.push((Path(path), ii));
+                            }
+                        }
+                    }
+                }
+                Block::Table(t) => {
+                    for (ri, row) in t.rows.iter().enumerate() {
+                        for (ci, cell) in row.cells.iter().enumerate() {
+                            prefix.extend([i as u32, ri as u32, ci as u32]);
+                            walk(&cell.blocks, prefix, tag, out);
+                            prefix.truncate(prefix.len() - 3);
+                        }
+                    }
+                }
+                Block::Raw { .. } => {}
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(blocks, &mut Vec::new(), tag, &mut out);
+    out
+}
+
+fn collect_linked_tags(blocks: &[Block], out: &mut Vec<String>) {
+    for b in blocks {
+        match b {
+            Block::Paragraph(p) => {
+                for inline in &p.content {
+                    if let Inline::Image(img) = inline {
+                        if let Some(tag) = img.description.as_deref().filter(|t| t.starts_with(EXCEL_LINK_PREFIX)) {
+                            out.push(tag.to_string());
+                        }
+                    }
+                }
+            }
+            Block::Table(t) => {
+                if let Some(tag) = table_link_tag(t).filter(|t| t.starts_with(EXCEL_LINK_PREFIX)) {
+                    out.push(tag);
+                }
+                for row in &t.rows {
+                    for cell in &row.cells {
+                        collect_linked_tags(&cell.blocks, out);
+                    }
+                }
+            }
+            Block::Raw { .. } => {}
+        }
+    }
 }

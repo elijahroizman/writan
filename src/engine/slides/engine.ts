@@ -78,6 +78,7 @@ export interface Element {
   id: string
   type: 'text' | 'shape' | 'connector' | 'image' | 'table' | 'group' | 'other'
   name: string
+  linkTag?: string
   x: number
   y: number
   width: number
@@ -240,6 +241,40 @@ export class SlidesEngine {
     const p = JSON.parse(this.doc.paint(index)) as { items: PaintItem[]; styles: import('../paint').PaintStyle[] }
     this.styles.add(p.styles)
     return p.items
+  }
+
+  insertLinkedTable(tag: string, rows: import('../sheets/engine').RangeCellSnapshot[][], name: string): string {
+    const id = this.doc.insertLinkedTable(tag, JSON.stringify(rows), name)
+    this.refresh()
+    return id
+  }
+
+  updateLinkedTable(tag: string, rows: import('../sheets/engine').RangeCellSnapshot[][]): boolean {
+    const ok = this.doc.updateLinkedTable(tag, JSON.stringify(rows))
+    if (ok) this.refresh()
+    return ok
+  }
+
+  insertLinkedImage(tag: string, bytes: Uint8Array, contentType: string, width: number, height: number, name: string): string {
+    const id = this.doc.insertLinkedImage(tag, bytes, contentType, width, height, name)
+    this.refresh()
+    return id
+  }
+
+  updateLinkedImage(tag: string, bytes: Uint8Array, contentType: string): boolean {
+    const ok = this.doc.updateLinkedImage(tag, bytes, contentType)
+    if (ok) this.refresh()
+    return ok
+  }
+
+  clearLinkTag(tag: string): boolean {
+    const ok = this.doc.clearLinkTag(tag)
+    if (ok) this.refresh()
+    return ok
+  }
+
+  linkedTags(): { slide: number; frameId: string; tag: string }[] {
+    return JSON.parse(this.doc.linkedTags()) as { slide: number; frameId: string; tag: string }[]
   }
 
   /** Where this copy is, for the others while shared (collab/session.ts). */
