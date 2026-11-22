@@ -43,6 +43,8 @@ export interface RecentFile {
 /** What every editor exposes to the shell (save, find, zoom, print). */
 export interface EditorHandle {
   getBytes(): Promise<Uint8Array>
+  /** Password used to unlock an encrypted PDF, if any. */
+  getPassword?: () => string
   /** Commit pending input before taking the save snapshot. */
   prepareSave?(): void
   /** Content revision, excluding caret and selection changes. */

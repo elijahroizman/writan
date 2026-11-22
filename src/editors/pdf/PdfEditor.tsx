@@ -814,6 +814,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
           lastWritten.current = bytes
           return bytes
         },
+        getPassword: () => passwordRef.current,
         // Autosave waits while you're drawing or typing into a form field or text box, since
         // saving commits them (getBytes above) and would take the focus away mid-word.
         busy: () => {

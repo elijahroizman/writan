@@ -78,7 +78,7 @@ export async function readTabBytes(tab: DocTab): Promise<Uint8Array> {
 /** Converts an open tab into clean Markdown suitable for feeding to LLMs. */
 export async function tabToMarkdown(tab: DocTab): Promise<string> {
   const bytes = await readTabBytes(tab)
-  if (tab.kind === 'pdf') return await pdfToMarkdown(bytes)
+  if (tab.kind === 'pdf') return await pdfToMarkdown(bytes, getEditor(tab.id)?.getPassword?.() ?? '')
   const engine = await loadEngine()
   return engine.toMarkdown(bytes, fileNameForTab(tab))
 }
@@ -92,7 +92,7 @@ export async function convertTab(tab: DocTab, target: ConvertFormat): Promise<{ 
   }
   const srcBytes = await readTabBytes(tab)
   if (tab.kind === 'pdf') {
-    const md = await pdfToMarkdown(srcBytes)
+    const md = await pdfToMarkdown(srcBytes, getEditor(tab.id)?.getPassword?.() ?? '')
     const text = target === 'md' ? md : md.replace(/^## Page \d+\n\n/gm, '')
     return { bytes: new TextEncoder().encode(text), name }
   }
@@ -439,17 +439,20 @@ async function imageBytesToPdf(bytes: Uint8Array, name: string): Promise<Uint8Ar
 
 // ── PDFium lossless merge & text extraction
 
+export type PdfInput = Uint8Array | { bytes: Uint8Array; password?: string }
+
 /** Merges multiple PDF byte buffers into a single PDF using PDFium. */
-export async function mergePdfBytes(pdfs: Uint8Array[]): Promise<Uint8Array> {
+export async function mergePdfBytes(pdfs: PdfInput[]): Promise<Uint8Array> {
   if (pdfs.length === 0) throw new Error('Choose at least one document to merge.')
-  if (pdfs.length === 1) return pdfs[0]
+  const norm = pdfs.map((p) => (p instanceof Uint8Array ? { bytes: p, password: '' } : { bytes: p.bytes, password: p.password ?? '' }))
+  if (norm.length === 1) return norm[0].bytes
   const { PdfEngine } = await import('../editors/pdf/engine/client')
   const engine = await PdfEngine.create()
   try {
-    const first = await engine.call('open', [pdfs[0].slice().buffer, ''])
+    const first = await engine.call('open', [norm[0].bytes.slice().buffer, norm[0].password])
     let pageCount = first.pages.length
-    for (let i = 1; i < pdfs.length; i++) {
-      const res = await engine.call('insertPdf', [pageCount, pdfs[i].slice().buffer])
+    for (let i = 1; i < norm.length; i++) {
+      const res = await engine.call('insertPdf', [pageCount, norm[i].bytes.slice().buffer, norm[i].password])
       pageCount = res.pages.length
     }
     const saved = await engine.call('save', [])
@@ -465,21 +468,23 @@ export async function bundleTabsToPdf(
   onProgress?: (done: number, total: number, currentTitle: string) => void,
 ): Promise<Uint8Array> {
   if (!tabs.length) throw new Error('Choose at least one open file to bundle.')
-  const pdfs: Uint8Array[] = []
+  const pdfs: PdfInput[] = []
   for (let i = 0; i < tabs.length; i++) {
     onProgress?.(i, tabs.length, tabs[i].title)
-    pdfs.push(await tabToPdf(tabs[i]))
+    const bytes = await tabToPdf(tabs[i])
+    const password = tabs[i].kind === 'pdf' ? (getEditor(tabs[i].id)?.getPassword?.() ?? '') : ''
+    pdfs.push({ bytes, password })
   }
   onProgress?.(tabs.length, tabs.length, 'Merging PDF…')
   return await mergePdfBytes(pdfs)
 }
 
 /** Extracts clean Markdown text from a PDF using PDFium. */
-async function pdfToMarkdown(bytes: Uint8Array): Promise<string> {
+async function pdfToMarkdown(bytes: Uint8Array, password = ''): Promise<string> {
   const { PdfEngine } = await import('../editors/pdf/engine/client')
   const engine = await PdfEngine.create()
   try {
-    const opened = await engine.call('open', [bytes.slice().buffer, ''])
+    const opened = await engine.call('open', [bytes.slice().buffer, password])
     const multi = opened.pages.length > 1
     const sections: string[] = []
     for (let i = 0; i < opened.pages.length; i++) {
