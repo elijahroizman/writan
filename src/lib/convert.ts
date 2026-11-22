@@ -38,7 +38,6 @@ const TARGETS_BY_KIND: Record<string, ConvertFormat[]> = {
   txt: ['pdf', 'docx', 'md'],
   pdf: ['md', 'txt'],
   image: ['pdf'],
-  latex: ['pdf'],
 }
 
 /** Target formats a tab of `kind` can be converted to in one click. */
