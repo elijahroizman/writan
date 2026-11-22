@@ -2250,11 +2250,11 @@ fn build_linked_table(tag: &str, rows: &[Vec<LinkedCell>], width: Emu) -> Table 
     let col_count = rows.iter().map(Vec::len).max().unwrap_or(1).clamp(1, 63);
     let col = Emu(width.0 / col_count as i64);
     let border = |side: &str| {
-        Element::new(ns::W, side)
-            .with_attr(ns::W, "val", "single")
-            .with_attr(ns::W, "sz", "4")
-            .with_attr(ns::W, "space", "0")
-            .with_attr(ns::W, "color", "D9D9D9")
+        Element::new(ns::W, side).with_attr(ns::W, "val", "single").with_attr(ns::W, "sz", "4").with_attr(ns::W, "space", "0").with_attr(
+            ns::W,
+            "color",
+            "D9D9D9",
+        )
     };
     let mut borders = Element::new(ns::W, "tblBorders");
     for side in ["top", "left", "bottom", "right", "insideH", "insideV"] {
@@ -2283,7 +2283,11 @@ fn build_linked_table(tag: &str, rows: &[Vec<LinkedCell>], width: Emu) -> Table 
                     };
                     let p = Paragraph {
                         props: ParaProps { align: parse_align(c.and_then(|x| x.align.as_deref())), ..Default::default() },
-                        content: if text.is_empty() { Vec::new() } else { vec![Inline::Text(Run { text: text.into(), props, ..Default::default() })] },
+                        content: if text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![Inline::Text(Run { text: text.into(), props, ..Default::default() })]
+                        },
                         ..Default::default()
                     };
                     let fill = c.and_then(|x| x.fill.as_deref()).and_then(Rgb::parse).map(Color::rgb);

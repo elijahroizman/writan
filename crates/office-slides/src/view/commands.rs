@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use office_core::drawing::{Color, Fill, Line, Rgb, Xfrm};
 use office_core::formats::{common::names_parts, dml::PPR, pptx, xlsx::chart::CHART_TYPE};
-use office_core::model::{Align, Block, Cell, Frame, FrameContent, Image, Inline, Origin, ParaProps, Paragraph, Row, Run, RunProps, Slide, Strike, Table, TextBody};
+use office_core::model::{
+    Align, Block, Cell, Frame, FrameContent, Image, Inline, Origin, ParaProps, Paragraph, Row, Run, RunProps, Slide, Strike, Table,
+    TextBody,
+};
 use office_core::units::{Angle, Emu, FontSize};
 use office_core::xml::{ns, Element};
 use office_engine::display::{self, Rect};
@@ -1305,7 +1308,10 @@ impl SlidesView {
             return false;
         }
         let found = self.slides().iter().enumerate().find_map(|(si, s)| {
-            s.frames.iter().find(|f| f.description.as_deref() == Some(tag) && matches!(f.content, FrameContent::Table { .. })).map(|f| (si, f.id))
+            s.frames
+                .iter()
+                .find(|f| f.description.as_deref() == Some(tag) && matches!(f.content, FrameContent::Table { .. }))
+                .map(|f| (si, f.id))
         });
         let Some((slide_index, frame_id)) = found else { return false };
         let rows = rows.to_vec();
@@ -1359,7 +1365,10 @@ impl SlidesView {
     /// Replaces the image bytes of the picture frame carrying `tag` in place, preserving position and size.
     pub fn update_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str) -> bool {
         let found = self.slides().iter().enumerate().find_map(|(si, s)| {
-            s.frames.iter().find(|f| f.description.as_deref() == Some(tag) && matches!(f.content, FrameContent::Picture { .. })).map(|f| (si, f.id))
+            s.frames
+                .iter()
+                .find(|f| f.description.as_deref() == Some(tag) && matches!(f.content, FrameContent::Picture { .. }))
+                .map(|f| (si, f.id))
         });
         let Some((slide_index, frame_id)) = found else { return false };
         let media = self.add_media(content_type, bytes);
@@ -1374,9 +1383,11 @@ impl SlidesView {
 
     /// Clears `tag` from its frame without deleting the frame.
     pub fn clear_link_tag(&mut self, tag: &str) -> bool {
-        let found = self.slides().iter().enumerate().find_map(|(si, s)| {
-            s.frames.iter().find(|f| f.description.as_deref() == Some(tag)).map(|f| (si, f.id))
-        });
+        let found = self
+            .slides()
+            .iter()
+            .enumerate()
+            .find_map(|(si, s)| s.frames.iter().find(|f| f.description.as_deref() == Some(tag)).map(|f| (si, f.id)));
         let Some((slide_index, frame_id)) = found else { return false };
         self.change_slide(slide_index, None, |s| {
             if let Some(f) = s.frames.iter_mut().find(|f| f.id == frame_id) {
@@ -2498,7 +2509,11 @@ fn build_linked_slide_table(
                     };
                     let p = Paragraph {
                         props: ParaProps { align: parse_align(c.and_then(|x| x.align.as_deref())), ..Default::default() },
-                        content: if text.is_empty() { Vec::new() } else { vec![Inline::Text(Run { text: text.into(), props, ..Default::default() })] },
+                        content: if text.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![Inline::Text(Run { text: text.into(), props, ..Default::default() })]
+                        },
                         ..Default::default()
                     };
                     let fill = c.and_then(|x| x.fill.as_deref()).and_then(Rgb::parse).map(Color::rgb);

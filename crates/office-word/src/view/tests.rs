@@ -1379,15 +1379,17 @@ fn cropping_a_picture_put_in_here_shows_and_saves() {
 fn linked_excel_table_and_image_round_trip_update_and_unlink() {
     let mut v = WordView::open(&doc_bytes(&["Intro"])).unwrap();
     let tag = format!("{EXCEL_LINK_PREFIX}tbl-1");
-    let rows1 = vec![
-        vec![LinkedCell { text: "Q1".into(), bold: true, ..Default::default() }, LinkedCell { text: "100".into(), align: Some("right".into()), ..Default::default() }],
-    ];
+    let rows1 = vec![vec![
+        LinkedCell { text: "Q1".into(), bold: true, ..Default::default() },
+        LinkedCell { text: "100".into(), align: Some("right".into()), ..Default::default() },
+    ]];
     v.insert_linked_table(&tag, &rows1);
     assert_eq!(v.linked_tags(), vec![tag.clone()]);
 
-    let rows2 = vec![
-        vec![LinkedCell { text: "Q1".into(), bold: true, ..Default::default() }, LinkedCell { text: "250".into(), align: Some("right".into()), ..Default::default() }],
-    ];
+    let rows2 = vec![vec![
+        LinkedCell { text: "Q1".into(), bold: true, ..Default::default() },
+        LinkedCell { text: "250".into(), align: Some("right".into()), ..Default::default() },
+    ]];
     assert!(v.update_linked_table(&tag, &rows2));
 
     let img_tag = format!("{EXCEL_LINK_PREFIX}chart-1");
