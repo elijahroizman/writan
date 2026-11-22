@@ -2,6 +2,15 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.12.6 — 2026-11-22
+
+### Edit together
+- When the person sharing stops, closes the document or quits, everyone else is told, and their tab closes. **Keep a Copy** keeps it open as an unsaved copy instead.
+- A person's name sits on top of their caret like a flag, without the little square beside it. The square shows once the name fades, to bring it back.
+
+### Presentations
+- **New slide › Title Slide** and **Title and Content** add the same plain slides a new presentation starts with.
+
 ## 0.12.5 — 2026-11-22
 
 ### Edit together
