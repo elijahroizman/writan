@@ -263,23 +263,72 @@ async function sheetBytesToPdf(bytes: Uint8Array, name: string): Promise<Uint8Ar
       const cols = Math.max(1, contentCols)
       const raw = JSON.parse(engine.doc.paint(sheetIdx, 0, rows, 0, cols)) as { items: PaintItem[]; styles: PaintStyle[] }
       engine.styles.add(raw.styles)
-      const usedW = Math.max(1, g.x(cols))
-      const usedH = Math.max(1, g.y(rows))
+      const pictures = engine.picturesOf(sheetIdx)
+      const charts = engine.chartsOf(sheetIdx)
+      const items: PaintItem[] = [
+        ...raw.items,
+        ...pictures.map((p): PaintItem => ({ t: 'image', media: p.media, x: p.x, y: p.y, w: p.w, h: p.h, crop: p.crop })),
+      ]
+      let usedW = Math.max(1, g.x(cols))
+      let usedH = Math.max(1, g.y(rows))
+      for (const b of [...pictures, ...charts]) {
+        usedW = Math.max(usedW, b.x + b.w)
+        usedH = Math.max(usedH, b.y + b.h)
+      }
 
       // Scale width to fit cleanly within page width, then paginate vertically.
       const fitScalePt = Math.min(PX_TO_PT, innerW / usedW)
       const slicePxH = Math.max(1, Math.floor(innerH / fitScalePt))
+
+      let chartTools: {
+        createElement: typeof import('react').createElement
+        renderToStaticMarkup: typeof import('react-dom/server').renderToStaticMarkup
+        ChartSvg: typeof import('../engine/sheets/Chart').ChartSvg
+      } | null = null
+      if (charts.length) {
+        const [react, reactDomServer, chartMod] = await Promise.all([
+          import('react'),
+          import('react-dom/server'),
+          import('../engine/sheets/Chart'),
+        ])
+        chartTools = {
+          createElement: react.createElement,
+          renderToStaticMarkup: reactDomServer.renderToStaticMarkup,
+          ChartSvg: chartMod.ChartSvg,
+        }
+      }
 
       for (let y = 0; y < usedH; y += slicePxH) {
         if (pagesAdded > 0) pdf.addPage('letter', 'landscape')
         pagesAdded++
         const h = Math.min(slicePxH, usedH - y)
         const canvas = await draw(
-          { width: g.width, height: g.height, items: raw.items, styles: engine.styles, media: engine.media },
+          { width: Math.max(g.width, usedW), height: Math.max(g.height, usedH), items, styles: engine.styles, media: engine.media },
           RENDER_SCALE,
           [],
           { x: 0, y, w: usedW, h },
         )
+        if (chartTools) {
+          const ctx = canvas.getContext('2d')!
+          for (const c of charts) {
+            if (c.y + c.h <= y || c.y >= y + h) continue
+            const markup = chartTools.renderToStaticMarkup(chartTools.createElement(chartTools.ChartSvg, { chart: c, width: c.w, height: c.h }))
+            const svg = markup
+              .slice(markup.indexOf('<svg'), markup.lastIndexOf('</svg>') + 6)
+              .replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"')
+            const img = new Image()
+            const svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
+            img.src = svgUrl
+            try {
+              await img.decode()
+              ctx.drawImage(img, c.x, c.y, c.w, c.h)
+            } catch {
+              // Skip unrenderable chart SVG rather than failing export.
+            } finally {
+              URL.revokeObjectURL(svgUrl)
+            }
+          }
+        }
         const drawW = usedW * fitScalePt
         const drawH = h * fitScalePt
         pdf.addImage(canvas.toDataURL('image/jpeg', 0.94), 'JPEG', margin, margin, drawW, drawH, undefined, 'FAST')
