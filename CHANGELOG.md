@@ -2,6 +2,11 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.12.5 — 2026-11-22
+
+### Edit together
+- Sharing and joining work on Windows. Before, a Windows computer couldn't join a shared document ("WebSocket protocol error: Sending after closing is not allowed"), and a document shared from one never connected.
+
 ## 0.12.4 — 2026-11-22
 
 ### Edit together

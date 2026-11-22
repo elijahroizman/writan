@@ -243,16 +243,13 @@ fn bridge(stream: TcpStream, mcp: SharedMcp, path: &str) {
         );
         return;
     }
-    let Ok(handle) = stream.try_clone() else {
-        return;
-    };
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_FRAME))
         .max_frame_size(Some(MAX_FRAME));
     let Ok(mut ws) = tungstenite::accept_with_config(stream, Some(config)) else {
         return;
     };
-    if set_pump_timeouts(&handle).is_err() {
+    if set_pump_timeouts(ws.get_ref()).is_err() {
         return;
     }
     let (tx, rx) = channel();
@@ -269,11 +266,10 @@ fn session_from_path(path: &str) -> Option<&str> {
 
 fn serve(stream: TcpStream, state: Shared, mcp: SharedMcp, codes: SharedCodes, port: u16) {
     let started = Instant::now();
-    let Ok(handle) = stream.try_clone() else {
-        return;
-    };
-    if handle.set_read_timeout(Some(HELLO_TIMEOUT)).is_err()
-        || handle.set_write_timeout(Some(HELLO_TIMEOUT)).is_err()
+    // Timeouts go on the socket that reads, never a clone: on Windows a clone's don't reach it,
+    // and a read that never times out keeps the pump from sending anything.
+    if stream.set_read_timeout(Some(HELLO_TIMEOUT)).is_err()
+        || stream.set_write_timeout(Some(HELLO_TIMEOUT)).is_err()
     {
         return;
     }
@@ -306,7 +302,7 @@ fn serve(stream: TcpStream, state: Shared, mcp: SharedMcp, codes: SharedCodes, p
     let Ok(mut ws) = tungstenite::accept_hdr_with_config(stream, check_path, Some(config)) else {
         return;
     };
-    if set_pump_timeouts(&handle).is_err() {
+    if set_pump_timeouts(ws.get_ref()).is_err() {
         return;
     }
 

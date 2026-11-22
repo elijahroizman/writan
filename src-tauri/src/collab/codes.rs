@@ -258,7 +258,9 @@ pub fn find(code: &str, lan: &[Ipv4Addr]) -> Result<String, String> {
                 if Instant::now() >= next_send {
                     for t in &targets {
                         if let Err(e) = socket.send_to(ask.as_bytes(), (*t, DISCOVERY_PORT)) {
-                            if !t.is_loopback() && is_refusal(&e) {
+                            // 255.255.255.255 can fail the same way for lack of a route,
+                            // so only a network's own broadcast address says it's refused.
+                            if !t.is_loopback() && !t.is_broadcast() && is_refusal(&e) {
                                 refused.store(true, Ordering::SeqCst);
                             }
                         }

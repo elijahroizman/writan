@@ -203,6 +203,9 @@ jobs:
           workspaces: src-tauri
       - run: cargo check --all-targets
       - run: cargo clippy --all-targets -- -D warnings
+      # Sockets behave differently here: on Windows a cloned socket's timeouts don't reach the
+      # original, which once kept shared documents from connecting at all.
+      - run: cargo test --lib collab
 
   frontend:
     name: Frontend build and browser tests

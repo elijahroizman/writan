@@ -79,7 +79,8 @@ pub fn pump<S: Read + Write>(
             match queue.try_recv() {
                 Ok(Cmd::Text(text)) => {
                     if let Err(e) = ws.write(Message::text(text)) {
-                        return e.to_string();
+                        // Writing after the other end closed: why it closed says more.
+                        return reason.unwrap_or_else(|| e.to_string());
                     }
                 }
                 Ok(Cmd::Close) | Err(TryRecvError::Disconnected) => {
