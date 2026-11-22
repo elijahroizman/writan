@@ -1339,12 +1339,19 @@ impl SlidesView {
             return false;
         }
         let rows = rows.to_vec();
+        let grouped = matching_slides.len() > 1;
+        if grouped {
+            self.begin_group();
+        }
         for slide_index in matching_slides {
             let tag = tag.to_string();
             let rows = rows.clone();
             self.change_slide(slide_index, None, |s| {
                 update_linked_tables_in_frames(&mut s.frames, &tag, &rows);
             });
+        }
+        if grouped {
+            self.end_group();
         }
         true
     }
@@ -1392,12 +1399,19 @@ impl SlidesView {
             return false;
         }
         let media = self.add_media(content_type, bytes);
+        let grouped = matching_slides.len() > 1;
+        if grouped {
+            self.begin_group();
+        }
         for slide_index in matching_slides {
             let tag = tag.to_string();
             let media = media.clone();
             self.change_slide(slide_index, None, |s| {
                 update_linked_images_in_frames(&mut s.frames, &tag, &media);
             });
+        }
+        if grouped {
+            self.end_group();
         }
         true
     }
@@ -1409,11 +1423,18 @@ impl SlidesView {
         if matching_slides.is_empty() {
             return false;
         }
+        let grouped = matching_slides.len() > 1;
+        if grouped {
+            self.begin_group();
+        }
         for slide_index in matching_slides {
             let tag = tag.to_string();
             self.change_slide(slide_index, None, |s| {
                 clear_link_tag_in_frames(&mut s.frames, &tag);
             });
+        }
+        if grouped {
+            self.end_group();
         }
         true
     }
