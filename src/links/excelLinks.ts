@@ -505,7 +505,7 @@ export function useExcelLinks(
       if (!chart) return null
       const rendered = await renderChartToPng(chart)
       const id = makeLinkId()
-      const title = chart.title || `Chart ${chartIndex + 1}`
+      const displayTitle = chart.title || `Chart ${chartIndex + 1}`
       const link: ExcelLink = {
         id,
         kind: 'chart',
@@ -514,7 +514,7 @@ export function useExcelLinks(
         workbookTabId: workbook.tabId,
         sheet: workbook.engine.sheets[sheetIdx]?.name ?? sheet,
         chartIndex,
-        chartTitle: title,
+        chartTitle: chart.title || undefined,
         autoUpdate,
         lastUpdatedAt: Date.now(),
       }
@@ -524,7 +524,7 @@ export function useExcelLinks(
         'image/png',
         rendered.width,
         rendered.height,
-        `${workbook.name} · ${title}`,
+        `${workbook.name} · ${displayTitle}`,
       )
       setLinks((prev) => [...prev, link])
       onMutatedRef.current?.()
