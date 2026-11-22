@@ -288,6 +288,7 @@ export function useExcelLinks(
   const [openWorkbooks, setOpenWorkbooks] = useState<OpenWorkbook[]>(() => listOpenWorkbooks())
   const [updating, setUpdating] = useState(false)
   const linksRef = useRef<ExcelLink[]>([])
+  const unlinkedHistoryRef = useRef<Map<string, ExcelLink>>(new Map())
   const targetRef = useRef<LinkedDocumentTarget | null>(target)
   const onMutatedRef = useRef(onMutated)
   linksRef.current = links
@@ -347,13 +348,33 @@ export function useExcelLinks(
     [applyResolved],
   )
 
+  const syncRestoredLinks = useCallback((): ExcelLink[] => {
+    const t = targetRef.current
+    if (!t || unlinkedHistoryRef.current.size === 0) return linksRef.current
+    const presentTags = new Set(t.linkedTags())
+    const restored: ExcelLink[] = []
+    for (const [id, link] of unlinkedHistoryRef.current.entries()) {
+      if (presentTags.has(linkTagFor(id))) {
+        restored.push(link)
+        unlinkedHistoryRef.current.delete(id)
+      }
+    }
+    if (!restored.length) return linksRef.current
+    const existingIds = new Set(linksRef.current.map((l) => l.id))
+    const merged = [...linksRef.current, ...restored.filter((l) => !existingIds.has(l.id))]
+    linksRef.current = merged
+    setLinks(merged)
+    return merged
+  }, [])
+
   const updateAll = useCallback(async (): Promise<number> => {
-    if (!targetRef.current || !linksRef.current.length) return 0
+    const currentLinks = syncRestoredLinks()
+    if (!targetRef.current || !currentLinks.length) return 0
     setUpdating(true)
     let count = 0
     try {
       const presentTags = new Set(targetRef.current.linkedTags())
-      const activeLinks = linksRef.current.filter((l) => presentTags.has(linkTagFor(l.id)))
+      const activeLinks = currentLinks.filter((l) => presentTags.has(linkTagFor(l.id)))
       const updates = new Map<string, { now: number; sheet: string; range?: string }>()
       for (const link of activeLinks) {
         const resolved = await resolveExcelLink(link)
@@ -388,8 +409,9 @@ export function useExcelLinks(
       const tabs = [...pendingTabs]
       pendingTabs.clear()
       const t = targetRef.current
-      if (!t || !linksRef.current.length) return
-      const matching = linksRef.current.filter((l) => {
+      const currentLinks = syncRestoredLinks()
+      if (!t || !currentLinks.length) return
+      const matching = currentLinks.filter((l) => {
         if (!l.autoUpdate) return false
         const open = findOpenWorkbook(l)
         return open != null && (tabs.length === 0 || tabs.includes(open.tabId))
@@ -521,6 +543,8 @@ export function useExcelLinks(
   )
 
   const unlink = useCallback((id: string) => {
+    const existing = linksRef.current.find((l) => l.id === id)
+    if (existing) unlinkedHistoryRef.current.set(id, existing)
     targetRef.current?.clearLinkTag(linkTagFor(id))
     setLinks((prev) => prev.filter((l) => l.id !== id))
     onMutatedRef.current?.()
@@ -534,17 +558,24 @@ export function useExcelLinks(
   const getByTag = useCallback((tag: string | null | undefined): ExcelLink | null => {
     const id = linkIdFromTag(tag)
     if (!id) return null
-    return linksRef.current.find((l) => l.id === id) ?? null
-  }, [])
+    const found = linksRef.current.find((l) => l.id === id)
+    if (found) return found
+    const restored = unlinkedHistoryRef.current.get(id)
+    if (restored) {
+      syncRestoredLinks()
+      return restored
+    }
+    return null
+  }, [syncRestoredLinks])
 
   const writeToBytes = useCallback(async (bytes: Uint8Array): Promise<Uint8Array> => {
     const t = targetRef.current
-    const current = linksRef.current
+    const current = syncRestoredLinks()
     if (!t) return writeExcelLinks(bytes, current)
     const liveTags = new Set(t.linkedTags())
     const kept = current.filter((l) => liveTags.has(linkTagFor(l.id)))
     return writeExcelLinks(bytes, kept)
-  }, [])
+  }, [syncRestoredLinks])
 
   return {
     links,
