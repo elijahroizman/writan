@@ -29,7 +29,7 @@ use serde::Serialize;
 
 use crate::sections::Section;
 use crate::{word, StoryKind, Words};
-pub use commands::{image_size, BorderScope, LinkedCell, Move, TableOp, Toggle, EXCEL_LINK_PREFIX};
+pub use commands::{image_size, BorderScope, LinkedCell, Move, TableOp, Toggle, EXCEL_LINK_PREFIX, LATEX_MATH_PREFIX};
 use extras::Extras;
 use resolve::{emu_px, PageFields, WordResolver};
 pub use state::*;
@@ -1017,6 +1017,11 @@ impl Objects for PageObjects<'_> {
         };
         let Some(p) = pos::para(blocks, para) else { return };
         if let Some(Inline::Raw { xml }) = p.content.get(inline as usize) {
+            if let Some((tag, _, _)) = resolve::inline_latex_math(xml) {
+                let id = format!("{}:{}", para.0.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."), inline);
+                out.push(Item::Image { x, y, w, h, media: tag.to_string(), crop: None, id: Some(id) });
+                return;
+            }
             self.diagram(ctx, xml, (x, y, w, h), out);
             return;
         }
@@ -1030,6 +1035,11 @@ impl Objects for PageObjects<'_> {
     }
 
     fn preview_raw(&mut self, ctx: &mut Ctx, xml: &office_core::xml::Element, rect: display::Rect, out: &mut Vec<Item>) {
+        if let Some((tag, _, _)) = resolve::inline_latex_math(xml) {
+            let (x, y, w, h) = rect;
+            out.push(Item::Image { x, y, w, h, media: tag.to_string(), crop: None, id: None });
+            return;
+        }
         self.diagram(ctx, xml, rect, out);
     }
 }
@@ -1066,13 +1076,28 @@ impl Objects for NoteObjects<'_> {
     fn preview_image(&mut self, img: &office_core::model::Image, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
         out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: None });
     }
+
+    fn preview_raw(&mut self, _: &mut Ctx, xml: &office_core::xml::Element, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
+        if let Some((tag, _, _)) = resolve::inline_latex_math(xml) {
+            out.push(Item::Image { x, y, w, h, media: tag.to_string(), crop: None, id: None });
+        }
+    }
 }
 
 fn paint_image(blocks: &[Block], para: &Path, inline: u32, (x, y, w, h): display::Rect, out: &mut Vec<Item>) {
     let Some(p) = pos::para(blocks, para) else { return };
-    let Some(Inline::Image(img)) = p.content.get(inline as usize) else { return };
     let id = format!("{}:{}", para.0.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."), inline);
-    out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: Some(id) });
+    match p.content.get(inline as usize) {
+        Some(Inline::Image(img)) => {
+            out.push(Item::Image { x, y, w, h, media: img.media.clone(), crop: image_crop(img), id: Some(id) });
+        }
+        Some(Inline::Raw { xml }) => {
+            if let Some((tag, _, _)) = resolve::inline_latex_math(xml) {
+                out.push(Item::Image { x, y, w, h, media: tag.to_string(), crop: None, id: Some(id) });
+            }
+        }
+        _ => {}
+    }
 }
 
 /// A picture's crop (`a:srcRect`), as shares of its size cut from each side.

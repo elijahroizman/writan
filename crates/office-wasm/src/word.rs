@@ -400,6 +400,18 @@ impl WordDoc {
         json(&self.view.linked_tags())
     }
 
+    /// Inserts an inline Office Math (`m:oMath` / `m:oMathPara`) equation tagged with `tag`.
+    #[wasm_bindgen(js_name = insertMath)]
+    pub fn insert_math(&mut self, tag: &str, omml_xml: &str) -> bool {
+        self.view.insert_math(tag, omml_xml)
+    }
+
+    /// Updates the currently selected inline LaTeX Office Math equation in place.
+    #[wasm_bindgen(js_name = updateSelectedMath)]
+    pub fn update_selected_math(&mut self, tag: &str, omml_xml: &str) -> bool {
+        self.view.update_selected_math(tag, omml_xml)
+    }
+
     /// Starts sharing the document as copy `client` (see `office_engine::collab`).
     #[wasm_bindgen(js_name = collabStart)]
     pub fn collab_start(&mut self, client: &str) {

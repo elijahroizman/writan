@@ -442,8 +442,11 @@ export function useWordState(): WordState | null {
   return useWordSelector((e) => ({ ...e.state, tick: e.tick }), null)
 }
 
-export function useEditorState<T>(pick: (s: { page: WordState['page'] | null; selection: number; image: WordState['image']; table: WordState['table'] }) => T): T {
-  return useWordSelector((e) => pick({ page: e.state.page, selection: e.tick, image: e.state.image, table: e.state.table }), pick({ page: null, selection: 0, image: null, table: null }))
+export function useEditorState<T>(pick: (s: { page: WordState['page'] | null; selection: number; image: WordState['image']; table: WordState['table']; mathTag: WordState['mathTag'] }) => T): T {
+  return useWordSelector(
+    (e) => pick({ page: e.state.page, selection: e.tick, image: e.state.image, table: e.state.table, mathTag: e.state.mathTag }),
+    pick({ page: null, selection: 0, image: null, table: null, mathTag: undefined }),
+  )
 }
 
 /** The 1-based page currently most visible in the viewport. */

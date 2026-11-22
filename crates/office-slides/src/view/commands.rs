@@ -1503,6 +1503,77 @@ impl SlidesView {
         out
     }
 
+    // ---- inline LaTeX math (real PowerPoint Office Math / a14:m OMML) ----
+
+    /// Inserts a native PowerPoint Office Math (`a14:m` / `m:oMathPara`) text-box frame on the
+    /// active slide, tagged with `tag` in `p:cNvPr/@descr` so Writan renders it with MathJax and
+    /// re-edits the LaTeX source while PowerPoint opens it as a native editable equation.
+    pub fn insert_math(&mut self, tag: &str, omml_xml: &str, fallback_text: &str, width: f64, height: f64) -> u32 {
+        let Some(body) = build_slide_math_body(omml_xml, fallback_text) else {
+            return 0;
+        };
+        let (w, h) = self.size();
+        let k = (w * 0.8 / width.max(1.0)).min(h * 0.6 / height.max(1.0)).min(1.0);
+        let (bw, bh) = ((width * k).max(8.0), (height * k).max(8.0));
+        let x = ((w - bw) / 2.0).max(24.0);
+        let y = ((h - bh) / 2.0).max(24.0);
+        let xf = Xfrm { x: px_emu(x), y: px_emu(y), width: px_emu(bw), height: px_emu(bh), ..Default::default() };
+        let f = Frame {
+            id: 0,
+            name: "Equation".into(),
+            description: Some(tag.into()),
+            hidden: false,
+            shape: office_core::drawing::ShapeProps { xfrm: Some(xf), preset: Some("rect".into()), ..Default::default() },
+            placeholder: None,
+            link: None,
+            content: FrameContent::Shape { text: Some(body), connector: false },
+            origin: Origin::default(),
+        };
+        self.insert_frame(f)
+    }
+
+    /// Replaces a LaTeX math frame's Office Math XML, tag, and dimensions in place while preserving
+    /// its center position. Accepts both OMML `<p:sp>` frames and legacy tagged `<p:pic>` frames.
+    pub fn update_math(&mut self, id: u32, tag: &str, omml_xml: &str, fallback_text: &str, width: f64, height: f64) -> bool {
+        let active = self.sel.active;
+        let Some(slide) = self.slides().get(active) else {
+            return false;
+        };
+        let is_math_frame = find_frame(&slide.frames, id).is_some_and(|f| {
+            matches!(f.content, FrameContent::Shape { .. } | FrameContent::Picture { .. })
+                && f.description.as_deref().is_some_and(|d| d.starts_with(LATEX_MATH_PREFIX))
+        });
+        if !is_math_frame {
+            return false;
+        }
+        let Some(body) = build_slide_math_body(omml_xml, fallback_text) else {
+            return false;
+        };
+        let (w, h) = self.size();
+        let k = (w * 0.8 / width.max(1.0)).min(h * 0.6 / height.max(1.0)).min(1.0);
+        let (bw, bh) = ((width * k).max(8.0), (height * k).max(8.0));
+        let tag = tag.to_string();
+        let new_w = px_emu(bw);
+        let new_h = px_emu(bh);
+        self.change_slide(active, None, |s| {
+            if let Some(f) = find_frame_mut(&mut s.frames, id) {
+                f.description = Some(tag.clone());
+                f.name = "Equation".into();
+                if let Some(xf) = f.shape.xfrm.as_mut() {
+                    let cx = xf.x.0 + xf.width.0 / 2;
+                    let cy = xf.y.0 + xf.height.0 / 2;
+                    xf.width = new_w;
+                    xf.height = new_h;
+                    xf.x = Emu((cx - new_w.0 / 2).max(0));
+                    xf.y = Emu((cy - new_h.0 / 2).max(0));
+                }
+                f.content = FrameContent::Shape { text: Some(body.clone()), connector: false };
+                f.origin = Origin::default();
+            }
+        });
+        true
+    }
+
     /// Changes the selected table: `header`/`banded` turn those looks on or off, `rows`/`cols`
     /// set the counts, `style` sets its table style.
     pub fn table_op(&mut self, op: &str, value: Option<&str>) {
@@ -1606,6 +1677,10 @@ impl SlidesView {
         let Some(slide) = self.slides().get(self.sel.active).cloned() else { return false };
         let Some(f) = slide.frames.iter().find(|f| f.id == id) else { return false };
         if !matches!(&f.content, FrameContent::Shape { .. } | FrameContent::Table { .. }) {
+            return false;
+        }
+        // Native OMML equation frames are edited through the LaTeX modal, never raw text editing.
+        if f.description.as_deref().is_some_and(|d| d.starts_with(LATEX_MATH_PREFIX)) {
             return false;
         }
         let blocks = frame_blocks(f);
@@ -2546,6 +2621,9 @@ fn same_origins(a: &[Frame], b: &[Frame]) -> bool {
 /// Prefix stored in `frame.description` (`p:cNvPr/@descr`) for linked Excel objects.
 pub const EXCEL_LINK_PREFIX: &str = "writan:excel-link:";
 
+/// Prefix stored in `frame.description` (`p:cNvPr/@descr`) for editable inline LaTeX math equations.
+pub const LATEX_MATH_PREFIX: &str = "writan:latex:";
+
 /// One cell of a linked Excel range, deserialized from `SheetsDoc::rangeSnapshot`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2703,4 +2781,53 @@ fn is_title_or_subtitle_frame(f: &Frame) -> bool {
         }
     }
     matches!(f.name.trim().to_ascii_lowercase().as_str(), "title" | "subtitle")
+}
+
+/// Builds a DrawingML `TextBody` containing a native PowerPoint equation:
+/// `<mc:AlternateContent><mc:Choice Requires="a14"><a14:m>...</a14:m></mc:Choice><mc:Fallback><a:r>...</a:r></mc:Fallback></mc:AlternateContent>`.
+fn build_slide_math_body(omml_xml: &str, fallback_text: &str) -> Option<TextBody> {
+    let omml = office_core::xml::parse_element(omml_xml).ok()?;
+    if !(omml.is(ns::M, "oMath") || omml.is(ns::M, "oMathPara")) {
+        return None;
+    }
+    let math_para = if omml.is(ns::M, "oMathPara") { omml } else { Element::new(ns::M, "oMathPara").with_child(omml) };
+    let a14_m = Element::new(ns::A14, "m").with_child(math_para);
+    let mut choice = Element::new(ns::MC, "Choice").with_attr("", "Requires", "a14").with_child(a14_m);
+    // ECMA-376 Part 3 requires the prefix named in mc:Choice/@Requires to be declared in scope on mc:Choice itself.
+    choice.attrs.push(office_core::xml::Attr { prefix: Some("xmlns".into()), local: "a14".into(), ns: None, value: ns::A14.into() });
+    let fallback_run = Element::new(ns::A, "r")
+        .with_child(Element::new(ns::A, "rPr").with_attr("", "lang", "en-US"))
+        .with_child(Element::new(ns::A, "t").with_text(fallback_text));
+    let fallback = Element::new(ns::MC, "Fallback").with_child(fallback_run);
+    let alt = Element::new(ns::MC, "AlternateContent").with_child(choice).with_child(fallback);
+    let mut para = Paragraph::default();
+    para.props.align = Some(Align::Center);
+    para.content.push(Inline::Raw { xml: alt });
+    Some(TextBody { paragraphs: vec![para], ..Default::default() })
+}
+
+/// Returns the `writan:latex:...` tag on `f` only when its OMML text fingerprint (if recorded)
+/// still matches the live `<m:t>` text inside the frame's native PowerPoint equation.
+pub(crate) fn frame_math_tag(f: &Frame) -> Option<&str> {
+    let tag = f.description.as_deref().filter(|t| t.starts_with(LATEX_MATH_PREFIX))?;
+    if let Some(raw) = tag.strip_prefix(LATEX_MATH_PREFIX) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.trim()) {
+            if let Some(expected_fp) = val.get("f").and_then(|v| v.as_str()) {
+                if let FrameContent::Shape { text: Some(body), .. } = &f.content {
+                    let mut live_fp = String::new();
+                    for p in &body.paragraphs {
+                        for inline in &p.content {
+                            if let Inline::Raw { xml } = inline {
+                                live_fp.push_str(&office_core::xml::omml_text_fingerprint(xml));
+                            }
+                        }
+                    }
+                    if live_fp != expected_fp {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+    Some(tag)
 }

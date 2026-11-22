@@ -7,6 +7,7 @@ import type { PaintItem } from '../paint'
 import { itemsHtml, MediaCache, StyleSheet } from '../paint'
 import { BASE_FONTS } from '../preload'
 import { preloadFonts } from '../host'
+import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
 import type { SlidesDoc } from '../wasm/office_wasm'
 
 export interface Transition {
@@ -79,6 +80,7 @@ export interface Element {
   type: 'text' | 'shape' | 'connector' | 'image' | 'table' | 'group' | 'other'
   name: string
   linkTag?: string
+  mathTag?: string
   x: number
   y: number
   width: number
@@ -160,6 +162,9 @@ export class SlidesEngine {
     this.doc = doc
     this.styles = new StyleSheet(`p${++sheets}s`)
     this.media = new MediaCache((id) => {
+      if (id.startsWith(LATEX_MATH_PREFIX)) {
+        return renderLatexTagToSvgBytes(id)
+      }
       const bytes = this.doc.media(id)
       return bytes ? { bytes, type: this.doc.mediaType(id) ?? 'image/png' } : null
     })
@@ -275,6 +280,18 @@ export class SlidesEngine {
 
   linkedTags(): { slide: number; frameId: string; tag: string }[] {
     return JSON.parse(this.doc.linkedTags()) as { slide: number; frameId: string; tag: string }[]
+  }
+
+  insertMath(tag: string, ommlXml: string, fallbackText: string, width: number, height: number): string {
+    const id = this.doc.insertMath(tag, ommlXml, fallbackText, width, height)
+    if (id && id !== '0') this.refresh()
+    return id
+  }
+
+  updateMath(id: number, tag: string, ommlXml: string, fallbackText: string, width: number, height: number): boolean {
+    const ok = this.doc.updateMath(id, tag, ommlXml, fallbackText, width, height)
+    if (ok) this.refresh()
+    return ok
   }
 
   /** Where this copy is, for the others while shared (collab/session.ts). */

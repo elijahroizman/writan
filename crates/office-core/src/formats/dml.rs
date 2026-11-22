@@ -215,7 +215,13 @@ pub fn write_paragraph(p: &Paragraph, ctx: &mut PartCtx) -> Element {
             Inline::Break { .. } => {
                 el.push(Element::new(ns::A, "br"));
             }
-            Inline::Raw { xml } if xml.in_ns(ns::A) || p.origin.get().is_some_and(|o| o.is(ns::A, "p")) => {
+            Inline::Raw { xml }
+                if xml.in_ns(ns::A)
+                    || xml.in_ns(ns::MC)
+                    || xml.in_ns(ns::A14)
+                    || xml.in_ns(ns::M)
+                    || p.origin.get().is_some_and(|o| o.is(ns::A, "p")) =>
+            {
                 el.push(xml.clone());
             }
             // Pictures can't sit in DrawingML text, and other formats' markup means nothing here.

@@ -233,6 +233,37 @@ fn cell_parts(t: &Table, row: usize, col: usize) -> Vec<&'static str> {
     out
 }
 
+/// A `w:sdt` content control holding a Writan LaTeX Office Math equation (`m:oMath` / `m:oMathPara`).
+/// Returns `(tag, width_px, height_px)` when the tag encodes valid dimensions.
+pub(crate) fn inline_latex_math(el: &Element) -> Option<(&str, f64, f64)> {
+    let tag = inline_latex_math_tag(el)?;
+    let raw = tag.strip_prefix(super::LATEX_MATH_PREFIX)?.trim();
+    let val: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let w = val.get("w")?.as_f64().filter(|n| n.is_finite() && *n > 0.0)?;
+    let h = val.get("h")?.as_f64().filter(|n| n.is_finite() && *n > 0.0)?;
+    Some((tag, w, h))
+}
+
+/// Extracts the `writan:latex:...` tag from a `<w:sdt><w:sdtPr><w:tag w:val="..."/>` wrapper.
+/// Returns `None` if the tag carries an OMML text fingerprint (`"f"`) that no longer matches the
+/// live `<m:oMath>` text (meaning Word edited the equation natively after Writan saved it).
+pub(crate) fn inline_latex_math_tag(el: &Element) -> Option<&str> {
+    if !el.is(ns::W, "sdt") {
+        return None;
+    }
+    let tag = el.child(ns::W, "sdtPr")?.child(ns::W, "tag")?.attr_ns(ns::W, "val").filter(|v| v.starts_with(super::LATEX_MATH_PREFIX))?;
+    if let Some(raw) = tag.strip_prefix(super::LATEX_MATH_PREFIX) {
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.trim()) {
+            if let Some(expected_fp) = val.get("f").and_then(|v| v.as_str()) {
+                if office_core::xml::omml_text_fingerprint(el) != expected_fp {
+                    return None;
+                }
+            }
+        }
+    }
+    Some(tag)
+}
+
 /// A run holding a SmartArt diagram in the text (`wp:inline`): its `a:graphicData` and size.
 pub(crate) fn inline_diagram(run: &Element) -> Option<(&Element, Emu, Emu)> {
     if !run.is(ns::W, "r") {
@@ -510,6 +541,10 @@ impl WordResolver<'_> {
                     end,
                     kind: ItemKind::Object { width: emu_px(img.width), height: emu_px(img.height), inline: i as u32 },
                 }),
+                Inline::Raw { xml } if inline_latex_math(xml).is_some() => {
+                    let (_, w, h) = inline_latex_math(xml).unwrap();
+                    items.push(Item { start, end, kind: ItemKind::Object { width: w, height: h, inline: i as u32 } });
+                }
                 Inline::Raw { xml } if inline_diagram(xml).is_some() => {
                     let (_, w, h) = inline_diagram(xml).unwrap();
                     items.push(Item { start, end, kind: ItemKind::Object { width: emu_px(w), height: emu_px(h), inline: i as u32 } });

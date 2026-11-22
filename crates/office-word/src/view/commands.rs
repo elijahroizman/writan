@@ -106,6 +106,12 @@ impl WordView {
         let flat = text::flat(p);
         match count {
             2 => {
+                // Double-clicking a picture keeps only the picture selected instead of expanding
+                // into adjacent punctuation via word selection.
+                if let Some(sel) = self.image_at(host, page, x, y) {
+                    self.set_selection(sel);
+                    return true;
+                }
                 let (a, b) = para::word_at(&flat.text, at.offset);
                 self.set_selection(Selection { anchor: Pos::new(at.path.clone(), a), focus: Pos::new(at.path, b) });
             }
@@ -1869,6 +1875,65 @@ impl WordView {
         out
     }
 
+    // ---- inline LaTeX math (real Office Math / OMML) ----
+
+    /// The selected inline LaTeX Office Math equation (`<w:sdt>` wrapping `<m:oMath>` / `<m:oMathPara>`).
+    pub fn selected_math_raw(&self) -> Option<(Path, usize, &str)> {
+        let (from, to) = self.sel.ordered();
+        if from.path != to.path {
+            return None;
+        }
+        let p = pos::para(self.blocks(self.story), &from.path)?;
+        let (i, at) = text::inline_at(p, from.offset)?;
+        match p.content.get(i)? {
+            Inline::Raw { xml } if at == from.offset && to.offset == from.offset + text::inline_len(&p.content[i]) => {
+                let tag = super::resolve::inline_latex_math_tag(xml)?;
+                Some((from.path, i, tag))
+            }
+            _ => None,
+        }
+    }
+
+    /// Inserts an inline Office Math (`m:oMath` / `m:oMathPara`) equation wrapped in a `<w:sdt>`
+    /// content control carrying `tag` in `<w:sdtPr><w:tag w:val="..."/>` so it opens as a native
+    /// editable equation in Microsoft Word while preserving the LaTeX source for Writan.
+    pub fn insert_math(&mut self, tag: &str, omml_xml: &str) -> bool {
+        let Some(sdt) = build_math_sdt(tag, omml_xml) else {
+            return false;
+        };
+        let sel = self.sel.clone();
+        let e = self.replace_sel(&sel, |root, at| edit::insert_inline(root, at, Inline::Raw { xml: sdt.clone() }));
+        self.apply_edit(e, None);
+        true
+    }
+
+    /// Replaces the currently selected LaTeX equation (OMML `<w:sdt>` or legacy tagged image) in place.
+    pub fn update_selected_math(&mut self, tag: &str, omml_xml: &str) -> bool {
+        let target = if let Some((path, i, _)) = self.selected_math_raw() {
+            Some((path, i))
+        } else {
+            self.selected_image()
+                .filter(|(_, _, img)| img.description.as_deref().is_some_and(|t| t.starts_with(LATEX_MATH_PREFIX)))
+                .map(|(path, i, _)| (path, i))
+        };
+        let Some((path, i)) = target else {
+            return false;
+        };
+        let Some(sdt) = build_math_sdt(tag, omml_xml) else {
+            return false;
+        };
+        let root = self.blocks_mut(self.story);
+        let Some(s) = edit::change_para(root, &path, |p| {
+            if let Some(slot) = p.content.get_mut(i) {
+                *slot = Inline::Raw { xml: sdt.clone() };
+            }
+        }) else {
+            return false;
+        };
+        self.record(vec![s], None, None);
+        true
+    }
+
     // ---- page setup ----
 
     /// The page setup of the caret's section.
@@ -2218,6 +2283,9 @@ pub fn image_size(b: &[u8]) -> Option<(u32, u32)> {
 /// Prefix stored in `w:tblDescription` (tables) or `docPr/@descr` (images) for linked Excel objects.
 pub const EXCEL_LINK_PREFIX: &str = "writan:excel-link:";
 
+/// Prefix stored in `docPr/@descr` (images) for editable inline LaTeX math equations.
+pub const LATEX_MATH_PREFIX: &str = "writan:latex:";
+
 /// One cell of a linked Excel range, deserialized from `SheetsDoc::rangeSnapshot`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -2429,4 +2497,17 @@ fn collect_linked_tags(blocks: &[Block], out: &mut Vec<String>) {
             Block::Raw { .. } => {}
         }
     }
+}
+
+/// Builds a `<w:sdt>` inline content control wrapping parsed Office Math (`<m:oMath>` or `<m:oMathPara>`),
+/// storing the Writan LaTeX tag in `<w:sdtPr><w:tag w:val="..."/>`.
+fn build_math_sdt(tag: &str, omml_xml: &str) -> Option<Element> {
+    let omml = office_core::xml::parse_element(omml_xml).ok()?;
+    if !super::math::is_math(&omml) {
+        return None;
+    }
+    let tag_el = Element::new(ns::W, "tag").with_attr(ns::W, "val", tag);
+    let sdt_pr = Element::new(ns::W, "sdtPr").with_child(tag_el);
+    let sdt_content = Element::new(ns::W, "sdtContent").with_child(omml);
+    Some(Element::new(ns::W, "sdt").with_child(sdt_pr).with_child(sdt_content))
 }

@@ -1408,3 +1408,68 @@ fn linked_excel_table_and_image_round_trip_update_and_unlink() {
     assert!(!reopened.linked_tags().contains(&tag));
     assert!(!reopened.update_linked_table(&tag, &[]));
 }
+
+#[test]
+fn inline_latex_math_insert_update_undo_and_round_trip() {
+    let mut v = WordView::open(&doc_bytes(&["Equation: "])).unwrap();
+    // Move caret to end of paragraph.
+    v.set_selection(Selection::caret(Pos::new(Path(vec![0]), 10)));
+    let tag1 = format!(
+        "{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"E=mc^2\",\"display\":false,\"fontSizePt\":12,\"color\":\"#000000\",\"w\":64,\"h\":20}}"
+    );
+    let omml1 = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>E=mc</m:t></m:r><m:sSup><m:e><m:r><m:t>c</m:t></m:r></m:e><m:sup><m:r><m:t>2</m:t></m:r></m:sup></m:sSup></m:oMath>"#;
+    assert!(v.insert_math(&tag1, omml1));
+
+    // Select the inserted inline equation (at UTF-8 offset 10..13 since U+FFFC is 3 bytes).
+    v.set_selection(Selection { anchor: Pos::new(Path(vec![0]), 10), focus: Pos::new(Path(vec![0]), 13) });
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag1.as_str()));
+
+    let tag2 = format!(
+        "{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"\\\\frac{{1}}{{x}}\",\"display\":true,\"fontSizePt\":16,\"color\":\"#112233\",\"w\":80,\"h\":36}}"
+    );
+    let omml2 = r#"<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:oMath><m:f><m:num><m:r><m:t>1</m:t></m:r></m:num><m:den><m:r><m:t>x</m:t></m:r></m:den></m:f></m:oMath></m:oMathPara>"#;
+    assert!(v.update_selected_math(&tag2, omml2));
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag2.as_str()));
+
+    // Undo restores the first equation tag.
+    assert!(v.undo());
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag1.as_str()));
+    // Redo restores the updated equation tag.
+    assert!(v.redo());
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag2.as_str()));
+
+    // Save writes real Office Math (<m:oMath>) with zero embedded PNG pictures, and reopen preserves math_tag.
+    let saved = v.save().unwrap();
+    let pkg = office_core::opc::Package::read(&saved).unwrap();
+    let doc_xml = String::from_utf8(pkg.part("word/document.xml").unwrap().to_vec()).unwrap();
+    assert!(doc_xml.contains("<m:oMathPara"), "saved docx should contain native m:oMathPara: {doc_xml}");
+    assert!(doc_xml.contains("<m:oMath"), "saved docx should contain native m:oMath: {doc_xml}");
+    assert!(doc_xml.contains("<m:f>"), "saved docx should contain native fraction m:f: {doc_xml}");
+    assert!(pkg.part("word/media/image1.png").is_err(), "equations must not be saved as PNG pictures");
+
+    let mut reopened = WordView::open(&saved).unwrap();
+    reopened.set_selection(Selection { anchor: Pos::new(Path(vec![0]), 10), focus: Pos::new(Path(vec![0]), 13) });
+    assert_eq!(reopened.state().math_tag.as_deref(), Some(tag2.as_str()));
+}
+
+#[test]
+fn double_click_math_image_beside_punctuation_keeps_math_tag() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&["()"])).unwrap();
+    // Insert equation between "(" and ")".
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 1)));
+    let tag = format!(
+        "{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"E=mc^2\",\"display\":false,\"fontSizePt\":12,\"color\":\"#000000\",\"w\":64,\"h\":20}}"
+    );
+    let omml = r#"<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:r><m:t>E=mc^2</m:t></m:r></m:oMath>"#;
+    assert!(v.insert_math(&tag, omml));
+    v.layout(&mut host);
+
+    let page = v.pages[0].clone();
+    // "(" is ~7.33 px wide, so x = body_x + 30 lands squarely on the 64 px wide equation object.
+    let x = page.body_x + 30.0;
+    let y = page.body_y + 10.0;
+    assert!(v.click(&mut host, 0, x, y, false, 2));
+    assert_eq!(v.selection().ordered(), (Pos::new(Path::top(0), 1), Pos::new(Path::top(0), 4)));
+    assert_eq!(v.state().math_tag.as_deref(), Some(tag.as_str()));
+}

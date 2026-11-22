@@ -225,10 +225,26 @@ impl Drawer<'_, '_, '_> {
                 items.extend(kids);
             }
             FrameContent::Shape { text, connector } => {
-                let look = self.look(slide, f);
-                self.outline(f, &b, &look, *connector, &mut items);
-                if let Some(body) = text {
-                    self.text(slide, f, body, &b, &look, &mut items);
+                if let Some(tag) = super::commands::frame_math_tag(f) {
+                    items.push(Item::Image { x: 0.0, y: 0.0, w: r(b.w), h: r(b.h), media: tag.to_string(), crop: None, id: None });
+                    let look = self.look(slide, f);
+                    if let Some((color, w, dash)) = look.line.filter(|_| f.shape.line.is_some()) {
+                        items.push(Item::Path {
+                            x: 0.0,
+                            y: 0.0,
+                            d: format!("M0 0H{0}V{1}H0Z", r(b.w), r(b.h)),
+                            fill: None,
+                            stroke: Some(color),
+                            sw: r(w),
+                            dash,
+                        });
+                    }
+                } else {
+                    let look = self.look(slide, f);
+                    self.outline(f, &b, &look, *connector, &mut items);
+                    if let Some(body) = text {
+                        self.text(slide, f, body, &b, &look, &mut items);
+                    }
                 }
             }
             FrameContent::Picture { image } => {

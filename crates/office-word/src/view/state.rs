@@ -50,6 +50,9 @@ pub struct WordState {
     /// Tag (`writan:excel-link:<id>`) when the caret is in a linked Excel table or a linked chart is selected.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link_tag: Option<String>,
+    /// Tag (`writan:latex:{...}`) when an inline LaTeX math image is selected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub math_tag: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -117,7 +120,7 @@ impl WordView {
             can_undo: self.can_undo(),
             can_redo: self.can_redo(),
             dirty: self.is_dirty(),
-            has_selection: !self.sel.is_collapsed() && self.selected_image().is_none(),
+            has_selection: !self.sel.is_collapsed() && self.selected_image().is_none() && self.selected_math_raw().is_none(),
             header_footer: self.editing_header_footer().map(|k| if k == StoryKind::Header { "header" } else { "footer" }),
             note: self.editing_note(),
             link: self.link(),
@@ -214,9 +217,15 @@ impl WordView {
                 Some(TableState { rows: t.rows.len(), columns: t.columns.len().max(t.rows.first().map(|r| r.cells.len()).unwrap_or(0)) });
             st.link_tag = super::commands::table_link_tag(t).filter(|tag| tag.starts_with(super::EXCEL_LINK_PREFIX));
         }
+        if let Some((_, _, tag)) = self.selected_math_raw() {
+            st.math_tag = Some(tag.to_string());
+        }
         if let Some((_, _, img)) = self.selected_image() {
             if let Some(tag) = img.description.as_deref().filter(|t| t.starts_with(super::EXCEL_LINK_PREFIX)) {
                 st.link_tag = Some(tag.to_string());
+            }
+            if let Some(tag) = img.description.as_deref().filter(|t| t.starts_with(super::LATEX_MATH_PREFIX)) {
+                st.math_tag = Some(tag.to_string());
             }
             let crop = image_crop(img).unwrap_or([0.0; 4]);
             let rot = img

@@ -99,6 +99,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'docx.comment', label: 'Add comment', group: 'Document', scope: 'docx', keys: isMac ? '⌥⌘A' : '⌥⌘M' },
   { id: 'docx.header', label: 'Edit header', group: 'Document', scope: 'docx', keys: '' },
   { id: 'docx.footer', label: 'Edit footer', group: 'Document', scope: 'docx', keys: '' },
+  { id: 'docx.math', label: 'Insert LaTeX math', group: 'Document', scope: 'docx', keys: '⌥=' },
 
   // ── Presentations (.pptx)
   { id: 'pptx.new-slide', label: 'New slide', group: 'Presentation', scope: 'pptx', keys: '⌘M', builtIn: true },
@@ -112,6 +113,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'pptx.notes', label: 'Show or hide speaker notes', group: 'Presentation', scope: 'pptx', keys: '' },
   { id: 'pptx.present', label: 'Play from this slide', group: 'Presentation', scope: 'pptx', keys: '⌘↩' },
   { id: 'pptx.present-start', label: 'Play from start', group: 'Presentation', scope: 'pptx', keys: '⇧⌘↩' },
+  { id: 'pptx.math', label: 'Insert LaTeX math', group: 'Presentation', scope: 'pptx', keys: '⌥=' },
 ].filter((s) => !s.platform || (s.platform === 'mac') === isMac) as ShortcutDef[]
 
 const BY_ID = new Map(SHORTCUTS.map((s) => [s.id, s]))

@@ -291,6 +291,18 @@ impl SlidesDoc {
         json(&items)
     }
 
+    /// Inserts a native PowerPoint Office Math (`a14:m`) frame on the active slide, returning its frame id.
+    #[wasm_bindgen(js_name = insertMath)]
+    pub fn insert_math(&mut self, tag: &str, omml_xml: &str, fallback_text: &str, width: f64, height: f64) -> String {
+        self.view.insert_math(tag, omml_xml, fallback_text, width, height).to_string()
+    }
+
+    /// Updates a LaTeX Office Math frame in place on the active slide.
+    #[wasm_bindgen(js_name = updateMath)]
+    pub fn update_math(&mut self, id: u32, tag: &str, omml_xml: &str, fallback_text: &str, width: f64, height: f64) -> bool {
+        self.view.update_math(id, tag, omml_xml, fallback_text, width, height)
+    }
+
     pub fn dirty(&self) -> bool {
         self.view.is_dirty()
     }

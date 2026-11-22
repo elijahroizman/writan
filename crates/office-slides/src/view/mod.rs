@@ -24,7 +24,7 @@ use office_engine::pos::Selection;
 use serde::Serialize;
 
 use crate::Decks;
-pub use commands::{LinkedCell, RangeBoxes, TextOverlay, TextPatch, EXCEL_LINK_PREFIX};
+pub use commands::{LinkedCell, RangeBoxes, TextOverlay, TextPatch, EXCEL_LINK_PREFIX, LATEX_MATH_PREFIX};
 pub use draw::{paint_diagram, Boxed};
 pub use elements::{Element, SlideInfo};
 

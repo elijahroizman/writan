@@ -1335,6 +1335,55 @@ fn linked_excel_table_and_image_round_trip_update_and_unlink() {
 }
 
 #[test]
+fn inline_latex_math_insert_update_undo_and_round_trip() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::open(&deck(&[&[]])).unwrap();
+    let tag1 = format!("{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"a^2+b^2=c^2\",\"display\":true,\"fontSizePt\":28,\"color\":\"#000000\",\"w\":160,\"h\":48}}");
+    let omml1 = r#"<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:oMath><m:r><m:t>a^2+b^2=c^2</m:t></m:r></m:oMath></m:oMathPara>"#;
+    let id = v.insert_math(&tag1, omml1, "a²+b²=c²", 160.0, 48.0);
+    assert_ne!(id, 0);
+    let el1 = v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).unwrap();
+    assert_eq!(el1.math_tag.as_deref(), Some(tag1.as_str()));
+    assert_eq!(el1.name, "Equation");
+    // Raw text editing must not overwrite a native Office Math frame.
+    assert!(!v.begin_edit(&mut host, id, None));
+
+    let tag2 = format!(
+        "{LATEX_MATH_PREFIX}{{\"v\":1,\"latex\":\"\\\\int_0^1 x^2 dx\",\"display\":true,\"fontSizePt\":32,\"color\":\"#FFFFFF\",\"w\":200,\"h\":64}}"
+    );
+    let omml2 = r#"<m:oMathPara xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math"><m:oMath><m:nary><m:naryPr><m:chr m:val="∫"/></m:naryPr><m:sub><m:r><m:t>0</m:t></m:r></m:sub><m:sup><m:r><m:t>1</m:t></m:r></m:sup><m:e><m:r><m:t>x^2 dx</m:t></m:r></m:e></m:nary></m:oMath></m:oMathPara>"#;
+    assert!(v.update_math(id, &tag2, omml2, "∫₀¹ x² dx", 200.0, 64.0));
+    let el2 = v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).unwrap();
+    assert_eq!(el2.math_tag.as_deref(), Some(tag2.as_str()));
+    assert!((el2.width - 200.0).abs() < 1.0);
+
+    // Undo / redo round trip.
+    assert!(v.undo());
+    assert_eq!(v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).and_then(|e| e.math_tag), Some(tag1));
+    assert!(v.redo());
+    assert_eq!(v.elements(&mut host, 0).into_iter().find(|e| e.id == id.to_string()).and_then(|e| e.math_tag), Some(tag2.clone()));
+
+    // Save writes real PowerPoint Office Math (<a14:m><m:oMathPara><m:oMath>) with zero PNG pictures,
+    // and reopen preserves the math tag in p:cNvPr/@descr.
+    let saved = v.save().unwrap();
+    let pkg = office_core::opc::Package::read(&saved).unwrap();
+    let slide_xml = String::from_utf8(pkg.part("ppt/slides/slide1.xml").unwrap().to_vec()).unwrap();
+    assert!(slide_xml.contains("<mc:AlternateContent"), "saved pptx should wrap equation in mc:AlternateContent: {slide_xml}");
+    assert!(
+        slide_xml.contains(r#"<mc:Choice Requires="a14" xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main""#),
+        "mc:Choice must declare xmlns:a14 in scope for Requires=\"a14\": {slide_xml}"
+    );
+    assert!(slide_xml.contains("<a14:m"), "saved pptx should contain native PowerPoint a14:m: {slide_xml}");
+    assert!(slide_xml.contains("<m:oMathPara"), "saved pptx should contain m:oMathPara: {slide_xml}");
+    assert!(slide_xml.contains("<m:nary>"), "saved pptx should contain m:nary: {slide_xml}");
+    assert!(pkg.part("ppt/media/image1.png").is_err(), "equations must not be saved as PNG pictures");
+
+    let mut reopened = SlidesView::open(&saved).unwrap();
+    let el3 = reopened.elements(&mut host, 0).into_iter().find(|e| e.math_tag.is_some()).unwrap();
+    assert_eq!(el3.math_tag.as_deref(), Some(tag2.as_str()));
+}
+
+#[test]
 fn linked_excel_placement_avoids_title_and_subtitle_overlap() {
     let mut host = FixedMeasurer::default();
     let mut v = SlidesView::blank();

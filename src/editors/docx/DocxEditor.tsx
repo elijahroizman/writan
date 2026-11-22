@@ -27,6 +27,7 @@ import {
   Plus,
   Redo2,
   RemoveFormatting,
+  Sigma,
   Strikethrough,
   Subscript,
   Superscript,
@@ -49,6 +50,10 @@ import { LinkExcelModal } from '../../links/LinkExcelModal'
 import { LinkedExcelSection } from '../../links/LinkedExcelSection'
 import type { ExcelLink, ExcelLinksController, LinkedDocumentTarget } from '../../links/excelLinks'
 import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
+import { LatexMathModal } from '../../math/LatexMathModal'
+import { MathInspectorSection } from '../../math/MathInspectorSection'
+import type { LatexMathSpec } from '../../math/latexMath'
+import { encodeLatexTag, normalizeHexColor, parseLatexTag } from '../../math/latexMath'
 import { itemsHtml } from '../../engine/paint'
 import {
   DocxEditor,
@@ -123,6 +128,7 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
   const zoom = useZoom()
   const search = useDocumentSearch()
   const [findOpen, setFindOpen] = useState<false | 'find' | 'replace'>(false)
+  const [mathModal, setMathModal] = useState<{ mode: 'insert' | 'edit'; initialSpec: LatexMathSpec } | null>(null)
   const editorRef = useRef<WordEngine | null>(null)
   editorRef.current = editor
   const host = useMemo(() => (editor ? commentEditor(editor) : null), [editor])
@@ -222,6 +228,7 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
           },
           'docx.header': () => openHeaderFooter(editorRef.current, 'header'),
           'docx.footer': () => openHeaderFooter(editorRef.current, 'footer'),
+          'docx.math': () => openMathModalRef.current(),
         },
       }),
     [tab.id, comments, commentsChanged],
@@ -243,6 +250,33 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
 
   // Cropping the selected picture, on the page.
   const [crop, setCrop] = useState<PictureCrop | null>(null)
+  const openMathModal = (forceEdit = false) => {
+    const ed = editorRef.current
+    if (!ed) return
+    const existing = parseLatexTag(ed.state.mathTag)
+    if (existing) {
+      setMathModal({ mode: 'edit', initialSpec: existing })
+      return
+    }
+    if (forceEdit) return
+    let initialLatex = ''
+    if (ed.state.hasSelection) {
+      try {
+        const res = ed.run<{ text?: string }>({ cmd: 'copy' })
+        const selected = (res?.text ?? '').trim()
+        if (selected && !selected.includes('\n') && selected.length <= 500) {
+          initialLatex = selected
+        }
+      } catch {
+        // Ignore selection read errors.
+      }
+    }
+    const fontSizePt = ed.state.size ? Math.round((ed.state.size / 2) * 10) / 10 : 12
+    const color = normalizeHexColor(ed.state.color, '#000000')
+    setMathModal({ mode: 'insert', initialSpec: { latex: initialLatex, display: false, fontSizePt, color } })
+  }
+  const openMathModalRef = useRef(openMathModal)
+  openMathModalRef.current = openMathModal
   const startCrop = () => {
     const next = pictureCrop(editorRef.current)
     if (next) setCrop(next)
@@ -287,6 +321,8 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
           excelLinks={excelLinks}
           onOpenExcelModal={() => setExcelModalOpen(true)}
           onOpenExcelSource={openExcelSource}
+          onOpenMathModal={() => openMathModal(false)}
+          onEditMathModal={() => openMathModal(true)}
         />
       }
     >
@@ -297,6 +333,9 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
         onMouseLeave={() => {
           window.clearTimeout(peekTimer.current)
           setPeek(null)
+        }}
+        onDoubleClick={() => {
+          if (editorRef.current?.state.mathTag) openMathModal(true)
         }}
         onClick={(e) => {
           // Clicking commented text shows its thread.
@@ -313,6 +352,27 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
       {peek && <CommentPeek store={comments} id={peek.id} at={peek.at} />}
       {crop && <CropOverlay src={crop.src} frame={crop.frame} image={crop.image} onDone={endCrop} onCancel={() => endCrop()} />}
       <LinkExcelModal open={excelModalOpen} onClose={() => setExcelModalOpen(false)} controller={excelLinks} targetLabel="Word" />
+      <LatexMathModal
+        open={!!mathModal}
+        mode={mathModal?.mode ?? 'insert'}
+        targetLabel="Word"
+        initialSpec={mathModal?.initialSpec ?? { latex: '', display: false, fontSizePt: 12, color: '#000000' }}
+        onClose={() => {
+          setMathModal(null)
+          editorRef.current?.focus()
+        }}
+        onCommit={({ spec, omml, fingerprint, width, height }) => {
+          const ed = editorRef.current
+          if (!ed) return
+          const tag = encodeLatexTag(spec, { width, height, fingerprint })
+          if (mathModal?.mode === 'edit') {
+            ed.updateSelectedMath(tag, omml)
+          } else {
+            ed.insertMath(tag, omml)
+          }
+          ed.focus()
+        }}
+      />
       <FindBar
         open={!!findOpen}
         replacing={findOpen === 'replace'}
@@ -470,6 +530,8 @@ function Inspector({
   excelLinks,
   onOpenExcelModal,
   onOpenExcelSource,
+  onOpenMathModal,
+  onEditMathModal,
 }: {
   tab: EditorProps['tab']
   comments: CommentStore
@@ -479,6 +541,8 @@ function Inspector({
   excelLinks: ExcelLinksController
   onOpenExcelModal: () => void
   onOpenExcelSource: (link: ExcelLink) => void
+  onOpenMathModal: () => void
+  onEditMathModal: () => void
 }) {
   const style = useParagraphStyle()
   const family = useFontFamily()
@@ -495,6 +559,7 @@ function Inspector({
   const [tableOpen, setTableOpen] = useState(false)
   const hasSelection = useHasSelectedText()
   const headerFooter = useHeaderFooterState()
+  const mathTag = useEditorState((s) => s.mathTag)
 
   const alignment = alignCenter.isActive ? 'center' : alignRight.isActive ? 'right' : alignJustify.isActive ? 'justify' : alignLeft.isActive ? 'left' : null
   const alignCommands = { left: alignLeft, center: alignCenter, right: alignRight, justify: alignJustify }
@@ -648,6 +713,14 @@ function Inspector({
             onMouseDown={(e) => e.preventDefault()}
             onClick={onOpenExcelModal}
           />
+          <ToolButton
+            icon={<Sigma size={15} />}
+            label="Math"
+            title={shortcut(withKeys('Insert LaTeX math', 'docx.math'))}
+            disabled={!editor}
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={onOpenMathModal}
+          />
         </div>
         {tableOpen && (
           <TableSizePicker
@@ -661,6 +734,8 @@ function Inspector({
       </Section>
 
       {headerFooter?.editing && <HeaderFooterSection position={headerFooter.editing} />}
+
+      <MathInspectorSection mathTag={mathTag} onEdit={onEditMathModal} />
 
       <ImageSection onCrop={onCrop} />
 

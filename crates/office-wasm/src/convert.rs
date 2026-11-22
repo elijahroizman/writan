@@ -538,7 +538,11 @@ fn render_paragraph_inlines(
             Inline::Image(img) => {
                 if let Some(desc) = img.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
                     flush(&mut out, &mut cur_fmt, &mut cur_buf);
-                    out.push_str(&format!("![{}]()", desc.replace(['[', ']'], "")));
+                    if let Some(math_md) = latex_tag_markdown(desc) {
+                        out.push_str(&math_md);
+                    } else {
+                        out.push_str(&format!("![{}]()", desc.replace(['[', ']'], "")));
+                    }
                 }
             }
             Inline::Raw { xml } => {
@@ -551,6 +555,51 @@ fn render_paragraph_inlines(
     }
     flush(&mut out, &mut cur_fmt, &mut cur_buf);
     (out, has_page_break)
+}
+
+fn latex_tag_markdown(desc: &str) -> Option<String> {
+    let raw = desc.strip_prefix("writan:latex:")?.trim();
+    let val: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let latex = val.get("latex")?.as_str()?.trim();
+    if latex.is_empty() {
+        return None;
+    }
+    let display = val.get("display").and_then(serde_json::Value::as_bool).unwrap_or(false);
+    Some(if display { format!("$${latex}$$") } else { format!("${latex}$") })
+}
+
+fn latex_tag_matches_omml(tag: &str, el: &Element) -> bool {
+    let Some(raw) = tag.strip_prefix("writan:latex:") else {
+        return true;
+    };
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
+        return true;
+    };
+    match val.get("f").and_then(serde_json::Value::as_str) {
+        Some(expected_fp) => office_core::xml::omml_text_fingerprint(el) == expected_fp,
+        None => true,
+    }
+}
+
+fn slide_body_matches_latex_tag(tag: &str, body: &office_core::model::TextBody) -> bool {
+    let Some(raw) = tag.strip_prefix("writan:latex:") else {
+        return true;
+    };
+    let Ok(val) = serde_json::from_str::<serde_json::Value>(raw.trim()) else {
+        return true;
+    };
+    let Some(expected_fp) = val.get("f").and_then(serde_json::Value::as_str) else {
+        return true;
+    };
+    let mut live_fp = String::new();
+    for p in &body.paragraphs {
+        for inline in &p.content {
+            if let Inline::Raw { xml } = inline {
+                live_fp.push_str(&office_core::xml::omml_text_fingerprint(xml));
+            }
+        }
+    }
+    live_fp == expected_fp
 }
 
 fn raw_block_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut Vec<String>) -> Option<String> {
@@ -594,6 +643,15 @@ fn raw_run_is_vanished(run_el: &Element) -> bool {
 fn raw_inline_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut Vec<String>) -> Option<String> {
     if el.is(ns::W, "del") || el.is(ns::W, "moveFrom") {
         return None;
+    }
+    if el.is(ns::W, "sdt") {
+        if let Some(tag) = el.child(ns::W, "sdtPr").and_then(|pr| pr.child(ns::W, "tag")).and_then(|t| t.attr_ns(ns::W, "val")) {
+            if latex_tag_matches_omml(tag, el) {
+                if let Some(math_md) = latex_tag_markdown(tag) {
+                    return Some(math_md);
+                }
+            }
+        }
     }
     if math::is_math(el) {
         let eq = math::linear(el);
@@ -825,6 +883,19 @@ fn slide_reading_order(frames: &[Frame]) -> Vec<&Frame> {
 }
 
 fn slide_frame_markdown(f: &Frame, out: &mut String) {
+    if let Some(desc) = f.description.as_deref().map(str::trim) {
+        let omml_matches = match &f.content {
+            FrameContent::Shape { text: Some(body), .. } => slide_body_matches_latex_tag(desc, body),
+            _ => true,
+        };
+        if omml_matches {
+            if let Some(math_md) = latex_tag_markdown(desc) {
+                out.push_str(&math_md);
+                out.push_str("\n\n");
+                return;
+            }
+        }
+    }
     match &f.content {
         FrameContent::Shape { text: Some(body), .. } => {
             for p in &body.paragraphs {
@@ -856,7 +927,12 @@ fn slide_frame_markdown(f: &Frame, out: &mut String) {
         }
         FrameContent::Picture { image } => {
             if let Some(desc) = image.description.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-                out.push_str(&format!("![{}]()\n\n", desc.replace(['[', ']'], "")));
+                if let Some(math_md) = latex_tag_markdown(desc) {
+                    out.push_str(&math_md);
+                    out.push_str("\n\n");
+                } else {
+                    out.push_str(&format!("![{}]()\n\n", desc.replace(['[', ']'], "")));
+                }
             }
         }
         FrameContent::Group { frames } => {
@@ -871,15 +947,36 @@ fn slide_frame_markdown(f: &Frame, out: &mut String) {
 fn slide_para_inline_markdown(p: &Paragraph) -> String {
     let mut out = String::new();
     for inline in &p.content {
-        if let Inline::Text(r) = inline {
-            let fmt = InlineFmt {
-                bold: r.props.bold == Some(true),
-                italic: r.props.italic == Some(true),
-                strike: matches!(r.props.strike, Some(Strike::Single | Strike::Double)),
-                code: is_monospace_font(r.props.font.as_deref()),
-                link: r.link.as_ref().and_then(|l| l.url.clone()).filter(|u| !u.is_empty()),
-            };
-            out.push_str(&format_inline_span(&r.text, &fmt));
+        match inline {
+            Inline::Text(r) => {
+                let fmt = InlineFmt {
+                    bold: r.props.bold == Some(true),
+                    italic: r.props.italic == Some(true),
+                    strike: matches!(r.props.strike, Some(Strike::Single | Strike::Double)),
+                    code: is_monospace_font(r.props.font.as_deref()),
+                    link: r.link.as_ref().and_then(|l| l.url.clone()).filter(|u| !u.is_empty()),
+                };
+                out.push_str(&format_inline_span(&r.text, &fmt));
+            }
+            Inline::Raw { xml } => {
+                let math_el = if math::is_math(xml) {
+                    Some(xml)
+                } else {
+                    xml.descendant(ns::M, "oMathPara").or_else(|| xml.descendant(ns::M, "oMath"))
+                };
+                if let Some(m) = math_el {
+                    let eq = math::linear(m);
+                    let eq = eq.trim();
+                    if !eq.is_empty() {
+                        if m.is(ns::M, "oMathPara") {
+                            out.push_str(&format!("$${eq}$$"));
+                        } else {
+                            out.push_str(&format!("${eq}$"));
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
     }
     out

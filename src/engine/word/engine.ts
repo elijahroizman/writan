@@ -6,6 +6,7 @@ import { host, onFontsChanged, preloadFonts } from '../host'
 import { expectKind, loadEngine } from '../load'
 import { BASE_FONTS } from '../preload'
 import { MediaCache, StyleSheet } from '../paint'
+import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
 import type { WordDoc } from '../wasm/office_wasm'
 
 export interface WordState {
@@ -44,6 +45,7 @@ export interface WordState {
   note: number | null
   link: string | null
   linkTag?: string
+  mathTag?: string
   page: { current: number; total: number }
 }
 
@@ -141,6 +143,9 @@ export class WordEngine {
     this.doc = doc
     this.styles = new StyleSheet(`w${++sheets}s`)
     this.media = new MediaCache((id) => {
+      if (id.startsWith(LATEX_MATH_PREFIX)) {
+        return renderLatexTagToSvgBytes(id)
+      }
       const bytes = this.doc.media(id)
       return bytes ? { bytes, type: this.doc.mediaType(id) ?? 'image/png' } : null
     })
@@ -300,6 +305,18 @@ export class WordEngine {
 
   linkedTags(): string[] {
     return JSON.parse(this.doc.linkedTags()) as string[]
+  }
+
+  insertMath(tag: string, ommlXml: string): boolean {
+    const ok = this.doc.insertMath(tag, ommlXml)
+    if (ok) this.refresh()
+    return ok
+  }
+
+  updateSelectedMath(tag: string, ommlXml: string): boolean {
+    const ok = this.doc.updateSelectedMath(tag, ommlXml)
+    if (ok) this.refresh()
+    return ok
   }
 
   dispose() {

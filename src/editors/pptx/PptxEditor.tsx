@@ -17,6 +17,7 @@ import {
   Redo2,
   Scissors,
   SendToBack,
+  Sigma,
   StickyNote,
   Trash2,
   Undo2,
@@ -41,6 +42,9 @@ import { registerEditor, useWorkspace } from '../../state/workspace'
 import { LinkExcelModal } from '../../links/LinkExcelModal'
 import type { ExcelLink, LinkedDocumentTarget } from '../../links/excelLinks'
 import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
+import { LatexMathModal } from '../../math/LatexMathModal'
+import type { LatexMathSpec } from '../../math/latexMath'
+import { encodeLatexTag, parseLatexTag } from '../../math/latexMath'
 import type { Restack } from './arrange'
 import { Inspector } from './Inspector'
 import { NotesPane } from './Notes'
@@ -92,6 +96,7 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
   const activeIndex = st.active
   const markDirty = useWorkspace((s) => s.markDirty)
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null)
+  const [mathModal, setMathModal] = useState<{ mode: 'insert' | 'edit'; frameId?: number; initialSpec: LatexMathSpec } | null>(null)
   const [presenting, setPresenting] = useState<number | null>(null)
   const [findOpen, setFindOpen] = useState<false | 'find' | 'replace'>(false)
   const [matches, setMatches] = useState<{ slide: number; id: string }[]>([])
@@ -382,6 +387,33 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
     })
   }
 
+  const openMathModal = (frameId?: number) => {
+    if (frameId != null) {
+      const target = engine.elements.find((e) => Number(e.id) === frameId)
+      const parsed = parseLatexTag(target?.mathTag)
+      if (parsed) {
+        setMathModal({ mode: 'edit', frameId, initialSpec: parsed })
+        return true
+      }
+      return false
+    }
+    const sel = engine.state.frames.length === 1 ? engine.elements.find((e) => e.id === engine.state.frames[0]) : null
+    const existing = parseLatexTag(sel?.mathTag)
+    if (sel && existing) {
+      setMathModal({ mode: 'edit', frameId: Number(sel.id), initialSpec: existing })
+      return true
+    }
+    setMathModal({ mode: 'insert', initialSpec: { latex: '', display: true, fontSizePt: 28, color: '#000000' } })
+    return true
+  }
+  const openMathModalRef = useRef(openMathModal)
+  openMathModalRef.current = openMathModal
+
+  const openFrame = (id: string) => {
+    if (openMathModal(Number(id))) return true
+    return playVideo(id)
+  }
+
   // ── Right-click on the slide: the canvas picks what was clicked; the menu is ours.
   const objectMenu = (x: number, y: number) => {
     const ids = engine.state.frames
@@ -411,6 +443,9 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
       return
     }
     const el = ids.length === 1 ? engine.elements.find((e) => e.id === ids[0]) ?? null : null
+    if (el?.mathTag) {
+      items.push({ label: 'Edit equation', icon: <Sigma size={14} />, onSelect: () => openMathModal(Number(el.id)) })
+    }
     items.push({ label: 'Duplicate', icon: <Copy size={14} />, shortcut: keysFor('pptx.duplicate'), onSelect: () => engine.run({ cmd: 'duplicate' }) })
     if (croppable(el, ids.length)) items.push({ label: 'Crop', icon: <Crop size={14} />, onSelect: startCrop })
     if (ids.length > 1) items.push({ label: 'Group', icon: <Group size={14} />, shortcut: keysFor('pptx.group'), separatorBefore: true, onSelect: () => engine.run({ cmd: 'group' }) })
@@ -513,6 +548,7 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
           'pptx.notes': () => setNotesOpen((open) => !open),
           'pptx.present': () => setPresenting(deckRef.current.activeIndex),
           'pptx.present-start': () => setPresenting(0),
+          'pptx.math': () => openMathModalRef.current(),
         },
         print: () => printSlides(engine),
       }),
@@ -567,12 +603,14 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
           excelLinks={excelLinks}
           onOpenExcelModal={() => setExcelModalOpen(true)}
           onOpenExcelSource={openExcelSource}
+          onOpenMathModal={() => openMathModal()}
+          onEditMathModal={(id) => openMathModal(Number(id))}
         />
       }
     >
       <div className={`deck-stage ${crop ? 'cropping' : ''} ${scale > 1.01 ? 'slide-enlarged' : ''}`} ref={stageRef}>
         <SlideCanvas engine={engine} scale={scale} padding={40} active={active} onContextMenu={objectMenu} viewportRef={viewportRef} wrapperRef={wrapperRef} onPixelScale={(s) => (pixelScale.current = s)}
-          onOpenFrame={playVideo}
+          onOpenFrame={openFrame}
           frameOverlay={shownVideo && { id: shownVideo.id, node: <VideoFrame embed={shownVideo.embed} style={{}} onClose={() => setPlaying(null)} /> }}
         />
       </div>
@@ -630,6 +668,21 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
       {menu && <PopoverMenu anchor={menu} items={menu.items} onClose={() => setMenu(null)} />}
       {crop && <CropOverlay src={crop.src} frame={crop.frame} image={crop.image} onDone={endCrop} onCancel={() => endCrop()} />}
       <LinkExcelModal open={excelModalOpen} onClose={() => setExcelModalOpen(false)} controller={excelLinks} targetLabel="Slides" />
+      <LatexMathModal
+        open={!!mathModal}
+        mode={mathModal?.mode ?? 'insert'}
+        targetLabel="Slides"
+        initialSpec={mathModal?.initialSpec ?? { latex: '', display: true, fontSizePt: 28, color: '#000000' }}
+        onClose={() => setMathModal(null)}
+        onCommit={({ spec, omml, linear, fingerprint, width, height }) => {
+          const tag = encodeLatexTag(spec, { width, height, fingerprint })
+          if (mathModal?.mode === 'edit' && mathModal.frameId != null) {
+            engine.updateMath(mathModal.frameId, tag, omml, linear, width, height)
+          } else {
+            engine.insertMath(tag, omml, linear, width, height)
+          }
+        }}
+      />
       {presenting !== null && (
         <PresentMode
           engine={engine}
