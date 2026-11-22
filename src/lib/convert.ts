@@ -341,18 +341,31 @@ async function sheetBytesToPdf(bytes: Uint8Array, name: string): Promise<Uint8Ar
   }
 }
 
-async function imageBytesToPdf(bytes: Uint8Array, name: string): Promise<Uint8Array> {
-  const { jsPDF } = await import('jspdf')
+function isHeicBytes(bytes: Uint8Array, ext: string): boolean {
+  if (ext === 'heic' || ext === 'heif') return true
+  if (bytes.length < 12) return false
+  const box = String.fromCharCode(...bytes.slice(4, 12))
+  return box.startsWith('ftyp') && /^(hei[cmsx]|hev[cmsx]|mif1|msf1)$/.test(box.slice(4))
+}
+
+async function decodeImageToCanvas(bytes: Uint8Array, name: string): Promise<HTMLCanvasElement> {
   const ext = name.split('.').pop()?.toLowerCase() ?? 'png'
-  const mime = ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' : 'image/png'
+  const heic = isHeicBytes(bytes, ext)
+  const mime = heic
+    ? 'image/heic'
+    : ext === 'jpg' || ext === 'jpeg'
+      ? 'image/jpeg'
+      : ext === 'webp'
+        ? 'image/webp'
+        : ext === 'gif'
+          ? 'image/gif'
+          : 'image/png'
   const blob = new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime })
   const url = URL.createObjectURL(blob)
   try {
     const img = new Image()
     img.src = url
     await img.decode()
-    const wPt = Math.max(72, img.naturalWidth * PX_TO_PT)
-    const hPt = Math.max(72, img.naturalHeight * PX_TO_PT)
     const canvas = document.createElement('canvas')
     canvas.width = img.naturalWidth
     canvas.height = img.naturalHeight
@@ -360,17 +373,68 @@ async function imageBytesToPdf(bytes: Uint8Array, name: string): Promise<Uint8Ar
     ctx.fillStyle = '#ffffff'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
     ctx.drawImage(img, 0, 0)
-    const pdf = new jsPDF({
-      unit: 'pt',
-      format: [wPt, hPt],
-      orientation: wPt > hPt ? 'landscape' : 'portrait',
-      compress: true,
-    })
-    pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, wPt, hPt, undefined, 'FAST')
-    return new Uint8Array(pdf.output('arraybuffer'))
+    return canvas
+  } catch (err) {
+    if (!heic) throw err
+    // @ts-expect-error -- libheif-js ships no TypeScript declarations (see plugins/images/libheif.d.ts)
+    const mod = (await import('libheif-js/libheif-wasm/libheif-bundle.mjs')) as {
+      default: () => {
+        HeifDecoder: new () => {
+          decode(data: Uint8Array): Array<{
+            is_primary(): boolean
+            get_width(): number
+            get_height(): number
+            display(
+              buf: { data: Uint8ClampedArray; width: number; height: number },
+              cb: (out: { data: Uint8ClampedArray; width: number; height: number } | null) => void,
+            ): void
+            free(): void
+          }>
+        }
+      }
+    }
+    const decoder = new (mod.default().HeifDecoder)()
+    const images = decoder.decode(bytes)
+    if (!images.length) throw new Error('This HEIC file has no picture in it.')
+    const image = images.find((i) => i.is_primary()) ?? images[0]
+    try {
+      const width = image.get_width()
+      const height = image.get_height()
+      const imgData = await new Promise<ImageData>((resolve, reject) => {
+        image.display({ data: new Uint8ClampedArray(width * height * 4), width, height }, (data) => {
+          if (data) resolve(new ImageData(new Uint8ClampedArray(data.data), data.width, data.height))
+          else reject(new Error('Could not decode this HEIC photo.'))
+        })
+      })
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const ctx = canvas.getContext('2d')!
+      ctx.fillStyle = '#ffffff'
+      ctx.fillRect(0, 0, width, height)
+      ctx.putImageData(imgData, 0, 0)
+      return canvas
+    } finally {
+      for (const each of images) each.free()
+    }
   } finally {
     URL.revokeObjectURL(url)
   }
+}
+
+async function imageBytesToPdf(bytes: Uint8Array, name: string): Promise<Uint8Array> {
+  const { jsPDF } = await import('jspdf')
+  const canvas = await decodeImageToCanvas(bytes, name)
+  const wPt = Math.max(72, canvas.width * PX_TO_PT)
+  const hPt = Math.max(72, canvas.height * PX_TO_PT)
+  const pdf = new jsPDF({
+    unit: 'pt',
+    format: [wPt, hPt],
+    orientation: wPt > hPt ? 'landscape' : 'portrait',
+    compress: true,
+  })
+  pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, wPt, hPt, undefined, 'FAST')
+  return new Uint8Array(pdf.output('arraybuffer'))
 }
 
 // ── PDFium lossless merge & text extraction
