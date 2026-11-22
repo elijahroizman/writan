@@ -65,10 +65,14 @@ fn open_document(bytes: &[u8], name: &str) -> office_core::Result<Document> {
     Ok(doc)
 }
 
+fn cell_has_formula(c: &office_core::model::SheetCell) -> bool {
+    c.formula.is_some() || c.origin.get().is_some_and(|el| el.child(ns::X, "f").is_some())
+}
+
 fn recalculate_missing_formulas(doc: &mut Document) {
     let has_uncached = match &doc.body {
         Body::Workbook { sheets } => {
-            sheets.iter().any(|s| s.rows.iter().any(|r| r.cells.iter().any(|c| c.formula.is_some() && matches!(c.value, Value::Empty))))
+            sheets.iter().any(|s| s.rows.iter().any(|r| r.cells.iter().any(|c| cell_has_formula(c) && matches!(c.value, Value::Empty))))
         }
         _ => false,
     };
@@ -84,7 +88,7 @@ fn recalculate_missing_formulas(doc: &mut Document) {
                     let row_idx = r.index;
                     r.cells
                         .iter()
-                        .filter(|c| c.formula.is_some() && !matches!(c.value, Value::Empty))
+                        .filter(|c| cell_has_formula(c) && !matches!(c.value, Value::Empty))
                         .map(move |c| (si, row_idx, c.col, c.value.clone()))
                 })
             })
