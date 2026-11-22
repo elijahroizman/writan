@@ -2,6 +2,19 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.13.0 — 2026-11-23
+
+### Convert and export
+- **File › Convert File…** turns the open document into another format: Markdown, PDF, Word, PowerPoint, Excel, CSV or plain text, depending on what it is. Open the result in a new tab or save it to disk.
+- **Copy as Markdown (for LLMs)** and **Export as Markdown (.md)** give clean headings, lists and tables to paste into an AI chat. **Export as PDF** saves the rendered pages, charts and pictures included.
+- **Bundle Open Files to PDF…** merges the open Word, PowerPoint, Excel, Markdown, image and PDF files into one PDF, in the order you pick.
+
+### Linked Excel
+- The **Excel** button in Word and Presentations inserts a range or chart from an open Excel workbook and keeps it linked. It updates whenever the workbook changes, or when you click **Update now** in the **Linked Excel** section of the Inspector, which also opens the source workbook and unlinks.
+
+### Equations
+- **Insert LaTeX math** (⌥=) types an equation in LaTeX with a live preview and puts it inline in a Word document or on a slide. To change it, double-click it in Word, or right-click it on a slide and pick **Edit equation**. It's saved as a native equation, so Word and PowerPoint can edit it too.
+
 ## 0.12.6 — 2026-11-22
 
 ### Edit together
