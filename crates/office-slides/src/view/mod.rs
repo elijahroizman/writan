@@ -13,8 +13,7 @@ mod table_style;
 mod templates;
 mod text;
 
-use office_core::model::{Block, Body, Document, Frame, FrameContent, Kind, Paragraph, Run, RunProps, Slide, SlideSize, TextBody};
-use office_core::units::{Emu, FontSize};
+use office_core::model::{Block, Body, Document, Frame, FrameContent, Kind, Paragraph, RunProps, Slide, SlideSize, TextBody};
 use office_core::Compiler;
 use office_engine::display::{self, Item};
 use office_engine::flow;
@@ -132,45 +131,8 @@ impl SlidesView {
     pub fn blank() -> SlidesView {
         let mut doc = Document::new(Kind::Slides);
         let size = SlideSize::default();
-        let inch = |v: f64| Emu::from_inches(v);
-        let text = |s: &str, pt: f64, bold: bool, color: &str| {
-            let mut p = Paragraph::default();
-            p.content.push(office_core::model::Inline::Text(Run::new(s).with_props(RunProps {
-                size: Some(FontSize::from_points(pt)),
-                bold: bold.then_some(true),
-                color: office_core::drawing::Rgb::parse(color).map(office_core::drawing::Color::rgb),
-                font: Some("Helvetica Neue".into()),
-                ..Default::default()
-            })));
-            p
-        };
-        let boxed = |id: u32, x: f64, y: f64, w: f64, h: f64, paras: Vec<Paragraph>| {
-            Frame::text_box(
-                id,
-                office_core::drawing::Xfrm { x: inch(x), y: inch(y), width: inch(w), height: inch(h), ..Default::default() },
-                paras,
-            )
-        };
-        let title = Slide {
-            frames: vec![
-                boxed(2, 0.9, 2.6, 11.5, 1.2, vec![text("Presentation title", 48.0, true, "111111")]),
-                boxed(3, 0.9, 3.8, 11.5, 0.7, vec![text("Subtitle or presenter", 22.0, false, "6B6B70")]),
-            ],
-            ..Default::default()
-        };
-        let mut bullets = Vec::new();
-        for s in ["First point", "Second point", "Third point"] {
-            let mut p = text(s, 24.0, false, "333333");
-            commands::set_bullet(&mut p, Some(false));
-            bullets.push(p);
-        }
-        let content = Slide {
-            frames: vec![
-                boxed(2, 0.9, 0.6, 11.5, 1.0, vec![text("Slide title", 34.0, true, "111111")]),
-                boxed(3, 0.9, 1.9, 11.5, 4.2, bullets),
-            ],
-            ..Default::default()
-        };
+        let title = Slide { frames: templates::plain_title(1.0, 1.0), ..Default::default() };
+        let content = Slide { frames: templates::plain_content(1.0, 1.0), ..Default::default() };
         doc.body = Body::Slides { size, slides: vec![title, content] };
         let bytes = Compiler::new().with_layer(Decks).write(&doc, Kind::Slides).expect("a new deck writes");
         SlidesView::open(&bytes).expect("a new deck reads")

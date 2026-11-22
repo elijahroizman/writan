@@ -768,12 +768,12 @@ fn shapes_tables_and_styles() {
 fn template_slides_are_scaled_and_undo_as_one_change() {
     let mut host = FixedMeasurer::default();
     for (id, count) in [
-        ("titleAndContent", 3),
-        ("title", 3),
+        ("titleAndContent", 2),
+        ("title", 2),
         ("sectionHeader", 4),
-        ("twoContent", 4),
-        ("comparison", 6),
-        ("titleOnly", 2),
+        ("twoContent", 3),
+        ("comparison", 5),
+        ("titleOnly", 1),
         ("quote", 3),
         ("closing", 3),
         ("blank", 0),
@@ -793,6 +793,37 @@ fn template_slides_are_scaled_and_undo_as_one_change() {
         assert!(v.redo());
         assert_eq!(v.elements(&mut host, 1).len(), count);
     }
+}
+
+#[test]
+fn new_slides_are_the_plain_ones_a_new_deck_has() {
+    let mut host = FixedMeasurer::default();
+    let mut v = SlidesView::blank();
+    let shown = |v: &mut SlidesView, host: &mut FixedMeasurer, i: usize| -> Vec<String> {
+        v.elements(host, i).iter().map(|e| format!("{}:{}:{:.0},{:.0},{:.0},{:.0}", e.kind, e.text, e.x, e.y, e.width, e.height)).collect()
+    };
+    let (title, content) = (shown(&mut v, &mut host, 0), shown(&mut v, &mut host, 1));
+    v.add_template(1, "title");
+    v.add_template(2, "titleAndContent");
+    assert_eq!(shown(&mut v, &mut host, 2), title);
+    assert_eq!(shown(&mut v, &mut host, 3), content);
+    // The same words in the same font, size, weight and color.
+    let runs = |v: &SlidesView, i: usize| {
+        let mut out = Vec::new();
+        for f in &v.slides()[i].frames {
+            if let FrameContent::Shape { text: Some(body), .. } = &f.content {
+                for p in &body.paragraphs {
+                    for r in p.runs() {
+                        let pr = &r.props;
+                        out.push(format!("{}|{:?}|{:?}|{:?}|{:?}", r.text, pr.font, pr.size, pr.bold, pr.color));
+                    }
+                }
+            }
+        }
+        out
+    };
+    assert_eq!(runs(&v, 2), runs(&v, 0));
+    assert_eq!(runs(&v, 3), runs(&v, 1));
 }
 
 #[test]

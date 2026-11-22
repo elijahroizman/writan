@@ -10,6 +10,7 @@
 // speaking the same messages only changes the invite's address (see transport.ts).
 
 import { create } from 'zustand'
+import { showDialog } from '../lib/dialogs'
 import { stripExtension } from '../lib/kinds'
 import { collabHooks, getEditor, useWorkspace } from '../state/workspace'
 import { connect, findInvite, host, parseCode, parseInvite, unhost, type Invite, type Transport } from './transport'
@@ -271,6 +272,38 @@ function finish(link: Link, status: Share['status'], message: string | null) {
   update(link.tabId, { status, message, peers: [] })
 }
 
+/** The name of whoever shares a guest's document. */
+function hostOf(tabId: string): string {
+  return useCollab.getState()[tabId]?.peers.find((p) => p.host)?.name || 'The person sharing'
+}
+
+/**
+ * The person sharing a guest's tab stopped, or the guest lost them: says so, then closes the
+ * tab, since it can't follow their document any more. The guest can keep it as a copy instead.
+ */
+async function hostGone(link: Link, host: string, stopped: boolean) {
+  // An agent's copy has no tab; its agent finds out from its tools.
+  if (link.role !== 'guest' || link.agent) return
+  const tabId = link.tabId
+  const title = useWorkspace.getState().tabs.find((t) => t.id === tabId)?.title
+  if (!title) return
+  const answer = await showDialog({
+    kind: 'info',
+    title: stopped ? `${host} stopped sharing “${title}”` : `Lost the connection to ${host}`,
+    message: `${stopped ? `${host} has the file, with the changes that reached them.` : `“${title}” can’t follow ${host}’s changes any more.`} It closes here unless you keep a copy of your own.`,
+    buttons: [
+      { label: 'Keep a Copy', value: 'keep' },
+      { label: 'Close', value: 'close', primary: true },
+    ],
+    cancelValue: 'close',
+  })
+  const workspace = useWorkspace.getState()
+  if (answer !== 'close' || !workspace.tabs.some((t) => t.id === tabId)) return
+  // Nothing in it is the guest's to save: the file is the host's.
+  workspace.markDirty(tabId, false)
+  await workspace.closeTab(tabId)
+}
+
 const ERRORS: Record<string, string> = {
   'bad-token': 'This invite isn’t valid any more. Ask for a new code.',
   'no-session': 'This document isn’t being shared any more.',
@@ -343,8 +376,12 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       if (peer) place(link.tabId, peer, msg.data)
       return
     }
-    case 'end':
-      return finish(link, 'ended', 'Sharing has stopped. This is your own copy now; save it to keep it.')
+    case 'end': {
+      const host = hostOf(link.tabId)
+      finish(link, 'ended', 'Sharing has stopped. This is your own copy now; save it to keep it.')
+      void hostGone(link, host, true)
+      return
+    }
     case 'error': {
       const code = msg.code as string
       if (code === 'bad-message' && link.welcomed) return
@@ -471,7 +508,11 @@ async function follow(invite: Invite, link: Link, open: (doc: Opened) => string,
       },
       closed: (reason) => {
         if (first) reject(new Error(`Couldn’t join: ${reason}`))
-        else finish(link, 'disconnected', 'Lost the connection to the person sharing. Your copy is still here; save it to keep your changes.')
+        else if (!link.closed) {
+          const host = hostOf(link.tabId)
+          finish(link, 'disconnected', 'Lost the connection to the person sharing. Your copy is still here; save it to keep your changes.')
+          void hostGone(link, host, false)
+        }
       },
     })
       .then((t) => {
