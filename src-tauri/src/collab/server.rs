@@ -523,10 +523,15 @@ mod tests {
         server.register("doc", "tok", "hk");
         let code = server.add_code("doc", "tok").unwrap();
         let invite = codes::find(&code, &[]).unwrap();
-        assert_eq!(
-            invite,
-            format!("ws://127.0.0.1:{}/v1/doc?token=tok", codes::DISCOVERY_PORT)
-        );
+        // Whichever answers first: localhost over TCP, or the broadcast from this computer's
+        // own network address.
+        let address = invite
+            .strip_prefix("ws://")
+            .and_then(|rest| {
+                rest.strip_suffix(&format!(":{}/v1/doc?token=tok", codes::DISCOVERY_PORT))
+            })
+            .unwrap_or_else(|| panic!("{invite}"));
+        assert!(address.parse::<std::net::Ipv4Addr>().is_ok(), "{invite}");
         let wrong = if code == "000000" { "000001" } else { "000000" };
         assert!(codes::find(wrong, &[]).unwrap_err().contains("Nobody"));
     }
