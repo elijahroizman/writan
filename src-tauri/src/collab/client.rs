@@ -65,17 +65,23 @@ pub fn connect(url: &str) -> Result<Pending, String> {
             },
         )
         .ok_or(last)?;
-    let handle = stream.try_clone().map_err(|e| e.to_string())?;
-    handle
+    // Timeouts go on this socket, never a clone: on Windows a clone's don't reach it, and a
+    // read that never times out keeps the pump from sending anything (the hello included).
+    stream
         .set_read_timeout(Some(HANDSHAKE_TIMEOUT))
-        .and_then(|()| handle.set_write_timeout(Some(HANDSHAKE_TIMEOUT)))
+        .and_then(|()| stream.set_write_timeout(Some(HANDSHAKE_TIMEOUT)))
         .map_err(|e| e.to_string())?;
     let config = WebSocketConfig::default()
         .max_message_size(Some(MAX_INCOMING))
         .max_frame_size(Some(MAX_INCOMING));
     let (ws, _) = tungstenite::client_tls_with_config(request, stream, Some(config), None)
         .map_err(|e| e.to_string())?;
-    set_pump_timeouts(&handle).map_err(|e| e.to_string())?;
+    let tcp = match ws.get_ref() {
+        MaybeTlsStream::Plain(s) => s,
+        MaybeTlsStream::NativeTls(s) => s.get_ref(),
+        _ => return Err("Unexpected kind of connection.".into()),
+    };
+    set_pump_timeouts(tcp).map_err(|e| e.to_string())?;
     Ok(Pending { ws })
 }
 
