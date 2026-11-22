@@ -1503,14 +1503,18 @@ impl SlidesView {
         out
     }
 
-    // ---- inline LaTeX math ----
+    // ---- inline LaTeX math (real PowerPoint Office Math / a14:m OMML) ----
 
-    /// Inserts an inline LaTeX math equation picture on the active slide, tagged with `tag`.
-    pub fn insert_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> u32 {
+    /// Inserts a native PowerPoint Office Math (`a14:m` / `m:oMathPara`) text-box frame on the
+    /// active slide, tagged with `tag` in `p:cNvPr/@descr` so Writan renders it with MathJax and
+    /// re-edits the LaTeX source while PowerPoint opens it as a native editable equation.
+    pub fn insert_math(&mut self, tag: &str, omml_xml: &str, fallback_text: &str, width: f64, height: f64) -> u32 {
+        let Some(body) = build_slide_math_body(omml_xml, fallback_text) else {
+            return 0;
+        };
         let (w, h) = self.size();
         let k = (w * 0.8 / width.max(1.0)).min(h * 0.6 / height.max(1.0)).min(1.0);
         let (bw, bh) = ((width * k).max(8.0), (height * k).max(8.0));
-        let media = self.add_media(content_type, bytes);
         let x = ((w - bw) / 2.0).max(24.0);
         let y = ((h - bh) / 2.0).max(24.0);
         let xf = Xfrm { x: px_emu(x), y: px_emu(y), width: px_emu(bw), height: px_emu(bh), ..Default::default() };
@@ -1519,37 +1523,35 @@ impl SlidesView {
             name: "Equation".into(),
             description: Some(tag.into()),
             hidden: false,
-            shape: office_core::drawing::ShapeProps { xfrm: Some(xf.clone()), preset: Some("rect".into()), ..Default::default() },
+            shape: office_core::drawing::ShapeProps { xfrm: Some(xf), preset: Some("rect".into()), ..Default::default() },
             placeholder: None,
             link: None,
-            content: FrameContent::Picture {
-                image: Image {
-                    media,
-                    width: xf.width,
-                    height: xf.height,
-                    name: "Equation".into(),
-                    description: Some(tag.into()),
-                    origin: Origin::default(),
-                },
-            },
+            content: FrameContent::Shape { text: Some(body), connector: false },
             origin: Origin::default(),
         };
         self.insert_frame(f)
     }
 
-    /// Replaces a LaTeX math picture frame's image, tag, and dimensions in place while preserving its center position.
-    pub fn update_math_image(&mut self, id: u32, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> bool {
+    /// Replaces a LaTeX math frame's Office Math XML, tag, and dimensions in place while preserving
+    /// its center position. Accepts both OMML `<p:sp>` frames and legacy tagged `<p:pic>` frames.
+    pub fn update_math(&mut self, id: u32, tag: &str, omml_xml: &str, fallback_text: &str, width: f64, height: f64) -> bool {
         let active = self.sel.active;
         let Some(slide) = self.slides().get(active) else {
             return false;
         };
-        if !matches!(find_frame(&slide.frames, id).map(|f| &f.content), Some(FrameContent::Picture { .. })) {
+        let is_math_frame = find_frame(&slide.frames, id).is_some_and(|f| {
+            matches!(f.content, FrameContent::Shape { .. } | FrameContent::Picture { .. })
+                && f.description.as_deref().is_some_and(|d| d.starts_with(LATEX_MATH_PREFIX))
+        });
+        if !is_math_frame {
             return false;
         }
+        let Some(body) = build_slide_math_body(omml_xml, fallback_text) else {
+            return false;
+        };
         let (w, h) = self.size();
         let k = (w * 0.8 / width.max(1.0)).min(h * 0.6 / height.max(1.0)).min(1.0);
         let (bw, bh) = ((width * k).max(8.0), (height * k).max(8.0));
-        let media = self.add_media(content_type, bytes);
         let tag = tag.to_string();
         let new_w = px_emu(bw);
         let new_h = px_emu(bh);
@@ -1565,14 +1567,7 @@ impl SlidesView {
                     xf.x = Emu((cx - new_w.0 / 2).max(0));
                     xf.y = Emu((cy - new_h.0 / 2).max(0));
                 }
-                if let FrameContent::Picture { image } = &mut f.content {
-                    image.media = media.clone();
-                    image.width = new_w;
-                    image.height = new_h;
-                    image.name = "Equation".into();
-                    image.description = Some(tag.clone());
-                    image.origin = Origin::default();
-                }
+                f.content = FrameContent::Shape { text: Some(body.clone()), connector: false };
                 f.origin = Origin::default();
             }
         });
@@ -2782,4 +2777,25 @@ fn is_title_or_subtitle_frame(f: &Frame) -> bool {
         }
     }
     matches!(f.name.trim().to_ascii_lowercase().as_str(), "title" | "subtitle")
+}
+
+/// Builds a DrawingML `TextBody` containing a native PowerPoint equation:
+/// `<mc:AlternateContent><mc:Choice Requires="a14"><a14:m>...</a14:m></mc:Choice><mc:Fallback><a:r>...</a:r></mc:Fallback></mc:AlternateContent>`.
+fn build_slide_math_body(omml_xml: &str, fallback_text: &str) -> Option<TextBody> {
+    let omml = office_core::xml::parse_element(omml_xml).ok()?;
+    if !(omml.is(ns::M, "oMath") || omml.is(ns::M, "oMathPara")) {
+        return None;
+    }
+    let math_para = if omml.is(ns::M, "oMathPara") { omml } else { Element::new(ns::M, "oMathPara").with_child(omml) };
+    let a14_m = Element::new(ns::A14, "m").with_child(math_para);
+    let choice = Element::new(ns::MC, "Choice").with_attr("", "Requires", "a14").with_child(a14_m);
+    let fallback_run = Element::new(ns::A, "r")
+        .with_child(Element::new(ns::A, "rPr").with_attr("", "lang", "en-US"))
+        .with_child(Element::new(ns::A, "t").with_text(fallback_text));
+    let fallback = Element::new(ns::MC, "Fallback").with_child(fallback_run);
+    let alt = Element::new(ns::MC, "AlternateContent").with_child(choice).with_child(fallback);
+    let mut para = Paragraph::default();
+    para.props.align = Some(Align::Center);
+    para.content.push(Inline::Raw { xml: alt });
+    Some(TextBody { paragraphs: vec![para], ..Default::default() })
 }

@@ -1017,6 +1017,11 @@ impl Objects for PageObjects<'_> {
         };
         let Some(p) = pos::para(blocks, para) else { return };
         if let Some(Inline::Raw { xml }) = p.content.get(inline as usize) {
+            if let Some((tag, _, _)) = resolve::inline_latex_math(xml) {
+                let id = format!("{}:{}", para.0.iter().map(|n| n.to_string()).collect::<Vec<_>>().join("."), inline);
+                out.push(Item::Image { x, y, w, h, media: tag.to_string(), crop: None, id: Some(id) });
+                return;
+            }
             self.diagram(ctx, xml, (x, y, w, h), out);
             return;
         }
@@ -1030,6 +1035,11 @@ impl Objects for PageObjects<'_> {
     }
 
     fn preview_raw(&mut self, ctx: &mut Ctx, xml: &office_core::xml::Element, rect: display::Rect, out: &mut Vec<Item>) {
+        if let Some((tag, _, _)) = resolve::inline_latex_math(xml) {
+            let (x, y, w, h) = rect;
+            out.push(Item::Image { x, y, w, h, media: tag.to_string(), crop: None, id: None });
+            return;
+        }
         self.diagram(ctx, xml, rect, out);
     }
 }

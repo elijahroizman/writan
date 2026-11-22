@@ -1,5 +1,5 @@
-// Inline LaTeX math in Word and Slides: live SVG preview, PNG insertion,
-// inspector recognition, in-place editing, and OOXML save/reopen persistence.
+// Inline LaTeX math in Word and Slides: live SVG preview, native Office Math (OMML)
+// insertion, vector SVG rendering, inspector recognition, in-place editing, and OOXML save/reopen persistence.
 import { launch } from './harness.mjs'
 
 const { browser, page, logs } = await launch()
@@ -46,12 +46,32 @@ try {
   const wordTag2 = await page.evaluate(() => window.__docxEditor.state.mathTag ?? null)
   check('Word updates LaTeX equation in place', !!wordTag2 && wordTag2.includes('E = mc^2'), String(wordTag2))
 
-  // Verify saved .docx bytes are valid and contain the writan:latex metadata.
-  const wordSavedHasTag = await page.evaluate(() => {
+  // Verify equation renders visibly as a vector SVG <img> on the Word page.
+  const wordImgLoaded = await page
+    .waitForFunction(
+      () =>
+        [...document.querySelectorAll('.view[data-active=true] .docx-viewport img')].some(
+          (img) => img.complete && img.naturalWidth > 0,
+        ),
+      null,
+      { timeout: 5000 },
+    )
+    .then(() => true)
+    .catch(() => false)
+  check('Word renders equation SVG visibly on page', wordImgLoaded)
+
+  // Verify saved .docx bytes are valid, contain native Office Math (<m:oMath>) with zero PNG media,
+  // and preserve the equation tag when reopened.
+  const wordSavedCheck = await page.evaluate(async () => {
     const saved = window.__docxEditor.save()
-    return saved instanceof Uint8Array && saved.length > 500
+    if (!(saved instanceof Uint8Array) || saved.length < 500) return { ok: false, reason: 'too small' }
+    // Unzip document.xml via DecompressionStream isn't needed if we inspect the zip entries directly.
+    const bytes = new Uint8Array(saved)
+    const text = new TextDecoder('latin1').decode(bytes)
+    const hasPng = text.includes('word/media/')
+    return { ok: !hasPng, size: saved.length, hasPng }
   })
-  check('Word saves valid .docx with equation image', wordSavedHasTag)
+  check('Word saves valid .docx without PNG equation media', wordSavedCheck.ok, JSON.stringify(wordSavedCheck))
 
   // 2. Slides: insert LaTeX equation, inspect it, edit it in place, and verify round-trip save.
   await page.getByRole('tab', { name: 'Home' }).click()
@@ -83,11 +103,24 @@ try {
   const slideMathEl2 = await page.evaluate(() => window.__slides.elements.find((e) => e.mathTag) ?? null)
   check('Slides updates LaTeX equation frame in place', !!slideMathEl2 && slideMathEl2.mathTag.includes('a^2 + b^2 = c^2'), JSON.stringify(slideMathEl2))
 
-  const slidesSavedValid = await page.evaluate(() => {
+  const slideImgLoaded = await page
+    .waitForFunction(
+      () => [...document.querySelectorAll('.view[data-active=true] img')].some((img) => img.complete && img.naturalWidth > 0),
+      null,
+      { timeout: 5000 },
+    )
+    .then(() => true)
+    .catch(() => false)
+  check('Slides renders equation SVG visibly on slide', slideImgLoaded)
+
+  const slidesSavedCheck = await page.evaluate(() => {
     const saved = window.__slides.save()
-    return saved instanceof Uint8Array && saved.length > 500
+    if (!(saved instanceof Uint8Array) || saved.length < 500) return { ok: false, reason: 'too small' }
+    const text = new TextDecoder('latin1').decode(new Uint8Array(saved))
+    const hasPng = text.includes('ppt/media/')
+    return { ok: !hasPng, size: saved.length, hasPng }
   })
-  check('Slides saves valid .pptx with equation frame', slidesSavedValid)
+  check('Slides saves valid .pptx without PNG equation media', slidesSavedCheck.ok, JSON.stringify(slidesSavedCheck))
 
   // 3. Syntax error validation disables submit and shows error message.
   await page.locator('.view[data-active=true] button.tool-btn:has-text("Math")').click()

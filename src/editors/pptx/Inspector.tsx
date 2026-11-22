@@ -203,8 +203,8 @@ export function Inspector({
           <MathInspectorSection mathTag={el.mathTag} onEdit={() => onEditMathModal(el.id)} />
           {isTable(el) && <TableSection deck={deck} el={el} />}
           {el.type === 'group' && <GroupTextSection deck={deck} />}
-          {hasText(el) && <TextSection deck={deck} el={el} />}
-          {(el.type === 'shape' || el.type === 'text' || el.type === 'connector') && <FillSection deck={deck} el={el} />}
+          {!el.mathTag && hasText(el) && <TextSection deck={deck} el={el} />}
+          {!el.mathTag && (el.type === 'shape' || el.type === 'text' || el.type === 'connector') && <FillSection deck={deck} el={el} />}
           <ArrangeSection deck={deck} el={el} update={update} onArrange={onArrange} canArrange={canArrange} onCrop={onCrop} />
           <LinkSection deck={deck} el={el} onPlayVideo={onPlayVideo} />
         </>

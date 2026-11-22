@@ -610,6 +610,13 @@ fn raw_inline_markdown(el: &Element, footnotes: &mut Vec<String>, endnotes: &mut
     if el.is(ns::W, "del") || el.is(ns::W, "moveFrom") {
         return None;
     }
+    if el.is(ns::W, "sdt") {
+        if let Some(tag) = el.child(ns::W, "sdtPr").and_then(|pr| pr.child(ns::W, "tag")).and_then(|t| t.attr_ns(ns::W, "val")) {
+            if let Some(math_md) = latex_tag_markdown(tag) {
+                return Some(math_md);
+            }
+        }
+    }
     if math::is_math(el) {
         let eq = math::linear(el);
         let eq = eq.trim();
@@ -840,6 +847,13 @@ fn slide_reading_order(frames: &[Frame]) -> Vec<&Frame> {
 }
 
 fn slide_frame_markdown(f: &Frame, out: &mut String) {
+    if let Some(desc) = f.description.as_deref().map(str::trim) {
+        if let Some(math_md) = latex_tag_markdown(desc) {
+            out.push_str(&math_md);
+            out.push_str("\n\n");
+            return;
+        }
+    }
     match &f.content {
         FrameContent::Shape { text: Some(body), .. } => {
             for p in &body.paragraphs {

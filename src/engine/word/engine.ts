@@ -6,6 +6,7 @@ import { host, onFontsChanged, preloadFonts } from '../host'
 import { expectKind, loadEngine } from '../load'
 import { BASE_FONTS } from '../preload'
 import { MediaCache, StyleSheet } from '../paint'
+import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
 import type { WordDoc } from '../wasm/office_wasm'
 
 export interface WordState {
@@ -142,6 +143,9 @@ export class WordEngine {
     this.doc = doc
     this.styles = new StyleSheet(`w${++sheets}s`)
     this.media = new MediaCache((id) => {
+      if (id.startsWith(LATEX_MATH_PREFIX)) {
+        return renderLatexTagToSvgBytes(id)
+      }
       const bytes = this.doc.media(id)
       return bytes ? { bytes, type: this.doc.mediaType(id) ?? 'image/png' } : null
     })
@@ -303,13 +307,14 @@ export class WordEngine {
     return JSON.parse(this.doc.linkedTags()) as string[]
   }
 
-  insertMathImage(tag: string, bytes: Uint8Array, contentType: string, width: number, height: number) {
-    this.doc.insertMathImage(tag, bytes, contentType, width, height)
-    this.refresh()
+  insertMath(tag: string, ommlXml: string): boolean {
+    const ok = this.doc.insertMath(tag, ommlXml)
+    if (ok) this.refresh()
+    return ok
   }
 
-  updateSelectedMathImage(tag: string, bytes: Uint8Array, contentType: string, width: number, height: number): boolean {
-    const ok = this.doc.updateSelectedMathImage(tag, bytes, contentType, width, height)
+  updateSelectedMath(tag: string, ommlXml: string): boolean {
+    const ok = this.doc.updateSelectedMath(tag, ommlXml)
     if (ok) this.refresh()
     return ok
   }

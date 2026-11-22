@@ -3,7 +3,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { shortcut } from '../lib/platform'
 import type { LatexMathSpec } from './latexMath'
-import { LATEX_SNIPPETS, normalizeHexColor, renderLatexToPng, renderLatexToSvg } from './latexMath'
+import { LATEX_SNIPPETS, normalizeHexColor, renderLatexToSvg } from './latexMath'
+import { latexToOmml } from './omml'
 
 const COLOR_SWATCHES = ['#000000', '#FFFFFF', '#1E40AF', '#DC2626', '#15803D', '#7C3AED']
 
@@ -22,7 +23,7 @@ export interface LatexMathModalProps {
   targetLabel: 'Word' | 'Slides'
   initialSpec: LatexMathSpec
   onClose: () => void
-  onCommit: (result: { spec: LatexMathSpec; bytes: Uint8Array; width: number; height: number }) => void
+  onCommit: (result: { spec: LatexMathSpec; omml: string; linear: string; width: number; height: number }) => void
 }
 
 export function LatexMathModal({ open, mode, targetLabel, initialSpec, onClose, onCommit }: LatexMathModalProps) {
@@ -99,13 +100,14 @@ export function LatexMathModal({ open, mode, targetLabel, initialSpec, onClose, 
     })
   }
 
-  const handleSubmit = async () => {
-    if (!canSubmit) return
+  const handleSubmit = () => {
+    if (!canSubmit || !preview) return
     setBusy(true)
     setSubmitError(null)
     try {
-      const rendered = await renderLatexToPng(spec)
-      onCommit({ spec, ...rendered })
+      const target = targetLabel === 'Word' ? 'word' : 'slides'
+      const { omml, linear } = latexToOmml(spec, target)
+      onCommit({ spec, omml, linear, width: preview.width, height: preview.height })
       onClose()
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : String(err))

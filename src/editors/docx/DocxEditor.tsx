@@ -361,14 +361,14 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
           setMathModal(null)
           editorRef.current?.focus()
         }}
-        onCommit={({ spec, bytes, width, height }) => {
+        onCommit={({ spec, omml, width, height }) => {
           const ed = editorRef.current
           if (!ed) return
-          const tag = encodeLatexTag(spec)
+          const tag = encodeLatexTag(spec, { width, height })
           if (mathModal?.mode === 'edit') {
-            ed.updateSelectedMathImage(tag, bytes, 'image/png', width, height)
+            ed.updateSelectedMath(tag, omml)
           } else {
-            ed.insertMathImage(tag, bytes, 'image/png', width, height)
+            ed.insertMath(tag, omml)
           }
           ed.focus()
         }}

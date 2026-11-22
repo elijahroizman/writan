@@ -674,12 +674,12 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
         targetLabel="Slides"
         initialSpec={mathModal?.initialSpec ?? { latex: '', display: true, fontSizePt: 28, color: '#000000' }}
         onClose={() => setMathModal(null)}
-        onCommit={({ spec, bytes, width, height }) => {
-          const tag = encodeLatexTag(spec)
+        onCommit={({ spec, omml, linear, width, height }) => {
+          const tag = encodeLatexTag(spec, { width, height })
           if (mathModal?.mode === 'edit' && mathModal.frameId != null) {
-            engine.updateMathImage(mathModal.frameId, tag, bytes, 'image/png', width, height)
+            engine.updateMath(mathModal.frameId, tag, omml, linear, width, height)
           } else {
-            engine.insertMathImage(tag, bytes, 'image/png', width, height)
+            engine.insertMath(tag, omml, linear, width, height)
           }
         }}
       />

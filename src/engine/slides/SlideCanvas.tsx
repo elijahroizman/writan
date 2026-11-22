@@ -157,6 +157,7 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
     const hit = run<string | null>({ cmd: 'press', x: p.x, y: p.y, additive })
     if (hit && e.detail >= 2) {
       const el = engine.elements.find((x) => x.id === hit)
+      if (!additive && el?.mathTag && onOpenFrame?.(hit)) return
       if (el && (el.type === 'text' || el.type === 'shape' || el.type === 'table')) {
         run({ cmd: 'beginEdit', id: Number(hit), x: p.x, y: p.y })
         return

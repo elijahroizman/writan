@@ -14,6 +14,8 @@ pub const XDR: &str = "http://schemas.openxmlformats.org/drawingml/2006/spreadsh
 pub const C: &str = "http://schemas.openxmlformats.org/drawingml/2006/chart";
 /// Office Math (OMML), Word's equations.
 pub const M: &str = "http://schemas.openxmlformats.org/officeDocument/2006/math";
+/// DrawingML 2010 extensions (used for PowerPoint native `a14:m` math blocks).
+pub const A14: &str = "http://schemas.microsoft.com/office/drawing/2010/main";
 /// SmartArt's data, layout, colors and style parts.
 pub const DGM: &str = "http://schemas.openxmlformats.org/drawingml/2006/diagram";
 /// The drawing Office caches for a SmartArt diagram.
@@ -44,6 +46,8 @@ pub fn prefix_for(uri: &str) -> Option<&'static str> {
         WP => "wp",
         XDR => "xdr",
         C => "c",
+        M => "m",
+        A14 => "a14",
         MC => "mc",
         CP => "cp",
         DC => "dc",

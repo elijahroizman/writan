@@ -28,16 +28,22 @@ interface StoredLatexPayload {
   display?: boolean
   fontSizePt?: number
   color?: string
+  w?: number
+  h?: number
 }
 
-/** Encodes a LaTeX equation specification into an OOXML alt-text tag (`wp:docPr/@descr` or `p:cNvPr/@descr`). */
-export function encodeLatexTag(spec: LatexMathSpec): string {
+/** Encodes a LaTeX equation specification (and optional rendered CSS-px size) into an OOXML metadata tag. */
+export function encodeLatexTag(spec: LatexMathSpec, dims?: { width: number; height: number }): string {
   const payload: StoredLatexPayload = {
     v: 1,
     latex: spec.latex,
     display: spec.display,
     fontSizePt: Math.round(spec.fontSizePt * 10) / 10,
     color: normalizeHexColor(spec.color),
+  }
+  if (dims && Number.isFinite(dims.width) && dims.width > 0 && Number.isFinite(dims.height) && dims.height > 0) {
+    payload.w = Math.round(dims.width * 10) / 10
+    payload.h = Math.round(dims.height * 10) / 10
   }
   return `${LATEX_MATH_PREFIX}${JSON.stringify(payload)}`
 }
@@ -164,42 +170,15 @@ export function renderLatexToSvg(spec: LatexMathSpec): RenderedLatexSvg {
 }
 
 /**
- * Renders LaTeX math to a crisp high-DPI transparent PNG for embedding in Word (.docx) and Slides (.pptx).
- * Embeds cleanly in Writan, Microsoft Office, Apple Keynote, and LibreOffice.
+ * Synchronously renders a `writan:latex:...` metadata tag to UTF-8 SVG bytes for display in Writan's
+ * Word and Slides `MediaCache`. Saved `.docx`/`.pptx` files store real Office Math (OMML), not images.
  */
-export async function renderLatexToPng(
-  spec: LatexMathSpec,
-  scale = 3,
-): Promise<{ bytes: Uint8Array; width: number; height: number }> {
+export function renderLatexTagToSvgBytes(tag: string): { bytes: Uint8Array; type: string } | null {
+  const spec = parseLatexTag(tag)
+  if (!spec) return null
   const rendered = renderLatexToSvg(spec)
-  if (rendered.error || !rendered.svg) {
-    throw new Error(rendered.error ?? 'Failed to render LaTeX equation.')
-  }
-  const { svg, width, height } = rendered
-  const blob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
-  const url = URL.createObjectURL(blob)
-  try {
-    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-      const el = new Image()
-      el.onload = () => resolve(el)
-      el.onerror = () => reject(new Error('Failed to rasterize equation image.'))
-      el.src = url
-    })
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, Math.round(width * scale))
-    canvas.height = Math.max(1, Math.round(height * scale))
-    const ctx = canvas.getContext('2d')
-    if (!ctx) throw new Error('Canvas 2D context unavailable.')
-    ctx.clearRect(0, 0, canvas.width, canvas.height)
-    ctx.scale(scale, scale)
-    ctx.drawImage(img, 0, 0, width, height)
-    const pngBlob = await new Promise<Blob>((resolve, reject) => {
-      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode equation PNG.'))), 'image/png')
-    })
-    return { bytes: new Uint8Array(await pngBlob.arrayBuffer()), width, height }
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+  if (rendered.error || !rendered.svg) return null
+  return { bytes: new TextEncoder().encode(rendered.svg), type: 'image/svg+xml' }
 }
 
 export interface LatexSnippet {

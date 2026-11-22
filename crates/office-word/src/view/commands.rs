@@ -1875,45 +1875,57 @@ impl WordView {
         out
     }
 
-    // ---- inline LaTeX math ----
+    // ---- inline LaTeX math (real Office Math / OMML) ----
 
-    /// Inserts an inline LaTeX math equation image tagged with `tag` in its `description`.
-    pub fn insert_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) {
-        let max_w = self.sections.first().map(|s| emu_px(s.section.text_width())).unwrap_or(600.0);
-        let k = if width > max_w && width > 0.0 { max_w / width } else { 1.0 };
-        let media = self.add_media(content_type, bytes);
-        let img = Image {
-            media,
-            width: Emu::from_pixels((width * k).max(1.0)),
-            height: Emu::from_pixels((height * k).max(1.0)),
-            name: "Equation".into(),
-            description: Some(tag.into()),
-            origin: Origin::default(),
-        };
-        let sel = self.sel.clone();
-        let e = self.replace_sel(&sel, |root, at| edit::insert_inline(root, at, Inline::Image(img)));
-        self.apply_edit(e, None);
+    /// The selected inline LaTeX Office Math equation (`<w:sdt>` wrapping `<m:oMath>` / `<m:oMathPara>`).
+    pub fn selected_math_raw(&self) -> Option<(Path, usize, &str)> {
+        let (from, to) = self.sel.ordered();
+        if from.path != to.path {
+            return None;
+        }
+        let p = pos::para(self.blocks(self.story), &from.path)?;
+        let (i, at) = text::inline_at(p, from.offset)?;
+        match p.content.get(i)? {
+            Inline::Raw { xml } if at == from.offset && to.offset == from.offset + text::inline_len(&p.content[i]) => {
+                let tag = super::resolve::inline_latex_math_tag(xml)?;
+                Some((from.path, i, tag))
+            }
+            _ => None,
+        }
     }
 
-    /// Replaces the currently selected inline LaTeX math image in place with updated bytes, dimensions, and tag.
-    pub fn update_selected_math_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str, width: f64, height: f64) -> bool {
-        let Some((path, i, _)) = self.selected_image() else {
+    /// Inserts an inline Office Math (`m:oMath` / `m:oMathPara`) equation wrapped in a `<w:sdt>`
+    /// content control carrying `tag` in `<w:sdtPr><w:tag w:val="..."/>` so it opens as a native
+    /// editable equation in Microsoft Word while preserving the LaTeX source for Writan.
+    pub fn insert_math(&mut self, tag: &str, omml_xml: &str) -> bool {
+        let Some(sdt) = build_math_sdt(tag, omml_xml) else {
             return false;
         };
-        let max_w = self.sections.first().map(|s| emu_px(s.section.text_width())).unwrap_or(600.0);
-        let k = if width > max_w && width > 0.0 { max_w / width } else { 1.0 };
-        let media = self.add_media(content_type, bytes);
-        let w_emu = Emu::from_pixels((width * k).max(1.0));
-        let h_emu = Emu::from_pixels((height * k).max(1.0));
+        let sel = self.sel.clone();
+        let e = self.replace_sel(&sel, |root, at| edit::insert_inline(root, at, Inline::Raw { xml: sdt.clone() }));
+        self.apply_edit(e, None);
+        true
+    }
+
+    /// Replaces the currently selected LaTeX equation (OMML `<w:sdt>` or legacy tagged image) in place.
+    pub fn update_selected_math(&mut self, tag: &str, omml_xml: &str) -> bool {
+        let target = if let Some((path, i, _)) = self.selected_math_raw() {
+            Some((path, i))
+        } else {
+            self.selected_image()
+                .filter(|(_, _, img)| img.description.as_deref().is_some_and(|t| t.starts_with(LATEX_MATH_PREFIX)))
+                .map(|(path, i, _)| (path, i))
+        };
+        let Some((path, i)) = target else {
+            return false;
+        };
+        let Some(sdt) = build_math_sdt(tag, omml_xml) else {
+            return false;
+        };
         let root = self.blocks_mut(self.story);
         let Some(s) = edit::change_para(root, &path, |p| {
-            if let Some(Inline::Image(img)) = p.content.get_mut(i) {
-                img.media = media.clone();
-                img.width = w_emu;
-                img.height = h_emu;
-                img.name = "Equation".into();
-                img.description = Some(tag.into());
-                img.origin = Origin::default();
+            if let Some(slot) = p.content.get_mut(i) {
+                *slot = Inline::Raw { xml: sdt.clone() };
             }
         }) else {
             return false;
@@ -2485,4 +2497,17 @@ fn collect_linked_tags(blocks: &[Block], out: &mut Vec<String>) {
             Block::Raw { .. } => {}
         }
     }
+}
+
+/// Builds a `<w:sdt>` inline content control wrapping parsed Office Math (`<m:oMath>` or `<m:oMathPara>`),
+/// storing the Writan LaTeX tag in `<w:sdtPr><w:tag w:val="..."/>`.
+fn build_math_sdt(tag: &str, omml_xml: &str) -> Option<Element> {
+    let omml = office_core::xml::parse_element(omml_xml).ok()?;
+    if !super::math::is_math(&omml) {
+        return None;
+    }
+    let tag_el = Element::new(ns::W, "tag").with_attr(ns::W, "val", tag);
+    let sdt_pr = Element::new(ns::W, "sdtPr").with_child(tag_el);
+    let sdt_content = Element::new(ns::W, "sdtContent").with_child(omml);
+    Some(Element::new(ns::W, "sdt").with_child(sdt_pr).with_child(sdt_content))
 }
