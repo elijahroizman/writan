@@ -8,6 +8,8 @@ import { Explorer, startFolderPalette } from './components/Explorer'
 import { Home } from './components/Home'
 import { showVersionHistory, useVersionHistory, VersionHistory } from './components/VersionHistory'
 import { NewFilePicker, useNewFile } from './components/NewFile'
+import { ConvertModal, useConvertDialog } from './components/ConvertDialog'
+import { canExportMarkdown, canIncludeInPdfBundle, convertAndDeliver, copyTabAsMarkdown, targetsForKind } from './lib/convert'
 import { TexInstall, TexRemove } from './components/TexInstall'
 import { Dialogs } from './components/Dialogs'
 import { canShare, JoinDialog, showJoinDialog, showSharePanel, useSharePanel } from './components/Share'
@@ -283,6 +285,27 @@ export async function runCommand(id: string) {
     case 'save-as':
       await ws.save(undefined, { saveAs: true })
       break
+    case 'convert-file':
+      useConvertDialog.getState().openConvert(ws.activeId === HOME_TAB_ID ? null : ws.activeId)
+      break
+    case 'copy-markdown': {
+      try {
+        const md = await copyTabAsMarkdown()
+        if (md === null) await platform.showMessage('Open a Word, PowerPoint, Excel, CSV, PDF, or text document to copy as Markdown.', 'Copy as Markdown')
+      } catch (err) {
+        await platform.showError(err instanceof Error ? err.message : String(err), 'Couldn’t copy Markdown')
+      }
+      break
+    }
+    case 'export-markdown':
+      await convertAndDeliver(undefined, 'md', 'open')
+      break
+    case 'export-pdf':
+      await convertAndDeliver(undefined, 'pdf', 'open')
+      break
+    case 'bundle-pdf':
+      useConvertDialog.getState().openBundle()
+      break
     case 'revert':
       await ws.revert()
       break
@@ -450,6 +473,16 @@ export function commandAvailable(command: string) {
     case 'close-tab':
     case 'duplicate-tab':
       return !!tab
+    case 'convert-file':
+      return !!tab && targetsForKind(tab.kind).length > 0
+    case 'copy-markdown':
+      return !!tab && canExportMarkdown(tab.kind)
+    case 'export-markdown':
+      return !!tab && targetsForKind(tab.kind).some((t) => t.format === 'md')
+    case 'export-pdf':
+      return !!tab && targetsForKind(tab.kind).some((t) => t.format === 'pdf')
+    case 'bundle-pdf':
+      return ws.tabs.some((t) => canIncludeInPdfBundle(t.kind))
     case 'revert':
     case 'reveal':
       return !!tab?.path && !tab.path.startsWith('browser:')
@@ -495,6 +528,7 @@ export default function App() {
   const settingsOpen = useSettings((s) => s.open)
   const setupOpen = useSetup((s) => s.open)
   const newFileOpen = useNewFile((s) => s.open)
+  const convertOpen = useConvertDialog((s) => s.open)
   const paletteOpen = usePalette((s) => s.open)
   const historyOpen = useVersionHistory((s) => !!s.tabId)
   const texOffer = useTex((s) => s.offer)
@@ -676,6 +710,7 @@ export default function App() {
         </Suspense>
       )}
       {newFileOpen && <NewFilePicker />}
+      {convertOpen && <ConvertModal />}
       {paletteOpen && <CommandPalette />}
       {historyOpen && <VersionHistory />}
       {setupOpen && (

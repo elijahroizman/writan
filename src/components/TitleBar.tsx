@@ -1,4 +1,4 @@
-import { Check, CircleAlert, Columns2, Copy, FolderOpen, History, LayoutGrid, Plus, Save, SaveOff, Users, X } from 'lucide-react'
+import { ArrowRightLeft, Check, CircleAlert, ClipboardCopy, Columns2, Copy, FileStack, FolderOpen, History, LayoutGrid, Plus, Save, SaveOff, Users, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { autosaveBlock, useAutosaveStatus } from '../lib/autosave'
 import { isMac, isTauri, revealInFinder, revealLabel, shortcut, tildify } from '../lib/platform'
@@ -9,6 +9,8 @@ import { HOME_TAB_ID, SPLIT_KINDS, useWorkspace } from '../state/workspace'
 import type { DocKind } from '../lib/kinds'
 import { pickSplit } from '../App'
 import { keeperOf, useCollab } from '../collab/session'
+import { canExportMarkdown, canIncludeInPdfBundle, copyTabAsMarkdown, targetsForKind } from '../lib/convert'
+import { useConvertDialog } from './ConvertDialog'
 import { canShare, ShareButton, showSharePanel } from './Share'
 import { UpdateButton } from './UpdateButton'
 import { showVersionHistory } from './VersionHistory'
@@ -174,6 +176,34 @@ export function TitleBar() {
                 ? [{ label: 'Open to the side…', icon: <Columns2 size={14} />, onSelect: () => void openBeside(tabMenu.id) }]
                 : []),
             ...(canShare(tabMenu.id) ? [{ label: shared[tabMenu.id] ? 'Sharing…' : 'Share on your network…', icon: <Users size={14} />, onSelect: () => showSharePanel(tabMenu.id) }] : []),
+            ...(() => {
+              const t = tabs.find((x) => x.id === tabMenu.id)
+              if (!t) return []
+              const out: { label: string; icon?: React.ReactNode; separatorBefore?: boolean; onSelect(): void }[] = []
+              if (targetsForKind(t.kind).length > 0) {
+                out.push({
+                  label: 'Convert file…',
+                  icon: <ArrowRightLeft size={14} />,
+                  separatorBefore: true,
+                  onSelect: () => useConvertDialog.getState().openConvert(t.id),
+                })
+              }
+              if (canExportMarkdown(t.kind)) {
+                out.push({
+                  label: 'Copy as Markdown (LLM)',
+                  icon: <ClipboardCopy size={14} />,
+                  onSelect: () => void copyTabAsMarkdown(t.id),
+                })
+              }
+              if (tabs.some((x) => canIncludeInPdfBundle(x.kind))) {
+                out.push({
+                  label: 'Bundle open files to PDF…',
+                  icon: <FileStack size={14} />,
+                  onSelect: () => useConvertDialog.getState().openBundle(),
+                })
+              }
+              return out
+            })(),
             ...(isTauri && tabs.find((t) => t.id === tabMenu.id)?.path
               ? [
                   { label: revealLabel, icon: <FolderOpen size={14} />, onSelect: () => void revealInFinder(tabs.find((t) => t.id === tabMenu.id)!.path!) },

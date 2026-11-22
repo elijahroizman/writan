@@ -7,10 +7,12 @@
 use office_engine::measure::{Font, Measurer, Metrics};
 use wasm_bindgen::prelude::*;
 
+mod convert;
 mod sheets;
 mod slides;
 mod word;
 
+pub use convert::{convert_document, to_markdown};
 pub use sheets::SheetsDoc;
 pub use slides::SlidesDoc;
 pub use word::WordDoc;

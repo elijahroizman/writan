@@ -7,7 +7,7 @@ mod collab;
 mod commands;
 pub mod extras;
 mod fingerprint;
-mod math;
+pub mod math;
 mod paginate;
 pub mod resolve;
 mod state;
