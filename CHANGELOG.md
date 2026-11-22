@@ -2,6 +2,11 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.12.4 — 2026-11-22
+
+### Edit together
+- **Join a shared document…** now says it takes the link as well as the code, so the link from **Copy the link instead** has somewhere to go. Use it when the code can't find the person sharing, for example on another part of an office network.
+
 ## 0.12.3 — 2026-11-22
 
 ### Edit together

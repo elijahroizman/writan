@@ -334,13 +334,13 @@ export function JoinDialog() {
       >
         <div className="dialog-text">
           <h2 id="join-title">Join a shared document</h2>
-          <p>Type the code the person sharing sees in their Share panel. You both need to be on the same network.</p>
+          <p>Type the code the person sharing sees in their Share panel, or paste the link they copied. You both need to be on the same network.</p>
         </div>
         <div className="share-body">
           <TextField
-            label="Code"
+            label="Code or link"
             value={code}
-            placeholder="123 456"
+            placeholder="123 456 or ws://…"
             autoFocus
             autoComplete="off"
             spellCheck={false}
