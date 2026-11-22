@@ -153,14 +153,8 @@ fn word_to_markdown(doc: &Document, blocks: &[Block]) -> String {
                     in_code_block = false;
                 }
 
-                let (text, has_page_break) = render_paragraph_inlines(
-                    doc,
-                    p,
-                    heading.is_some(),
-                    false,
-                    &mut referenced_footnotes,
-                    &mut referenced_endnotes,
-                );
+                let (text, has_page_break) =
+                    render_paragraph_inlines(doc, p, heading.is_some(), false, &mut referenced_footnotes, &mut referenced_endnotes);
                 let trimmed = text.trim();
 
                 if trimmed.is_empty() {
@@ -444,11 +438,7 @@ fn render_paragraph_inlines(
                 let link = r.link.as_ref().and_then(|l| l.url.clone()).filter(|u| !u.is_empty());
                 let fmt = InlineFmt { bold, italic, strike, code, link };
 
-                let text = if in_table {
-                    r.text.replace('\n', "<br>").replace('\t', " ")
-                } else {
-                    r.text.replace('\t', " ")
-                };
+                let text = if in_table { r.text.replace('\n', "<br>").replace('\t', " ") } else { r.text.replace('\t', " ") };
 
                 if cur_fmt.as_ref() == Some(&fmt) {
                     cur_buf.push_str(&text);
@@ -674,11 +664,7 @@ fn slides_to_markdown(doc: &Document, slides: &[Slide]) -> String {
         }
 
         let notes = office_slides::notes(doc, idx);
-        let note_text: Vec<String> = notes
-            .iter()
-            .map(|p| p.plain_text().trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        let note_text: Vec<String> = notes.iter().map(|p| p.plain_text().trim().to_string()).filter(|s| !s.is_empty()).collect();
         if !note_text.is_empty() {
             out.push_str("> **Notes:** ");
             out.push_str(&note_text.join(" "));
@@ -825,14 +811,8 @@ fn normalize_markdown(s: &str) -> String {
 
 fn plain_text_to_word(text: &str) -> Document {
     let mut doc = Document::new(Kind::Word);
-    let blocks: Vec<Block> = text
-        .replace("\r\n", "\n")
-        .split('\n')
-        .map(|line| Block::Paragraph(Paragraph::text(line)))
-        .collect();
-    doc.body = Body::Flow {
-        blocks: if blocks.is_empty() { vec![Block::Paragraph(Paragraph::default())] } else { blocks },
-    };
+    let blocks: Vec<Block> = text.replace("\r\n", "\n").split('\n').map(|line| Block::Paragraph(Paragraph::text(line))).collect();
+    doc.body = Body::Flow { blocks: if blocks.is_empty() { vec![Block::Paragraph(Paragraph::default())] } else { blocks } };
     doc
 }
 
@@ -866,10 +846,7 @@ pub fn markdown_to_word(md: &str) -> Document {
                     size: Some(FontSize(20)),
                     ..Default::default()
                 });
-                blocks.push(Block::Paragraph(Paragraph {
-                    content: vec![Inline::Text(run)],
-                    ..Default::default()
-                }));
+                blocks.push(Block::Paragraph(Paragraph { content: vec![Inline::Text(run)], ..Default::default() }));
                 i += 1;
             }
             if i < owned_lines.len() {
@@ -1040,10 +1017,7 @@ fn parse_inline_markdown(input: &str) -> Paragraph {
             if let Some(end) = input[i + 1..].find('`') {
                 flush_plain(&mut plain, &mut content);
                 let code = &input[i + 1..i + 1 + end];
-                content.push(Inline::Text(Run::new(code).with_props(RunProps {
-                    font: Some("Consolas".into()),
-                    ..Default::default()
-                })));
+                content.push(Inline::Text(Run::new(code).with_props(RunProps { font: Some("Consolas".into()), ..Default::default() })));
                 i += end + 2;
                 continue;
             }
@@ -1081,10 +1055,9 @@ fn parse_inline_markdown(input: &str) -> Paragraph {
         if input[i..].starts_with("**") {
             if let Some(end) = input[i + 2..].find("**") {
                 flush_plain(&mut plain, &mut content);
-                content.push(Inline::Text(Run::new(&input[i + 2..i + 2 + end]).with_props(RunProps {
-                    bold: Some(true),
-                    ..Default::default()
-                })));
+                content.push(Inline::Text(
+                    Run::new(&input[i + 2..i + 2 + end]).with_props(RunProps { bold: Some(true), ..Default::default() }),
+                ));
                 i += end + 4;
                 continue;
             }
@@ -1093,10 +1066,9 @@ fn parse_inline_markdown(input: &str) -> Paragraph {
         if input[i..].starts_with("~~") {
             if let Some(end) = input[i + 2..].find("~~") {
                 flush_plain(&mut plain, &mut content);
-                content.push(Inline::Text(Run::new(&input[i + 2..i + 2 + end]).with_props(RunProps {
-                    strike: Some(Strike::Single),
-                    ..Default::default()
-                })));
+                content.push(Inline::Text(
+                    Run::new(&input[i + 2..i + 2 + end]).with_props(RunProps { strike: Some(Strike::Single), ..Default::default() }),
+                ));
                 i += end + 4;
                 continue;
             }
@@ -1106,10 +1078,9 @@ fn parse_inline_markdown(input: &str) -> Paragraph {
             if let Some(end) = input[i + 1..].find('*') {
                 if end > 0 {
                     flush_plain(&mut plain, &mut content);
-                    content.push(Inline::Text(Run::new(&input[i + 1..i + 1 + end]).with_props(RunProps {
-                        italic: Some(true),
-                        ..Default::default()
-                    })));
+                    content.push(Inline::Text(
+                        Run::new(&input[i + 1..i + 1 + end]).with_props(RunProps { italic: Some(true), ..Default::default() }),
+                    ));
                     i += end + 2;
                     continue;
                 }
