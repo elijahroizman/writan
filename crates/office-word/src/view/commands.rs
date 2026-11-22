@@ -1743,36 +1743,42 @@ impl WordView {
             .unwrap_or(Emu::from_inches(6.27));
         let table = build_linked_table(tag, rows, width);
         let sel = self.sel.clone();
-        let mut e = self.replace_sel(&sel, |root, at| edit::insert_blocks(root, at, vec![Block::Table(table)]));
+        let mut e = self
+            .replace_sel(&sel, |root, at| edit::insert_blocks(root, at, vec![Block::Table(table), Block::Paragraph(Paragraph::default())]));
         if let Some(Splice { container, index, inserted, .. }) = e.splices.last() {
             if let Some(off) = inserted.iter().position(|b| matches!(b, Block::Table(_))) {
                 let mut c = container.clone();
-                c.extend([index + off as u32, 0, 0, 0]);
+                c.push(index + off as u32 + 1);
                 e.selection = Some(Selection::caret(Pos::new(Path(c), 0)));
             }
         }
         self.apply_edit(e, None);
     }
 
-    /// Updates the Word table carrying `tag` in place; returns whether it was found.
+    /// Updates every Word table carrying `tag` in place; returns whether any was found.
     pub fn update_linked_table(&mut self, tag: &str, rows: &[Vec<LinkedCell>]) -> bool {
         if rows.is_empty() {
             return false;
         }
-        let Some((path, width)) = find_linked_table(self.blocks(StoryId::Body), tag) else { return false };
-        let table = build_linked_table(tag, rows, width);
-        let root = self.blocks_mut(StoryId::Body);
-        let s = edit::replace(root, path.container(), path.block(), 1, vec![Block::Table(table)]);
+        let matches = find_all_linked_tables(self.blocks(StoryId::Body), tag);
+        if matches.is_empty() {
+            return false;
+        }
+        let mut splices = Vec::with_capacity(matches.len());
+        let mut sel_after = None;
+        for (path, width) in matches {
+            let table = build_linked_table(tag, rows, width);
+            let root = self.blocks_mut(StoryId::Body);
+            splices.push(edit::replace(root, path.container(), path.block(), 1, vec![Block::Table(table)]));
+            if self.sel.focus.path.0.starts_with(&path.0) {
+                let mut c = path.0.clone();
+                c.extend([0, 0, 0]);
+                sel_after = Some(Selection::caret(Pos::new(Path(c), 0)));
+            }
+        }
         let prev_story = self.story;
         self.story = StoryId::Body;
-        let sel_after = if self.sel.focus.path.0.starts_with(&path.0) {
-            let mut c = path.0.clone();
-            c.extend([0, 0, 0]);
-            Some(Selection::caret(Pos::new(Path(c), 0)))
-        } else {
-            None
-        };
-        self.record(vec![s], sel_after, None);
+        self.record(splices, sel_after, None);
         self.story = prev_story;
         true
     }
@@ -1795,32 +1801,42 @@ impl WordView {
         self.apply_edit(e, None);
     }
 
-    /// Replaces the image bytes of the inline picture carrying `tag` in place, keeping its display size.
+    /// Replaces the image bytes of every inline picture carrying `tag` in place, keeping its display size.
     pub fn update_linked_image(&mut self, tag: &str, bytes: Vec<u8>, content_type: &str) -> bool {
-        let Some((path, inline_index)) = find_linked_image(self.blocks(StoryId::Body), tag) else { return false };
-        let media = self.add_media(content_type, bytes);
-        let root = self.blocks_mut(StoryId::Body);
-        if let Some(s) = edit::change_para(root, &path, |p| {
-            if let Some(Inline::Image(img)) = p.content.get_mut(inline_index) {
-                img.media = media.clone();
-            }
-        }) {
-            let prev_story = self.story;
-            self.story = StoryId::Body;
-            self.record(vec![s], None, None);
-            self.story = prev_story;
-            return true;
+        let matches = find_all_linked_images(self.blocks(StoryId::Body), tag);
+        if matches.is_empty() {
+            return false;
         }
-        false
+        let media = self.add_media(content_type, bytes);
+        let mut splices = Vec::new();
+        for (path, inline_index) in matches {
+            let root = self.blocks_mut(StoryId::Body);
+            if let Some(s) = edit::change_para(root, &path, |p| {
+                if let Some(Inline::Image(img)) = p.content.get_mut(inline_index) {
+                    img.media = media.clone();
+                }
+            }) {
+                splices.push(s);
+            }
+        }
+        if splices.is_empty() {
+            return false;
+        }
+        let prev_story = self.story;
+        self.story = StoryId::Body;
+        self.record(splices, None, None);
+        self.story = prev_story;
+        true
     }
 
-    /// Removes `tag` from its table or image so the object stays in the document as normal content.
+    /// Removes `tag` from every table or image carrying it so the objects stay in the document as normal content.
     pub fn clear_link_tag(&mut self, tag: &str) -> bool {
-        if let Some((path, _)) = find_linked_table(self.blocks(StoryId::Body), tag) {
+        let mut splices = Vec::new();
+        for (path, _) in find_all_linked_tables(self.blocks(StoryId::Body), tag) {
             let Some(Block::Table(mut table)) =
                 pos::blocks_at(self.blocks(StoryId::Body), path.container()).and_then(|b| b.get(path.block() as usize)).cloned()
             else {
-                return false;
+                continue;
             };
             if let Some(mut tbl_el) = table.origin.get().cloned() {
                 if let Some(pr) = tbl_el.child_mut(ns::W, "tblPr") {
@@ -1829,28 +1845,26 @@ impl WordView {
                 table.origin = Origin::new(tbl_el);
             }
             let root = self.blocks_mut(StoryId::Body);
-            let s = edit::replace(root, path.container(), path.block(), 1, vec![Block::Table(table)]);
-            let prev_story = self.story;
-            self.story = StoryId::Body;
-            self.record(vec![s], None, None);
-            self.story = prev_story;
-            return true;
+            splices.push(edit::replace(root, path.container(), path.block(), 1, vec![Block::Table(table)]));
         }
-        if let Some((path, inline_index)) = find_linked_image(self.blocks(StoryId::Body), tag) {
+        for (path, inline_index) in find_all_linked_images(self.blocks(StoryId::Body), tag) {
             let root = self.blocks_mut(StoryId::Body);
             if let Some(s) = edit::change_para(root, &path, |p| {
                 if let Some(Inline::Image(img)) = p.content.get_mut(inline_index) {
                     img.description = None;
                 }
             }) {
-                let prev_story = self.story;
-                self.story = StoryId::Body;
-                self.record(vec![s], None, None);
-                self.story = prev_story;
-                return true;
+                splices.push(s);
             }
         }
-        false
+        if splices.is_empty() {
+            return false;
+        }
+        let prev_story = self.story;
+        self.story = StoryId::Body;
+        self.record(splices, None, None);
+        self.story = prev_story;
+        true
     }
 
     /// Every `writan:excel-link:*` tag currently present in the body (tables and images).
@@ -2305,8 +2319,8 @@ fn build_linked_table(tag: &str, rows: &[Vec<LinkedCell>], width: Emu) -> Table 
     }
 }
 
-fn find_linked_table(blocks: &[Block], tag: &str) -> Option<(Path, Emu)> {
-    fn walk(blocks: &[Block], prefix: &mut Vec<u32>, tag: &str) -> Option<(Path, Emu)> {
+fn find_all_linked_tables(blocks: &[Block], tag: &str) -> Vec<(Path, Emu)> {
+    fn walk(blocks: &[Block], prefix: &mut Vec<u32>, tag: &str, out: &mut Vec<(Path, Emu)>) {
         for (i, b) in blocks.iter().enumerate() {
             if let Block::Table(t) = b {
                 if table_link_tag(t).as_deref() == Some(tag) {
@@ -2314,27 +2328,25 @@ fn find_linked_table(blocks: &[Block], tag: &str) -> Option<(Path, Emu)> {
                     p.push(i as u32);
                     let total: i64 = t.columns.iter().map(|c| c.0).sum();
                     let width = if total > 0 { Emu(total) } else { Emu::from_inches(6.27) };
-                    return Some((Path(p), width));
+                    out.push((Path(p), width));
                 }
                 for (ri, row) in t.rows.iter().enumerate() {
                     for (ci, cell) in row.cells.iter().enumerate() {
                         prefix.extend([i as u32, ri as u32, ci as u32]);
-                        let found = walk(&cell.blocks, prefix, tag);
+                        walk(&cell.blocks, prefix, tag, out);
                         prefix.truncate(prefix.len() - 3);
-                        if found.is_some() {
-                            return found;
-                        }
                     }
                 }
             }
         }
-        None
     }
-    walk(blocks, &mut Vec::new(), tag)
+    let mut out = Vec::new();
+    walk(blocks, &mut Vec::new(), tag, &mut out);
+    out
 }
 
-fn find_linked_image(blocks: &[Block], tag: &str) -> Option<(Path, usize)> {
-    fn walk(blocks: &[Block], prefix: &mut Vec<u32>, tag: &str) -> Option<(Path, usize)> {
+fn find_all_linked_images(blocks: &[Block], tag: &str) -> Vec<(Path, usize)> {
+    fn walk(blocks: &[Block], prefix: &mut Vec<u32>, tag: &str, out: &mut Vec<(Path, usize)>) {
         for (i, b) in blocks.iter().enumerate() {
             match b {
                 Block::Paragraph(p) => {
@@ -2343,7 +2355,7 @@ fn find_linked_image(blocks: &[Block], tag: &str) -> Option<(Path, usize)> {
                             if img.description.as_deref() == Some(tag) {
                                 let mut path = prefix.clone();
                                 path.push(i as u32);
-                                return Some((Path(path), ii));
+                                out.push((Path(path), ii));
                             }
                         }
                     }
@@ -2352,20 +2364,18 @@ fn find_linked_image(blocks: &[Block], tag: &str) -> Option<(Path, usize)> {
                     for (ri, row) in t.rows.iter().enumerate() {
                         for (ci, cell) in row.cells.iter().enumerate() {
                             prefix.extend([i as u32, ri as u32, ci as u32]);
-                            let found = walk(&cell.blocks, prefix, tag);
+                            walk(&cell.blocks, prefix, tag, out);
                             prefix.truncate(prefix.len() - 3);
-                            if found.is_some() {
-                                return found;
-                            }
                         }
                     }
                 }
                 Block::Raw { .. } => {}
             }
         }
-        None
     }
-    walk(blocks, &mut Vec::new(), tag)
+    let mut out = Vec::new();
+    walk(blocks, &mut Vec::new(), tag, &mut out);
+    out
 }
 
 fn collect_linked_tags(blocks: &[Block], out: &mut Vec<String>) {
