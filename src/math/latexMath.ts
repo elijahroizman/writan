@@ -151,8 +151,15 @@ export function renderLatexToSvg(spec: LatexMathSpec): RenderedLatexSvg {
 
     return { svg, width, height }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    return { svg: '', width: 0, height: 0, error: message || 'Invalid LaTeX syntax.' }
+    let message = 'Invalid LaTeX syntax.'
+    if (err instanceof Error && err.message) {
+      message = err.message
+    } else if (err && typeof err === 'object' && 'message' in err && typeof (err as { message: unknown }).message === 'string' && (err as { message: string }).message.trim()) {
+      message = (err as { message: string }).message
+    } else if (typeof err === 'string' && err.trim()) {
+      message = err
+    }
+    return { svg: '', width: 0, height: 0, error: message }
   }
 }
 

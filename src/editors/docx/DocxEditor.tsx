@@ -559,6 +559,7 @@ function Inspector({
   const [tableOpen, setTableOpen] = useState(false)
   const hasSelection = useHasSelectedText()
   const headerFooter = useHeaderFooterState()
+  const mathTag = useEditorState((s) => s.mathTag)
 
   const alignment = alignCenter.isActive ? 'center' : alignRight.isActive ? 'right' : alignJustify.isActive ? 'justify' : alignLeft.isActive ? 'left' : null
   const alignCommands = { left: alignLeft, center: alignCenter, right: alignRight, justify: alignJustify }
@@ -734,7 +735,7 @@ function Inspector({
 
       {headerFooter?.editing && <HeaderFooterSection position={headerFooter.editing} />}
 
-      <MathInspectorSection mathTag={editor?.state.mathTag} onEdit={onEditMathModal} />
+      <MathInspectorSection mathTag={mathTag} onEdit={onEditMathModal} />
 
       <ImageSection onCrop={onCrop} />
 

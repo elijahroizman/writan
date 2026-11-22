@@ -94,7 +94,9 @@ try {
   await page.waitForSelector('#writan-latex-input', { timeout: 10000 })
   await page.locator('#writan-latex-input').fill('\\frac{1}{')
   const submitDisabled = await page.getByRole('button', { name: /^(Insert|Update) equation$/ }).isDisabled()
+  const previewErrText = await page.locator('[data-testid="latex-math-preview"]').innerText()
   check('Invalid LaTeX disables submit button', submitDisabled)
+  check('Invalid LaTeX shows readable error text', previewErrText.length > 0 && !previewErrText.includes('[object Object]'), previewErrText)
   await page.keyboard.press('Escape')
 
   check('no console/page errors', logs.length === 0, logs.join('; '))
