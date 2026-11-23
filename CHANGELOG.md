@@ -2,6 +2,21 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.14.0 — 2026-11-23
+
+### Edit together
+- The six-digit code now works over the internet, not just on your network. The code lasts ten minutes, and the Share panel counts it down; **New code** makes a fresh one and the old one stops working. With **Ask me before letting someone in** on, you see each person who types the code and choose **Let in** or **Deny**. Without an internet connection, the code works on your network as before.
+- A code from someone on Writan 0.13 or older doesn’t work here. Join with their link instead.
+
+### AI agents
+- Settings › AI sets up Writan in [Pi](https://pi.dev) too (version 0.99 or later). Pi joins shared documents under its own name and logo, like the other agents. Pi and Codex share one copy of Writan's skill.
+
+### Presentations
+- The arrow keys move to the next or previous slide in the editor, not only while presenting, when no object is selected. Home and End go to the first and last slide, and Page Up and Page Down turn slides even with an object selected.
+
+### Tabs
+- With many files open, tabs keep their width and scroll sideways instead of shrinking to icons, and Home keeps its name.
+
 ## 0.13.0 — 2026-11-23
 
 ### Convert and export
