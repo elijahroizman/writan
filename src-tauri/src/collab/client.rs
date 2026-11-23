@@ -19,7 +19,7 @@ const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A welcome holds the document and the whole edit log, so it can be much bigger than one of
 /// the frames the relay accepts. This only guards against a relay sending endless data.
-const MAX_INCOMING: usize = 1 << 30;
+pub(super) const MAX_INCOMING: usize = 1 << 30;
 
 /// A connection that's open but not yet reading, so the caller can file it away before the
 /// first message or the close can arrive.

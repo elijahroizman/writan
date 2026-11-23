@@ -4653,6 +4653,12 @@ button.section-title:hover {
   padding: 8px 16px 14px;
 }
 
+/* In a short window, people waiting to join scroll here, and the footer stays in view. */
+.share-panel .share-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .share-join .share-body {
   padding: 0;
 }
@@ -4704,6 +4710,61 @@ button.section-title:hover {
   align-self: flex-start;
   margin: -2px 0 0;
   font-size: 11.5px;
+}
+
+.share-code-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.share-code-meta .share-link {
+  font-size: 11.5px;
+}
+
+.share-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.share-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.share-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.share-requests li {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 6px 6px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--field);
+  font-size: 12px;
+}
+
+.share-requests li > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .share-code-field input {

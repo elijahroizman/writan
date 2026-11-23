@@ -6,14 +6,15 @@
 // does the rest (crates/office-engine/src/collab.rs): it applies changes in that order, so the
 // copies agree, and drops a change that collides with an earlier one.
 //
-// The relay is on the host's computer for now (LAN). Nothing here depends on that: a cloud relay
-// speaking the same messages only changes the invite's address (see transport.ts).
+// The relay is on the host's computer. Guests on the network reach it over a WebSocket, and guests
+// from the internet through an iroh connection between the apps (transport.ts). Nothing here
+// depends on which: a cloud relay speaking the same messages only changes the invite's address.
 
 import { create } from 'zustand'
 import { showDialog } from '../lib/dialogs'
 import { stripExtension } from '../lib/kinds'
 import { collabHooks, getEditor, useWorkspace } from '../state/workspace'
-import { connect, findInvite, host, parseCode, parseInvite, unhost, type Invite, type Transport } from './transport'
+import { approveJoin, connect, connectP2p, findInvite, host, onHostEvents, parseCode, parseInvite, rotateCode, setRequireApproval, unhost, type Invite, type JoinRequest, type Transport } from './transport'
 
 export const SHAREABLE = new Set(['docx', 'pptx', 'xlsx'])
 
@@ -70,6 +71,14 @@ export interface Share {
   peers: Peer[]
   /** Why it ended or what went wrong. */
   message: string | null
+  /** For the host: whether the code works over the internet (else on the network only), and until when (Unix ms). */
+  internet?: boolean
+  expiresAt?: number | null
+  /** For the host: whether guests from the internet wait to be let in, and who's waiting. */
+  requireApproval?: boolean
+  waiting?: JoinRequest[]
+  /** For the host: why sharing over the internet didn't start. */
+  internetError?: string | null
 }
 
 /** Shared tabs, by tab id. */
@@ -269,7 +278,7 @@ function finish(link: Link, status: Share['status'], message: string | null) {
   link.presenceTimer = null
   links.delete(link.tabId)
   setPlaces(link.tabId, () => null)
-  update(link.tabId, { status, message, peers: [] })
+  update(link.tabId, { status, message, peers: [], waiting: [] })
 }
 
 /** The name of whoever shares a guest's document. */
@@ -390,8 +399,51 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
   }
 }
 
-/** Shares a tab's document on the network. */
-export async function share(tabId: string, name: string): Promise<void> {
+/** The tab sharing `session`. */
+function hostTab(session: string): string | null {
+  for (const [tabId, link] of links) if (link.role === 'host' && link.session === session && !link.closed) return tabId
+  return null
+}
+
+onHostEvents({
+  joinRequest(req) {
+    const tabId = hostTab(req.session)
+    const now = tabId ? useCollab.getState()[tabId] : null
+    if (!tabId || !now) return
+    const others = (now.waiting ?? []).filter((r) => r.request !== req.request)
+    update(tabId, { waiting: req.waiting ? [...others, req] : others })
+  },
+})
+
+/** Gives a shared tab's code ten more minutes, as a new code; the old one stops working. */
+export async function newCode(tabId: string): Promise<void> {
+  const link = links.get(tabId)
+  if (!link || link.role !== 'host' || !link.session) return
+  const { code, expiresAt } = await rotateCode(link.session)
+  update(tabId, { code, expiresAt, message: null })
+}
+
+/** Whether guests from the internet wait for the host to let them in, from now on. */
+export async function requireApproval(tabId: string, on: boolean): Promise<void> {
+  const link = links.get(tabId)
+  if (!link || link.role !== 'host' || !link.session) return
+  await setRequireApproval(link.session, on)
+  update(tabId, { requireApproval: on })
+}
+
+/** Lets someone waiting into a shared tab, or doesn't. */
+export async function letIn(tabId: string, request: string, allow: boolean): Promise<void> {
+  const now = useCollab.getState()[tabId]
+  if (now?.waiting) update(tabId, { waiting: now.waiting.filter((r) => r.request !== request) })
+  // They may have stopped waiting already; then there's nothing to answer.
+  await approveJoin(request, allow).catch(() => {})
+}
+
+/**
+ * Shares a tab's document: in the app, with anyone who has the code (who wait to be let in when
+ * `approval`); in a browser, through the relay.
+ */
+export async function share(tabId: string, name: string, approval = true): Promise<void> {
   const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
   if (!tab || !getEditor(tabId) || !SHAREABLE.has(tab.kind) || links.has(tabId)) return
   const link: Link = { ...newLink(name), tabId, role: 'host' }
@@ -399,10 +451,19 @@ export async function share(tabId: string, name: string): Promise<void> {
   useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', you: null, invite: null, code: null, addresses: [], peers: [], message: null } })
   const title = `${tab.title}.${tab.kind}`
   try {
-    const hosting = await host(title, tab.kind)
+    const hosting = await host(title, tab.kind, approval)
     link.session = hosting.session
     link.invite = hosting.local
-    update(tabId, { invite: hosting.invite, code: hosting.code, addresses: hosting.addresses })
+    update(tabId, {
+      invite: hosting.invite,
+      code: hosting.code,
+      addresses: hosting.addresses,
+      internet: hosting.internet,
+      expiresAt: hosting.expiresAt,
+      requireApproval: hosting.requireApproval,
+      internetError: hosting.internetError,
+      waiting: [],
+    })
     // Everyone starts from these bytes, the host too: reloading makes the host's document what
     // the others read from them. Taken last, and again if the document changed while they were
     // written (Word adds its comments asynchronously), so nothing typed is lost.
@@ -448,9 +509,9 @@ export async function share(tabId: string, name: string): Promise<void> {
  */
 export async function join(codeOrLink: string, name: string, cancelled: () => boolean = () => false): Promise<void> {
   const code = parseCode(codeOrLink)
-  const inviteText = code ? await findInvite(code) : codeOrLink.trim()
+  const found = code ? await findInvite(code) : { invite: parseInvite(codeOrLink), link: codeOrLink.trim() }
   if (cancelled()) return
-  const invite = parseInvite(inviteText)
+  const invite = found.invite
   if (!invite) throw new Error('That isn’t a code or a link. A code is six digits.')
   const tabId = await follow(invite, newLink(name), ({ bytes, name: fileName, kind }) => {
     // Given up on (the dialog closed) while connecting: leave without opening anything.
@@ -460,7 +521,7 @@ export async function join(codeOrLink: string, name: string, cancelled: () => bo
     if (!id) throw new Error('Writan can’t open this kind of document.')
     return id
   })
-  update(tabId, { invite: inviteText })
+  update(tabId, { invite: found.link })
 }
 
 /** A shared document as the relay first sends it. */
@@ -490,8 +551,8 @@ async function follow(invite: Invite, link: Link, open: (doc: Opened) => string,
         return null
       }
     }
-    connect(invite.url, {
-      message: (data) => {
+    const events = {
+      message: (data: string) => {
         if (first) {
           // Until the welcome, an error means the link didn't work.
           const msg = JSON.parse(data) as { t: string; code?: string; message?: string }
@@ -506,7 +567,7 @@ async function follow(invite: Invite, link: Link, open: (doc: Opened) => string,
         }
         onMessage(link, data)
       },
-      closed: (reason) => {
+      closed: (reason: string) => {
         if (first) reject(new Error(`Couldn’t join: ${reason}`))
         else if (!link.closed) {
           const host = hostOf(link.tabId)
@@ -514,10 +575,13 @@ async function follow(invite: Invite, link: Link, open: (doc: Opened) => string,
           void hostGone(link, host, false)
         }
       },
-    })
-      .then((t) => {
-        link.transport = t
-        hello(link, invite.token, extra)
+    }
+    // Over the internet, the token comes once the host has let this copy in.
+    const opening = invite.p2p ? connectP2p(invite.url, link.name, events) : connect(invite.url, events).then((transport) => ({ transport, token: invite.token }))
+    opening
+      .then(({ transport, token }) => {
+        link.transport = transport
+        hello(link, token, extra)
       })
       .catch(reject)
   })
@@ -537,10 +601,13 @@ export function onOthersChange(id: string, f: (client: string) => void): () => v
   }
 }
 
-/** Where this app connects to a shared tab's document, so an agent can join it too. */
+/**
+ * Where this app connects to a shared tab's document, so an agent can join it too. Not for a
+ * document joined over the internet: its invite needs the code, and the host to let in another.
+ */
 export function inviteOf(tabId: string): Invite | null {
   const link = links.get(tabId)
-  return link && !link.closed ? link.invite : null
+  return link && !link.closed && !link.invite?.p2p ? link.invite : null
 }
 
 /**

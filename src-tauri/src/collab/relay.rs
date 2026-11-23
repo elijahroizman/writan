@@ -510,6 +510,16 @@ impl Relay {
             }
         }
 
+        // Only the host takes the host's place: a guest naming the host's id would put it out.
+        if !host
+            && session
+                .members
+                .iter()
+                .any(|m| m.host && m.client == hello.client)
+        {
+            return refuse(conn, "bad-message", "That client id is the host's.");
+        }
+
         let mut out = Vec::new();
         // The same client id again (a reconnect, a second window): the old connection goes,
         // and the others see it leave and come back.
@@ -932,6 +942,17 @@ mod tests {
         let out = r.handle(1, r#"{"t":"op","id":"a","base":0,"steps":[]}"#);
         assert_eq!(to(&out, 3).len(), 1);
         assert!(to(&out, 2).is_empty());
+    }
+
+    #[test]
+    fn a_guest_cant_take_the_hosts_place() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h"));
+        let out = join(&mut r, 2, &guest_hello("h"));
+        assert!(closed(&out, 2));
+        assert_eq!(to(&out, 2)[0]["t"], "error");
+        assert!(!closed(&out, 1));
+        assert!(to(&out, 1).is_empty());
     }
 
     #[test]

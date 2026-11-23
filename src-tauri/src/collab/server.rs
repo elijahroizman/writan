@@ -36,9 +36,27 @@ use super::socket::{pump, set_pump_timeouts, Cmd};
 /// A connection must finish its handshake and send its hello within this long.
 const HELLO_TIMEOUT: Duration = Duration::from_secs(10);
 
+enum Outbox {
+    Sync(Sender<Cmd>),
+    Async(tokio::sync::mpsc::UnboundedSender<Cmd>),
+}
+
+impl Outbox {
+    fn send(&self, cmd: Cmd) {
+        match self {
+            Outbox::Sync(tx) => {
+                let _ = tx.send(cmd);
+            }
+            Outbox::Async(tx) => {
+                let _ = tx.send(cmd);
+            }
+        }
+    }
+}
+
 struct State {
     relay: Relay,
-    queues: HashMap<ConnId, Sender<Cmd>>,
+    queues: HashMap<ConnId, Outbox>,
     next: ConnId,
 }
 
@@ -49,12 +67,12 @@ impl State {
             match o {
                 Outgoing::Send(conn, text) => {
                     if let Some(q) = self.queues.get(&conn) {
-                        let _ = q.send(Cmd::Text(text));
+                        q.send(Cmd::Text(text));
                     }
                 }
                 Outgoing::Close(conn) => {
                     if let Some(q) = self.queues.remove(&conn) {
-                        let _ = q.send(Cmd::Close);
+                        q.send(Cmd::Close);
                     }
                 }
             }
@@ -63,6 +81,40 @@ impl State {
 }
 
 type Shared = Arc<Mutex<State>>;
+
+/// Lets connections that aren't WebSockets (`p2p.rs`) into the relay.
+#[derive(Clone)]
+pub struct RelayBridge {
+    state: Shared,
+}
+
+impl RelayBridge {
+    pub fn connect_async(
+        &self,
+        session: &str,
+    ) -> (ConnId, tokio::sync::mpsc::UnboundedReceiver<Cmd>) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut s = self.state.lock().unwrap();
+        let conn = s.next;
+        s.next += 1;
+        s.queues.insert(conn, Outbox::Async(tx));
+        s.relay.connect(conn, session);
+        (conn, rx)
+    }
+
+    pub fn handle(&self, conn: ConnId, text: &str) {
+        let mut s = self.state.lock().unwrap();
+        let out = s.relay.handle(conn, text);
+        s.dispatch(out);
+    }
+
+    pub fn disconnect(&self, conn: ConnId) {
+        let mut s = self.state.lock().unwrap();
+        s.queues.remove(&conn);
+        let out = s.relay.disconnect(conn);
+        s.dispatch(out);
+    }
+}
 
 /// A running relay server. Dropping it stops accepting connections.
 pub struct Server {
@@ -142,6 +194,13 @@ impl Server {
     /// A six-digit code guests can join `session` with, until it ends.
     pub fn add_code(&self, session: &str, token: &str) -> Result<String, String> {
         self.codes.lock().unwrap().add(session, token)
+    }
+
+    /// For connections that aren't WebSockets (`p2p.rs`).
+    pub fn bridge(&self) -> RelayBridge {
+        RelayBridge {
+            state: self.state.clone(),
+        }
     }
 
     /// Ends a session for everyone in it, as the host's `end` would.
@@ -311,7 +370,7 @@ fn serve(stream: TcpStream, state: Shared, mcp: SharedMcp, codes: SharedCodes, p
         let mut s = state.lock().unwrap();
         let conn = s.next;
         s.next += 1;
-        s.queues.insert(conn, tx);
+        s.queues.insert(conn, Outbox::Sync(tx));
         s.relay.connect(conn, &session);
         conn
     };

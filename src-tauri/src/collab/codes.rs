@@ -5,7 +5,9 @@
 //! broadcasts `writan-join 1 <code>`. Either answer is `{"session", "token", "port"}`, and the
 //! guest builds the same invite link it would have been sent before (`find`).
 //!
-//! A code has a million values, so wrong guesses are limited: `MAX_MISSES_PER_IP` a minute from
+//! A code here starts with 0, and the directory's (`directory.rs`) never do, so a guest knows where
+//! to look without asking both. That leaves a hundred thousand values, so wrong guesses are
+//! limited: `MAX_MISSES_PER_IP` a minute from
 //! one address and `MAX_MISSES` from everyone, after which lookups are refused until the minute
 //! is up. A guest's search reaches every Writan on the network several times, so the same code
 //! from the same address counts once.
@@ -51,12 +53,17 @@ pub fn is_code(code: &str) -> bool {
     code.len() == 6 && code.bytes().all(|b| b.is_ascii_digit())
 }
 
-/// Six random digits.
+/// Whether `code` is one for the local network rather than the directory: it starts with 0.
+pub fn is_local(code: &str) -> bool {
+    is_code(code) && code.starts_with('0')
+}
+
+/// A 0 and five random digits.
 fn random_code() -> Result<String, String> {
     let mut buf = [0u8; 4];
     getrandom::fill(&mut buf).map_err(|e| e.to_string())?;
-    // 2^32 isn't a multiple of a million, which leans toward low codes by 0.02%.
-    Ok(format!("{:06}", u32::from_le_bytes(buf) % 1_000_000))
+    // 2^32 isn't a multiple of 100,000, which leans toward low codes by 0.002%.
+    Ok(format!("0{:05}", u32::from_le_bytes(buf) % 100_000))
 }
 
 impl Codes {
@@ -383,7 +390,8 @@ mod tests {
         let mut codes = Codes::default();
         let a = codes.add("s1", "t1").unwrap();
         let b = codes.add("s2", "t2").unwrap();
-        assert!(is_code(&a) && is_code(&b));
+        assert!(is_local(&a) && is_local(&b));
+        assert!(!is_local("123456"));
         assert_ne!(a, b);
         let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 2));
         let now = Instant::now();
