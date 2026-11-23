@@ -82,8 +82,7 @@ impl State {
 
 type Shared = Arc<Mutex<State>>;
 
-/// Handle that lets an external transport (such as `p2p.rs`'s `iroh` streams) speak directly
-/// into the same `Relay` state machine as WebSocket connections.
+/// Lets connections that aren't WebSockets (`p2p.rs`) into the relay.
 #[derive(Clone)]
 pub struct RelayBridge {
     state: Shared,
@@ -197,12 +196,7 @@ impl Server {
         self.codes.lock().unwrap().add(session, token)
     }
 
-    /// Registers a specific six-digit code for `session` on the LAN discovery responder.
-    pub fn set_code(&self, code: &str, session: &str, token: &str) {
-        self.codes.lock().unwrap().set_exact(code, session, token);
-    }
-
-    /// Handle for external transports (`p2p.rs`) to feed frames into this server's relay.
+    /// For connections that aren't WebSockets (`p2p.rs`).
     pub fn bridge(&self) -> RelayBridge {
         RelayBridge {
             state: self.state.clone(),

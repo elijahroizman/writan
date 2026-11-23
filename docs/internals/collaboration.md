@@ -1,6 +1,6 @@
 # Editing together
 
-Several people can edit one Word document, presentation or workbook at the same time. One person shares it. The others join with the six-digit code they get, from a computer on the same network. This page is about how that works. What it looks like to use is in [features](../user/features.md#sharing-on-your-network).
+Several people can edit one Word document, presentation or workbook at the same time. One person shares it. The others join with the six-digit code they get, from anywhere. This page is about how that works. What it looks like to use is in [features](../user/features.md#sharing).
 
 ```
  host's app                                         guest's app
@@ -43,8 +43,8 @@ JSON text frames over WebSocket, at `/v1/<session>`:
 
 | From | Message | Meaning |
 | --- | --- | --- |
-| copy | `hello { v, token, client, name, color, hostKey?, snapshot?, sinceSeq? }` | First message. The host's carries the opening bytes (base64) and the host key. `color` is the one asked for. A reconnecting client sends `sinceSeq` to resume without re-downloading the snapshot. |
-| relay | `welcome { client, color, host, seq, session, snapshot, ops, peers, resumed? }` | The opening bytes and every change so far (or `resumed: true`, empty `snapshot`, and only ops with `seq > sinceSeq` on reconnect). `color` is this copy's: the one asked for if nobody has it, else the first free one in `COLORS`. `peers` have `{ client, name, color, host, presence }`. |
+| copy | `hello { v, token, client, name, color, hostKey?, snapshot? }` | First message. The host's carries the opening bytes (base64) and the host key. `color` is the one asked for. |
+| relay | `welcome { client, color, host, seq, session, snapshot, ops, peers }` | The opening bytes and every change so far. `color` is this copy's: the one asked for if nobody has it, else the first free one in `COLORS`. `peers` have `{ client, name, color, host, presence }`. |
 | copy | `op { id, base, steps }` | A change. `base` is the last change this copy had applied. |
 | relay | `op { seq, client, id, base, steps }` | The change in its place in the order, to everyone. |
 | copy | `presence { data }` | Where this copy's caret is. The relay keeps the last one for newcomers' `welcome` and sends it on as `presence { client, data }`. |
@@ -54,22 +54,24 @@ JSON text frames over WebSocket, at `/v1/<session>`:
 
 The invite is the relay's address with the token as a query parameter: `ws://192.168.1.20:47811/v1/<session>?token=<token>`. The token is 192 random bits. Anyone with the link can edit while the host's tab is open. People don't see it unless they ask for it; they join with a code.
 
-## Join codes
+## Over the internet
 
-Sharing also gives the session a six-digit code (`src-tauri/src/collab/codes.rs`). The host's relay answers lookups for it two ways:
+In the app, sharing puts the session in Writan's code directory, a Cloudflare Worker with one SQLite Durable Object (`worker/writan-join/`, reached through `src-tauri/src/collab/directory.rs`; `WRITAN_JOIN_URL` points the app at another). The directory picks a six-digit code nobody else has, keeps the host's iroh address and the session id under it for ten minutes, and gives the host a secret that alone can replace the code (`POST /rooms/<code>/rotate`) or remove it (`DELETE`). Anyone can look a code up (`GET /rooms/<code>`), but one address (an IPv6 /64 counts as one) gets 5 misses a minute. It never sees the token, a document or a change.
+
+The host's app runs an [iroh](https://iroh.computer) endpoint while anything is shared this way (`p2p.rs`). It's QUIC, so it's encrypted, and iroh checks that whoever answers holds the key the address names. It connects directly when hole punching works, and otherwise through n0's public relays, which pass on packets they can't read. A guest's `collab_find` asks the directory first and gets a `writan-p2p://` invite (the address, the session and the code), which `collab_connect_p2p` dials. The guest's first frame is `{ session, code, name }`. The host checks the code. If the host asked to let people in, it answers `{ waiting: true }` and the page shows the name with **Let in** and **Deny** for up to a minute, then `{ ok: true, token }`; otherwise `{ ok: true, token }` right away, or `{ error, message }`. From then on each frame is one of the relay's messages, length-prefixed, into the host's relay as if it came over a WebSocket (`server::RelayBridge`), starting with the guest's hello.
+
+The directory knows every code, so it's trusted to hand out the right address; sending the code over iroh tells nobody anything the directory doesn't know. The host limits the rest: a code works for ten minutes, five wrong ones end it early (the panel asks for a new one), at most 16 guests can be connecting at once and 5 can wait to be let in per document. **New code** asks the directory for a new code for the same room, and the old one stops working on both. When the directory can't be reached, the code is for the local network instead (below), and an internet code is never answered there: anyone nearby could hear it asked for, and the local lookup has no approval step.
+
+## Join codes on the network
+
+Without the internet, the session's code is for the local network (`src-tauri/src/collab/codes.rs`). The host's relay answers lookups for it two ways:
 
 - `GET /join/<code>` on the relay's port, refused when the request has an `Origin` (a web page);
 - a UDP datagram `writan-join 1 <code>` on port 47811, answered only when the code is there.
 
-Both answer `{ session, token, port }`. The guest's app (`collab_find`) broadcasts the UDP lookup to 255.255.255.255 and each of its networks' `.255`, and at the same time asks `GET /join/<code>` of every address in each of its /24 networks on port 47811, 48 at a time, and of itself. The first answer wins, and the guest builds the invite link from it and joins as before. Both run because some networks drop broadcasts and others are bigger than a /24. After 4 seconds with no answer, the guest is told nobody has that code; if the system refused to reach the network (macOS before it's allowed), it says so, and the page waits as it does for a link.
+Both answer `{ session, token, port }`. When the directory doesn't have the code, the guest's app (`collab_find`) broadcasts the UDP lookup to 255.255.255.255 and each of its networks' `.255`, and at the same time asks `GET /join/<code>` of every address in each of its /24 networks on port 47811, 48 at a time, and of itself. The first answer wins, and the guest builds the invite link from it and joins as before. Both run because some networks drop broadcasts and others are bigger than a /24. After 4 seconds with no answer, the guest is told nobody has that code; if the system refused to reach the network (macOS before it's allowed), it says so, and the page waits as it does for a link.
 
 A code has a million values, so each relay limits wrong guesses: 20 a minute from one address and 100 from everyone, after which it answers nothing until the minute is up. A guest's search reaches every Writan on the network, so a few misses per join are normal. A code ends with its session.
-
-## Internet sharing
-
-In the desktop app, sharing also starts an ephemeral `iroh` QUIC peer-to-peer endpoint (`src-tauri/src/collab/p2p.rs`, ALPN `writan/collab/1`) and registers the 6-digit code in a tiny Cloudflare Worker directory (`worker/writan-join/`, client in `src-tauri/src/collab/directory.rs`, overridable via `WRITAN_JOIN_URL`). The directory only stores `{ addr, session }` for 10 minutes and never sees document bytes or ops; the same 6-digit code is also registered on LAN so local guests connect directly.
-
-When a guest types a 6-digit code, `collab_find` races LAN discovery against the directory Worker. If the directory answers, it returns a `writan-p2p://` invite and `collab_connect_p2p` connects over encrypted QUIC (direct UDP hole-punching when possible, falling back to an encrypted `iroh` relay). Access is gated by a SPAKE2 password-authenticated key exchange on the 6-digit code (so the code is never sent on the wire and offline cracking is impossible), a 10-minute code TTL, 5-strike auto-rotation on failed handshakes, per-IP rate limiting in the Worker, and optional 1-click host approval (`Allow` / `Deny`, on by default). Once authenticated, the P2P stream bridges directly into the host's in-process `Relay` (`RelayBridge`) and the guest switches to token-based reconnect (`sinceSeq`) so temporary drops resume transparently even after the join code expires.
 
 AI agents never use a code. They reach shared documents through the MCP server, which needs its own token (below), and the page hands their copies the host's invite itself.
 

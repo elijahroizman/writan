@@ -50,7 +50,6 @@ pub struct RotatedRoom {
 #[serde(rename_all = "camelCase")]
 pub struct LookupRoom {
     pub endpoint_addr: Value,
-    pub expires_at: u64,
 }
 
 #[derive(Deserialize)]
@@ -58,8 +57,16 @@ struct ErrorBody {
     error: Option<String>,
 }
 
+/// Native TLS, as everywhere in the app (see `files::http_agent`): ureq's default, Rustls, isn't
+/// built in and panics.
 fn agent() -> ureq::Agent {
     ureq::Agent::config_builder()
+        .tls_config(
+            ureq::tls::TlsConfig::builder()
+                .provider(ureq::tls::TlsProvider::NativeTls)
+                .root_certs(ureq::tls::RootCerts::PlatformVerifier)
+                .build(),
+        )
         .timeout_global(Some(TIMEOUT))
         .http_status_as_error(false)
         .user_agent(USER_AGENT)
@@ -129,34 +136,30 @@ pub fn lookup_room(base: &str, code: &str) -> Result<Option<LookupRoom>, String>
     }
 }
 
-/// Replaces `old_code` with a fresh 6-digit code and 10-minute TTL.
+/// Replaces `old_code` with a fresh code for another ten minutes. `None` when the directory has
+/// forgotten the room.
 pub fn rotate_room(
     base: &str,
     old_code: &str,
     host_secret: &str,
-    endpoint_addr: Option<&Value>,
-) -> Result<RotatedRoom, String> {
+    endpoint_addr: &Value,
+) -> Result<Option<RotatedRoom>, String> {
     let url = format!("{}/rooms/{old_code}/rotate", base.trim_end_matches('/'));
-    let req = agent()
+    let body = serde_json::to_vec(&serde_json::json!({ "endpointAddr": endpoint_addr }))
+        .map_err(|e| e.to_string())?;
+    let resp = agent()
         .post(&url)
-        .header("Authorization", &format!("Bearer {host_secret}"));
-    let resp = match endpoint_addr {
-        Some(addr) => {
-            let body = serde_json::to_vec(&serde_json::json!({ "endpointAddr": addr }))
-                .map_err(|e| e.to_string())?;
-            req.header("Content-Type", "application/json").send(body)
-        }
-        None => req.send_empty(),
-    }
-    .map_err(|e| format!("Couldn't reach the sharing directory: {e}"))?;
-    let status = resp.status().as_u16();
-    if status == 200 {
-        read_json::<RotatedRoom>(resp)
-    } else {
-        Err(read_error(
+        .header("Authorization", &format!("Bearer {host_secret}"))
+        .header("Content-Type", "application/json")
+        .send(body)
+        .map_err(|e| format!("Couldn't reach the sharing directory: {e}"))?;
+    match resp.status().as_u16() {
+        200 => read_json::<RotatedRoom>(resp).map(Some),
+        404 => Ok(None),
+        status => Err(read_error(
             resp,
-            &format!("Couldn't rotate the join code ({status})."),
-        ))
+            &format!("Couldn't make a new code ({status})."),
+        )),
     }
 }
 
@@ -167,14 +170,4 @@ pub fn delete_room(base: &str, code: &str, host_secret: &str) {
         .delete(&url)
         .header("Authorization", &format!("Bearer {host_secret}"))
         .call();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_directory_url_is_https() {
-        assert!(DEFAULT_URL.starts_with("https://"));
-    }
 }

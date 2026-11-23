@@ -1,17 +1,17 @@
-//! Editing a document together over the internet or local network.
+//! Editing a document together, on the local network or over the internet.
 //!
 //! Sharing starts a relay (`relay.rs`, run by `server.rs`) in this app. The relay only puts edits
 //! in order; every copy of the document, the host's included, applies that order itself. The
 //! host's page connects to its own relay over 127.0.0.1 like any guest, through `client.rs`,
 //! because the web view isn't allowed to open WebSockets itself.
 //!
-//! For internet sharing (`p2p.rs` + `directory.rs`), the host also runs an ephemeral `iroh` P2P
-//! endpoint and registers a 6-digit code with a 10-minute TTL in the code directory Worker.
-//! Guests authenticate with SPAKE2 (the 6-digit code is never sent on the wire) and optional
-//! 1-click host approval, then bridge directly into the same `Relay`.
+//! In the app, sharing also puts the session's code in the code directory (`directory.rs`), and
+//! guests anywhere reach the relay through an `iroh` connection to this app (`p2p.rs`). When that
+//! can't start, the code works on the local network only (`codes.rs`).
 //!
 //! Messages reach the page as `collab-message` events (`{ conn, data }`) and the end of a
-//! connection as `collab-closed` (`{ conn, reason }`).
+//! connection as `collab-closed` (`{ conn, reason }`). A relay says nothing until it has the
+//! client's hello, so no message arrives before `collab_connect` has returned the conn id.
 
 pub mod client;
 pub mod codes;
@@ -34,6 +34,7 @@ use tauri::{AppHandle, Emitter, Runtime};
 
 use p2p::{DirectoryEntry, HostEvents, P2pClient, P2pHost};
 use relay::Policy;
+use server::RelayBridge;
 use server::Server;
 
 /// The relay's port when it's free. Guests looking for a join code ask this port.
@@ -42,7 +43,7 @@ const PORT: u16 = codes::DISCOVERY_PORT;
 /// The relay, while anything is shared.
 static SERVER: Mutex<Option<Server>> = Mutex::new(None);
 
-/// The ephemeral `iroh` P2P host, while any document is shared over the internet.
+/// This app's `iroh` endpoint, while something is shared over the internet.
 static P2P_HOST: LazyLock<tokio::sync::Mutex<Option<Arc<P2pHost>>>> =
     LazyLock::new(|| tokio::sync::Mutex::new(None));
 
@@ -80,19 +81,19 @@ pub struct ShareInfo {
     pub port: u16,
     /// This machine's addresses on the local network, the likeliest first.
     pub addresses: Vec<String>,
-    /// Legacy LAN invite URL (`ws://<first address>:<port>/v1/<session>?token=<token>`).
+    /// For guests on the network: `ws://<first address>:<port>/v1/<session>?token=<token>`.
     pub invite_url: String,
-    /// Six digits guests can join with (internet + LAN when `internet` is true, else LAN only).
+    /// Six digits a guest joins with: anywhere when `internet`, else on the network (`codes.rs`).
     pub code: String,
     /// For the host's own connection.
     pub local_url: String,
-    /// Whether internet P2P sharing is active for this session.
+    /// Whether the code is in the directory, for guests anywhere.
     pub internet: bool,
-    /// Unix epoch milliseconds when the current 6-digit internet code expires (`None` for LAN-only).
+    /// When the code stops working (Unix ms), when `internet`.
     pub expires_at: Option<u64>,
-    /// Whether internet joiners must be approved by the host.
+    /// Whether guests from the internet wait for the host to let them in.
     pub require_approval: bool,
-    /// If internet sharing was requested but couldn't start (e.g. offline), why it fell back to LAN.
+    /// Why sharing over the internet didn't start, when it didn't.
     pub internet_error: Option<String>,
 }
 
@@ -102,22 +103,28 @@ pub struct CodeUpdate {
     pub session: String,
     pub code: String,
     pub expires_at: u64,
-    pub rotated_by_lockout: bool,
 }
 
+/// `collab-join-request`: someone waits to be let in (`waiting`), or stopped waiting.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
-pub struct JoinRequestEvent {
-    pub request_id: String,
-    pub session: String,
-    pub name: String,
+struct JoinRequestEvent<'a> {
+    request: &'a str,
+    session: &'a str,
+    name: &'a str,
+    waiting: bool,
+}
+
+/// `collab-code-locked`: too many wrong codes ended a session's code.
+#[derive(Serialize, Clone, Debug)]
+struct CodeLockedEvent<'a> {
+    session: &'a str,
 }
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct P2pConnInfo {
     pub conn: u32,
-    pub session: String,
     pub token: String,
 }
 
@@ -138,33 +145,20 @@ struct AppHostEvents<R: Runtime> {
 }
 
 impl<R: Runtime> HostEvents for AppHostEvents<R> {
-    fn on_join_request(&self, request_id: String, session: String, name: String) {
-        let _ = self.app.emit(
-            "collab-join-request",
-            JoinRequestEvent {
-                request_id,
-                session,
-                name,
-            },
-        );
+    fn join_request(&self, request: &str, session: &str, name: &str, waiting: bool) {
+        let event = JoinRequestEvent {
+            request,
+            session,
+            name,
+            waiting,
+        };
+        let _ = self.app.emit("collab-join-request", event);
     }
 
-    fn on_code_changed(
-        &self,
-        session: String,
-        code: String,
-        expires_at: u64,
-        rotated_by_lockout: bool,
-    ) {
-        let _ = self.app.emit(
-            "collab-code-changed",
-            CodeUpdate {
-                session,
-                code,
-                expires_at,
-                rotated_by_lockout,
-            },
-        );
+    fn code_locked(&self, session: &str) {
+        let _ = self
+            .app
+            .emit("collab-code-locked", CodeLockedEvent { session });
     }
 }
 
@@ -205,6 +199,15 @@ fn lan_addresses() -> Vec<Ipv4Addr> {
 }
 
 /// Makes macOS ask whether Writan may reach the local network, if nobody has answered yet.
+///
+/// macOS 15 and later ask the first time an app does something on the local network that
+/// macOS checks, and until the person allows it, connections to other machines there fail with
+/// "no route to host". Connecting to the router isn't checked, but sending to the mDNS group is,
+/// so sharing and joining start with an empty mDNS query (a header asking nothing, which
+/// responders ignore). That way the question comes when the person has just pressed Share or
+/// Join, with the reason from the app's Info.plist. macOS says nothing about the answer; a
+/// guest's connection failing with "no route to host" is how the page finds out. Other
+/// systems have no such permission.
 #[tauri::command]
 pub fn collab_local_network() {
     #[cfg(target_os = "macos")]
@@ -225,9 +228,13 @@ pub fn collab_network_settings() {
     }
 }
 
-/// Shares a document: starts the relay if need be and makes a session for it.
-/// When `internet` is true (default), also starts an ephemeral `iroh` P2P endpoint and registers
-/// a 6-digit code in the directory Worker (falling back to LAN-only if offline).
+/// Shares a document: starts the relay if need be and makes a session for it. The page then
+/// connects to `localUrl` and says hello with `hostKey` and the document. `name` and `kind` are
+/// for the page's own records; guests see the ones in the host's hello.
+///
+/// Unless `internet` is false, the session's code goes in the directory too, for guests anywhere,
+/// who wait for the host to let them in unless `requireApproval` is false. When that fails
+/// (offline, say), the code is for the local network, as `internetError` says.
 #[tauri::command]
 pub async fn collab_share<R: Runtime>(
     app: AppHandle<R>,
@@ -237,9 +244,7 @@ pub async fn collab_share<R: Runtime>(
     require_approval: Option<bool>,
 ) -> Result<ShareInfo, String> {
     let _ = (name, kind);
-    let want_internet = internet.unwrap_or(true);
-    let require_approval = require_approval.unwrap_or(true);
-
+    let approval = require_approval.unwrap_or(true);
     let (session, token, host_key, port, bridge) = {
         let mut slot = SERVER.lock().unwrap();
         let server = running(&mut slot).map_err(|e| format!("Couldn't start sharing: {e}"))?;
@@ -249,62 +254,25 @@ pub async fn collab_share<R: Runtime>(
         server.register(&session, &token, &host_key);
         (session, token, host_key, server.port(), server.bridge())
     };
-
-    let mut internet_active = false;
-    let mut expires_at = None;
-    let mut internet_error = None;
-    let mut internet_code = None;
-
-    if want_internet {
-        let mut host_slot = P2P_HOST.lock().await;
-        if host_slot.is_none() {
-            let events: Arc<dyn HostEvents> = Arc::new(AppHostEvents { app: app.clone() });
-            match P2pHost::start(bridge, events).await {
-                Ok(h) => *host_slot = Some(Arc::new(h)),
-                Err(e) => internet_error = Some(e),
-            }
-        }
-        if let Some(host) = host_slot.as_ref().cloned() {
-            drop(host_slot);
-            match host
-                .register_internet(
-                    session.clone(),
-                    token.clone(),
-                    require_approval,
-                    directory::directory_url(),
-                )
-                .await
-            {
-                Ok(res) => {
-                    internet_active = true;
-                    expires_at = Some(res.expires_at_ms);
-                    internet_code = Some(res.code);
-                }
-                Err(e) => {
-                    internet_error = Some(e);
-                }
-            }
-        }
-    }
-
-    let code = {
-        let slot = SERVER.lock().unwrap();
-        let server = slot
-            .as_ref()
-            .ok_or_else(|| "Sharing stopped before it finished starting.".to_owned())?;
-        if let Some(c) = internet_code {
-            // Also answer the same 6-digit code on LAN for fast local discovery when
-            // host approval isn't required. When approval is required, keep joins going
-            // through P2P so the approval gate is enforced consistently.
-            if !require_approval {
-                server.set_code(&c, &session, &token);
-            }
-            c
-        } else {
-            server.add_code(&session, &token)?
+    let online = if internet.unwrap_or(true) {
+        Some(share_online(&app, bridge, &session, &token, approval).await)
+    } else {
+        None
+    };
+    let (code, expires_at, internet_error) = match online {
+        Some(Ok((code, expires))) => (code, Some(expires), None),
+        // An internet code is never answered on the local network, where it would let anyone
+        // nearby in without the host's approval and after it's been replaced.
+        other => {
+            let slot = SERVER.lock().unwrap();
+            let server = slot.as_ref().ok_or("Sharing stopped before it started.")?;
+            (
+                server.add_code(&session, &token)?,
+                None,
+                other.and_then(Result::err),
+            )
         }
     };
-
     let addresses: Vec<String> = lan_addresses().iter().map(Ipv4Addr::to_string).collect();
     let first = addresses.first().map_or("127.0.0.1", String::as_str);
     Ok(ShareInfo {
@@ -316,115 +284,118 @@ pub async fn collab_share<R: Runtime>(
         host_key,
         port,
         addresses,
-        internet: internet_active,
+        internet: expires_at.is_some(),
         expires_at,
-        require_approval,
+        require_approval: approval,
         internet_error,
     })
 }
 
-/// Rotates an internet-shared session's 6-digit code and resets its 10-minute window.
-#[tauri::command]
-pub async fn collab_rotate_code(session: String) -> Result<CodeUpdate, String> {
-    let host = P2P_HOST
+/// Starts this app's endpoint if need be and puts `session` in the directory.
+async fn share_online<R: Runtime>(
+    app: &AppHandle<R>,
+    bridge: RelayBridge,
+    session: &str,
+    token: &str,
+    approval: bool,
+) -> Result<(String, u64), String> {
+    let host = {
+        let mut slot = P2P_HOST.lock().await;
+        if slot.is_none() {
+            let events = Arc::new(AppHostEvents { app: app.clone() });
+            *slot = Some(Arc::new(P2pHost::start(bridge, events).await?));
+        }
+        slot.clone().expect("set above")
+    };
+    let registered = host
+        .register(session, token, approval, directory::directory_url())
+        .await;
+    if registered.is_err() {
+        let mut slot = P2P_HOST.lock().await;
+        if slot.as_ref().is_some_and(|h| h.is_empty()) {
+            slot.take().expect("checked").shutdown();
+        }
+    }
+    registered
+}
+
+async fn p2p_host() -> Result<Arc<P2pHost>, String> {
+    P2P_HOST
         .lock()
         .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "Internet sharing isn't active.".to_owned())?;
-    let (code, expires_at) = host.rotate_code(&session).await?;
+        .clone()
+        .ok_or_else(|| "Nothing is shared over the internet.".to_owned())
+}
+
+/// Gives an internet-shared session a new code for another ten minutes; the old one stops working.
+#[tauri::command]
+pub async fn collab_rotate_code(session: String) -> Result<CodeUpdate, String> {
+    let (code, expires_at) = p2p_host().await?.rotate(&session).await?;
     Ok(CodeUpdate {
         session,
         code,
         expires_at,
-        rotated_by_lockout: false,
     })
 }
 
-/// Toggles whether new internet joiners need 1-click host approval.
+/// Whether guests from the internet wait for the host to let them in, from now on.
 #[tauri::command]
-pub async fn collab_set_require_approval(
-    session: String,
-    require_approval: bool,
-) -> Result<(), String> {
-    if let Some(host) = P2P_HOST.lock().await.as_ref() {
-        host.set_require_approval(&session, require_approval);
+pub async fn collab_set_require_approval(session: String, require_approval: bool) {
+    if let Ok(host) = p2p_host().await {
+        host.set_approval(&session, require_approval);
     }
-    Ok(())
 }
 
-/// Approves or denies a pending internet join request.
+/// Lets someone in, or doesn't, after `collab-join-request`.
 #[tauri::command]
-pub async fn collab_approve_join(request_id: String, allow: bool) -> Result<(), String> {
-    let host = P2P_HOST
-        .lock()
-        .await
-        .as_ref()
-        .cloned()
-        .ok_or_else(|| "Internet sharing isn't active.".to_owned())?;
-    if host.resolve_approval(&request_id, allow) {
+pub async fn collab_approve_join(request: String, allow: bool) -> Result<(), String> {
+    if p2p_host().await?.answer(&request, allow) {
         Ok(())
     } else {
-        Err("That join request already expired.".into())
+        Err("They stopped waiting.".into())
     }
 }
 
-/// Finds who is sharing with a six-digit code, racing the local network against the
-/// internet code directory. Returns either a `ws://` (LAN) or `writan-p2p://` (internet) invite.
+/// Finds who is sharing with a six-digit code and returns their invite: a `writan-p2p://` one
+/// from the directory, or else a `ws://` link from the local network (`codes.rs`).
+///
+/// The directory goes first, so a code shared over the internet is never asked for on the local
+/// network, where anyone could hear it and answer.
 #[tauri::command]
 pub async fn collab_find(code: String) -> Result<String, String> {
     let code: String = code.chars().filter(char::is_ascii_digit).collect();
     if !codes::is_code(&code) {
-        return Err("A join code is six digits.".into());
+        return Err("A code is six digits.".into());
     }
+    let asked = code.clone();
+    let online = tauri::async_runtime::spawn_blocking(move || find_online(&asked))
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Ok(Some(invite)) = online {
+        return Ok(invite);
+    }
+    let lan = tauri::async_runtime::spawn_blocking(move || codes::find(&code, &lan_addresses()))
+        .await
+        .map_err(|e| e.to_string())?;
+    match (lan, online) {
+        (Ok(url), _) => Ok(url),
+        // The page waits for macOS's permission on this one (network.ts).
+        (Err(e), _) if e.contains("no route to host") => Err(e),
+        (Err(_), Err(online)) => Err(format!(
+            "Nobody on your network is sharing with that code, and Writan couldn't look it up online: {online}"
+        )),
+        (Err(e), Ok(None)) => Err(e),
+        (Err(_), Ok(Some(_))) => unreachable!("returned above"),
+    }
+}
 
-    let lan_code = code.clone();
-    let mut lan = tauri::async_runtime::spawn_blocking(move || {
-        codes::find(&lan_code, &lan_addresses())
-    });
-
-    let dir_code = code.clone();
-    let dir_url = directory::directory_url();
-    let mut internet = tauri::async_runtime::spawn_blocking(move || {
-        match directory::lookup_room(&dir_url, &dir_code)? {
-            Some(found) => {
-                let entry: DirectoryEntry = serde_json::from_value(found.endpoint_addr)
-                    .map_err(|_| "Invalid directory address.".to_owned())?;
-                p2p::encode_invite(&entry.addr, &entry.session, Some(&dir_code), None).map(Some)
-            }
-            None => Ok(None),
-        }
-    });
-
-    let (first_lan, first_net) = tokio::select! {
-        r = &mut lan => (Some(r.map_err(|e| e.to_string()).and_then(|x| x)), None),
-        r = &mut internet => (None, Some(r.map_err(|e| e.to_string()).and_then(|x| x))),
+fn find_online(code: &str) -> Result<Option<String>, String> {
+    let Some(found) = directory::lookup_room(&directory::directory_url(), code)? else {
+        return Ok(None);
     };
-
-    if let Some(Ok(url)) = &first_lan {
-        return Ok(url.clone());
-    }
-    if let Some(Ok(Some(uri))) = &first_net {
-        return Ok(uri.clone());
-    }
-
-    // Wait for the other lookup before giving up.
-    let lan_res = match first_lan {
-        Some(r) => r,
-        None => lan.await.map_err(|e| e.to_string()).and_then(|x| x),
-    };
-    if let Ok(url) = lan_res {
-        return Ok(url);
-    }
-    let net_res = match first_net {
-        Some(r) => r,
-        None => internet.await.map_err(|e| e.to_string()).and_then(|x| x),
-    };
-    match net_res {
-        Ok(Some(uri)) => Ok(uri),
-        Ok(None) => Err("Nobody is sharing with that code right now.".into()),
-        Err(e) => Err(e),
-    }
+    let entry: DirectoryEntry = serde_json::from_value(found.endpoint_addr)
+        .map_err(|_| "The directory sent an address Writan can't read.".to_owned())?;
+    p2p::encode_invite(&entry, code).map(Some)
 }
 
 /// The relay's server, started if it isn't running.
@@ -435,28 +406,26 @@ fn running(slot: &mut Option<Server>) -> std::io::Result<&Server> {
     Ok(slot.as_ref().expect("started above"))
 }
 
-/// Stops sharing: everyone in the session is told and disconnected. When nothing else is
-/// shared and agents aren't let in, the relay and P2P endpoint stop listening.
+/// Stops sharing: everyone in the session is told and disconnected, and its code leaves the
+/// directory. When nothing else is shared and agents aren't let in, the relay stops listening,
+/// and when nothing is shared over the internet, so does this app's endpoint.
 #[tauri::command]
 pub async fn collab_unshare(session: String) {
+    // The relay first, so guests over the internet get its `end` before the endpoint closes.
     {
-        let mut p2p_slot = P2P_HOST.lock().await;
-        if let Some(host) = p2p_slot.as_ref() {
-            host.unregister(&session);
-            if !host.has_sessions() {
-                if let Some(h) = p2p_slot.take() {
-                    if let Ok(owned) = Arc::try_unwrap(h) {
-                        owned.shutdown();
-                    }
-                }
+        let mut slot = SERVER.lock().unwrap();
+        if let Some(server) = slot.as_ref() {
+            server.end_session(&session);
+            if server.session_count() == 0 && !server.has_mcp() {
+                *slot = None;
             }
         }
     }
-    let mut slot = SERVER.lock().unwrap();
-    if let Some(server) = slot.as_ref() {
-        server.end_session(&session);
-        if server.session_count() == 0 && !server.has_mcp() {
-            *slot = None;
+    let mut slot = P2P_HOST.lock().await;
+    if let Some(host) = slot.as_ref() {
+        host.unregister(&session);
+        if host.is_empty() {
+            slot.take().expect("checked").shutdown();
         }
     }
 }
@@ -513,13 +482,11 @@ pub async fn collab_reset() {
     for (_, c) in CLIENTS.lock().unwrap().drain() {
         c.close();
     }
-    if let Some(h) = P2P_HOST.lock().await.take() {
-        if let Ok(owned) = Arc::try_unwrap(h) {
-            owned.shutdown();
-        }
-    }
     if let Some(server) = SERVER.lock().unwrap().take() {
         server.end_all();
+    }
+    if let Some(host) = P2P_HOST.lock().await.take() {
+        host.shutdown();
     }
 }
 
@@ -548,8 +515,9 @@ pub async fn collab_connect<R: Runtime>(app: AppHandle<R>, url: String) -> Resul
     .map_err(|e| e.to_string())?
 }
 
-/// Opens an encrypted `iroh` P2P connection (`writan-p2p://...`), runs SPAKE2 or token
-/// reconnect, and returns the connection id along with the authenticated session & token.
+/// Joins a session found in the directory (`writan-p2p://…` from `collab_find`), as `name`, and
+/// returns the connection's id and the session's token for the hello. If the host lets guests in
+/// themselves, this waits for them.
 #[tauri::command]
 pub async fn collab_connect_p2p<R: Runtime>(
     app: AppHandle<R>,
@@ -559,7 +527,7 @@ pub async fn collab_connect_p2p<R: Runtime>(
     let invite = p2p::parse_invite(&url)?;
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
     let (on_message, on_closed) = (app.clone(), app);
-    let connected = p2p::connect_p2p(
+    let (client, token) = p2p::connect(
         invite,
         name,
         move |data| {
@@ -571,15 +539,8 @@ pub async fn collab_connect_p2p<R: Runtime>(
         },
     )
     .await?;
-    CLIENTS
-        .lock()
-        .unwrap()
-        .insert(conn, Conn::P2p(connected.client));
-    Ok(P2pConnInfo {
-        conn,
-        session: connected.session,
-        token: connected.token,
-    })
+    CLIENTS.lock().unwrap().insert(conn, Conn::P2p(client));
+    Ok(P2pConnInfo { conn, token })
 }
 
 /// Sends one text frame on a connection.

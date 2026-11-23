@@ -131,10 +131,6 @@ struct Hello {
     snapshot: Option<SnapshotIn>,
     #[serde(default)]
     agent: Option<String>,
-    /// On reconnect, the highest `seq` the client already has; the relay omits the snapshot
-    /// and sends only ops after this sequence number.
-    #[serde(default)]
-    since_seq: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -171,8 +167,6 @@ struct Welcome<'a> {
     seq: u64,
     session: SessionInfo<'a>,
     snapshot: &'a str,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    resumed: bool,
     ops: &'a [Box<RawValue>],
     peers: Vec<Peer<'a>>,
 }
@@ -538,13 +532,6 @@ impl Relay {
             pick_color(&session.members, &hello.color)
         };
         let snapshot = session.snapshot.as_ref().expect("set above");
-        let resumed = hello.since_seq.is_some_and(|s| s <= session.seq);
-        let (welcome_snapshot, welcome_ops) = if resumed {
-            let start = (hello.since_seq.unwrap() as usize).min(session.log.len());
-            ("", &session.log[start..])
-        } else {
-            (snapshot.bytes.as_str(), session.log.as_slice())
-        };
         let welcome = json(&Welcome {
             t: "welcome",
             v: VERSION,
@@ -556,9 +543,8 @@ impl Relay {
                 name: &snapshot.name,
                 kind: &snapshot.kind,
             },
-            snapshot: welcome_snapshot,
-            resumed,
-            ops: welcome_ops,
+            snapshot: &snapshot.bytes,
+            ops: &session.log,
             peers: session
                 .members
                 .iter()
@@ -968,37 +954,5 @@ mod tests {
         let out = r.handle(4, &guest_hello("g"));
         assert_eq!(to(&out, 4)[0]["t"], "welcome");
         assert_eq!(to(&out, 4)[0]["session"]["name"], "Report.docx");
-    }
-
-    #[test]
-    fn since_seq_resumes_without_resending_snapshot() {
-        let mut r = registered();
-        join(&mut r, 1, &host_hello("h"));
-        join(&mut r, 2, &guest_hello("g"));
-        r.handle(1, r#"{"t":"op","id":"a","base":0,"steps":[{"k":"1"}]}"#);
-        r.handle(1, r#"{"t":"op","id":"b","base":1,"steps":[{"k":"2"}]}"#);
-        r.handle(1, r#"{"t":"op","id":"c","base":2,"steps":[{"k":"3"}]}"#);
-
-        r.connect(3, S);
-        let resume_hello = json!({
-            "t": "hello",
-            "v": VERSION,
-            "token": "tok",
-            "client": "g",
-            "name": "Guest",
-            "color": "#0f0",
-            "sinceSeq": 1,
-        })
-        .to_string();
-        let out = r.handle(3, &resume_hello);
-        let welcome = &to(&out, 3)[0];
-        assert_eq!(welcome["t"], "welcome");
-        assert_eq!(welcome["resumed"], true);
-        assert_eq!(welcome["snapshot"], "");
-        assert_eq!(welcome["seq"], 3);
-        let ops = welcome["ops"].as_array().unwrap();
-        assert_eq!(ops.len(), 2);
-        assert_eq!(ops[0]["seq"], 2);
-        assert_eq!(ops[1]["seq"], 3);
     }
 }

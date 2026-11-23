@@ -72,14 +72,6 @@ impl Codes {
         }
     }
 
-    /// Registers a specific six-digit code (e.g. allocated by the internet directory)
-    /// for LAN discovery too, replacing any previous code for `session`.
-    pub fn set_exact(&mut self, code: &str, session: &str, token: &str) {
-        self.remove_session(session);
-        self.by_code
-            .insert(code.to_owned(), (session.to_owned(), token.to_owned()));
-    }
-
     pub fn remove_session(&mut self, session: &str) {
         self.by_code.retain(|_, (s, _)| s != session);
     }

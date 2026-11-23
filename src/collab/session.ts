@@ -6,30 +6,15 @@
 // does the rest (crates/office-engine/src/collab.rs): it applies changes in that order, so the
 // copies agree, and drops a change that collides with an earlier one.
 //
-// In the desktop app, internet sharing runs encrypted P2P (`iroh` + SPAKE2 + 6-digit code
-// directory Worker) bridged into the same relay, with LAN discovery as a local fast path.
+// The relay is on the host's computer. Guests on the network reach it over a WebSocket, and guests
+// from the internet through an iroh connection between the apps (transport.ts). Nothing here
+// depends on which: a cloud relay speaking the same messages only changes the invite's address.
 
 import { create } from 'zustand'
 import { showDialog } from '../lib/dialogs'
 import { stripExtension } from '../lib/kinds'
 import { collabHooks, getEditor, useWorkspace } from '../state/workspace'
-import {
-  approveJoin,
-  connect,
-  connectP2p,
-  findInvite,
-  host,
-  p2pReconnectUrl,
-  parseCode,
-  parseInvite,
-  rotateCode,
-  setHostEventHandlers,
-  setRequireApproval,
-  unhost,
-  type Invite,
-  type JoinRequest,
-  type Transport,
-} from './transport'
+import { approveJoin, connect, connectP2p, findInvite, host, onHostEvents, parseCode, parseInvite, rotateCode, setRequireApproval, unhost, type Invite, type JoinRequest, type Transport } from './transport'
 
 export const SHAREABLE = new Set(['docx', 'pptx', 'xlsx'])
 
@@ -86,16 +71,14 @@ export interface Share {
   peers: Peer[]
   /** Why it ended or what went wrong. */
   message: string | null
-  /** Whether encrypted internet P2P sharing is active. */
+  /** For the host: whether the code works over the internet (else on the network only), and until when (Unix ms). */
   internet?: boolean
-  /** Unix epoch ms when the current 6-digit internet code expires. */
   expiresAt?: number | null
-  /** Whether internet joiners must be approved by the host. */
+  /** For the host: whether guests from the internet wait to be let in, and who's waiting. */
   requireApproval?: boolean
-  /** If internet sharing couldn't start (e.g. offline), why it fell back to LAN. */
+  waiting?: JoinRequest[]
+  /** For the host: why sharing over the internet didn't start. */
   internetError?: string | null
-  /** Guests waiting for the host's approval to join. */
-  pendingJoins?: JoinRequest[]
 }
 
 /** Shared tabs, by tab id. */
@@ -193,26 +176,7 @@ function fromBase64(text: string) {
 
 function newLink(name: string): Link {
   const client = newClient()
-  return {
-    tabId: '',
-    role: 'guest',
-    client,
-    name,
-    transport: null,
-    engine: null,
-    queue: [],
-    welcomed: false,
-    live: false,
-    closed: false,
-    presence: null,
-    presenceTimer: null,
-    invite: null,
-    lastSeq: 0,
-    reconnecting: false,
-    reconnectTimer: null,
-    reconnectAttempts: 0,
-    reconnectExtra: {},
-  }
+  return { tabId: '', role: 'guest', client, name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false, presence: null, presenceTimer: null, invite: null }
 }
 
 /** One shared tab's connection. */
@@ -232,21 +196,14 @@ interface Link {
   /** The last presence sent, and a send waiting to go. */
   presence: string | null
   presenceTimer: number | null
-  /** Where this copy connects (and reconnects with its authenticated token). */
+  /** Where this copy connects, to let an agent join the same document. */
   invite: Invite | null
   /** For an agent's copy: which agent, sent in the hello. */
   agent?: string
-  /** Highest relay `seq` seen so far, used for `sinceSeq` resume on reconnect. */
-  lastSeq: number
-  reconnecting: boolean
-  reconnectTimer: number | null
-  reconnectAttempts: number
-  reconnectExtra: Record<string, unknown>
 }
 
 /** Moving the caret sends where it is at most this often. */
 const PRESENCE_EVERY = 50
-const MAX_RECONNECT_ATTEMPTS = 5
 
 const links = new Map<string, Link>()
 
@@ -255,51 +212,11 @@ function update(tabId: string, patch: Partial<Share>) {
   if (now) useCollab.setState({ [tabId]: { ...now, ...patch } })
 }
 
-function tabForSession(session: string): string | null {
-  for (const [tabId, link] of links) {
-    if (link.role === 'host' && link.session === session && !link.closed) return tabId
-  }
-  return null
-}
-
-// Wire host-side P2P events from Rust (join approval requests & code rotations).
-setHostEventHandlers({
-  onJoinRequest: (req) => {
-    const tabId = tabForSession(req.session)
-    if (!tabId) return
-    const cur = useCollab.getState()[tabId]
-    if (!cur) return
-    const existing = cur.pendingJoins ?? []
-    if (existing.some((r) => r.requestId === req.requestId)) return
-    update(tabId, { pendingJoins: [...existing, req] })
-  },
-  onCodeChanged: (upd) => {
-    const tabId = tabForSession(upd.session)
-    if (!tabId) return
-    update(tabId, {
-      code: upd.code,
-      expiresAt: upd.expiresAt,
-      ...(upd.rotatedByLockout ? { message: 'Code rotated after too many wrong guesses.' } : {}),
-    })
-  },
-})
-
 function hello(link: Link, token: string, extra: Record<string, unknown> = {}) {
   // The color asked for, from the name so a person tends to keep theirs from one document to
   // the next; the relay gives another if someone has it. An agent asks for its own.
   const color = link.agent ? (extra.color as string) : colorFor(link.name || link.client)
-  link.transport?.send(
-    JSON.stringify({
-      t: 'hello',
-      v: 1,
-      token,
-      client: link.client,
-      name: link.name,
-      ...extra,
-      color,
-      ...(link.agent ? { agent: link.agent } : {}),
-    }),
-  )
+  link.transport?.send(JSON.stringify({ t: 'hello', v: 1, token, client: link.client, name: link.name, ...extra, color, ...(link.agent ? { agent: link.agent } : {}) }))
 }
 
 /** Sends what changed here, then where the caret is if that changed. */
@@ -326,13 +243,7 @@ function sendPresence(link: Link) {
 }
 
 function peerOf(p: Record<string, unknown>): Peer {
-  return {
-    client: p.client as string,
-    name: p.name as string,
-    color: p.color as string,
-    host: !!p.host,
-    ...(typeof p.agent === 'string' ? { agent: p.agent } : {}),
-  }
+  return { client: p.client as string, name: p.name as string, color: p.color as string, host: !!p.host, ...(typeof p.agent === 'string' ? { agent: p.agent } : {}) }
 }
 
 /** Someone's place, from a presence message or a welcome's peer. */
@@ -349,7 +260,7 @@ function start(link: Link) {
   link.queue = []
   engine.refresh()
   flush(link)
-  update(link.tabId, { status: 'live', message: null })
+  update(link.tabId, { status: 'live' })
 }
 
 /** Stops sharing on this copy: it goes on as an ordinary unsaved document. */
@@ -357,9 +268,6 @@ function finish(link: Link, status: Share['status'], message: string | null) {
   if (link.closed) return
   link.closed = true
   link.live = false
-  link.reconnecting = false
-  if (link.reconnectTimer !== null) window.clearTimeout(link.reconnectTimer)
-  link.reconnectTimer = null
   if (link.engine) {
     link.engine.collab = null
     link.engine.doc.collabStop()
@@ -370,7 +278,7 @@ function finish(link: Link, status: Share['status'], message: string | null) {
   link.presenceTimer = null
   links.delete(link.tabId)
   setPlaces(link.tabId, () => null)
-  update(link.tabId, { status, message, peers: [], pendingJoins: [] })
+  update(link.tabId, { status, message, peers: [], waiting: [] })
 }
 
 /** The name of whoever shares a guest's document. */
@@ -423,11 +331,9 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
     case 'welcome': {
       const raw = msg.peers as Record<string, unknown>[]
       const peers = raw.map(peerOf)
-      if (typeof msg.seq === 'number' && msg.seq > link.lastSeq) link.lastSeq = msg.seq
-      const resumed = !!msg.resumed
       // An older relay doesn't hand out colors; then this copy keeps the one it asked for.
       const you: Peer = { client: link.client, name: link.name, color: (msg.color as string) || colorFor(link.name || link.client), host: link.role === 'host' }
-      if (opened && !resumed) {
+      if (opened) {
         const session = msg.session as { name: string; kind: string }
         const tabId = opened({ bytes: fromBase64(msg.snapshot as string), name: session.name, kind: session.kind })
         if (!tabId) return finish(link, 'disconnected', 'Writan can’t open this kind of document.')
@@ -435,33 +341,15 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
         links.set(tabId, link)
         useCollab.setState({ [tabId]: { role: 'guest', status: 'connecting', you, invite: null, code: null, addresses: [], peers, message: null } })
       } else {
-        update(link.tabId, { peers, you, status: 'live', message: null })
+        update(link.tabId, { peers, you })
       }
-      link.reconnecting = false
-      link.reconnectAttempts = 0
       raw.forEach((p, i) => p.presence != null && place(link.tabId, peers[i], p.presence))
-      const missed = (msg.ops as Record<string, unknown>[]).map((op) => {
-        if (typeof op.seq === 'number' && op.seq > link.lastSeq) link.lastSeq = op.seq
-        return JSON.stringify(op)
-      })
-      if (resumed && link.engine) {
-        let changed = false
-        for (const op of missed) {
-          if (link.engine.doc.collabReceive(op)) changed = true
-        }
-        if (changed) link.engine.refresh()
-        link.live = true
-        link.presence = null
-        flush(link)
-      } else {
-        link.queue.push(...missed)
-        link.welcomed = true
-        start(link)
-      }
+      link.queue.push(...(msg.ops as unknown[]).map((op) => JSON.stringify(op)))
+      link.welcomed = true
+      start(link)
       return
     }
     case 'op':
-      if (typeof msg.seq === 'number' && msg.seq > link.lastSeq) link.lastSeq = msg.seq
       if (msg.client !== link.client) for (const f of changeListeners.get(link.tabId) ?? []) f(msg.client as string)
       if (!link.live || !link.engine) {
         link.queue.push(data)
@@ -498,9 +386,9 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       return
     }
     case 'end': {
-      const hostName = hostOf(link.tabId)
+      const host = hostOf(link.tabId)
       finish(link, 'ended', 'Sharing has stopped. This is your own copy now; save it to keep it.')
-      void hostGone(link, hostName, true)
+      void hostGone(link, host, true)
       return
     }
     case 'error': {
@@ -511,79 +399,63 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
   }
 }
 
-/** Schedules a guest reconnect with exponential backoff and `sinceSeq` resume. */
-function scheduleReconnect(link: Link) {
-  if (link.closed || link.role !== 'guest' || !link.invite || !link.invite.token) return
-  link.live = false
-  link.transport = null
-  if (link.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    const hostName = hostOf(link.tabId)
-    finish(link, 'disconnected', 'Lost the connection to the person sharing. Your copy is still here; save it to keep your changes.')
-    void hostGone(link, hostName, false)
-    return
-  }
-  link.reconnecting = true
-  const delay = Math.min(30_000, 1000 * 2 ** link.reconnectAttempts)
-  link.reconnectAttempts++
-  update(link.tabId, { status: 'connecting', message: 'Reconnecting…' })
-  link.reconnectTimer = window.setTimeout(() => {
-    link.reconnectTimer = null
-    if (link.closed || !link.invite) return
-    const invite = link.invite
-    const events = {
-      message: (data: string) => onMessage(link, data),
-      closed: () => {
-        if (!link.closed) scheduleReconnect(link)
-      },
-    }
-    const open = invite.p2p
-      ? connectP2p(invite.url, link.name, events).then((r) => r.transport)
-      : connect(invite.url, events)
-    open
-      .then((t) => {
-        if (link.closed) {
-          t.close()
-          return
-        }
-        link.transport = t
-        hello(link, invite.token, { ...link.reconnectExtra, sinceSeq: link.lastSeq })
-      })
-      .catch(() => {
-        if (!link.closed) scheduleReconnect(link)
-      })
-  }, delay)
+/** The tab sharing `session`. */
+function hostTab(session: string): string | null {
+  for (const [tabId, link] of links) if (link.role === 'host' && link.session === session && !link.closed) return tabId
+  return null
 }
 
-/** Shares a tab's document over the internet (with LAN fast-path). */
-export async function share(
-  tabId: string,
-  name: string,
-  opts?: { internet?: boolean; requireApproval?: boolean },
-): Promise<void> {
+onHostEvents({
+  joinRequest(req) {
+    const tabId = hostTab(req.session)
+    const now = tabId ? useCollab.getState()[tabId] : null
+    if (!tabId || !now) return
+    const others = (now.waiting ?? []).filter((r) => r.request !== req.request)
+    update(tabId, { waiting: req.waiting ? [...others, req] : others })
+  },
+  codeLocked(session) {
+    const tabId = hostTab(session)
+    if (tabId) update(tabId, { expiresAt: Date.now(), message: 'Someone tried too many wrong codes, so this one stopped working. Make a new code to let people join.' })
+  },
+})
+
+/** Gives a shared tab's code ten more minutes, as a new code; the old one stops working. */
+export async function newCode(tabId: string): Promise<void> {
+  const link = links.get(tabId)
+  if (!link || link.role !== 'host' || !link.session) return
+  const { code, expiresAt } = await rotateCode(link.session)
+  update(tabId, { code, expiresAt, message: null })
+}
+
+/** Whether guests from the internet wait for the host to let them in, from now on. */
+export async function requireApproval(tabId: string, on: boolean): Promise<void> {
+  const link = links.get(tabId)
+  if (!link || link.role !== 'host' || !link.session) return
+  await setRequireApproval(link.session, on)
+  update(tabId, { requireApproval: on })
+}
+
+/** Lets someone waiting into a shared tab, or doesn't. */
+export async function letIn(tabId: string, request: string, allow: boolean): Promise<void> {
+  const now = useCollab.getState()[tabId]
+  if (now?.waiting) update(tabId, { waiting: now.waiting.filter((r) => r.request !== request) })
+  // They may have stopped waiting already; then there's nothing to answer.
+  await approveJoin(request, allow).catch(() => {})
+}
+
+/**
+ * Shares a tab's document: in the app, with anyone who has the code (who wait to be let in when
+ * `approval`); in a browser, through the relay.
+ */
+export async function share(tabId: string, name: string, approval = true): Promise<void> {
   const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
   if (!tab || !getEditor(tabId) || !SHAREABLE.has(tab.kind) || links.has(tabId)) return
   const link: Link = { ...newLink(name), tabId, role: 'host' }
   links.set(tabId, link)
-  useCollab.setState({
-    [tabId]: {
-      role: 'host',
-      status: 'connecting',
-      you: null,
-      invite: null,
-      code: null,
-      addresses: [],
-      peers: [],
-      message: null,
-      internet: opts?.internet ?? true,
-      expiresAt: null,
-      requireApproval: opts?.requireApproval ?? true,
-      internetError: null,
-      pendingJoins: [],
-    },
-  })
+  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', you: null, invite: null, code: null, addresses: [], peers: [], message: null } })
   const title = `${tab.title}.${tab.kind}`
   try {
-    const hosting = await host(title, tab.kind, opts)
+    const hosting = await host(title, tab.kind, approval)
     link.session = hosting.session
     link.invite = hosting.local
     update(tabId, {
@@ -594,6 +466,7 @@ export async function share(
       expiresAt: hosting.expiresAt,
       requireApproval: hosting.requireApproval,
       internetError: hosting.internetError,
+      waiting: [],
     })
     // Everyone starts from these bytes, the host too: reloading makes the host's document what
     // the others read from them. Taken last, and again if the document changed while they were
@@ -634,31 +507,6 @@ export async function share(
   }
 }
 
-/** Rotates an internet-shared tab's 6-digit code and resets its 10-minute window. */
-export async function rotateShareCode(tabId: string): Promise<void> {
-  const link = links.get(tabId)
-  if (!link || link.role !== 'host' || !link.session) return
-  const upd = await rotateCode(link.session)
-  update(tabId, { code: upd.code, expiresAt: upd.expiresAt, message: null })
-}
-
-/** Toggles whether new internet joiners need 1-click host approval. */
-export async function setShareRequireApproval(tabId: string, on: boolean): Promise<void> {
-  const link = links.get(tabId)
-  if (!link || link.role !== 'host' || !link.session) return
-  await setRequireApproval(link.session, on)
-  update(tabId, { requireApproval: on })
-}
-
-/** Approves or denies a pending internet join request. */
-export async function approveJoinRequest(tabId: string, requestId: string, allow: boolean): Promise<void> {
-  const cur = useCollab.getState()[tabId]
-  if (cur?.pendingJoins) {
-    update(tabId, { pendingJoins: cur.pendingJoins.filter((r) => r.requestId !== requestId) })
-  }
-  await approveJoin(requestId, allow)
-}
-
 /**
  * Joins a document someone shared, from its six-digit code or its link: opens it in a new tab
  * once it arrives.
@@ -677,7 +525,8 @@ export async function join(codeOrLink: string, name: string, cancelled: () => bo
     if (!id) throw new Error('Writan can’t open this kind of document.')
     return id
   })
-  update(tabId, { invite: invite.p2p ? null : inviteText, internet: !!invite.p2p })
+  // An internet invite only works with the code, once; there's no link to show for it.
+  update(tabId, { invite: invite.p2p ? null : inviteText })
 }
 
 /** A shared document as the relay first sends it. */
@@ -694,7 +543,6 @@ export interface Opened {
  */
 async function follow(invite: Invite, link: Link, open: (doc: Opened) => string, extra: Record<string, unknown> = {}): Promise<string> {
   link.invite = invite
-  link.reconnectExtra = extra
   let first = true
   return new Promise<string>((resolve, reject) => {
     const opened = (doc: Opened) => {
@@ -727,34 +575,20 @@ async function follow(invite: Invite, link: Link, open: (doc: Opened) => string,
       closed: (reason: string) => {
         if (first) reject(new Error(`Couldn’t join: ${reason}`))
         else if (!link.closed) {
-          if (link.invite?.token && !link.agent) {
-            scheduleReconnect(link)
-          } else {
-            const hostName = hostOf(link.tabId)
-            finish(link, 'disconnected', 'Lost the connection to the person sharing. Your copy is still here; save it to keep your changes.')
-            void hostGone(link, hostName, false)
-          }
+          const host = hostOf(link.tabId)
+          finish(link, 'disconnected', 'Lost the connection to the person sharing. Your copy is still here; save it to keep your changes.')
+          void hostGone(link, host, false)
         }
       },
     }
-
-    if (invite.p2p) {
-      connectP2p(invite.url, link.name, events)
-        .then(({ transport, token }) => {
-          link.transport = transport
-          // Switch stored invite to token mode so reconnect works even after the 10-min code expires.
-          link.invite = { url: p2pReconnectUrl(invite.url, token), token, p2p: true }
-          hello(link, token, extra)
-        })
-        .catch(reject)
-    } else {
-      connect(invite.url, events)
-        .then((t) => {
-          link.transport = t
-          hello(link, invite.token, extra)
-        })
-        .catch(reject)
-    }
+    // Over the internet, the token comes once the host has let this copy in.
+    const opening = invite.p2p ? connectP2p(invite.url, link.name, events) : connect(invite.url, events).then((transport) => ({ transport, token: invite.token }))
+    opening
+      .then(({ transport, token }) => {
+        link.transport = transport
+        hello(link, token, extra)
+      })
+      .catch(reject)
   })
 }
 
@@ -772,10 +606,13 @@ export function onOthersChange(id: string, f: (client: string) => void): () => v
   }
 }
 
-/** Where this app connects to a shared tab's document, so an agent can join it too. */
+/**
+ * Where this app connects to a shared tab's document, so an agent can join it too. Not for a
+ * document joined over the internet: its invite needs the code, and the host to let in another.
+ */
 export function inviteOf(tabId: string): Invite | null {
   const link = links.get(tabId)
-  return link && !link.closed ? link.invite : null
+  return link && !link.closed && !link.invite?.p2p ? link.invite : null
 }
 
 /**

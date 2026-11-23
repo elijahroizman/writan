@@ -46,7 +46,7 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'close-tab', label: 'Close tab', group: 'Files and tabs', scope: 'app', keys: '⌘W' },
   { id: 'reopen-tab', label: 'Reopen closed tab', group: 'Files and tabs', scope: 'app', keys: '⇧⌘T' },
   { id: 'version-history', label: 'Version history…', group: 'Files and tabs', scope: 'app', keys: '' },
-  { id: 'share', label: 'Share on your network…', group: 'Files and tabs', scope: 'app', keys: '' },
+  { id: 'share', label: 'Share…', group: 'Files and tabs', scope: 'app', keys: '' },
   { id: 'join-shared', label: 'Join a shared document…', group: 'Files and tabs', scope: 'app', keys: '' },
   { id: 'duplicate-tab', label: 'Duplicate tab', group: 'Files and tabs', scope: 'app', keys: '⇧⌘D' },
   { id: 'next-tab', label: 'Next tab', group: 'Files and tabs', scope: 'app', keys: isMac ? '⇧⌘]' : '⌘⇥' },

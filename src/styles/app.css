@@ -4738,24 +4738,27 @@ button.section-title:hover {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
 }
 
-.share-request {
+.share-requests li {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
+  gap: 4px;
+  padding: 6px 6px 6px 10px;
   border-radius: var(--radius-sm);
   background: var(--field);
   font-size: 12px;
 }
 
-.share-request-actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: none;
+.share-requests li > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .share-code-field input {

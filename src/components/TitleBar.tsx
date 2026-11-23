@@ -199,7 +199,7 @@ export function TitleBar() {
               : SPLIT_KINDS.has(tabs.find((t) => t.id === tabMenu.id)?.kind as DocKind)
                 ? [{ label: 'Open to the side…', icon: <Columns2 size={14} />, onSelect: () => void openBeside(tabMenu.id) }]
                 : []),
-            ...(canShare(tabMenu.id) ? [{ label: shared[tabMenu.id] ? 'Sharing…' : 'Share on your network…', icon: <Users size={14} />, onSelect: () => showSharePanel(tabMenu.id) }] : []),
+            ...(canShare(tabMenu.id) ? [{ label: shared[tabMenu.id] ? 'Sharing…' : isTauri ? 'Share…' : 'Share on your network…', icon: <Users size={14} />, onSelect: () => showSharePanel(tabMenu.id) }] : []),
             ...(() => {
               const t = tabs.find((x) => x.id === tabMenu.id)
               if (!t) return []

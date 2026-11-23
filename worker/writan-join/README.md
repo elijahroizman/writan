@@ -8,7 +8,7 @@ No document content, edit operations, or encryption keys pass through this Worke
 
 - `GET /health` — Health check (`{"ok":true}`)
 - `POST /rooms` — Body `{"endpointAddr": ...}` → `201 {"code","expiresAt","ttlSecs","hostSecret"}`
-- `GET /rooms/<code>` — Per-IP rate-limited (5 misses/min) lookup → `200 {"endpointAddr","expiresAt"}`
+- `GET /rooms/<code>` — lookup, 5 misses a minute per address (an IPv6 /64 counts as one) → `200 {"endpointAddr","expiresAt"}`
 - `POST /rooms/<code>/rotate` — `Authorization: Bearer <hostSecret>` → allocates a fresh 6-digit code and 10-minute TTL
 - `DELETE /rooms/<code>` — `Authorization: Bearer <hostSecret>` → removes the code immediately
 
@@ -21,4 +21,4 @@ cd worker/writan-join
 npx wrangler deploy
 ```
 
-Override the directory URL in Writan at runtime via `WRITAN_JOIN_URL` or at build time via `WRITAN_JOIN_URL`.
+`WRITAN_JOIN_URL`, set when Writan runs or when it's built, points the app at another directory.

@@ -1,9 +1,12 @@
 // Writan 6-digit code directory for internet sharing.
 //
-// Maps ephemeral 6-digit join codes to a host's iroh EndpointAddr in a single
-// SQLite-backed Durable Object so codes are globally unique, expire after 10
-// minutes, and are rate-limited per IP. Document bytes and edits never pass
-// through this Worker — it only introduces peers.
+// Maps six-digit join codes to a host's iroh address and session id, in one
+// SQLite-backed Durable Object, so codes are unique, last ten minutes, and are
+// rate limited per address. Documents and edits never pass through here; it only
+// introduces the apps to each other.
+//
+// Every request is handled without awaiting once it has its body, so a Durable
+// Object's one-request-at-a-time guarantee makes each check and change atomic.
 
 const ROOM_TTL_MS = 10 * 60 * 1000;
 const RETENTION_MS = 24 * 60 * 60 * 1000;
@@ -62,12 +65,36 @@ function bearerToken(request) {
   return match ? match[1] : null;
 }
 
-function clientIp(request) {
-  return (
-    request.headers.get("cf-connecting-ip") ||
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
-    "unknown"
-  );
+// Who's asking, for rate limits: the address Cloudflare saw. Over IPv6 one
+// person usually has a whole /64, so that counts as one.
+function clientKey(request) {
+  const ip = request.headers.get("cf-connecting-ip") || "unknown";
+  if (!ip.includes(":")) return ip;
+  const [head, tail] = ip.toLowerCase().split("::");
+  const h = head ? head.split(":") : [];
+  const t = tail ? tail.split(":") : [];
+  const groups = tail === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill("0"), ...t];
+  return groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":") + "::/64";
+}
+
+// The request's `endpointAddr`, as JSON text: `{ addr }`, or `{ error }` as a
+// Response. With `optional`, an empty body gives `{ addr: null }`.
+async function readAddr(request, optional = false) {
+  const text = await request.text();
+  if (text.length > MAX_ADDR_BYTES * 2) return { error: json({ error: "Request too large." }, 413) };
+  if (optional && !text.trim()) return { addr: null };
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    return { error: json({ error: "Invalid JSON body." }, 400) };
+  }
+  if (!payload || typeof payload.endpointAddr !== "object" || payload.endpointAddr === null) {
+    return { error: json({ error: "Missing endpointAddr object." }, 400) };
+  }
+  const addr = JSON.stringify(payload.endpointAddr);
+  if (addr.length > MAX_ADDR_BYTES) return { error: json({ error: "endpointAddr is too large." }, 413) };
+  return { addr };
 }
 
 export class RoomDirectory {
@@ -123,9 +150,10 @@ export class RoomDirectory {
     );
   }
 
-  allocateCode(now) {
+  allocateCode(now, except = null) {
     for (let attempt = 0; attempt < 32; attempt++) {
       const code = randomCode();
+      if (code === except) continue;
       const existing = this.sql
         .exec("SELECT expires_at FROM rooms WHERE code = ?", code)
         .toArray();
@@ -141,28 +169,17 @@ export class RoomDirectory {
 
   async fetch(request) {
     const url = new URL(request.url);
-    const ip = clientIp(request);
-    const now = Date.now();
-    this.prune(now);
+    const ip = clientKey(request);
 
     if (request.method === "POST" && url.pathname === "/rooms") {
+      const body = await readAddr(request);
+      if (body.error) return body.error;
+      const now = Date.now();
+      this.prune(now);
       if (this.countRecent(ip, "create", now - CREATE_WINDOW_MS) >= MAX_CREATES_PER_IP) {
         return json({ error: "Too many share rooms created. Try again shortly." }, 429, {
           "retry-after": "60",
         });
-      }
-      let payload;
-      try {
-        payload = await request.json();
-      } catch {
-        return json({ error: "Invalid JSON body." }, 400);
-      }
-      if (!payload || typeof payload.endpointAddr !== "object" || payload.endpointAddr === null) {
-        return json({ error: "Missing endpointAddr object." }, 400);
-      }
-      const addrJson = JSON.stringify(payload.endpointAddr);
-      if (addrJson.length > MAX_ADDR_BYTES) {
-        return json({ error: "endpointAddr is too large." }, 413);
       }
       const code = this.allocateCode(now);
       if (!code) {
@@ -173,21 +190,13 @@ export class RoomDirectory {
       this.sql.exec(
         "INSERT INTO rooms (code, endpoint_addr, host_secret, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
         code,
-        addrJson,
+        body.addr,
         hostSecret,
         expiresAt,
         now,
       );
       this.recordEvent(ip, "create", now);
-      return json(
-        {
-          code,
-          expiresAt,
-          ttlSecs: Math.floor(ROOM_TTL_MS / 1000),
-          hostSecret,
-        },
-        201,
-      );
+      return json({ code, expiresAt, ttlSecs: ROOM_TTL_MS / 1000, hostSecret }, 201);
     }
 
     const rotateMatch = url.pathname.match(/^\/rooms\/(\d{6})\/rotate$/);
@@ -195,32 +204,17 @@ export class RoomDirectory {
       const oldCode = rotateMatch[1];
       const secret = bearerToken(request);
       if (!secret) return json({ error: "Missing host authorization." }, 401);
-
+      const body = await readAddr(request, true);
+      if (body.error) return body.error;
+      const now = Date.now();
+      this.prune(now);
       const rows = this.sql
         .exec("SELECT endpoint_addr, host_secret FROM rooms WHERE code = ?", oldCode)
         .toArray();
       if (rows.length === 0 || !constantTimeEqual(String(rows[0].host_secret), secret)) {
         return json({ error: "Room not found or unauthorized." }, 404);
       }
-
-      let addrJson = String(rows[0].endpoint_addr);
-      try {
-        const bodyText = await request.text();
-        if (bodyText.trim()) {
-          const body = JSON.parse(bodyText);
-          if (body && typeof body.endpointAddr === "object" && body.endpointAddr !== null) {
-            const candidate = JSON.stringify(body.endpointAddr);
-            if (candidate.length > MAX_ADDR_BYTES) {
-              return json({ error: "endpointAddr is too large." }, 413);
-            }
-            addrJson = candidate;
-          }
-        }
-      } catch {
-        return json({ error: "Invalid JSON body." }, 400);
-      }
-
-      const newCode = this.allocateCode(now);
+      const newCode = this.allocateCode(now, oldCode);
       if (!newCode) {
         return json({ error: "Could not allocate a join code. Try again." }, 503);
       }
@@ -229,16 +223,12 @@ export class RoomDirectory {
       this.sql.exec(
         "INSERT INTO rooms (code, endpoint_addr, host_secret, expires_at, created_at) VALUES (?, ?, ?, ?, ?)",
         newCode,
-        addrJson,
+        body.addr ?? String(rows[0].endpoint_addr),
         secret,
         expiresAt,
         now,
       );
-      return json({
-        code: newCode,
-        expiresAt,
-        ttlSecs: Math.floor(ROOM_TTL_MS / 1000),
-      });
+      return json({ code: newCode, expiresAt, ttlSecs: ROOM_TTL_MS / 1000 });
     }
 
     const roomMatch = url.pathname.match(/^\/rooms\/([^/]+)$/);
@@ -247,6 +237,8 @@ export class RoomDirectory {
       if (!CODE_RE.test(code)) {
         return json({ error: "Code must be six digits." }, 400);
       }
+      const now = Date.now();
+      this.prune(now);
 
       if (request.method === "GET") {
         if (this.countRecent(ip, "miss", now - MISS_WINDOW_MS) >= MAX_MISSES_PER_IP) {
@@ -294,6 +286,10 @@ export default {
     const url = new URL(request.url);
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true });
+    }
+    // Too big to be an address: turned away here, before the Durable Object reads it.
+    if (Number(request.headers.get("content-length") || 0) > MAX_ADDR_BYTES * 2) {
+      return json({ error: "Request too large." }, 413);
     }
     const id = env.ROOMS.idFromName("global");
     const stub = env.ROOMS.get(id);

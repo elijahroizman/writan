@@ -2,13 +2,12 @@
 //
 // In the app the relay runs in Rust (src-tauri/src/collab): sharing starts it on this computer,
 // and every connection, the sharer's own included, goes through Rust, since the page's content
-// security policy doesn't allow sockets to other machines. For internet sharing, Rust also runs an
-// ephemeral `iroh` P2P endpoint and registers a 6-digit code in the directory Worker; guests join
-// via `writan-p2p://` URIs authenticated with SPAKE2 and bridged into the same relay.
-//
-// In a plain browser (development and the browser tests) the page talks WebSocket to a relay
-// itself, the standalone one in src-tauri/examples/collab_relay.rs, which creates a session for
-// whoever shares first.
+// security policy doesn't allow sockets to other machines. Guests from the internet reach the
+// sharer's relay through an iroh connection between the two apps (src-tauri/src/collab/p2p.rs),
+// found through the code directory. In a plain browser (development and the browser tests) the
+// page talks WebSocket to a relay itself, the standalone one in src-tauri/examples/collab_relay.rs,
+// which creates a session for whoever shares first. A relay in the cloud would be reached the same
+// way.
 
 import { isTauri } from '../lib/platform'
 
@@ -22,12 +21,12 @@ export interface TransportEvents {
   closed(reason: string): void
 }
 
-/** A session someone can join: either a WebSocket relay URL + token or an encrypted P2P invite. */
+/** A session someone can join: the relay's address and the secret that lets them in. */
 export interface Invite {
-  /** `ws://host:port/v1/<session>` or `writan-p2p://<payload>?code=…` / `?token=…`. */
+  /** `ws://host:port/v1/<session>`, without the token, or `writan-p2p://…` from the directory. */
   url: string
+  /** Empty for `writan-p2p://`, whose token comes once the sharer lets this copy in. */
   token: string
-  /** True when `url` is a `writan-p2p://` invite. */
   p2p?: boolean
 }
 
@@ -35,59 +34,37 @@ export interface Invite {
 export interface Hosting {
   session: string
   invite: string
-  /** Six digits guests can join with (internet + LAN when `internet` is true). None in a browser. */
+  /** Six digits guests join with instead of the link: anywhere when `internet`, else on the network. None in a browser. */
   code: string | null
   local: Invite
   hostKey: string
   /** This computer's addresses on the network, for showing. */
   addresses: string[]
-  /** Whether encrypted internet P2P sharing is active. */
+  /** Whether the code is in the directory, for guests anywhere. */
   internet: boolean
-  /** Unix epoch ms when the 6-digit internet code expires (`null` for LAN-only / browser). */
+  /** When the code stops working (Unix ms), when `internet`. */
   expiresAt: number | null
-  /** Whether internet joiners require 1-click host approval. */
+  /** Whether guests from the internet wait for the sharer to let them in. */
   requireApproval: boolean
-  /** If internet sharing couldn't start (e.g. offline), why it fell back to LAN. */
+  /** Why sharing over the internet didn't start, when it didn't. */
   internetError: string | null
 }
 
-export interface CodeUpdate {
-  session: string
-  code: string
-  expiresAt: number
-  rotatedByLockout: boolean
-}
-
+/** Someone with the code waiting to be let in, or who stopped waiting. */
 export interface JoinRequest {
-  requestId: string
+  request: string
   session: string
   name: string
+  waiting: boolean
 }
 
-const P2P_SCHEME = 'writan-p2p://'
+const P2P = 'writan-p2p://'
 
-export function isP2pInvite(text: string): boolean {
-  return text.trim().startsWith(P2P_SCHEME)
-}
-
-/** Builds a reconnect P2P invite URI using the authenticated session `token` instead of the 6-digit code. */
-export function p2pReconnectUrl(originalUrl: string, token: string): string {
-  const trimmed = originalUrl.trim()
-  const base = trimmed.split('?')[0]
-  return `${base}?token=${encodeURIComponent(token)}`
-}
-
-/** Reads an invite link (`ws://192.168.1.20:47811/v1/abc?token=…` or `writan-p2p://…`). */
+/** Reads an invite link (`ws://192.168.1.20:47811/v1/abc?token=…`, or `writan-p2p://…` from `findInvite`). */
 export function parseInvite(text: string): Invite | null {
-  const trimmed = text.trim()
-  if (trimmed.startsWith(P2P_SCHEME)) {
-    const rest = trimmed.slice(P2P_SCHEME.length)
-    const [payload] = rest.split('?')
-    if (!payload) return null
-    return { url: trimmed, token: '', p2p: true }
-  }
+  if (text.trim().startsWith(P2P)) return { url: text.trim(), token: '', p2p: true }
   try {
-    const url = new URL(trimmed)
+    const url = new URL(text.trim())
     if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return null
     const token = url.searchParams.get('token')
     if (!token || !/^\/v1\/[A-Za-z0-9_-]+$/.test(url.pathname)) return null
@@ -106,8 +83,8 @@ export function parseCode(text: string): string | null {
 }
 
 /**
- * Finds who is sharing with `code`, racing the local network against the internet code directory
- * (src-tauri/src/collab/mod.rs). Returns a `ws://` or `writan-p2p://` invite.
+ * Finds who is sharing with `code` and returns their invite: from the code directory, or else from
+ * the computers nearby (src-tauri/src/collab/mod.rs, `collab_find`).
  */
 export async function findInvite(code: string): Promise<string> {
   if (!isTauri) throw new Error('In the browser, join with the link instead of a code.')
@@ -142,33 +119,14 @@ export function resetNative() {
   return reset
 }
 
-/** Starts hosting a session for a document. */
-export async function host(
-  name: string,
-  kind: string,
-  opts?: { internet?: boolean; requireApproval?: boolean },
-): Promise<Hosting> {
+/** Starts hosting a session for a document. In the app, guests from the internet wait to be let in when `requireApproval`. */
+export async function host(name: string, kind: string, requireApproval: boolean): Promise<Hosting> {
   await resetNative()
   if (isTauri) {
+    await listenOnce()
     const { invoke } = await import('@tauri-apps/api/core')
-    const info = await invoke<{
-      session: string
-      token: string
-      hostKey: string
-      addresses: string[]
-      inviteUrl: string
-      code: string
-      localUrl: string
-      internet: boolean
-      expiresAt: number | null
-      requireApproval: boolean
-      internetError: string | null
-    }>('collab_share', {
-      name,
-      kind,
-      internet: opts?.internet ?? true,
-      requireApproval: opts?.requireApproval ?? true,
-    })
+    type Info = { session: string; token: string; hostKey: string; addresses: string[]; inviteUrl: string; code: string; localUrl: string; internet: boolean; expiresAt: number | null; requireApproval: boolean; internetError: string | null }
+    const info = await invoke<Info>('collab_share', { name, kind, requireApproval })
     return {
       session: info.session,
       invite: info.inviteUrl,
@@ -185,18 +143,7 @@ export async function host(
   const session = randomId(12)
   const token = randomId(24)
   const url = `${browserRelay()}/v1/${session}`
-  return {
-    session,
-    invite: `${url}?token=${token}`,
-    code: null,
-    local: { url, token },
-    hostKey: randomId(24),
-    addresses: [],
-    internet: false,
-    expiresAt: null,
-    requireApproval: false,
-    internetError: null,
-  }
+  return { session, invite: `${url}?token=${token}`, code: null, local: { url, token }, hostKey: randomId(24), addresses: [], internet: false, expiresAt: null, requireApproval: false, internetError: null }
 }
 
 /** Ends hosting: the relay tells everyone and forgets the session. */
@@ -206,42 +153,39 @@ export async function unhost(session: string): Promise<void> {
   await invoke('collab_unshare', { session })
 }
 
-/** Rotates an internet-shared session's 6-digit join code and resets its 10-minute window. */
-export async function rotateCode(session: string): Promise<CodeUpdate> {
-  if (!isTauri) throw new Error('Internet sharing is only available in the desktop app.')
+/** Gives an internet-shared session a new code for ten minutes; the old one stops working. */
+export async function rotateCode(session: string): Promise<{ code: string; expiresAt: number }> {
   const { invoke } = await import('@tauri-apps/api/core')
-  return invoke<CodeUpdate>('collab_rotate_code', { session })
+  return invoke<{ code: string; expiresAt: number }>('collab_rotate_code', { session })
 }
 
-/** Toggles whether new internet joiners need 1-click host approval. */
+/** Whether guests from the internet wait to be let in, from now on. */
 export async function setRequireApproval(session: string, requireApproval: boolean): Promise<void> {
-  if (!isTauri) return
   const { invoke } = await import('@tauri-apps/api/core')
   await invoke('collab_set_require_approval', { session, requireApproval })
 }
 
-/** Approves or denies a pending internet join request. */
-export async function approveJoin(requestId: string, allow: boolean): Promise<void> {
-  if (!isTauri) return
+/** Lets someone waiting in, or doesn't. Fails when they've stopped waiting. */
+export async function approveJoin(request: string, allow: boolean): Promise<void> {
   const { invoke } = await import('@tauri-apps/api/core')
-  await invoke('collab_approve_join', { requestId, allow })
+  await invoke('collab_approve_join', { request, allow })
+}
+
+/** What the sharer's app says about guests from the internet. */
+export interface HostEvents {
+  joinRequest(request: JoinRequest): void
+  /** Too many wrong codes ended `session`'s code. */
+  codeLocked(session: string): void
+}
+
+let hostEvents: HostEvents | null = null
+
+export function onHostEvents(events: HostEvents) {
+  hostEvents = events
 }
 
 const routes = new Map<number, TransportEvents>()
 let listening: Promise<void> | null = null
-
-export interface HostEventHandlers {
-  onJoinRequest?: (req: JoinRequest) => void
-  onCodeChanged?: (update: CodeUpdate) => void
-}
-
-let hostHandlers: HostEventHandlers = {}
-
-/** Registers listeners for host-side P2P events (join requests, code auto-rotations). */
-export function setHostEventHandlers(handlers: HostEventHandlers) {
-  hostHandlers = handlers
-  if (isTauri) void listenOnce()
-}
 
 function listenOnce() {
   listening ??= (async () => {
@@ -252,53 +196,49 @@ function listenOnce() {
       routes.delete(e.payload.conn)
       route?.closed(e.payload.reason)
     })
-    await listen<JoinRequest>('collab-join-request', (e) => hostHandlers.onJoinRequest?.(e.payload))
-    await listen<CodeUpdate>('collab-code-changed', (e) => hostHandlers.onCodeChanged?.(e.payload))
+    await listen<JoinRequest>('collab-join-request', (e) => hostEvents?.joinRequest(e.payload))
+    await listen<{ session: string }>('collab-code-locked', (e) => hostEvents?.codeLocked(e.payload.session))
   })()
   return listening
 }
 
-function nativeTransport(conn: number, events: TransportEvents): Transport {
+/** A connection Rust holds, by its id. */
+async function native(conn: number, events: TransportEvents): Promise<Transport> {
   routes.set(conn, events)
+  const { invoke } = await import('@tauri-apps/api/core')
   const fail = (err: unknown) => {
     if (!routes.delete(conn)) return
-    void import('@tauri-apps/api/core').then(({ invoke }) => invoke('collab_close', { conn }).catch(() => {}))
+    void invoke('collab_close', { conn }).catch(() => {})
     events.closed(String((err as Error)?.message ?? err))
   }
   return {
-    send: (data) =>
-      void import('@tauri-apps/api/core')
-        .then(({ invoke }) => invoke('collab_send', { conn, data }))
-        .catch(fail),
+    send: (data) => void invoke('collab_send', { conn, data }).catch(fail),
     close: () => {
       routes.delete(conn)
-      void import('@tauri-apps/api/core').then(({ invoke }) => invoke('collab_close', { conn }).catch(() => {}))
+      void invoke('collab_close', { conn }).catch(() => {})
     },
   }
 }
 
-/** Opens an encrypted `iroh` P2P connection, runs SPAKE2 or token reconnect, and returns the transport + authenticated token. */
-export async function connectP2p(
-  url: string,
-  name: string,
-  events: TransportEvents,
-): Promise<{ transport: Transport; session: string; token: string }> {
+/**
+ * Joins a session found in the directory (`writan-p2p://…`) as `name`. Resolves once the sharer
+ * has let this copy in, with the token for the hello.
+ */
+export async function connectP2p(url: string, name: string, events: TransportEvents): Promise<{ transport: Transport; token: string }> {
   await resetNative()
-  if (!isTauri) throw new Error('Internet P2P sharing is only available in the desktop app.')
   await listenOnce()
   const { invoke } = await import('@tauri-apps/api/core')
-  const info = await invoke<{ conn: number; session: string; token: string }>('collab_connect_p2p', { url, name })
-  return { transport: nativeTransport(info.conn, events), session: info.session, token: info.token }
+  const { conn, token } = await invoke<{ conn: number; token: string }>('collab_connect_p2p', { url, name })
+  return { transport: await native(conn, events), token }
 }
 
-/** Opens a connection to a relay (`ws://` or `wss://`). */
+/** Opens a connection to a relay. */
 export async function connect(url: string, events: TransportEvents): Promise<Transport> {
   await resetNative()
   if (isTauri) {
     await listenOnce()
     const { invoke } = await import('@tauri-apps/api/core')
-    const conn = await invoke<number>('collab_connect', { url })
-    return nativeTransport(conn, events)
+    return native(await invoke<number>('collab_connect', { url }), events)
   }
   const ws = new WebSocket(url)
   await new Promise<void>((resolve, reject) => {

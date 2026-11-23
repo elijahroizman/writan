@@ -1,24 +1,11 @@
-// Sharing a document over the internet or local network: the title bar's button and panel,
-// and the dialog for joining what someone else shared. The work is in collab/session.ts.
+// Sharing a document, over the internet in the app and on the network in a browser: the title
+// bar's button and panel, and the dialog for joining what someone else shared. The work is in collab/session.ts.
 
-import { Check, Copy, Link2, LogIn, RefreshCw, ShieldCheck, Users } from 'lucide-react'
+import { Check, Copy, Link2, LogIn, RefreshCw, Users } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { create } from 'zustand'
-import {
-  approveJoinRequest,
-  colorFor,
-  displayName,
-  join,
-  rotateShareCode,
-  setDisplayName,
-  setShareRequireApproval,
-  share,
-  SHAREABLE,
-  stop,
-  useCollab,
-  type Peer,
-} from '../collab/session'
+import { colorFor, displayName, join, letIn, newCode, requireApproval, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
 import { parseCode, parseInvite } from '../collab/transport'
 import { PeerAvatar } from '../collab/cursors'
 import { askForNetwork, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings, whileNetworkAllowed } from '../collab/network'
@@ -40,13 +27,10 @@ export function canShare(tabId: string) {
 
 const Avatar = PeerAvatar
 
-function formatCountdown(expiresAt: number | null | undefined, now: number): string | null {
-  if (!expiresAt) return null
-  const secs = Math.max(0, Math.ceil((expiresAt - now) / 1000))
-  if (secs === 0) return 'Code expired'
-  const m = Math.floor(secs / 60)
-  const s = secs % 60
-  return `Code expires in ${m}:${s.toString().padStart(2, '0')}`
+/** How long a code has left, as `9:41`, or null once it's out. */
+function timeLeft(expiresAt: number, now: number): string | null {
+  const secs = Math.ceil((expiresAt - now) / 1000)
+  return secs > 0 ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}` : null
 }
 
 export function ShareButton() {
@@ -58,16 +42,8 @@ export function ShareButton() {
   if (!tab || (!SHAREABLE.has(tab.kind) && !state)) return null
   const live = state?.status === 'live' || state?.status === 'connecting'
   const peers = live ? state.peers : []
-  const pendingCount = live ? (state.pendingJoins?.length ?? 0) : 0
-  const label = live
-    ? state.role === 'host'
-      ? state.internet
-        ? 'Shared'
-        : 'Shared on your network'
-      : 'Editing a shared document'
-    : isTauri
-      ? 'Share'
-      : 'Share on your network'
+  const label = live ? (state.role === 'host' ? (state.internet ? 'Shared' : 'Shared on your network') : 'Editing a shared document') : isTauri ? 'Share' : 'Share on your network'
+  const waiting = live ? (state.waiting?.length ?? 0) : 0
   return (
     <>
       <button
@@ -89,7 +65,7 @@ export function ShareButton() {
         ) : (
           <Users size={14} />
         )}
-        {(pendingCount > 0 || (live && !peers.length)) && <span className="share-btn-dot" />}
+        {live && (!peers.length || waiting > 0) && <span className="share-btn-dot" />}
       </button>
       {openFor === activeId && <SharePanel tabId={activeId} anchor={button} />}
     </>
@@ -115,29 +91,32 @@ function NetworkNote({ state }: { state: Network }) {
   )
 }
 
+
 function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<HTMLButtonElement | null> }) {
   const state = useCollab((s) => s[tabId])
   const tab = useWorkspace((s) => s.tabs.find((t) => t.id === tabId))
   const panel = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x: 0, y: 0 })
   const [name, setName] = useName()
-  const [requireApproval, setRequireApproval] = useState(true)
   const [busy, setBusy] = useState(false)
-  const [rotating, setRotating] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [copied, setCopied] = useState<'code' | 'link' | null>(null)
-  const [now, setNow] = useState(() => Date.now())
+  const [approval, setApproval] = useState(true)
+  const [renewing, setRenewing] = useState(false)
+  const [now, setNow] = useState(Date.now)
   const close = () => useSharePanel.setState({ tabId: null })
   // Others edit the file on disk with you, so it needs to be one, and what they start from is
   // what's saved.
   const unsaved = !tab?.path || !!tab?.dirty
+  const expiresAt = state?.expiresAt
 
+  // The code's time left, by the second.
   useEffect(() => {
-    if (!state?.expiresAt) return
+    if (!expiresAt) return
     setNow(Date.now())
-    const id = window.setInterval(() => setNow(Date.now()), 1000)
-    return () => window.clearInterval(id)
-  }, [state?.expiresAt])
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [expiresAt])
 
   useLayoutEffect(() => {
     const place = () => {
@@ -149,7 +128,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
     place()
     window.addEventListener('resize', place)
     return () => window.removeEventListener('resize', place)
-  }, [anchor, state?.status, state?.pendingJoins?.length])
+  }, [anchor, state?.status, state?.waiting?.length])
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => e.key === 'Escape' && close()
@@ -175,12 +154,12 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
       // On a Mac, macOS asks now whether Writan may reach the network, if it hasn't asked before.
       await askForNetwork()
       const ws = useWorkspace.getState()
-      const nowTab = ws.tabs.find((t) => t.id === tabId)
-      if (nowTab && (!nowTab.path || nowTab.dirty)) {
+      const current = ws.tabs.find((t) => t.id === tabId)
+      if (current && (!current.path || current.dirty)) {
         const saved = (await ws.save(tabId)) && !useWorkspace.getState().tabs.find((t) => t.id === tabId)?.dirty
         if (!saved) return setError('Save the document to share it. Everyone edits the saved file with you.')
       }
-      await share(tabId, who, { internet: true, requireApproval })
+      await share(tabId, who, approval)
     } catch (err) {
       setError(String((err as Error)?.message ?? err))
     } finally {
@@ -188,26 +167,15 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
     }
   }
 
-  const rotate = async () => {
-    setRotating(true)
+  const renew = async () => {
+    setRenewing(true)
     setError(null)
     try {
-      await rotateShareCode(tabId)
+      await newCode(tabId)
     } catch (err) {
       setError(String((err as Error)?.message ?? err))
     } finally {
-      setRotating(false)
-    }
-  }
-
-  const toggleApproval = async (checked: boolean) => {
-    setRequireApproval(checked)
-    if (state?.role === 'host' && (state.status === 'live' || state.status === 'connecting')) {
-      try {
-        await setShareRequireApproval(tabId, checked)
-      } catch (err) {
-        setError(String((err as Error)?.message ?? err))
-      }
+      setRenewing(false)
     }
   }
 
@@ -221,38 +189,25 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
 
   const live = state && (state.status === 'live' || state.status === 'connecting')
   const you: Peer = state?.you ?? { client: 'you', name: displayName() || 'You', color: colorFor(displayName() || 'you') }
-  const countdown = formatCountdown(state?.expiresAt, now)
 
   let body: React.ReactNode
   if (!state || !live) {
     body = (
       <>
         <header className="share-head">
-          <h2 id="share-title">
-            {state?.status === 'ended' || state?.status === 'disconnected'
-              ? 'Not shared any more'
-              : isTauri
-                ? 'Share document'
-                : 'Share on your network'}
-          </h2>
+          <h2 id="share-title">{state?.status === 'ended' || state?.status === 'disconnected' ? 'Not shared any more' : isTauri ? 'Share' : 'Share on your network'}</h2>
           <p>
             {state?.message ??
-              (tab?.path
-                ? isTauri
-                  ? `Share “${tab.title}” with a 6-digit code over an encrypted peer-to-peer connection. Your copy stays the file, and you save it as usual.`
-                  : `People on the same network can open “${tab.title}” and edit it with you while it’s open here. Your copy stays the file, and you save it as usual.`
-                : isTauri
-                  ? `Share “${tab?.title ?? 'this document'}” with a 6-digit code over an encrypted peer-to-peer connection. Save it first: your copy stays the file.`
-                  : `People on the same network can edit “${tab?.title ?? 'this document'}” with you while it’s open here. Save it first: your copy stays the file, and you save it as usual.`)}
+              `${isTauri ? 'Anyone you give the code to' : 'People on the same network'} can ${tab?.path ? 'open' : 'edit'} “${tab?.title ?? 'this document'}”${tab?.path ? ' and edit it' : ''} with you while it’s open here. ${tab?.path ? '' : 'Save it first: '}Your copy stays the file, and you save it as usual.`}
           </p>
         </header>
         {(!state || state.role === 'host') && (
           <div className="share-body">
             <TextField label="Your name" value={name} placeholder="How others see you" autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void start()} />
-            {isTauri && (
+            {isTauri && !state && (
               <label className="share-option">
-                <input type="checkbox" checked={requireApproval} onChange={(e) => setRequireApproval(e.target.checked)} />
-                <span>Require my approval when someone joins</span>
+                <input type="checkbox" checked={approval} onChange={(e) => setApproval(e.target.checked)} />
+                Ask me before letting someone in
               </label>
             )}
             {error && <p className="share-error">{error}</p>}
@@ -274,31 +229,26 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
       </>
     )
   } else {
-    const isHost = state.role === 'host'
-    const pendingJoins = state.pendingJoins ?? []
+    const host = state.role === 'host'
+    const left = state.expiresAt ? timeLeft(state.expiresAt, now) : null
     body = (
       <>
         <header className="share-head">
-          <h2 id="share-title">
-            {isHost ? (state.internet ? 'Shared' : 'Shared on your network') : 'Editing a shared document'}
-          </h2>
+          <h2 id="share-title">{host ? (state.internet ? 'Shared' : 'Shared on your network') : 'Editing a shared document'}</h2>
           <p>
             {state.status === 'connecting'
-              ? state.message || 'Connecting…'
-              : isHost
+              ? 'Connecting…'
+              : host
                 ? state.internet
-                  ? 'Give this 6-digit code to anyone you want to edit with. Connections are end-to-end encrypted.'
+                  ? `Give this code to the people you want to edit with, wherever they are. ${state.requireApproval ? 'You let each of them in.' : 'Anyone with it can edit while this tab is open.'}`
                   : state.code
-                    ? 'Give this code to people on your network. Anyone with it can edit while this tab is open.'
-                    : 'Send this link to people on your network. Anyone with it can edit while this tab is open.'
+                  ? 'Give this code to people on your network. Anyone with it can edit while this tab is open.'
+                  : 'Send this link to people on your network. Anyone with it can edit while this tab is open.'
                 : 'Your changes go to everyone in the document. The person sharing keeps the file.'}
           </p>
         </header>
         <div className="share-body">
-          {isHost && state.internetError && (
-            <p className="share-note">Internet sharing unavailable ({state.internetError}). Sharing on your local network only.</p>
-          )}
-          {isHost && state.code && (
+          {host && state.code && (
             <div className="share-code">
               <span className="share-code-digits" aria-label={`Code ${state.code.split('').join(' ')}`}>
                 {state.code.slice(0, 3)}
@@ -310,51 +260,45 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
               </Button>
             </div>
           )}
-          {isHost && state.internet && (
+          {host && state.internet && (
             <div className="share-code-meta">
-              <span>{countdown ?? 'Encrypted P2P'}</span>
-              <button type="button" className="share-link" disabled={rotating} onClick={() => void rotate()}>
-                <RefreshCw size={12} /> {rotating ? 'Rotating…' : 'New code'}
+              <span>{left ? `Works for ${left}` : 'This code has stopped working.'}</span>
+              <button type="button" className="share-link" disabled={renewing} onClick={() => void renew()}>
+                <RefreshCw size={12} /> New code
               </button>
             </div>
           )}
-          {isHost && state.internet && (
+          {host && state.internet && (
             <label className="share-option">
-              <input
-                type="checkbox"
-                checked={state.requireApproval ?? true}
-                onChange={(e) => void toggleApproval(e.target.checked)}
-              />
-              <ShieldCheck size={13} />
-              <span>Require approval to join</span>
+              <input type="checkbox" checked={state.requireApproval ?? true} onChange={(e) => void requireApproval(tabId, e.target.checked).catch((err) => setError(String((err as Error)?.message ?? err)))} />
+              Ask me before letting someone in
             </label>
           )}
-          {isHost && state.message && <p className="share-note">{state.message}</p>}
+          {host && state.internetError && <p className="share-note">Sharing over the internet didn’t start ({state.internetError}), so the code works on your network only.</p>}
+          {host && state.message && <p className="share-note">{state.message}</p>}
           {error && <p className="share-error">{error}</p>}
-          {isHost && pendingJoins.length > 0 && (
-            <div className="share-requests" role="status" aria-live="polite">
-              {pendingJoins.map((req) => (
-                <div key={req.requestId} className="share-request">
+          {host && !!state.waiting?.length && (
+            <ul className="share-requests" aria-label="Waiting to join">
+              {state.waiting.map((r) => (
+                <li key={r.request}>
                   <span>
-                    <strong>{req.name}</strong> wants to join
+                    <strong>{r.name}</strong> wants to join
                   </span>
-                  <div className="share-request-actions">
-                    <Button onClick={() => void approveJoinRequest(tabId, req.requestId, false)}>Deny</Button>
-                    <Button variant="primary" onClick={() => void approveJoinRequest(tabId, req.requestId, true)}>
-                      Allow
-                    </Button>
-                  </div>
-                </div>
+                  <Button onClick={() => void letIn(tabId, r.request, false)}>Deny</Button>
+                  <Button variant="primary" onClick={() => void letIn(tabId, r.request, true)}>
+                    Let in
+                  </Button>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
-          {isHost && !state.internet && state.code && state.invite && (
-            // LAN-only fallback when broadcasts are blocked on the local network.
+          {host && !state.internet && state.code && state.invite && (
+            // For a guest the code can't find: another subnet, or a network that drops broadcasts.
             <button type="button" className="share-link share-copy-link" onClick={() => void copy('link')}>
               {copied === 'link' ? <Check size={12} /> : <Link2 size={12} />} {copied === 'link' ? 'Link copied' : 'Copy the link instead'}
             </button>
           )}
-          {isHost && !state.code && state.invite && (
+          {host && !state.code && state.invite && (
             <div className="share-invite">
               <Link2 size={14} className="share-invite-icon" />
               <input readOnly value={state.invite} aria-label="Invite link" onFocus={(e) => e.currentTarget.select()} />
@@ -367,7 +311,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
             <li>
               <Avatar peer={you} you />
               <span>{you.name}</span>
-              <span className="share-role">{isHost ? 'You · sharing' : 'You'}</span>
+              <span className="share-role">{host ? 'You · sharing' : 'You'}</span>
             </li>
             {state.peers.map((p) => (
               <li key={p.client}>
@@ -380,8 +324,8 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
           </ul>
         </div>
         <footer className="share-foot">
-          <Button variant={isHost ? 'danger' : 'default'} onClick={() => stop(tabId)}>
-            {isHost ? 'Stop sharing' : 'Leave'}
+          <Button variant={host ? 'danger' : 'default'} onClick={() => stop(tabId)}>
+            {host ? 'Stop sharing' : 'Leave'}
           </Button>
         </footer>
       </>
@@ -396,7 +340,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
   )
 }
 
-/** Asks for the 6-digit code (or a browser/LAN link) and joins. */
+/** Asks for the code (or link) and joins. */
 export function JoinDialog() {
   const open = useSharePanel((s) => s.joining)
   const [name, setName] = useName()
@@ -460,17 +404,13 @@ export function JoinDialog() {
       >
         <div className="dialog-text">
           <h2 id="join-title">Join a shared document</h2>
-          <p>
-            {isTauri
-              ? 'Type the 6-digit code from the person sharing. Works over the internet or your local network.'
-              : 'Paste the link the person sharing copied from their Share panel.'}
-          </p>
+          <p>Type the code the person sharing sees in their Share panel, or paste the link they copied. {isTauri ? 'If they ask to let people in themselves, you wait for them here.' : 'You both need to be on the same network.'}</p>
         </div>
         <div className="share-body">
           <TextField
-            label={isTauri ? 'Code' : 'Code or link'}
+            label="Code or link"
             value={code}
-            placeholder={isTauri ? '123 456' : '123 456 or ws://…'}
+            placeholder="123 456 or ws://…"
             autoFocus
             autoComplete="off"
             spellCheck={false}
@@ -487,7 +427,7 @@ export function JoinDialog() {
             Cancel
           </Button>
           <button type="submit" className="btn primary" disabled={busy || !usable}>
-            {busy ? <Spinner size={14} /> : null} {busy && network !== 'waiting' && parseCode(code) ? 'Connecting…' : 'Join'}
+            {busy ? <Spinner size={14} /> : null} {busy && network !== 'waiting' && parseCode(code) ? 'Joining…' : 'Join'}
           </button>
         </div>
       </form>
