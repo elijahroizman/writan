@@ -71,9 +71,15 @@ impl Conn {
 /// The page's open connections, by the id the page knows them by.
 static CLIENTS: LazyLock<Mutex<HashMap<u32, Conn>>> = LazyLock::new(Default::default);
 static NEXT_CONN: AtomicU32 = AtomicU32::new(1);
-/// Internet joins still connecting or waiting to be let in, for `collab_cancel_joins`.
-static JOINING: LazyLock<Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>> =
-    LazyLock::new(Default::default);
+/// Internet joins still connecting or waiting to be let in, by the page's attempt number, for
+/// `collab_cancel_joins`; and the attempts up to which joins are given up, which can come first.
+static JOINING: LazyLock<Mutex<Joining>> = LazyLock::new(Default::default);
+
+#[derive(Default)]
+struct Joining {
+    waiting: HashMap<u32, tokio::sync::oneshot::Sender<()>>,
+    given_up_to: u32,
+}
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -363,7 +369,7 @@ pub async fn collab_find(code: String) -> Result<String, String> {
             return codes::find(&code, &lan_addresses());
         }
         find_online(&code)?.ok_or_else(|| {
-            "Nobody is sharing with that code. Check it, or ask for a new one: a code works for ten minutes."
+            "Nobody is sharing with that code. Check it, or ask for a new one: a code works for ten minutes. If they have Writan 0.13 or older, ask for their link instead."
                 .to_owned()
         })
     })
@@ -464,6 +470,8 @@ pub async fn collab_reset() {
     for (_, c) in CLIENTS.lock().unwrap().drain() {
         c.close();
     }
+    // The page counts its attempts from 1 again.
+    *JOINING.lock().unwrap() = Joining::default();
     if let Some(server) = SERVER.lock().unwrap().take() {
         server.end_all();
     }
@@ -511,17 +519,17 @@ pub async fn collab_connect<R: Runtime>(app: AppHandle<R>, url: String) -> Resul
 
 /// Joins a session found in the directory (`writan-p2p://…` from `collab_find`), as `name`, and
 /// returns the connection's id and the session's token for the hello. If the host lets guests in
-/// themselves, this waits for them.
+/// themselves, this waits for them. `attempt` goes up with each join, for `collab_cancel_joins`.
 #[tauri::command]
 pub async fn collab_connect_p2p<R: Runtime>(
     app: AppHandle<R>,
     url: String,
     name: String,
+    attempt: u32,
 ) -> Result<P2pConnInfo, String> {
     let invite = p2p::parse_invite(&url)?;
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
-    let (cancel, cancelled) = tokio::sync::oneshot::channel();
-    JOINING.lock().unwrap().insert(conn, cancel);
+    let cancelled = start_join(attempt)?;
     let (on_message, on_closed) = (app.clone(), app);
     let joined = p2p::connect(
         invite,
@@ -536,17 +544,38 @@ pub async fn collab_connect_p2p<R: Runtime>(
         async move { drop(cancelled.await) },
     )
     .await;
-    JOINING.lock().unwrap().remove(&conn);
+    JOINING.lock().unwrap().waiting.remove(&attempt);
     let (client, token) = joined?;
     CLIENTS.lock().unwrap().insert(conn, Conn::P2p(client));
     Ok(P2pConnInfo { conn, token })
 }
 
+/// Notes a join as waiting, unless it was given up already. What finishes when it's given up.
+fn start_join(attempt: u32) -> Result<tokio::sync::oneshot::Receiver<()>, String> {
+    let mut joining = JOINING.lock().unwrap();
+    if attempt <= joining.given_up_to {
+        return Err("Cancelled.".into());
+    }
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    joining.waiting.insert(attempt, cancel);
+    Ok(cancelled)
+}
+
 /// Gives up the internet joins still connecting or waiting to be let in (the Join dialog closed).
 #[tauri::command]
-pub fn collab_cancel_joins() {
-    for (_, cancel) in JOINING.lock().unwrap().drain() {
-        let _ = cancel.send(());
+pub fn collab_cancel_joins(up_to: u32) {
+    let mut joining = JOINING.lock().unwrap();
+    joining.given_up_to = joining.given_up_to.max(up_to);
+    let given_up: Vec<u32> = joining
+        .waiting
+        .keys()
+        .copied()
+        .filter(|a| *a <= up_to)
+        .collect();
+    for a in given_up {
+        if let Some(cancel) = joining.waiting.remove(&a) {
+            let _ = cancel.send(());
+        }
     }
 }
 
@@ -582,6 +611,16 @@ mod tests {
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'));
         assert_ne!(token, random_text(24).unwrap());
+    }
+
+    #[test]
+    fn collab_a_join_given_up_before_it_starts_stays_given_up() {
+        collab_cancel_joins(2);
+        assert!(start_join(1).is_err() && start_join(2).is_err());
+        let mut third = start_join(3).unwrap();
+        assert!(third.try_recv().is_err());
+        collab_cancel_joins(3);
+        assert!(third.try_recv().is_ok());
     }
 
     #[test]

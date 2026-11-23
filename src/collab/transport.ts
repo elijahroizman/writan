@@ -226,16 +226,22 @@ async function native(conn: number, events: TransportEvents): Promise<Transport>
  * has let this copy in, with the token for the hello.
  */
 export async function connectP2p(url: string, name: string, events: TransportEvents): Promise<{ transport: Transport; token: string }> {
+  // Numbered before anything waits, so `cancelJoins` covers it from the start, even when Rust
+  // hears the cancel first.
+  const attempt = ++joinAttempts
   await resetNative()
   await listenOnce()
   const { invoke } = await import('@tauri-apps/api/core')
-  const { conn, token } = await invoke<{ conn: number; token: string }>('collab_connect_p2p', { url, name })
+  const { conn, token } = await invoke<{ conn: number; token: string }>('collab_connect_p2p', { url, name, attempt })
   return { transport: await native(conn, events), token }
 }
 
-/** Gives up internet joins still waiting (the Join dialog closed). */
+let joinAttempts = 0
+
+/** Gives up the internet joins started so far (the Join dialog closed). */
 export function cancelJoins() {
-  if (isTauri) void import('@tauri-apps/api/core').then(({ invoke }) => invoke('collab_cancel_joins').catch(() => {}))
+  const upTo = joinAttempts
+  if (isTauri) void import('@tauri-apps/api/core').then(({ invoke }) => invoke('collab_cancel_joins', { upTo }).catch(() => {}))
 }
 
 /** Opens a connection to a relay. */
