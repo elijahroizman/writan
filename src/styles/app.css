@@ -229,7 +229,28 @@ button {
 }
 
 .tab-home {
+  flex: none;
   padding: 0 10px;
+}
+
+/* Tabs keep their width and scroll when they don't all fit. */
+.tabs-scroll {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  align-self: stretch;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+
+.tabs-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.tabs-scroll > .tab {
+  flex: none;
 }
 
 .tab-icon {
