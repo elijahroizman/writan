@@ -9,7 +9,7 @@ import type { SheetsEngine } from '../../engine/sheets/engine'
 import type { SlidesEngine } from '../../engine/slides/engine'
 import type { WordEngine } from '../../engine/word/engine'
 import { stripExtension } from '../../lib/kinds'
-import { getEditor, useWorkspace } from '../../state/workspace'
+import { useWorkspace } from '../../state/workspace'
 import { attach, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, useCollab, usePresence, type Opened, type Peer } from '../session'
 import { type Answer, type Args, doc, need, str, type Tool, ToolError } from './common'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
@@ -79,6 +79,8 @@ export class AgentSession {
       pending.catch(() => this.copies.get(tab) === pending && this.copies.delete(tab))
     }
     const c = await pending
+    // Left (and maybe joined again) meanwhile: this copy is on its way out.
+    if (this.ended || this.copies.get(tab) !== pending) throw new ToolError('You left the document.')
     this.joined.set(tab, c)
     const engine = await c.engine
     // The relay's welcome is applied when the copy goes live, just after the engine attaches.
@@ -170,9 +172,9 @@ async function live(id: string) {
 /**
  * The documents agents can work on: every Word document, presentation and workbook open in this
  * app, whether it's shared from here (`sharing`), someone else's joined from here (`joined`), or
- * not shared (`open`, which joining opens to this computer's agents). A tab that hasn't been shown
- * yet has no editor to share from, and a document joined from a host that can't let agents in has
- * no way in.
+ * not shared (`open`, which joining opens to this computer's agents, loading its editor if nobody
+ * has looked at the tab yet). A document joined from a host that can't let agents in has no way
+ * in.
  */
 export function documents(): { document: string; title: string; kind: 'docx' | 'pptx' | 'xlsx'; role: 'sharing' | 'joined' | 'open' }[] {
   const tabs = useWorkspace.getState().tabs
@@ -187,7 +189,7 @@ export function documents(): { document: string; title: string; kind: 'docx' | '
       role = 'joined'
     } else if (on) role = s.private ? 'open' : 'sharing'
     else {
-      if (!getEditor(t.id) || !SHAREABLE.has(t.kind) || keeperOf(t.id) !== null) return []
+      if (!SHAREABLE.has(t.kind) || keeperOf(t.id) !== null) return []
       role = 'open'
     }
     return [{ document: t.id, title: `${stripExtension(t.title)}.${t.kind}`, kind: t.kind, role }]

@@ -13,7 +13,7 @@
 import { create } from 'zustand'
 import { showDialog } from '../lib/dialogs'
 import { stripExtension } from '../lib/kinds'
-import { collabHooks, getEditor, useWorkspace } from '../state/workspace'
+import { collabHooks, getEditor, useWorkspace, wakeTab } from '../state/workspace'
 import { approveJoin, connect, connectP2p, findInvite, host, onHostEvents, parseCode, parseInvite, publish, rotateCode, setRequireApproval, unhost, type Invite, type JoinRequest, type Published, type Transport } from './transport'
 
 export const SHAREABLE = new Set(['docx', 'pptx', 'xlsx'])
@@ -210,6 +210,10 @@ interface Link {
   follows?: string
   /** For a guest over the internet: what this app's agents join the same document with. */
   seat?: string
+  /** For a host sharing what only its agents were in: getting its code. */
+  publishing?: boolean
+  /** Until the welcome: gives up joining, for `finish`. */
+  abort?: (reason: string) => void
 }
 
 /** Moving the caret sends where it is at most this often. */
@@ -286,6 +290,7 @@ function finish(link: Link, status: Share['status'], message: string | null) {
   if (link.closed) return
   link.closed = true
   link.live = false
+  if (!link.welcomed) link.abort?.(message ?? 'Cancelled.')
   if (link.engine) {
     link.engine.collab = null
     link.engine.doc.collabStop()
@@ -303,9 +308,10 @@ function finish(link: Link, status: Share['status'], message: string | null) {
     if (link.follows) closeIfNoAgents(link.follows)
     return
   }
-  // The agents that joined through this tab leave with it: a guest who leaves takes theirs along.
+  // The agents that joined through this tab leave with it: a guest who leaves takes theirs along,
+  // waiting to be let in or not.
   for (const agent of [...agentLinks]) {
-    if (agent.follows !== link.tabId || !agent.welcomed) continue
+    if (agent.follows !== link.tabId) continue
     agent.transport?.send(JSON.stringify({ t: 'bye' }))
     finish(agent, 'ended', 'The document isn’t shared here any more.')
   }
@@ -316,7 +322,7 @@ const agentLinks = new Set<Link>()
 
 /** A tab shared with this computer's agents only ends when the last of them leaves. */
 function closeIfNoAgents(tabId: string) {
-  if (!useCollab.getState()[tabId]?.private) return
+  if (!useCollab.getState()[tabId]?.private || links.get(tabId)?.publishing) return
   if ([...agentLinks].some((l) => l.follows === tabId && !l.closed)) return
   stop(tabId)
 }
@@ -495,14 +501,23 @@ function shown(p: Published): Partial<Share> {
 export async function share(tabId: string, name: string, approval = true): Promise<void> {
   const link = links.get(tabId)
   if (link?.role === 'host' && useCollab.getState()[tabId]?.private) {
-    if (!link.session || !link.invite) stop(tabId)
-    else {
-      const p = await publish(link.session, link.invite, approval)
-      if (link.closed) throw new Error('Sharing was stopped.')
+    // It stays open while it gets its code, even if the last agent leaves meanwhile.
+    link.publishing = true
+    try {
+      await opened(link)
+      const p = await publish(link.session!, link.invite!, approval)
+      if (link.closed) {
+        // Stopped meanwhile: the code it just got goes too.
+        void unhost(link.session!)
+        throw new Error('Sharing was stopped.')
+      }
       if (link.name !== name) rename(link, name)
       update(tabId, { ...shown(p), private: false, waiting: [], message: null })
-      return
+    } finally {
+      link.publishing = false
+      closeIfNoAgents(tabId)
     }
+    return
   }
   await startHosting(tabId, name, approval, false)
 }
@@ -528,10 +543,20 @@ const OPENING = 15_000
  * which only they join, until Share gives it one. Resolves once they can join.
  */
 export async function openToAgents(tabId: string): Promise<void> {
+  const until = Date.now() + OPENING
+  // A tab nobody has looked at yet loads its editor in the background first.
+  if (!getEditor(tabId)) wakeTab(tabId)
+  while (!getEditor(tabId) && Date.now() < until && useWorkspace.getState().tabs.some((t) => t.id === tabId)) await new Promise((r) => setTimeout(r, 25))
   if (!links.has(tabId)) await startHosting(tabId, displayName() || 'The person sharing', true, true)
   const link = links.get(tabId)
-  for (const until = Date.now() + OPENING; link && !link.closed && !link.welcomed && Date.now() < until; ) await new Promise((r) => setTimeout(r, 25))
-  if (!link || link.closed) throw new Error(useCollab.getState()[tabId]?.message ?? 'The document closed.')
+  if (!link) throw new Error(getEditor(tabId) ? 'Writan can’t open this document to agents.' : 'The document didn’t open in time.')
+  await opened(link, until)
+}
+
+/** Waits for a session's relay to have the document, so others can join it. */
+async function opened(link: Link, until = Date.now() + OPENING) {
+  while (!link.closed && !link.welcomed && Date.now() < until) await new Promise((r) => setTimeout(r, 25))
+  if (link.closed) throw new Error(useCollab.getState()[link.tabId]?.message ?? 'The document closed.')
   if (!link.welcomed) throw new Error('Opening the document took too long.')
 }
 
@@ -667,8 +692,13 @@ async function follow(invite: Invite, link: Link, open: (doc: Opened) => string,
     // its person's seat.
     const as = link.agent && invite.seat ? { seat: invite.seat, agent: link.agent } : undefined
     const opening = invite.p2p ? connectP2p(invite.url, link.name, events, as) : connect(invite.url, events).then((transport) => ({ transport, token: invite.token, seat: '' }))
+    link.abort = (reason) => {
+      if (first) reject(new Error(reason))
+    }
     opening
       .then(({ transport, token, seat }) => {
+        // Given up on while connecting or waiting to be let in.
+        if (link.closed) return transport.close()
         link.transport = transport
         if (!link.agent && seat) link.seat = seat
         hello(link, token, extra)

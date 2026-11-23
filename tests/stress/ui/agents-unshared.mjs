@@ -147,6 +147,25 @@ try {
   check('when the agent leaves, the workbook isn’t open to anyone any more', true)
   check('what the agent wrote stays', await a.page.evaluate(() => JSON.parse(window.__sheets.doc.cell(0, 2, 0)).display === '42'))
 
+  // A tab nobody has looked at yet: its editor loads in the background for the agent, and the tab
+  // in front stays in front.
+  const hidden = await a.page.evaluate(async () => {
+    const ws = window.__workspace
+    const bytes = await ws.getEditor(ws.useWorkspace.getState().tabs.find((t) => t.kind === 'docx').id).getBytes()
+    const id = ws.useWorkspace.getState().openUnsaved(bytes, 'Unseen.docx')
+    ws.useWorkspace.getState().newDocument('docx')
+    return id
+  })
+  await a.page.waitForFunction(() => window.__docxEditor)
+  const front = await a.page.evaluate(() => window.__workspace.useWorkspace.getState().activeId)
+  check('the unseen tab has no editor yet', await a.page.evaluate((id) => !window.__workspace.getEditor(id), hidden))
+  const unseen = await codex.call('list_documents')
+  check('an unseen tab is listed', unseen.text.includes(`Unseen.docx  document: "${hidden}"`), unseen.text)
+  const unseenRead = await codex.call('read_document', { document: hidden })
+  check('the agent reads an unseen tab', unseenRead.text.includes('And this, once shared.'), unseenRead.text)
+  check('the tab in front stays in front', (await a.page.evaluate(() => window.__workspace.useWorkspace.getState().activeId)) === front)
+  await codex.call('leave_document', { document: hidden })
+
   // A guest's own agent: page C joins Ada's document as Cy, and from then on answers the agent (the
   // newest page to connect takes the bridge). Everyone else sees it as Cy's; Cy sees “Codex”.
   const c = await launch({ tauri: false, init: () => {
