@@ -27,6 +27,7 @@ export function TitleBar() {
   const [fullscreen, setFullscreen] = useState(false)
   const [drag, setDrag] = useState<{ id: string; dx: number } | null>(null)
   const tabRefs = useRef(new Map<string, HTMLDivElement>())
+  const scrollRef = useRef<HTMLDivElement>(null)
   const shared = useCollab((s) => s)
 
   // Traffic lights disappear in full screen, so reclaim their space.
@@ -40,6 +41,17 @@ export function TitleBar() {
     })
     return () => unlisten?.()
   }, [])
+
+  // Tabs that don't fit scroll; the one in front is always in view.
+  useEffect(() => {
+    const box = scrollRef.current
+    const tab = tabRefs.current.get(activeId)
+    if (!box || !tab) return
+    const b = box.getBoundingClientRect()
+    const r = tab.getBoundingClientRect()
+    if (r.left < b.left) box.scrollLeft -= b.left - r.left
+    else if (r.right > b.right) box.scrollLeft += r.right - b.right
+  }, [activeId, tabs.length])
 
   /** Pointer-driven reordering (HTML5 drag-and-drop is owned by the native file drop handler). */
   const startDrag = (e: React.PointerEvent, id: string) => {
@@ -94,59 +106,69 @@ export function TitleBar() {
           </span>
           <span className="tab-title">Home</span>
         </div>
-        {tabs.map((tab) => {
-          const active = tab.id === activeId
-          const beside = !active && !!split?.includes(tab.id)
-          const dragging = drag?.id === tab.id
-          // Someone else's shared document has nothing unsaved here: they have the changes.
-          const dirty = tab.dirty && !keeperOf(tab.id)
-          return (
-            <div
-              key={tab.id}
-              ref={(el) => {
-                if (el) tabRefs.current.set(tab.id, el)
-                else tabRefs.current.delete(tab.id)
-              }}
-              role="tab"
-              aria-selected={active}
-              className={`tab ${active ? 'active' : ''} ${beside ? 'beside' : ''} ${dirty ? 'dirty' : ''} ${dragging ? 'dragging' : ''}`}
-              title={tab.path ?? tab.title}
-              style={dragging ? { transform: `translateX(${drag.dx}px)` } : undefined}
-              onPointerDown={(e) => startDrag(e, tab.id)}
-              onAuxClick={(e) => {
-                if (e.button === 1) void closeTab(tab.id)
-              }}
-              onContextMenu={(e) => {
-                e.preventDefault()
-                activate(tab.id)
-                setTabMenu({ x: e.clientX, y: e.clientY, id: tab.id })
-              }}
-            >
-              <span className="tab-icon">
-                <KindIcon kind={tab.kind} size={15} />
-              </span>
-              <span className="tab-title">{tab.title}</span>
-              {(shared[tab.id]?.status === 'live' || shared[tab.id]?.status === 'connecting') && (
-                <span className="tab-shared" title={shared[tab.id].role === 'host' ? 'Shared on your network' : 'A shared document'}>
-                  <Users size={12} />
-                </span>
-              )}
-              <button
-                type="button"
-                className="tab-close"
-                aria-label={dirty ? `Close ${tab.title} (unsaved changes)` : `Close ${tab.title}`}
-                title={shortcut(withKeys(dirty ? 'Unsaved changes — close' : 'Close', 'close-tab'))}
-                onClick={(e) => {
-                  e.stopPropagation()
-                  void closeTab(tab.id)
+        <div
+          className="tabs-scroll"
+          ref={scrollRef}
+          data-tauri-drag-region
+          onWheel={(e) => {
+            // A mouse wheel scrolls the tabs sideways; a trackpad already does.
+            if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) e.currentTarget.scrollLeft += e.deltaY
+          }}
+        >
+          {tabs.map((tab) => {
+            const active = tab.id === activeId
+            const beside = !active && !!split?.includes(tab.id)
+            const dragging = drag?.id === tab.id
+            // Someone else's shared document has nothing unsaved here: they have the changes.
+            const dirty = tab.dirty && !keeperOf(tab.id)
+            return (
+              <div
+                key={tab.id}
+                ref={(el) => {
+                  if (el) tabRefs.current.set(tab.id, el)
+                  else tabRefs.current.delete(tab.id)
+                }}
+                role="tab"
+                aria-selected={active}
+                className={`tab ${active ? 'active' : ''} ${beside ? 'beside' : ''} ${dirty ? 'dirty' : ''} ${dragging ? 'dragging' : ''}`}
+                title={tab.path ?? tab.title}
+                style={dragging ? { transform: `translateX(${drag.dx}px)` } : undefined}
+                onPointerDown={(e) => startDrag(e, tab.id)}
+                onAuxClick={(e) => {
+                  if (e.button === 1) void closeTab(tab.id)
+                }}
+                onContextMenu={(e) => {
+                  e.preventDefault()
+                  activate(tab.id)
+                  setTabMenu({ x: e.clientX, y: e.clientY, id: tab.id })
                 }}
               >
-                <span className="dirty-dot" style={dirty ? undefined : { display: 'none' }} />
-                <X size={13} className="x" />
-              </button>
-            </div>
-          )
-        })}
+                <span className="tab-icon">
+                  <KindIcon kind={tab.kind} size={15} />
+                </span>
+                <span className="tab-title">{tab.title}</span>
+                {(shared[tab.id]?.status === 'live' || shared[tab.id]?.status === 'connecting') && (
+                  <span className="tab-shared" title={shared[tab.id].role === 'host' ? 'Shared on your network' : 'A shared document'}>
+                    <Users size={12} />
+                  </span>
+                )}
+                <button
+                  type="button"
+                  className="tab-close"
+                  aria-label={dirty ? `Close ${tab.title} (unsaved changes)` : `Close ${tab.title}`}
+                  title={shortcut(withKeys(dirty ? 'Unsaved changes — close' : 'Close', 'close-tab'))}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    void closeTab(tab.id)
+                  }}
+                >
+                  <span className="dirty-dot" style={dirty ? undefined : { display: 'none' }} />
+                  <X size={13} className="x" />
+                </button>
+              </div>
+            )
+          })}
+        </div>
       </div>
       <IconButton
         label="New"

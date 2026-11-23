@@ -28,6 +28,7 @@ const scripts = [
   'tests/stress/ui/slides-clipboard.mjs',
   'tests/stress/ui/slides-keyboard.mjs',
   'tests/stress/ui/slides-video.mjs',
+  'tests/stress/ui/tab-overflow.mjs',
   'tests/stress/ui/tracked-changes.mjs',
   'tests/stress/ui/ux-regressions.mjs',
   'tests/stress/ui/version-history.mjs',
