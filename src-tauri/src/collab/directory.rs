@@ -114,35 +114,25 @@ pub fn create_room(base: &str, endpoint_addr: &Value) -> Result<CreatedRoom, Str
     }
 }
 
-/// Why a lookup failed.
-#[derive(Debug)]
-pub enum LookupError {
-    /// The directory couldn't be reached (offline, say).
-    Unreachable(String),
-    /// It answered, with no room for the code: too many misses, or something went wrong there.
-    Refused(String),
-}
-
-/// Looks up an active 6-digit code. Returns `Ok(None)` on 404.
-pub fn lookup_room(base: &str, code: &str) -> Result<Option<LookupRoom>, LookupError> {
+/// Looks up an active 6-digit code. Returns `Ok(None)` on 404, `Err` on rate-limit or network error.
+pub fn lookup_room(base: &str, code: &str) -> Result<Option<LookupRoom>, String> {
     let url = format!("{}/rooms/{code}", base.trim_end_matches('/'));
-    let resp = agent().get(&url).call().map_err(|e| {
-        LookupError::Unreachable(format!("Couldn't reach the sharing directory: {e}"))
-    })?;
+    let resp = agent()
+        .get(&url)
+        .call()
+        .map_err(|e| format!("Couldn't reach the sharing directory: {e}"))?;
     let status = resp.status().as_u16();
     match status {
-        200 => read_json::<LookupRoom>(resp)
-            .map(Some)
-            .map_err(LookupError::Refused),
+        200 => read_json::<LookupRoom>(resp).map(Some),
         404 => Ok(None),
-        429 => Err(LookupError::Refused(read_error(
+        429 => Err(read_error(
             resp,
             "Too many wrong codes. Wait a minute and try again.",
-        ))),
-        _ => Err(LookupError::Refused(read_error(
+        )),
+        _ => Err(read_error(
             resp,
             &format!("Directory lookup failed ({status})."),
-        ))),
+        )),
     }
 }
 

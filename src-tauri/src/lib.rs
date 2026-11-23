@@ -217,6 +217,7 @@ pub fn run() {
             collab::collab_find,
             collab::collab_connect,
             collab::collab_connect_p2p,
+            collab::collab_cancel_joins,
             collab::collab_rotate_code,
             collab::collab_set_require_approval,
             collab::collab_approve_join,

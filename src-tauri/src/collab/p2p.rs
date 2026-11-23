@@ -15,6 +15,7 @@
 //! an earlier code stops working when the host makes a new one. A code works for ten minutes.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -101,8 +102,20 @@ async fn read_frame(recv: &mut RecvStream, max: usize) -> Result<Option<String>,
     if len > max {
         return Err("Frame too large.".into());
     }
-    let mut buf = vec![0u8; len];
-    recv.read_exact(&mut buf).await.map_err(|e| e.to_string())?;
+    // Grown as it arrives, so a length alone doesn't make this side set aside a gigabyte.
+    let mut buf = Vec::with_capacity(len.min(1 << 20));
+    let mut chunk = vec![0u8; len.min(64 << 10)];
+    while buf.len() < len {
+        let want = (len - buf.len()).min(chunk.len());
+        match recv
+            .read(&mut chunk[..want])
+            .await
+            .map_err(|e| e.to_string())?
+        {
+            Some(n) => buf.extend_from_slice(&chunk[..n]),
+            None => return Err("The connection ended mid-message.".into()),
+        }
+    }
     String::from_utf8(buf)
         .map(Some)
         .map_err(|_| "Frame isn't UTF-8.".into())
@@ -602,17 +615,19 @@ impl P2pClient {
 }
 
 /// Joins a session found in the directory. Returns the connection and the session's token, for
-/// the hello. `on_text` gets each relay message, and `on_closed` why the connection ended.
+/// the hello. `on_text` gets each relay message, and `on_closed` why the connection ended. When
+/// `cancel` finishes first, the join is given up, and the host hears that.
 pub async fn connect(
     invite: DirectoryEntry,
     name: String,
     on_text: impl FnMut(&str) + Send + 'static,
     on_closed: impl FnOnce(String) + Send + 'static,
+    cancel: impl Future<Output = ()>,
 ) -> Result<(P2pClient, String), String> {
     let endpoint = Endpoint::bind(presets::N0)
         .await
         .map_err(|e| format!("Couldn't connect over the internet: {e}"))?;
-    connect_with(endpoint, invite, name, on_text, on_closed).await
+    connect_with(endpoint, invite, name, on_text, on_closed, cancel).await
 }
 
 async fn connect_with(
@@ -621,8 +636,12 @@ async fn connect_with(
     name: String,
     mut on_text: impl FnMut(&str) + Send + 'static,
     on_closed: impl FnOnce(String) + Send + 'static,
+    cancel: impl Future<Output = ()>,
 ) -> Result<(P2pClient, String), String> {
-    let joined = join(&endpoint, invite, name).await;
+    let joined = tokio::select! {
+        r = join(&endpoint, invite, name) => r,
+        () = cancel => Err("Cancelled.".to_owned()),
+    };
     let (conn, mut send, mut recv, token) = match joined {
         Ok(v) => v,
         Err(e) => {
@@ -779,6 +798,7 @@ mod tests {
             name.into(),
             move |t| drop(tx.send(t.to_owned())),
             move |_| drop(tx2.send("<closed>".into())),
+            std::future::pending(),
         )
         .await?;
         Ok((client, token, rx))
@@ -912,6 +932,51 @@ mod tests {
         });
     }
 
+    #[test]
+    fn a_guest_giving_up_settles_the_request() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let server = Server::start(Policy::Registered, &[0]).unwrap();
+            server.register("doc", "tok", "hk");
+            let events = Arc::new(Events::default());
+            let host = host(&server, events.clone()).await;
+            add(&host, "doc", "tok", "key", true);
+            let (cancel, cancelled) = oneshot::channel::<()>();
+            let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
+            let joining = tokio::spawn(connect_with(
+                endpoint,
+                invite(&host, "doc", "key"),
+                "Dee".into(),
+                |_| {},
+                |_| {},
+                async move { drop(cancelled.await) },
+            ));
+            let asked = |waiting: bool| {
+                let events = events.clone();
+                async move {
+                    while !events
+                        .requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .any(|r| r.1 == "Dee" && r.2 == waiting)
+                    {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }
+            };
+            tokio::time::timeout(Duration::from_secs(5), asked(true))
+                .await
+                .unwrap();
+            // What `collab_cancel_joins` does.
+            cancel.send(()).unwrap();
+            assert_eq!(joining.await.unwrap().err().as_deref(), Some("Cancelled."));
+            tokio::time::timeout(Duration::from_secs(5), asked(false))
+                .await
+                .unwrap();
+            assert_eq!(host.inner.lock().unwrap().sessions["doc"].waiting, 0);
+        });
+    }
+
     /// Through the real directory and n0's relays: `cargo test over_the_internet -- --ignored`.
     #[test]
     #[ignore = "needs the internet"]
@@ -930,6 +995,7 @@ mod tests {
                 .await
                 .unwrap();
 
+            assert!(!crate::collab::codes::is_local(&code), "{code}");
             let found = directory::lookup_room(&url, &code).unwrap().unwrap();
             let mut entry: DirectoryEntry = serde_json::from_value(found.endpoint_addr).unwrap();
             // Only the relay, as for a guest on another network.
@@ -948,6 +1014,7 @@ mod tests {
                 "Alex".into(),
                 move |t| drop(tx.send(t.to_owned())),
                 |_| {},
+                std::future::pending(),
             )
             .await
             .unwrap();
@@ -960,7 +1027,15 @@ mod tests {
             assert!(directory::lookup_room(&url, &code).unwrap().is_none());
             assert!(directory::lookup_room(&url, &new).unwrap().is_some());
             let endpoint = Endpoint::bind(presets::N0).await.unwrap();
-            let old = connect_with(endpoint, stale, "Alex".into(), |_| {}, |_| {}).await;
+            let old = connect_with(
+                endpoint,
+                stale,
+                "Alex".into(),
+                |_| {},
+                |_| {},
+                std::future::pending(),
+            )
+            .await;
             assert!(old.is_err(), "an invite from the old code still works");
             host.unregister("doc");
             host.shutdown();

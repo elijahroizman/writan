@@ -71,6 +71,9 @@ impl Conn {
 /// The page's open connections, by the id the page knows them by.
 static CLIENTS: LazyLock<Mutex<HashMap<u32, Conn>>> = LazyLock::new(Default::default);
 static NEXT_CONN: AtomicU32 = AtomicU32::new(1);
+/// Internet joins still connecting or waiting to be let in, for `collab_cancel_joins`.
+static JOINING: LazyLock<Mutex<HashMap<u32, tokio::sync::oneshot::Sender<()>>>> =
+    LazyLock::new(Default::default);
 
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
@@ -344,51 +347,37 @@ pub async fn collab_approve_join(request: String, allow: bool) -> Result<(), Str
     }
 }
 
-/// Finds who is sharing with a six-digit code and returns their invite: a `writan-p2p://` one
-/// from the directory, or else a `ws://` link from the local network (`codes.rs`).
-///
-/// The directory goes first, and the local network is asked only when the directory doesn't have
-/// the code or can't be reached, so a code shared over the internet isn't asked for nearby, where
-/// anyone could hear it and answer.
+/// Finds who is sharing with a six-digit code and returns their invite. A code that starts with 0
+/// is on the local network (`codes.rs`), found there and only there; any other is in the
+/// directory, for a `writan-p2p://` invite. So a code shared over the internet is never
+/// broadcast nearby, where anyone could hear it and answer, and a local one never leaves.
 #[tauri::command]
 pub async fn collab_find(code: String) -> Result<String, String> {
     let code: String = code.chars().filter(char::is_ascii_digit).collect();
     if !codes::is_code(&code) {
         return Err("A code is six digits.".into());
     }
-    let asked = code.clone();
-    let online = tauri::async_runtime::spawn_blocking(move || find_online(&asked))
-        .await
-        .map_err(|e| e.to_string())?;
-    // Why the directory couldn't be asked, when it couldn't.
-    let offline = match online {
-        Ok(Some(invite)) => return Ok(invite),
-        Ok(None) => None,
-        Err(directory::LookupError::Unreachable(e)) => Some(e),
-        Err(directory::LookupError::Refused(e)) => return Err(e),
-    };
-    let lan = tauri::async_runtime::spawn_blocking(move || codes::find(&code, &lan_addresses()))
-        .await
-        .map_err(|e| e.to_string())?;
-    match (lan, offline) {
-        (Ok(url), _) => Ok(url),
-        // The page waits for macOS's permission on this one (network.ts).
-        (Err(e), _) if e.contains("no route to host") => Err(e),
-        (Err(_), Some(offline)) => Err(format!(
-            "Nobody on your network is sharing with that code, and Writan couldn't look it up online: {offline}"
-        )),
-        (Err(e), None) => Err(e),
-    }
+    let local = codes::is_local(&code);
+    tauri::async_runtime::spawn_blocking(move || {
+        if local {
+            return codes::find(&code, &lan_addresses());
+        }
+        find_online(&code)?.ok_or_else(|| {
+            "Nobody is sharing with that code. Check it, or ask for a new one: a code works for ten minutes."
+                .to_owned()
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
-fn find_online(code: &str) -> Result<Option<String>, directory::LookupError> {
+fn find_online(code: &str) -> Result<Option<String>, String> {
     let Some(found) = directory::lookup_room(&directory::directory_url(), code)? else {
         return Ok(None);
     };
-    let refused = directory::LookupError::Refused;
     let entry: DirectoryEntry = serde_json::from_value(found.endpoint_addr)
-        .map_err(|_| refused("The directory sent an address Writan can't read.".into()))?;
-    p2p::encode_invite(&entry).map(Some).map_err(refused)
+        .map_err(|_| "The directory sent an address Writan can't read.".to_owned())?;
+    p2p::encode_invite(&entry).map(Some)
 }
 
 /// The relay's server, started if it isn't running.
@@ -531,8 +520,10 @@ pub async fn collab_connect_p2p<R: Runtime>(
 ) -> Result<P2pConnInfo, String> {
     let invite = p2p::parse_invite(&url)?;
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
+    let (cancel, cancelled) = tokio::sync::oneshot::channel();
+    JOINING.lock().unwrap().insert(conn, cancel);
     let (on_message, on_closed) = (app.clone(), app);
-    let (client, token) = p2p::connect(
+    let joined = p2p::connect(
         invite,
         name,
         move |data| {
@@ -542,10 +533,21 @@ pub async fn collab_connect_p2p<R: Runtime>(
             CLIENTS.lock().unwrap().remove(&conn);
             let _ = on_closed.emit("collab-closed", ClosedEvent { conn, reason });
         },
+        async move { drop(cancelled.await) },
     )
-    .await?;
+    .await;
+    JOINING.lock().unwrap().remove(&conn);
+    let (client, token) = joined?;
     CLIENTS.lock().unwrap().insert(conn, Conn::P2p(client));
     Ok(P2pConnInfo { conn, token })
+}
+
+/// Gives up the internet joins still connecting or waiting to be let in (the Join dialog closed).
+#[tauri::command]
+pub fn collab_cancel_joins() {
+    for (_, cancel) in JOINING.lock().unwrap().drain() {
+        let _ = cancel.send(());
+    }
 }
 
 /// Sends one text frame on a connection.

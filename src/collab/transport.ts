@@ -233,6 +233,11 @@ export async function connectP2p(url: string, name: string, events: TransportEve
   return { transport: await native(conn, events), token }
 }
 
+/** Gives up internet joins still waiting (the Join dialog closed). */
+export function cancelJoins() {
+  if (isTauri) void import('@tauri-apps/api/core').then(({ invoke }) => invoke('collab_cancel_joins').catch(() => {}))
+}
+
 /** Opens a connection to a relay. */
 export async function connect(url: string, events: TransportEvents): Promise<Transport> {
   await resetNative()

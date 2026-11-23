@@ -6,7 +6,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { create } from 'zustand'
 import { colorFor, displayName, join, letIn, newCode, requireApproval, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
-import { parseCode, parseInvite } from '../collab/transport'
+import { cancelJoins, parseCode, parseInvite } from '../collab/transport'
 import { PeerAvatar } from '../collab/cursors'
 import { askForNetwork, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings, whileNetworkAllowed } from '../collab/network'
 import { isMac, isTauri } from '../lib/platform'
@@ -354,6 +354,7 @@ export function JoinDialog() {
   // Closing while joining gives up: the attempt goes stale, and if the person sharing lets this
   // copy in later, it leaves without opening anything.
   const close = () => {
+    if (busy) cancelJoins()
     attempts.current++
     setBusy(false)
     setError(null)

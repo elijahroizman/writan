@@ -30,14 +30,16 @@ function json(body, status = 200, extraHeaders = {}) {
   });
 }
 
+// 100000 to 999999: codes starting with 0 are for the local network, which the app never asks
+// about here.
 function randomCode() {
-  // Rejection-sample to avoid modulo bias on 1_000_000.
-  const limit = 4_294_000_000;
+  // Rejection-sample to avoid modulo bias on 900_000.
+  const limit = 4_294_800_000;
   const buf = new Uint32Array(1);
   for (;;) {
     crypto.getRandomValues(buf);
     if (buf[0] < limit) {
-      return String(buf[0] % 1_000_000).padStart(6, "0");
+      return String(100_000 + (buf[0] % 900_000));
     }
   }
 }
