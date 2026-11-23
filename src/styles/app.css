@@ -4706,6 +4706,58 @@ button.section-title:hover {
   font-size: 11.5px;
 }
 
+.share-code-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--fg-muted);
+}
+
+.share-code-meta .share-link {
+  font-size: 11.5px;
+}
+
+.share-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--fg-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.share-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.share-requests {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.share-request {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--field);
+  font-size: 12px;
+}
+
+.share-request-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+
 .share-code-field input {
   font-size: 14px;
   font-weight: 500;

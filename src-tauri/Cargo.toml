@@ -34,6 +34,12 @@ sha2 = "0.10"
 tempfile = "3"
 # Co-editing over the LAN (collab/): a blocking WebSocket server and client, wss:// through native TLS.
 tungstenite = { version = "0.30", default-features = false, features = ["handshake", "native-tls"] }
+# Encrypted P2P co-editing over the internet (collab/p2p.rs): QUIC + hole-punching + relay fallback.
+iroh = "1.5"
+# Password-authenticated key exchange for 6-digit internet join codes (collab/p2p.rs).
+spake2 = "0.4"
+# Async runtime for iroh P2P streams (already pulled in by tauri).
+tokio = { version = "1", features = ["rt", "sync", "time", "io-util"] }
 # Session ids, invite tokens and host keys for shared documents (collab/).
 getrandom = "0.3"
 # Reads the HTTP requests of the MCP server for agents (collab/mcp.rs). tungstenite uses it too.

@@ -43,8 +43,8 @@ JSON text frames over WebSocket, at `/v1/<session>`:
 
 | From | Message | Meaning |
 | --- | --- | --- |
-| copy | `hello { v, token, client, name, color, hostKey?, snapshot? }` | First message. The host's carries the opening bytes (base64) and the host key. `color` is the one asked for. |
-| relay | `welcome { client, color, host, seq, session, snapshot, ops, peers }` | The opening bytes and every change so far. `color` is this copy's: the one asked for if nobody has it, else the first free one in `COLORS`. `peers` have `{ client, name, color, host, presence }`. |
+| copy | `hello { v, token, client, name, color, hostKey?, snapshot?, sinceSeq? }` | First message. The host's carries the opening bytes (base64) and the host key. `color` is the one asked for. A reconnecting client sends `sinceSeq` to resume without re-downloading the snapshot. |
+| relay | `welcome { client, color, host, seq, session, snapshot, ops, peers, resumed? }` | The opening bytes and every change so far (or `resumed: true`, empty `snapshot`, and only ops with `seq > sinceSeq` on reconnect). `color` is this copy's: the one asked for if nobody has it, else the first free one in `COLORS`. `peers` have `{ client, name, color, host, presence }`. |
 | copy | `op { id, base, steps }` | A change. `base` is the last change this copy had applied. |
 | relay | `op { seq, client, id, base, steps }` | The change in its place in the order, to everyone. |
 | copy | `presence { data }` | Where this copy's caret is. The relay keeps the last one for newcomers' `welcome` and sends it on as `presence { client, data }`. |
@@ -64,6 +64,12 @@ Sharing also gives the session a six-digit code (`src-tauri/src/collab/codes.rs`
 Both answer `{ session, token, port }`. The guest's app (`collab_find`) broadcasts the UDP lookup to 255.255.255.255 and each of its networks' `.255`, and at the same time asks `GET /join/<code>` of every address in each of its /24 networks on port 47811, 48 at a time, and of itself. The first answer wins, and the guest builds the invite link from it and joins as before. Both run because some networks drop broadcasts and others are bigger than a /24. After 4 seconds with no answer, the guest is told nobody has that code; if the system refused to reach the network (macOS before it's allowed), it says so, and the page waits as it does for a link.
 
 A code has a million values, so each relay limits wrong guesses: 20 a minute from one address and 100 from everyone, after which it answers nothing until the minute is up. A guest's search reaches every Writan on the network, so a few misses per join are normal. A code ends with its session.
+
+## Internet sharing
+
+In the desktop app, sharing also starts an ephemeral `iroh` QUIC peer-to-peer endpoint (`src-tauri/src/collab/p2p.rs`, ALPN `writan/collab/1`) and registers the 6-digit code in a tiny Cloudflare Worker directory (`worker/writan-join/`, client in `src-tauri/src/collab/directory.rs`, overridable via `WRITAN_JOIN_URL`). The directory only stores `{ addr, session }` for 10 minutes and never sees document bytes or ops; the same 6-digit code is also registered on LAN so local guests connect directly.
+
+When a guest types a 6-digit code, `collab_find` races LAN discovery against the directory Worker. If the directory answers, it returns a `writan-p2p://` invite and `collab_connect_p2p` connects over encrypted QUIC (direct UDP hole-punching when possible, falling back to an encrypted `iroh` relay). Access is gated by a SPAKE2 password-authenticated key exchange on the 6-digit code (so the code is never sent on the wire and offline cracking is impossible), a 10-minute code TTL, 5-strike auto-rotation on failed handshakes, per-IP rate limiting in the Worker, and optional 1-click host approval (`Allow` / `Deny`, on by default). Once authenticated, the P2P stream bridges directly into the host's in-process `Relay` (`RelayBridge`) and the guest switches to token-based reconnect (`sinceSeq`) so temporary drops resume transparently even after the join code expires.
 
 AI agents never use a code. They reach shared documents through the MCP server, which needs its own token (below), and the page hands their copies the host's invite itself.
 
