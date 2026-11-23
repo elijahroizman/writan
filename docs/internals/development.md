@@ -61,7 +61,7 @@ src-tauri/
   windows/hooks.nsh       closes Writan before a Windows install or uninstall
   src/defaults.rs         makes Writan the default app for its file types
   src/collab/             the relay that orders shared documents' changes, its WebSocket server and client, and the MCP server for agents (mcp.rs)
-  src/agents.rs           sets up Writan's MCP server and skill in Claude Code, Codex, Antigravity, Grok Build and Hermes
+  src/agents.rs           sets up Writan's MCP server and skill in Claude Code, Codex, Antigravity, Grok Build, Hermes and Pi
   src/files.rs            raw-bytes file reading and atomic saving
   src/menu.rs             the native menu bar
   linux/                  the .deb's install scripts and APT signing key
