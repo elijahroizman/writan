@@ -241,7 +241,8 @@ let joinAttempts = 0
 /** Gives up the internet joins started so far (the Join dialog closed). */
 export function cancelJoins() {
   const upTo = joinAttempts
-  if (isTauri) void import('@tauri-apps/api/core').then(({ invoke }) => invoke('collab_cancel_joins', { upTo }).catch(() => {}))
+  // After the reset the joins wait for too, which would forget it.
+  if (isTauri) void resetNative().then(() => import('@tauri-apps/api/core')).then(({ invoke }) => invoke('collab_cancel_joins', { upTo }).catch(() => {}))
 }
 
 /** Opens a connection to a relay. */

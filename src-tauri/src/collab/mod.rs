@@ -77,7 +77,8 @@ static JOINING: LazyLock<Mutex<Joining>> = LazyLock::new(Default::default);
 
 #[derive(Default)]
 struct Joining {
-    waiting: HashMap<u32, tokio::sync::oneshot::Sender<()>>,
+    /// By connection id, which a page loaded later doesn't reuse: the attempt and its cancel.
+    waiting: HashMap<u32, (u32, tokio::sync::oneshot::Sender<()>)>,
     given_up_to: u32,
 }
 
@@ -529,7 +530,7 @@ pub async fn collab_connect_p2p<R: Runtime>(
 ) -> Result<P2pConnInfo, String> {
     let invite = p2p::parse_invite(&url)?;
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
-    let cancelled = start_join(attempt)?;
+    let cancelled = start_join(conn, attempt)?;
     let (on_message, on_closed) = (app.clone(), app);
     let joined = p2p::connect(
         invite,
@@ -544,20 +545,20 @@ pub async fn collab_connect_p2p<R: Runtime>(
         async move { drop(cancelled.await) },
     )
     .await;
-    JOINING.lock().unwrap().waiting.remove(&attempt);
+    JOINING.lock().unwrap().waiting.remove(&conn);
     let (client, token) = joined?;
     CLIENTS.lock().unwrap().insert(conn, Conn::P2p(client));
     Ok(P2pConnInfo { conn, token })
 }
 
 /// Notes a join as waiting, unless it was given up already. What finishes when it's given up.
-fn start_join(attempt: u32) -> Result<tokio::sync::oneshot::Receiver<()>, String> {
+fn start_join(conn: u32, attempt: u32) -> Result<tokio::sync::oneshot::Receiver<()>, String> {
     let mut joining = JOINING.lock().unwrap();
     if attempt <= joining.given_up_to {
         return Err("Cancelled.".into());
     }
     let (cancel, cancelled) = tokio::sync::oneshot::channel();
-    joining.waiting.insert(attempt, cancel);
+    joining.waiting.insert(conn, (attempt, cancel));
     Ok(cancelled)
 }
 
@@ -566,16 +567,12 @@ fn start_join(attempt: u32) -> Result<tokio::sync::oneshot::Receiver<()>, String
 pub fn collab_cancel_joins(up_to: u32) {
     let mut joining = JOINING.lock().unwrap();
     joining.given_up_to = joining.given_up_to.max(up_to);
-    let given_up: Vec<u32> = joining
-        .waiting
-        .keys()
-        .copied()
-        .filter(|a| *a <= up_to)
-        .collect();
-    for a in given_up {
-        if let Some(cancel) = joining.waiting.remove(&a) {
-            let _ = cancel.send(());
-        }
+    let (given_up, rest) = std::mem::take(&mut joining.waiting)
+        .into_iter()
+        .partition::<HashMap<_, _>, _>(|(_, (attempt, _))| *attempt <= up_to);
+    joining.waiting = rest;
+    for (_, (_, cancel)) in given_up {
+        let _ = cancel.send(());
     }
 }
 
@@ -616,8 +613,8 @@ mod tests {
     #[test]
     fn collab_a_join_given_up_before_it_starts_stays_given_up() {
         collab_cancel_joins(2);
-        assert!(start_join(1).is_err() && start_join(2).is_err());
-        let mut third = start_join(3).unwrap();
+        assert!(start_join(101, 1).is_err() && start_join(102, 2).is_err());
+        let mut third = start_join(103, 3).unwrap();
         assert!(third.try_recv().is_err());
         collab_cancel_joins(3);
         assert!(third.try_recv().is_ok());
