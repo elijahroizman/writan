@@ -30,7 +30,7 @@ use super::client::MAX_INCOMING;
 use super::directory;
 use super::relay::MAX_FRAME;
 use super::server::RelayBridge;
-use super::socket::Cmd;
+use super::socket::{Cmd, WRITE_TIMEOUT};
 
 /// Names Writan's stream to iroh.
 const ALPN: &[u8] = b"writan/collab/1";
@@ -81,13 +81,18 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Sends one frame. The other side limits what it takes.
+/// Sends one frame. The other side limits what it takes. Like a WebSocket's write timeout, a
+/// side that takes nothing for `WRITE_TIMEOUT` is given up on, so what's waiting for it can't pile
+/// up for good.
 async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), String> {
     let len = u32::try_from(payload.len()).map_err(|_| "Frame too large.".to_owned())?;
-    send.write_all(&len.to_be_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    send.write_all(payload).await.map_err(|e| e.to_string())
+    for part in std::iter::once(&len.to_be_bytes()[..]).chain(payload.chunks(64 << 10)) {
+        tokio::time::timeout(WRITE_TIMEOUT, send.write_all(part))
+            .await
+            .map_err(|_| "The other side stopped reading.".to_owned())?
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// The next frame, or `None` when the other side finished the stream.
@@ -185,6 +190,8 @@ struct Entry {
 #[derive(Default)]
 struct Inner {
     sessions: HashMap<String, Entry>,
+    /// Sessions being put in the directory, which keep the endpoint open too.
+    registering: usize,
     /// Guests waiting to be let in, by request id: the session and the host's answer.
     approvals: HashMap<String, (String, oneshot::Sender<bool>)>,
     next: u64,
@@ -265,10 +272,13 @@ impl P2pHost {
     ) -> Result<(String, u64), String> {
         let (key, entry) = self.entry(session)?;
         let base = url.clone();
-        let room = tokio::task::spawn_blocking(move || directory::create_room(&base, &entry))
+        self.inner.lock().unwrap().registering += 1;
+        let created = tokio::task::spawn_blocking(move || directory::create_room(&base, &entry))
             .await
-            .map_err(|e| e.to_string())??;
+            .map_err(|e| e.to_string());
         let mut inner = self.inner.lock().unwrap();
+        inner.registering -= 1;
+        let room = created??;
         if inner.closed {
             drop(inner);
             delete_room(
@@ -371,8 +381,10 @@ impl P2pHost {
         }
     }
 
+    /// Whether nothing is shared or being shared, so the endpoint can close.
     pub fn is_empty(&self) -> bool {
-        self.inner.lock().unwrap().sessions.is_empty()
+        let inner = self.inner.lock().unwrap();
+        inner.sessions.is_empty() && inner.registering == 0
     }
 
     /// Unregisters everything and closes the endpoint, after what's being sent (the relay's

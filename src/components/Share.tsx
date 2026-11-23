@@ -332,7 +332,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
   }
 
   return createPortal(
-    <div ref={panel} className="share-panel" role="dialog" aria-labelledby="share-title" style={{ left: pos.x, top: pos.y }}>
+    <div ref={panel} className="share-panel" role="dialog" aria-labelledby="share-title" style={{ left: pos.x, top: pos.y, maxHeight: `calc(100vh - ${pos.y + 8}px)` }}>
       {body}
     </div>,
     document.body,

@@ -4653,6 +4653,12 @@ button.section-title:hover {
   padding: 8px 16px 14px;
 }
 
+/* In a short window, people waiting to join scroll here, and the footer stays in view. */
+.share-panel .share-body {
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .share-join .share-body {
   padding: 0;
 }
