@@ -223,6 +223,10 @@ impl Server {
         self.state.lock().unwrap().relay.session_count()
     }
 
+    pub fn has_session(&self, session: &str) -> bool {
+        self.state.lock().unwrap().relay.has_session(session)
+    }
+
     /// Lets agents in at `/mcp/<token>`, with the page answering at `/bridge/<bridge_key>`, or
     /// (`None`) stops. Agents' sessions start over either way.
     pub fn set_mcp(&self, token_and_key: Option<(&str, &str)>) {

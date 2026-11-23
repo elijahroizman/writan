@@ -81,7 +81,7 @@ try {
   check('initialize names the server and the session', codex.init?.result?.serverInfo?.name === 'writan', JSON.stringify(codex.init))
   const tools = (await codex.list()).result.tools.map((t) => t.name)
   check('the tools are listed', ['list_documents', 'read_document', 'insert_paragraphs', 'write_cells', 'where_is_everyone'].every((t) => tools.includes(t)), tools.join())
-  check('with nothing shared, list_documents says what to do', (await codex.call('list_documents')).text.includes('Nothing is shared'))
+  check('with nothing open, list_documents says what to do', (await codex.call('list_documents')).text.includes('is open in Writan'))
 
   // ── Word
   await a.page.getByRole('button', { name: /New document/ }).first().click()

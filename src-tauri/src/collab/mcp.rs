@@ -1,5 +1,5 @@
 //! Writan's MCP server: how an AI agent (Claude Code, Codex, Antigravity, Grok, Hermes, Pi…) joins
-//! shared documents and edits them alongside people.
+//! the documents open in Writan, shared or not, and edits them alongside people.
 //!
 //! It's served by the relay's server (`server.rs`) on the same port, at `/mcp/<token>`, speaking
 //! MCP's Streamable HTTP transport: each JSON-RPC message is a POST, answered with one JSON
@@ -67,9 +67,9 @@ const IDLE: Duration = Duration::from_secs(4 * 60 * 60);
 
 /// What the server says about itself to every agent.
 const INSTRUCTIONS: &str = "Writan is a word processor, presentation and spreadsheet app. \
-Through this server you join documents that people are sharing from Writan and edit them \
-together, live: they see your caret, your name and your changes as you make them, and you can \
-see where they are. Start with list_documents, then read_document; view_document shows a slide \
+Through this server you join the documents open in Writan, shared with others or not, and edit \
+them together with people, live: they see your caret, your name and your changes as you make \
+them, and you can see where they are. Start with list_documents, then read_document; view_document shows a slide \
 or page as people see it. Keep changes small and focused, don't edit what someone else is \
 working on unless asked, and read again before editing if time has passed.";
 

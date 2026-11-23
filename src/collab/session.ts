@@ -14,7 +14,7 @@ import { create } from 'zustand'
 import { showDialog } from '../lib/dialogs'
 import { stripExtension } from '../lib/kinds'
 import { collabHooks, getEditor, useWorkspace } from '../state/workspace'
-import { approveJoin, connect, connectP2p, findInvite, host, onHostEvents, parseCode, parseInvite, rotateCode, setRequireApproval, unhost, type Invite, type JoinRequest, type Transport } from './transport'
+import { approveJoin, connect, connectP2p, findInvite, host, onHostEvents, parseCode, parseInvite, publish, rotateCode, setRequireApproval, unhost, type Invite, type JoinRequest, type Published, type Transport } from './transport'
 
 export const SHAREABLE = new Set(['docx', 'pptx', 'xlsx'])
 
@@ -45,6 +45,9 @@ export interface Peer {
   host?: boolean
   /** For an AI agent: which (`claude`, `codex`…; see agents/identity.ts), or `ai` for another. */
   agent?: string
+  /** For an AI agent: the person whose app it joined through. `name` already says so (“Yoav’s
+   * Claude”), except for this app's own agents, which are just “Claude” here. */
+  owner?: string
 }
 
 /** Where someone else is in a document: what their engine's `presence` gave. */
@@ -79,6 +82,8 @@ export interface Share {
   waiting?: JoinRequest[]
   /** For the host: why sharing over the internet didn't start. */
   internetError?: string | null
+  /** For the host: shared with this computer's AI agents only, with no code yet (`openToAgents`). */
+  private?: boolean
 }
 
 /** Shared tabs, by tab id. */
@@ -198,8 +203,13 @@ interface Link {
   presenceTimer: number | null
   /** Where this copy connects, to let an agent join the same document. */
   invite: Invite | null
-  /** For an agent's copy: which agent, sent in the hello. */
+  /** For an agent's copy: which agent, and whose (the name of the person whose tab it
+   * follows), sent in the hello; and that tab. */
   agent?: string
+  owner?: string
+  follows?: string
+  /** For a guest over the internet: what this app's agents join the same document with. */
+  seat?: string
 }
 
 /** Moving the caret sends where it is at most this often. */
@@ -216,7 +226,7 @@ function hello(link: Link, token: string, extra: Record<string, unknown> = {}) {
   // The color asked for, from the name so a person tends to keep theirs from one document to
   // the next; the relay gives another if someone has it. An agent asks for its own.
   const color = link.agent ? (extra.color as string) : colorFor(link.name || link.client)
-  link.transport?.send(JSON.stringify({ t: 'hello', v: 1, token, client: link.client, name: link.name, ...extra, color, ...(link.agent ? { agent: link.agent } : {}) }))
+  link.transport?.send(JSON.stringify({ t: 'hello', v: 1, token, client: link.client, name: link.name, ...extra, color, ...(link.agent ? { agent: link.agent, owner: link.owner } : {}) }))
 }
 
 /** Sends what changed here, then where the caret is if that changed. */
@@ -242,8 +252,16 @@ function sendPresence(link: Link) {
   link.transport?.send(`{"t":"presence","data":${at}}`)
 }
 
+/** This app's agents' copies, by client, joining or joined. Here they show by their own name
+ * (“Claude”); everywhere else as their person's (“Eli’s Claude”). */
+const ownAgents = new Set<string>()
+
 function peerOf(p: Record<string, unknown>): Peer {
-  return { client: p.client as string, name: p.name as string, color: p.color as string, host: !!p.host, ...(typeof p.agent === 'string' ? { agent: p.agent } : {}) }
+  const client = p.client as string
+  const agent = typeof p.agent === 'string' ? p.agent : undefined
+  const owner = agent && typeof p.owner === 'string' && p.owner ? p.owner : undefined
+  const name = owner && !ownAgents.has(client) ? `${owner}’s ${p.name as string}` : (p.name as string)
+  return { client, name, color: p.color as string, host: !!p.host, ...(agent ? { agent } : {}), ...(owner ? { owner } : {}) }
 }
 
 /** Someone's place, from a presence message or a welcome's peer. */
@@ -279,6 +297,28 @@ function finish(link: Link, status: Share['status'], message: string | null) {
   links.delete(link.tabId)
   setPlaces(link.tabId, () => null)
   update(link.tabId, { status, message, peers: [], waiting: [] })
+  if (link.agent) {
+    agentLinks.delete(link)
+    ownAgents.delete(link.client)
+    if (link.follows) closeIfNoAgents(link.follows)
+    return
+  }
+  // The agents that joined through this tab leave with it: a guest who leaves takes theirs along.
+  for (const agent of [...agentLinks]) {
+    if (agent.follows !== link.tabId || !agent.welcomed) continue
+    agent.transport?.send(JSON.stringify({ t: 'bye' }))
+    finish(agent, 'ended', 'The document isn’t shared here any more.')
+  }
+}
+
+/** This app's agents' copies, joining or joined. */
+const agentLinks = new Set<Link>()
+
+/** A tab shared with this computer's agents only ends when the last of them leaves. */
+function closeIfNoAgents(tabId: string) {
+  if (!useCollab.getState()[tabId]?.private) return
+  if ([...agentLinks].some((l) => l.follows === tabId && !l.closed)) return
+  stop(tabId)
 }
 
 /** The name of whoever shares a guest's document. */
@@ -362,8 +402,11 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
     case 'join': {
       const peers = useCollab.getState()[link.tabId]?.peers ?? []
       const peer = peerOf(msg)
-      update(link.tabId, { peers: [...peers.filter((p) => p.client !== peer.client), peer] })
-      if (!peers.some((p) => p.client === peer.client)) arrive(link.tabId, peer, true)
+      // Someone already here is renamed (the host who shared what only their agents were in).
+      const known = peers.some((p) => p.client === peer.client)
+      update(link.tabId, { peers: known ? peers.map((p) => (p.client === peer.client ? peer : p)) : [...peers, peer] })
+      if (known) setPlaces(link.tabId, (now) => (now[peer.client] ? { ...now, [peer.client]: { ...now[peer.client], peer } } : now))
+      else arrive(link.tabId, peer, true)
       // Someone new hasn't seen where this copy is.
       link.presence = null
       if (link.live && link.presenceTimer === null) link.presenceTimer = window.setTimeout(() => sendPresence(link), 0)
@@ -439,43 +482,87 @@ export async function letIn(tabId: string, request: string, allow: boolean): Pro
   await approveJoin(request, allow).catch(() => {})
 }
 
+/** What the host's panel shows about how people join. */
+function shown(p: Published): Partial<Share> {
+  return { invite: p.invite, code: p.code, addresses: p.addresses, internet: p.internet, expiresAt: p.expiresAt, requireApproval: p.requireApproval, internetError: p.internetError }
+}
+
 /**
  * Shares a tab's document: in the app, with anyone who has the code (who wait to be let in when
- * `approval`); in a browser, through the relay.
+ * `approval`); in a browser, through the relay. A document this computer's agents are in already
+ * gets a code, and they stay.
  */
 export async function share(tabId: string, name: string, approval = true): Promise<void> {
+  const link = links.get(tabId)
+  if (link?.role === 'host' && useCollab.getState()[tabId]?.private) {
+    if (!link.session || !link.invite) stop(tabId)
+    else {
+      const p = await publish(link.session, link.invite, approval)
+      if (link.closed) throw new Error('Sharing was stopped.')
+      if (link.name !== name) rename(link, name)
+      update(tabId, { ...shown(p), private: false, waiting: [], message: null })
+      return
+    }
+  }
+  await startHosting(tabId, name, approval, false)
+}
+
+/** The host takes the name they typed to share, and their agents become theirs by it. */
+function rename(link: Link, name: string) {
+  link.name = name
+  link.transport?.send(JSON.stringify({ t: 'rename', name }))
+  const you = useCollab.getState()[link.tabId]?.you
+  if (you) update(link.tabId, { you: { ...you, name } })
+  for (const agent of agentLinks) {
+    if (agent.follows !== link.tabId || agent.closed) continue
+    agent.owner = name
+    agent.transport?.send(JSON.stringify({ t: 'rename', name: agent.name, owner: name }))
+  }
+}
+
+/** How long agents wait for a document to open to them. */
+const OPENING = 15_000
+
+/**
+ * Lets this computer's agents into a tab's document that isn't shared: a session with no code,
+ * which only they join, until Share gives it one. Resolves once they can join.
+ */
+export async function openToAgents(tabId: string): Promise<void> {
+  if (!links.has(tabId)) await startHosting(tabId, displayName() || 'The person sharing', true, true)
+  const link = links.get(tabId)
+  for (const until = Date.now() + OPENING; link && !link.closed && !link.welcomed && Date.now() < until; ) await new Promise((r) => setTimeout(r, 25))
+  if (!link || link.closed) throw new Error(useCollab.getState()[tabId]?.message ?? 'The document closed.')
+  if (!link.welcomed) throw new Error('Opening the document took too long.')
+}
+
+/** Starts a tab's session. A `private` one is for this computer's agents only (`openToAgents`). */
+async function startHosting(tabId: string, name: string, approval: boolean, isPrivate: boolean): Promise<void> {
   const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
   if (!tab || !getEditor(tabId) || !SHAREABLE.has(tab.kind) || links.has(tabId)) return
   const link: Link = { ...newLink(name), tabId, role: 'host' }
   links.set(tabId, link)
-  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', you: null, invite: null, code: null, addresses: [], peers: [], message: null } })
+  useCollab.setState({ [tabId]: { role: 'host', status: 'connecting', you: null, invite: null, code: null, addresses: [], peers: [], message: null, private: isPrivate } })
   const title = `${tab.title}.${tab.kind}`
   try {
-    const hosting = await host(title, tab.kind, approval)
+    const hosting = await host(title, tab.kind, approval, isPrivate)
     link.session = hosting.session
     link.invite = hosting.local
-    update(tabId, {
-      invite: hosting.invite,
-      code: hosting.code,
-      addresses: hosting.addresses,
-      internet: hosting.internet,
-      expiresAt: hosting.expiresAt,
-      requireApproval: hosting.requireApproval,
-      internetError: hosting.internetError,
-      waiting: [],
-    })
+    update(tabId, { ...(hosting.published ? shown(hosting.published) : {}), waiting: [] })
     // Everyone starts from these bytes, the host too: reloading makes the host's document what
     // the others read from them. Taken last, and again if the document changed while they were
     // written (Word adds its comments asynchronously), so nothing typed is lost.
     let bytes: Uint8Array | null = null
+    let unsaved = false
     for (let tries = 0; !bytes; tries++) {
       const editor = getEditor(tabId)
       if (link.closed || !editor) throw new Error('The tab closed before sharing started.')
       if (tries === 5) throw new Error('The document kept changing. Try sharing again.')
-      // What the others start from is what's saved: anything done since the panel saved it
-      // (while the relay started) is saved first.
       const now = useWorkspace.getState().tabs.find((t) => t.id === tabId)
-      if (now?.path && now.dirty && !((await useWorkspace.getState().save(tabId)) && !useWorkspace.getState().tabs.find((t) => t.id === tabId)?.dirty)) {
+      // What the others start from is what's saved: anything done since the panel saved it
+      // (while the relay started) is saved first. Agents alone start from what's there, saved
+      // or not, and it stays unsaved.
+      if (isPrivate) unsaved = !!now?.dirty
+      else if (now?.path && now.dirty && !((await useWorkspace.getState().save(tabId)) && !useWorkspace.getState().tabs.find((t) => t.id === tabId)?.dirty)) {
         throw new Error('Save the document to share it. Everyone edits the saved file with you.')
       }
       editor.prepareSave?.()
@@ -484,7 +571,7 @@ export async function share(tabId: string, name: string, approval = true): Promi
       if (getEditor(tabId) === editor && editor.getRevision?.() === revision) bytes = written
     }
     if (link.closed) throw new Error('Sharing was stopped.')
-    useWorkspace.getState().reloadBytes(tabId, bytes)
+    useWorkspace.getState().reloadBytes(tabId, bytes, unsaved)
     const transport = await connect(hosting.local.url, {
       message: (data) => onMessage(link, data),
       closed: (reason) => finish(link, 'disconnected', `Sharing stopped: ${reason}`),
@@ -576,11 +663,14 @@ async function follow(invite: Invite, link: Link, open: (doc: Opened) => string,
         }
       },
     }
-    // Over the internet, the token comes once the host has let this copy in.
-    const opening = invite.p2p ? connectP2p(invite.url, link.name, events) : connect(invite.url, events).then((transport) => ({ transport, token: invite.token }))
+    // Over the internet, the token comes once the host has let this copy in. An agent asks with
+    // its person's seat.
+    const as = link.agent && invite.seat ? { seat: invite.seat, agent: link.agent } : undefined
+    const opening = invite.p2p ? connectP2p(invite.url, link.name, events, as) : connect(invite.url, events).then((transport) => ({ transport, token: invite.token, seat: '' }))
     opening
-      .then(({ transport, token }) => {
+      .then(({ transport, token, seat }) => {
         link.transport = transport
+        if (!link.agent && seat) link.seat = seat
         hello(link, token, extra)
       })
       .catch(reject)
@@ -602,40 +692,61 @@ export function onOthersChange(id: string, f: (client: string) => void): () => v
 }
 
 /**
- * Where this app connects to a shared tab's document, so an agent can join it too. Not for a
- * document joined over the internet: its invite needs the code, and the host to let in another.
+ * Where this app connects to a shared tab's document, so an agent can join it too. A document
+ * joined over the internet needs the seat the host gave this app, and the host lets the agent in
+ * like a person; one from a host without seats (Writan 0.14) can't be joined.
  */
 export function inviteOf(tabId: string): Invite | null {
   const link = links.get(tabId)
-  return link && !link.closed && !link.invite?.p2p ? link.invite : null
+  if (!link || link.closed || !link.invite) return null
+  if (!link.invite.p2p) return link.invite
+  return link.seat ? { ...link.invite, seat: link.seat } : null
 }
 
 /**
- * Joins a shared document as an AI agent: a copy with no tab, whose engine `open` makes. The
- * agent shows to everyone with its name, color and logo. Resolves to the copy's id, which
+ * Joins the document a tab shares or follows as an AI agent: a copy with no tab, whose engine
+ * `open` makes. The agent shows to everyone with its name, color and logo, and to everyone on
+ * other computers as the tab's person's (“Eli’s Claude”). Resolves to the copy's id, which
  * `useCollab` and `usePresence` use like a tab's.
  */
-export async function followAsAgent(invite: Invite, who: { name: string; color: string; agent: string }, open: (id: string, doc: Opened) => void): Promise<string> {
+export async function followAsAgent(tabId: string, who: { name: string; color: string; agent: string }, open: (id: string, doc: Opened) => void): Promise<string> {
+  const invite = inviteOf(tabId)
+  const owner = links.get(tabId)
+  if (!invite || !owner) throw new Error('This document isn’t open to agents.')
   const link = newLink(who.name)
   link.agent = who.agent
+  link.owner = owner.name
+  link.follows = tabId
   const id = `agent:${link.client}`
-  return follow(
-    invite,
-    link,
-    (doc) => {
-      open(id, doc)
-      return id
-    },
-    { color: who.color },
-  )
+  ownAgents.add(link.client)
+  agentLinks.add(link)
+  try {
+    return await follow(
+      invite,
+      link,
+      (doc) => {
+        open(id, doc)
+        return id
+      },
+      { color: who.color },
+    )
+  } catch (err) {
+    link.closed = true
+    agentLinks.delete(link)
+    ownAgents.delete(link.client)
+    closeIfNoAgents(tabId)
+    throw err
+  }
 }
 
 /** An agent's copy leaves its document. */
 export function leaveAsAgent(id: string) {
   const link = links.get(id)
-  if (!link) return
-  link.transport?.send(JSON.stringify({ t: 'bye' }))
-  finish(link, 'ended', null)
+  if (link) {
+    link.transport?.send(JSON.stringify({ t: 'bye' }))
+    finish(link, 'ended', null)
+  }
+  if (!useCollab.getState()[id]) return
   useCollab.setState((s) => {
     const { [id]: _gone, ...rest } = s
     return rest

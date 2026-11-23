@@ -1,4 +1,4 @@
-// Settings › AI. For now: letting AI agents join shared documents through Writan's MCP server,
+// Settings › AI. For now: letting AI agents into open documents through Writan's MCP server,
 // and setting that up in the agent someone uses. Later AI settings go on this page too.
 
 import { Bot, Check, Copy, RefreshCw } from 'lucide-react'
@@ -36,7 +36,7 @@ export function AiPage() {
   return (
     <>
       <p className="settings-intro">
-        AI agents such as Claude Code and Codex can join the documents you share and edit them with you. Everyone in the document sees each agent’s name and logo at its cursor, like a person’s.
+        AI agents such as Claude Code and Codex can join the Word documents, presentations and workbooks you have open, shared or not, and edit them with you. Everyone in the document sees each agent’s name and logo at its cursor, like a person’s. People you share with see it as yours.
       </p>
       {on && status.local && (
         <section className="plugin-group">
@@ -68,12 +68,12 @@ export function AiPage() {
         <h4>Agents</h4>
         <div className="plugin-row">
           <span className="plugin-text">
-            <span className="settings-label">Let agents join shared documents</span>
+            <span className="settings-label">Let agents into your documents</span>
             <span className="settings-hint">
               Agents connect to Writan through an address with a secret in it, from this computer or another on your network. They can only work on documents you’ve shared, while Writan is open.
             </span>
           </span>
-          {agents && status.state === 'starting' ? <Spinner size={16} /> : <Switch label="Let agents join shared documents" checked={agents} onChange={setAgents} />}
+          {agents && status.state === 'starting' ? <Spinner size={16} /> : <Switch label="Let agents into your documents" checked={agents} onChange={setAgents} />}
         </div>
         {agents && status.state === 'error' && <p className="settings-hint error">{status.message}</p>}
         {on && (
@@ -87,7 +87,7 @@ export function AiPage() {
             >
               <RefreshCw size={14} /> New address
             </Button>
-            <span className="settings-hint">Anyone with the address can edit what you share. Make a new one if it got out.</span>
+            <span className="settings-hint">Anyone with the address can edit the documents you have open. Make a new one if it got out.</span>
           </div>
         )}
       </section>

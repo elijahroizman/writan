@@ -1,15 +1,16 @@
 // What an AI agent can do in Writan through MCP (src-tauri/src/collab/mcp.rs): the tools, and
-// doing them. An agent works on documents shared from this app. It joins one as a copy of its
-// own, with no tab, through the same relay as everyone else (session.ts `followAsAgent`), so its
-// changes, caret, name and logo reach everyone like a person's. Its edits are the editor's own
-// commands, run on that copy's engine.
+// doing them. An agent works on the Word documents, presentations and workbooks open in this app,
+// shared or not. It joins one as a copy of its own, with no tab, through the same relay as
+// everyone else (session.ts `followAsAgent`), so its changes, caret, name and logo reach everyone
+// like a person's. A document that isn't shared is opened to this computer's agents only
+// (`openToAgents`). Its edits are the editor's own commands, run on that copy's engine.
 
 import type { SheetsEngine } from '../../engine/sheets/engine'
 import type { SlidesEngine } from '../../engine/slides/engine'
 import type { WordEngine } from '../../engine/word/engine'
 import { stripExtension } from '../../lib/kinds'
-import { useWorkspace } from '../../state/workspace'
-import { attach, followAsAgent, inviteOf, leaveAsAgent, onOthersChange, useCollab, usePresence, type Opened, type Peer } from '../session'
+import { getEditor, useWorkspace } from '../../state/workspace'
+import { attach, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, useCollab, usePresence, type Opened, type Peer } from '../session'
 import { type Answer, type Args, doc, need, str, type Tool, ToolError } from './common'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
 import { describeSheetsPlace, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
@@ -61,13 +62,16 @@ export class AgentSession {
     return true
   }
 
-  /** The agent's copy of a shared tab's document, joining it first if need be. */
+  /** The agent's copy of a tab's document, joining it first if need be. */
   async copy(tab: string): Promise<{ copy: Copy; engine: Engine }> {
-    // Only while it's shared here: someone who stopped sharing or left takes the agent out too.
+    // Only while it's open here: closing the tab takes the agent out too.
     if (!documents().some((d) => d.document === tab)) {
       this.leave(tab)
-      throw new ToolError(`No shared document “${tab}”. list_documents shows the ones you can work on.`)
+      throw new ToolError(`No document “${tab}”. list_documents shows the ones you can work on.`)
     }
+    // A copy whose session ended (sharing stopped) joins again.
+    const was = this.joined.get(tab)
+    if (was && !alive(was.id)) this.leave(tab)
     let pending = this.copies.get(tab)
     if (!pending) {
       pending = this.join(tab)
@@ -83,15 +87,23 @@ export class AgentSession {
     return { copy: c, engine }
   }
 
+  /** Leaves documents that closed, and copies whose session ended. */
+  tidy(open: Set<string>) {
+    for (const tab of [...this.copies.keys()]) {
+      const c = this.joined.get(tab)
+      if (!open.has(tab) || (c && !alive(c.id))) this.leave(tab)
+    }
+  }
+
   /** Whether `c` is still this agent's copy of its document. */
   has(c: Copy): boolean {
     return !this.ended && this.joined.get(c.tab) === c
   }
 
   private async join(tab: string): Promise<Copy> {
-    const invite = inviteOf(tab)
     const doc = documents().find((d) => d.document === tab)
-    if (!invite || !doc) throw new ToolError(`No shared document “${tab}”. list_documents shows the ones you can work on.`)
+    if (!doc) throw new ToolError(`No document “${tab}”. list_documents shows the ones you can work on.`)
+    if (doc.role === 'open') await openToAgents(tab).catch((err) => Promise.reject(new ToolError(`Couldn’t open “${doc.title}” to you: ${String((err as Error)?.message ?? err)}`)))
     const who = this.who
     let resolveEngine!: (e: Engine) => void
     let rejectEngine!: (err: unknown) => void
@@ -99,12 +111,12 @@ export class AgentSession {
       resolveEngine = res
       rejectEngine = rej
     })
-    const id = await followAsAgent(invite, { name: who.name, color: who.id ? AGENTS[who.id].color : '#6E56CF', agent: who.id ?? 'ai' }, (copyId, opened) => {
+    const id = await followAsAgent(tab, { name: who.name, color: who.id ? AGENTS[who.id].color : '#6E56CF', agent: who.id ?? 'ai' }, (copyId, opened) => {
       void openEngine(opened).then((e) => {
         attach(copyId, e)
         resolveEngine(e)
       }, rejectEngine)
-    })
+    }).catch((err) => Promise.reject(err instanceof ToolError ? err : new ToolError(String((err as Error)?.message ?? err))))
     const copy = { id, tab, kind: doc.kind, engine }
     // A copy whose document didn't open leaves again, and the next call joins afresh.
     engine.catch(() => {
@@ -122,11 +134,20 @@ function close(c: Copy) {
   void c.engine.then((e) => e.dispose(), () => {})
 }
 
-// A document that stops being shared here (stopped, left, closed) loses its agents too.
-useCollab.subscribe(() => {
-  const shared = new Set(documents().map((d) => d.document))
-  for (const s of sessions) for (const tab of [...s.copies.keys()]) if (!shared.has(tab)) s.leave(tab)
-})
+/** Whether an agent's copy still follows its document. */
+function alive(id: string) {
+  const s = useCollab.getState()[id]
+  return s?.status === 'live' || s?.status === 'connecting'
+}
+
+// A document that closes, or whose session ends (sharing stopped), loses its agents' copies; a
+// copy of one that's still open joins again on the agent's next call.
+const tidy = () => {
+  const open = new Set(documents().map((d) => d.document))
+  for (const s of sessions) s.tidy(open)
+}
+useCollab.subscribe(tidy)
+useWorkspace.subscribe((state, prev) => state.tabs !== prev.tabs && tidy())
 
 async function openEngine(doc: Opened): Promise<Engine> {
   if (doc.kind === 'docx') return (await import('../../engine/word/engine')).WordEngine.open(doc.bytes)
@@ -146,14 +167,30 @@ async function live(id: string) {
   throw new ToolError('Joining the document took too long.')
 }
 
-/** The documents shared from this app, as agents see them. */
-export function documents(): { document: string; title: string; kind: 'docx' | 'pptx' | 'xlsx'; role: 'sharing' | 'joined' }[] {
+/**
+ * The documents agents can work on: every Word document, presentation and workbook open in this
+ * app, whether it's shared from here (`sharing`), someone else's joined from here (`joined`), or
+ * not shared (`open`, which joining opens to this computer's agents). A tab that hasn't been shown
+ * yet has no editor to share from, and a document joined from a host that can't let agents in has
+ * no way in.
+ */
+export function documents(): { document: string; title: string; kind: 'docx' | 'pptx' | 'xlsx'; role: 'sharing' | 'joined' | 'open' }[] {
   const tabs = useWorkspace.getState().tabs
   const shared = useCollab.getState()
   return tabs.flatMap((t) => {
+    if (t.kind !== 'docx' && t.kind !== 'pptx' && t.kind !== 'xlsx') return []
     const s = shared[t.id]
-    if (!s || s.status !== 'live' || !inviteOf(t.id) || (t.kind !== 'docx' && t.kind !== 'pptx' && t.kind !== 'xlsx')) return []
-    return [{ document: t.id, title: `${stripExtension(t.title)}.${t.kind}`, kind: t.kind, role: s.role === 'host' ? ('sharing' as const) : ('joined' as const) }]
+    const on = s && (s.status === 'live' || s.status === 'connecting')
+    let role: 'sharing' | 'joined' | 'open'
+    if (on && s.role === 'guest') {
+      if (!inviteOf(t.id)) return []
+      role = 'joined'
+    } else if (on) role = s.private ? 'open' : 'sharing'
+    else {
+      if (!getEditor(t.id) || !SHAREABLE.has(t.kind) || keeperOf(t.id) !== null) return []
+      role = 'open'
+    }
+    return [{ document: t.id, title: `${stripExtension(t.title)}.${t.kind}`, kind: t.kind, role }]
   })
 }
 
@@ -162,13 +199,13 @@ export function documents(): { document: string; title: string; kind: 'docx' | '
 const SHARED_TOOLS: Tool[] = [
   {
     name: 'list_documents',
-    description: 'The Word documents, presentations and workbooks shared in Writan that you can work on, with who is in each.',
+    description: 'The Word documents, presentations and workbooks open in Writan that you can work on, shared or not, with who is in each.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
     name: 'read_document',
     description:
-      'Reads a shared document, joining it first if you haven’t (people then see you in it). Word: numbered paragraphs, headings and table cells marked; use from/to for part of a long one. PowerPoint: each slide’s layout, shapes back to front (by id) with where each is, its size, look and text, and notes; use slide for one. Excel: a sheet’s cells as A1 references with values and formulas; use sheet and range (like A1:F40) for part.',
+      'Reads a document, joining it first if you haven’t (people then see you in it). Word: numbered paragraphs, headings and table cells marked; use from/to for part of a long one. PowerPoint: each slide’s layout, shapes back to front (by id) with where each is, its size, look and text, and notes; use slide for one. Excel: a sheet’s cells as A1 references with values and formulas; use sheet and range (like A1:F40) for part.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -327,11 +364,12 @@ function peopleIn(id: string): Peer[] {
 
 function listDocuments(): string {
   const docs = documents()
-  if (!docs.length) return 'Nothing is shared in Writan right now. Ask the person to open a Word document, presentation or workbook and share it (the people button at the top right).'
+  if (!docs.length) return 'No Word document, presentation or workbook is open in Writan right now. Ask the person to open one.'
+  const roles = { sharing: 'shared from here', joined: 'joined from here', open: 'not shared: only the person here and agents on this computer' }
   return docs
     .map((d) => {
       const people = peopleIn(d.document).map((p) => (p.agent ? `${p.name} (AI)` : p.name))
-      return `- ${d.title}  document: "${d.document}"  (${d.role === 'sharing' ? 'shared from here' : 'joined from here'}; in it: ${people.join(', ') || 'nobody yet'})`
+      return `- ${d.title}  document: "${d.document}"  (${roles[d.role]}; in it: ${people.join(', ') || 'nobody yet'})`
     })
     .join('\n')
 }

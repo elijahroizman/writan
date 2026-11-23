@@ -240,7 +240,9 @@ interface WorkspaceState {
    * Load `bytes` into a tab's editor in place of what it has, keeping its file and unsaved
    * state: sharing starts everyone, the sharer too, from the same bytes.
    */
-  reloadBytes(id: string, bytes: Uint8Array): void
+  /** Loads `bytes` in place of what the tab has. With `unsaved`, they aren't what's on disk, so
+   * the tab stays unsaved even when undo takes it back to them (as for `recovered`). */
+  reloadBytes(id: string, bytes: Uint8Array, unsaved?: boolean): void
   newDocument(kind: DocKind): void
   markDirty(id: string, dirty: boolean): void
   /**
@@ -534,8 +536,8 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       return true
     },
 
-    reloadBytes: (id, bytes) => {
-      set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1 } : t)) })
+    reloadBytes: (id, bytes, unsaved) => {
+      set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1, ...(unsaved ? { dirty: true, recovered: true } : {}) } : t)) })
     },
 
     newDocument: (kind) => {

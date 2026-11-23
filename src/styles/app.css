@@ -4740,33 +4740,6 @@ button.section-title:hover {
   accent-color: var(--accent);
 }
 
-.share-requests {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.share-requests li {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 6px 6px 6px 10px;
-  border-radius: var(--radius-sm);
-  background: var(--field);
-  font-size: 12px;
-}
-
-.share-requests li > span {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .share-code-field input {
   font-size: 14px;
   font-weight: 500;
@@ -4959,6 +4932,28 @@ button.section-title:hover {
   opacity: 0.6;
 }
 
+.arrivals-notes {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+/* Someone asking to join: it stays, and its buttons take clicks. */
+.arrival.join-request {
+  max-width: 440px;
+  padding-right: 12px;
+  pointer-events: auto;
+  animation: arrival-in 0.22s ease-out;
+}
+
+.join-request-actions {
+  display: flex;
+  flex: none;
+  gap: 6px;
+  margin-left: auto;
+}
+
 @keyframes arrival-in {
   from {
     opacity: 0;
@@ -4975,6 +4970,10 @@ button.section-title:hover {
 @media (prefers-reduced-motion: reduce) {
   .arrival {
     animation: arrival-out 0.35s ease-in 6.1s forwards;
+  }
+
+  .arrival.join-request {
+    animation: none;
   }
 }
 

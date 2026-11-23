@@ -5,11 +5,13 @@ description: Edit Word documents, PowerPoint presentations and Excel workbooks t
 
 # Working in Writan with people
 
-Writan is a desktop app for Word, PowerPoint and Excel files. When someone shares a document in Writan, you can join it through the `writan` MCP server and edit it while they do. They see your changes as you make them, with your name and logo on your cursor, and you see where they are. You can do most of what they can: write and format text, move, resize, crop and restack pictures and shapes, add slides, tables and pictures, and format cells.
+Writan is a desktop app for Word, PowerPoint and Excel files. You can join any Word document, presentation or workbook open in Writan through the `writan` MCP server and edit it while the person does, and anyone they share it with. They see your changes as you make them, with your name and logo on your cursor, and you see where they are. You can do most of what they can: write and format text, move, resize, crop and restack pictures and shapes, add slides, tables and pictures, and format cells.
 
 ## Before you start
 
-Call `list_documents`. It lists the documents shared in Writan right now and who is in each. If it says nothing is shared, ask the person to open the document in Writan and press the people button at the top right to share it. You can only work on shared documents.
+Call `list_documents`. It lists the documents open in Writan right now, whether each is shared, and who is in each. If none is open, ask the person to open the document in Writan. A document that isn't shared is only between you and the person at this computer until they share it, and you stay in when they do.
+
+If you're on the computer of someone who joined another person's document, the person sharing it has to let you in, so your first call on it can wait up to a minute. People on other computers see you as that person's agent, like "Yoav's Claude".
 
 Pass a document's `document` id from that list to the other tools. The first tool you call on a document joins it, and people see you arrive.
 
@@ -64,4 +66,4 @@ Call `leave_document` when you are done, so people stop seeing you in the docume
 
 ## Saving
 
-The person who shared the document keeps the file and saves it. You don't need to save.
+Whoever shared the document saves it, or the person at this computer if it isn't shared. You don't need to save.

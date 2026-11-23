@@ -5,7 +5,7 @@ import { Check, Copy, Link2, LogIn, RefreshCw, Users } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { create } from 'zustand'
-import { colorFor, displayName, join, letIn, newCode, requireApproval, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
+import { colorFor, displayName, join, newCode, requireApproval, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
 import { cancelJoins, parseCode, parseInvite } from '../collab/transport'
 import { PeerAvatar } from '../collab/cursors'
 import { askForNetwork, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings, whileNetworkAllowed } from '../collab/network'
@@ -40,8 +40,10 @@ export function ShareButton() {
   const openFor = useSharePanel((s) => s.tabId)
   const button = useRef<HTMLButtonElement>(null)
   if (!tab || (!SHAREABLE.has(tab.kind) && !state)) return null
-  const live = state?.status === 'live' || state?.status === 'connecting'
-  const peers = live ? state.peers : []
+  const on = state?.status === 'live' || state?.status === 'connecting'
+  // Shared with this computer's agents only, it shows who's in it, and offers to share.
+  const live = on && !state.private
+  const peers = on ? state.peers : []
   const label = live ? (state.role === 'host' ? (state.internet ? 'Shared' : 'Shared on your network') : 'Editing a shared document') : isTauri ? 'Share' : 'Share on your network'
   const waiting = live ? (state.waiting?.length ?? 0) : 0
   return (
@@ -187,7 +189,8 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
     window.setTimeout(() => setCopied(null), 1500)
   }
 
-  const live = state && (state.status === 'live' || state.status === 'connecting')
+  const live = state && !state.private && (state.status === 'live' || state.status === 'connecting')
+  const agentsHere = state?.private ? state.peers.map((p) => p.name) : []
   const you: Peer = state?.you ?? { client: 'you', name: displayName() || 'You', color: colorFor(displayName() || 'you') }
 
   let body: React.ReactNode
@@ -200,11 +203,12 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
             {state?.message ??
               `${isTauri ? 'Anyone you give the code to' : 'People on the same network'} can ${tab?.path ? 'open' : 'edit'} “${tab?.title ?? 'this document'}”${tab?.path ? ' and edit it' : ''} with you while it’s open here. ${tab?.path ? '' : 'Save it first: '}Your copy stays the file, and you save it as usual.`}
           </p>
+          {agentsHere.length > 0 && <p>{`${agentsHere.join(' and ')} ${agentsHere.length === 1 ? 'is' : 'are'} working in it from this computer.`}</p>}
         </header>
         {(!state || state.role === 'host') && (
           <div className="share-body">
             <TextField label="Your name" value={name} placeholder="How others see you" autoFocus onChange={(e) => setName(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && void start()} />
-            {isTauri && !state && (
+            {isTauri && (!state || state.private) && (
               <label className="share-option">
                 <input type="checkbox" checked={approval} onChange={(e) => setApproval(e.target.checked)} />
                 Ask me before letting someone in
@@ -218,7 +222,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
           <button type="button" className="share-link" onClick={() => useSharePanel.setState({ tabId: null, joining: true })}>
             <LogIn size={13} /> Join a shared document…
           </button>
-          {state ? (
+          {state && !state.private ? (
             <Button onClick={() => stop(tabId)}>Close</Button>
           ) : (
             <Button variant="primary" disabled={busy} onClick={() => void start()}>
@@ -240,7 +244,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
               ? 'Connecting…'
               : host
                 ? state.internet
-                  ? `Give this code to the people you want to edit with, wherever they are. ${state.requireApproval ? 'You let each of them in.' : 'Anyone with it can edit while this tab is open.'}`
+                  ? `Give this code to the people you want to edit with, wherever they are. ${state.requireApproval ? 'You let each of them in, and their AI agents.' : 'Anyone with it can edit while this tab is open.'}`
                   : state.code
                   ? 'Give this code to people on your network. Anyone with it can edit while this tab is open.'
                   : 'Send this link to people on your network. Anyone with it can edit while this tab is open.'
@@ -262,7 +266,7 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
           )}
           {host && state.internet && (
             <div className="share-code-meta">
-              <span>{left ? `Works for ${left}` : 'This code has stopped working.'}</span>
+              <span>{left ? `Joining works for ${left}. People already in stay.` : 'The code has expired. People already in stay.'}</span>
               <button type="button" className="share-link" disabled={renewing} onClick={() => void renew()}>
                 <RefreshCw size={12} /> New code
               </button>
@@ -276,21 +280,6 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
           )}
           {host && state.internetError && <p className="share-note">Sharing over the internet didn’t start ({state.internetError}), so the code works on your network only.</p>}
           {error && <p className="share-error">{error}</p>}
-          {host && !!state.waiting?.length && (
-            <ul className="share-requests" aria-label="Waiting to join">
-              {state.waiting.map((r) => (
-                <li key={r.request}>
-                  <span>
-                    <strong>{r.name}</strong> wants to join
-                  </span>
-                  <Button onClick={() => void letIn(tabId, r.request, false)}>Deny</Button>
-                  <Button variant="primary" onClick={() => void letIn(tabId, r.request, true)}>
-                    Let in
-                  </Button>
-                </li>
-              ))}
-            </ul>
-          )}
           {host && !state.internet && state.code && state.invite && (
             // For a guest the code can't find: another subnet, or a network that drops broadcasts.
             <button type="button" className="share-link share-copy-link" onClick={() => void copy('link')}>
