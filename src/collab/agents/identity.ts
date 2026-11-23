@@ -7,8 +7,9 @@ import claude from './logos/claude.svg'
 import codex from './logos/codex.svg'
 import grok from './logos/grok.svg'
 import hermes from './logos/hermes.svg'
+import pi from './logos/pi.svg'
 
-export type AgentId = 'claude' | 'codex' | 'antigravity' | 'grok' | 'hermes'
+export type AgentId = 'claude' | 'codex' | 'antigravity' | 'grok' | 'hermes' | 'pi'
 
 export interface Agent {
   id: AgentId
@@ -18,7 +19,8 @@ export interface Agent {
   product: string
   color: string
   logo: string
-  /** How much bigger than the others its logo is drawn, for a mark that's narrow in its box. */
+  /** How much bigger or smaller than the others its logo is drawn, for a mark that's narrow in its
+   * box, or a solid one that fills it. */
   logoScale?: number
   /** The name its MCP client gives in `initialize`, or the start of it. */
   client: (name: string) => boolean
@@ -30,6 +32,7 @@ export const AGENTS: Record<AgentId, Agent> = {
   antigravity: { id: 'antigravity', name: 'Antigravity', product: 'Antigravity', color: '#3186FF', logo: antigravity, client: (n) => n.startsWith('antigravity') },
   grok: { id: 'grok', name: 'Grok', product: 'Grok Build', color: '#0D0D0D', logo: grok, client: (n) => n.startsWith('grok') },
   hermes: { id: 'hermes', name: 'Hermes', product: 'Hermes Agent', color: '#0000F2', logo: hermes, logoScale: 1.35, client: (n) => n.startsWith('hermes') },
+  pi: { id: 'pi', name: 'Pi', product: 'Pi', color: '#111111', logo: pi, logoScale: 0.85, client: (n) => n === 'pi' },
 }
 
 export const AGENT_IDS = Object.keys(AGENTS) as AgentId[]

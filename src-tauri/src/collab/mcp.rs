@@ -1,4 +1,4 @@
-//! Writan's MCP server: how an AI agent (Claude Code, Codex, Antigravity, Grok, Hermes…) joins
+//! Writan's MCP server: how an AI agent (Claude Code, Codex, Antigravity, Grok, Hermes, Pi…) joins
 //! shared documents and edits them alongside people.
 //!
 //! It's served by the relay's server (`server.rs`) on the same port, at `/mcp/<token>`, speaking

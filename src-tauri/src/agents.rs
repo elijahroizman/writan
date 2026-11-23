@@ -12,6 +12,11 @@
 //! | Antigravity | `~/.gemini/config/mcp_config.json`, `mcpServers.writan.serverUrl` | `~/.gemini/config/skills` |
 //! | Grok Build | `~/.grok/config.toml`, `[mcp_servers.writan] url` | `~/.grok/skills` |
 //! | Hermes Agent | `~/.hermes/config.yaml`, `mcp_servers.writan.url` | `~/.hermes/skills` |
+//! | Pi | `~/.pi/agent/mcp.json`, `mcpServers.writan.url` | `~/.agents/skills` |
+//!
+//! Pi reads skills from `~/.agents/skills` as well as its own folder, and warns at every start
+//! when the two have a skill with the same name. So it shares Codex's copy, and taking Writan
+//! out of one of them leaves that copy while the other still has Writan's server.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -20,6 +25,9 @@ use serde::Serialize;
 
 /// The name Writan's server and skill go by in every agent.
 const NAME: &str = "writan";
+
+/// Every agent Writan sets up, as Settings › AI and the `?agent=` in its address name them.
+const AGENTS: [&str; 6] = ["claude", "codex", "antigravity", "grok", "hermes", "pi"];
 
 fn home() -> Result<PathBuf, String> {
     std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" })
@@ -38,6 +46,7 @@ fn places(agent: &str) -> Option<(Option<&'static str>, &'static str)> {
         ),
         "grok" => (Some(".grok/config.toml"), ".grok/skills"),
         "hermes" => (Some(".hermes/config.yaml"), ".hermes/skills"),
+        "pi" => (Some(".pi/agent/mcp.json"), ".agents/skills"),
         _ => return None,
     })
 }
@@ -54,14 +63,21 @@ pub fn agents_installed(agent: String) -> Result<Installed, String> {
     let (config, skills) = places(&agent).ok_or("Writan doesn't know that agent.")?;
     let home = home()?;
     let skill = home.join(skills).join(NAME).join("SKILL.md").is_file();
-    let mcp = match config {
+    Ok(Installed {
+        mcp: has_mcp(&home, config),
+        skill,
+    })
+}
+
+/// Whether the agent whose MCP config is `config` has Writan's server.
+fn has_mcp(home: &Path, config: Option<&str>) -> bool {
+    match config {
         Some(file) => std::fs::read_to_string(home.join(file)).is_ok_and(|t| has_server(file, &t)),
         None => std::fs::read_to_string(home.join(".claude.json")).is_ok_and(|t| {
             serde_json::from_str::<serde_json::Value>(&t)
                 .is_ok_and(|v| v["mcpServers"].get(NAME).is_some())
         }),
-    };
-    Ok(Installed { mcp, skill })
+    }
 }
 
 /// Adds Writan's MCP server at `url` to `agent`, replacing an older one. Returns what it did.
@@ -83,7 +99,7 @@ pub fn agents_install_mcp(agent: String, url: String) -> Result<String, String> 
     let after = if file.ends_with(".toml") {
         set_toml_server(&before, &url)
     } else if file.ends_with(".json") {
-        set_json_server(&before, &url)?
+        set_json_server(file, &before, &url)?
     } else {
         set_yaml_server(&before, &url)?
     };
@@ -103,14 +119,27 @@ pub fn agents_install_skill(agent: String, skill: String) -> Result<String, Stri
 /// Takes Writan's MCP server and skill back out of `agent`. Everything else stays.
 #[tauri::command]
 pub fn agents_remove(agent: String) -> Result<String, String> {
-    let (config, skills) = places(&agent).ok_or("Writan doesn't know that agent.")?;
-    let home = home()?;
+    remove(&home()?, &agent)
+}
+
+fn remove(home: &Path, agent: &str) -> Result<String, String> {
+    let (config, skills) = places(agent).ok_or("Writan doesn't know that agent.")?;
     let mut gone: Vec<&str> = Vec::new();
     let dir = home.join(skills).join(NAME);
+    // Another agent that reads skills from the same folder and still has Writan keeps the skill.
+    let sharing = AGENTS.into_iter().find(|&other| {
+        other != agent && places(other).is_some_and(|(c, s)| s == skills && has_mcp(home, c))
+    });
+    let mut kept = None;
     if dir.exists() {
-        std::fs::remove_dir_all(&dir)
-            .map_err(|e| format!("Couldn't remove {}: {e}", dir.display()))?;
-        gone.push("skill");
+        match sharing {
+            Some(other) => kept = Some(other),
+            None => {
+                std::fs::remove_dir_all(&dir)
+                    .map_err(|e| format!("Couldn't remove {}: {e}", dir.display()))?;
+                gone.push("skill");
+            }
+        }
     }
     let mcp = match config {
         Some(file) => {
@@ -122,7 +151,7 @@ pub fn agents_remove(agent: String) -> Result<String, String> {
                 let after = if file.ends_with(".toml") {
                     remove_toml_server(&before)
                 } else if file.ends_with(".json") {
-                    remove_json_server(&before)?
+                    remove_json_server(file, &before)?
                 } else {
                     remove_yaml_server(&before)
                 };
@@ -135,10 +164,30 @@ pub fn agents_remove(agent: String) -> Result<String, String> {
     if mcp {
         gone.insert(0, "MCP server");
     }
-    Ok(match gone.len() {
-        0 => "Nothing was set up.".into(),
+    let done = match gone.len() {
+        0 if kept.is_none() => "Nothing was set up.".into(),
+        0 => String::new(),
         _ => format!("Removed its {}.", gone.join(" and ")),
+    };
+    Ok(match kept {
+        Some(other) => format!("{done} Kept the skill, which {} uses too.", product(other))
+            .trim_start()
+            .to_owned(),
+        None => done,
     })
+}
+
+/// An agent's name, as people know it.
+fn product(agent: &str) -> &str {
+    match agent {
+        "claude" => "Claude Code",
+        "codex" => "Codex",
+        "antigravity" => "Antigravity",
+        "grok" => "Grok Build",
+        "hermes" => "Hermes Agent",
+        "pi" => "Pi",
+        other => other,
+    }
 }
 
 /// A new version's MCP address or skill isn't what an agent has: bring the ones that have it up
@@ -150,7 +199,7 @@ pub fn agents_sync(url: String, skill: String) -> Result<Vec<String>, String> {
     }
     let home = home()?;
     let mut updated = Vec::new();
-    for agent in ["claude", "codex", "antigravity", "grok", "hermes"] {
+    for agent in AGENTS {
         let Some((config, skills)) = places(agent) else {
             continue;
         };
@@ -246,7 +295,7 @@ fn has_server(file: &str, text: &str) -> bool {
     if file.ends_with(".toml") {
         text.lines().any(is_our_table)
     } else if file.ends_with(".json") {
-        serde_json::from_str::<serde_json::Value>(text)
+        serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}'))
             .is_ok_and(|v| v["mcpServers"].get(NAME).is_some())
     } else {
         yaml_entry(text).is_some_and(|e| e.found.is_some())
@@ -290,9 +339,10 @@ fn server_url(file: &str, text: &str) -> Option<String> {
             (unquote(k.trim()) == "url").then(|| unquote(v.trim()).to_owned())
         })
     } else if file.ends_with(".json") {
-        serde_json::from_str::<serde_json::Value>(text).ok()?["mcpServers"][NAME]["serverUrl"]
-            .as_str()
-            .map(String::from)
+        serde_json::from_str::<serde_json::Value>(text.trim_start_matches('\u{feff}')).ok()?
+            ["mcpServers"][NAME][url_key(file)]
+        .as_str()
+        .map(String::from)
     } else {
         let e = yaml_entry(text)?;
         let (start, stop) = e.found?;
@@ -329,11 +379,25 @@ fn remove_toml_server(text: &str) -> String {
     s
 }
 
+/// The key that holds a server's address in a JSON config: Antigravity's `serverUrl`, or the
+/// `url` Pi and most others use.
+fn url_key(file: &str) -> &'static str {
+    if file.ends_with("mcp_config.json") {
+        "serverUrl"
+    } else {
+        "url"
+    }
+}
+
 /// Our server out of the JSON config, leaving the rest.
-fn remove_json_server(text: &str) -> Result<String, String> {
-    let mut v: serde_json::Value = serde_json::from_str(text).map_err(|e| {
-        format!("Antigravity's mcp_config.json isn't valid JSON ({e}), so Writan left it alone.")
-    })?;
+fn remove_json_server(file: &str, text: &str) -> Result<String, String> {
+    let mut v: serde_json::Value = serde_json::from_str(text.trim_start_matches('\u{feff}'))
+        .map_err(|e| {
+            format!(
+                "{} isn't valid JSON ({e}), so Writan left it alone.",
+                tilde(file)
+            )
+        })?;
     if let Some(servers) = v.get_mut("mcpServers").and_then(|s| s.as_object_mut()) {
         servers.remove(NAME);
         if servers.is_empty() {
@@ -435,31 +499,52 @@ fn set_toml_server(text: &str, url: &str) -> String {
     s
 }
 
-/// Antigravity's JSON config with `mcpServers.writan = { serverUrl }`.
-fn set_json_server(text: &str, url: &str) -> Result<String, String> {
+/// A JSON config with Writan's server at `mcpServers.writan`: Antigravity's
+/// `{ serverUrl }`, or Pi's `{ url }`. A server already there keeps its other settings, such as
+/// how Pi shows its tools; a new one in Pi starts with `"exposure": "deferred"`, so Writan's
+/// tools are found when needed instead of filling every conversation.
+fn set_json_server(file: &str, text: &str, url: &str) -> Result<String, String> {
+    let text = text.trim_start_matches('\u{feff}');
     let mut v: serde_json::Value = if text.trim().is_empty() {
         serde_json::json!({})
     } else {
         serde_json::from_str(text).map_err(|e| {
             format!(
-                "Antigravity's mcp_config.json isn't valid JSON ({e}), so Writan left it alone."
+                "{} isn't valid JSON ({e}), so Writan left it alone.",
+                tilde(file)
             )
         })?
     };
+    let odd = || {
+        format!(
+            "{} isn't what Writan expects, so it left it alone.",
+            tilde(file)
+        )
+    };
     let Some(root) = v.as_object_mut() else {
-        return Err(
-            "Antigravity's mcp_config.json isn't what Writan expects, so it left it alone.".into(),
-        );
+        return Err(odd());
     };
     let servers = root
         .entry("mcpServers")
         .or_insert_with(|| serde_json::json!({}));
     let Some(servers) = servers.as_object_mut() else {
-        return Err(
-            "Antigravity's mcpServers isn't what Writan expects, so it left it alone.".into(),
-        );
+        return Err(odd());
     };
-    servers.insert(NAME.into(), serde_json::json!({ "serverUrl": url }));
+    let key = url_key(file);
+    match servers.get_mut(NAME).and_then(|s| s.as_object_mut()) {
+        Some(ours) => {
+            ours.insert(key.into(), url.into());
+        }
+        None if key == "url" => {
+            servers.insert(
+                NAME.into(),
+                serde_json::json!({ "url": url, "exposure": "deferred" }),
+            );
+        }
+        None => {
+            servers.insert(NAME.into(), serde_json::json!({ key: url }));
+        }
+    }
     let mut s = serde_json::to_string_pretty(&v).map_err(|e| e.to_string())?;
     s.push('\n');
     Ok(s)
@@ -554,6 +639,8 @@ mod tests {
     use super::*;
 
     const URL: &str = "http://192.168.1.20:47811/mcp/tok?agent=codex";
+    const AG: &str = ".gemini/config/mcp_config.json";
+    const PI: &str = ".pi/agent/mcp.json";
 
     #[test]
     fn toml_gets_one_table_and_keeps_the_rest() {
@@ -615,14 +702,81 @@ mod tests {
 
     #[test]
     fn json_gets_one_server_and_keeps_the_rest() {
-        let out =
-            set_json_server(r#"{"mcpServers":{"other":{"serverUrl":"a"}},"x":1}"#, URL).unwrap();
+        let out = set_json_server(
+            AG,
+            r#"{"mcpServers":{"other":{"serverUrl":"a"}},"x":1}"#,
+            URL,
+        )
+        .unwrap();
         let v: serde_json::Value = serde_json::from_str(&out).unwrap();
-        assert_eq!(v["mcpServers"]["writan"]["serverUrl"], URL);
+        assert_eq!(
+            v["mcpServers"]["writan"],
+            serde_json::json!({ "serverUrl": URL })
+        );
         assert_eq!(v["mcpServers"]["other"]["serverUrl"], "a");
         assert_eq!(v["x"], 1);
-        assert!(set_json_server("", URL).unwrap().contains("serverUrl"));
-        assert!(set_json_server("not json", URL).is_err());
+        assert!(set_json_server(AG, "", URL).unwrap().contains("serverUrl"));
+        let err = set_json_server(AG, "not json", URL).unwrap_err();
+        assert!(err.contains("mcp_config.json isn't valid JSON"), "{err}");
+    }
+
+    #[test]
+    fn pi_gets_url_and_keeps_what_was_changed_in_it() {
+        let out = set_json_server(
+            PI,
+            "\u{feff}{\"mcpServers\":{\"other\":{\"command\":\"x\"}}}",
+            URL,
+        )
+        .unwrap();
+        let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            v["mcpServers"]["writan"],
+            serde_json::json!({ "url": URL, "exposure": "deferred" })
+        );
+        assert_eq!(v["mcpServers"]["other"]["command"], "x");
+        assert!(has_server(PI, &out));
+        assert_eq!(server_url(PI, &out).as_deref(), Some(URL));
+        // Someone made the tools direct in /mcp: a new address keeps that.
+        let direct = out.replace("deferred", "direct");
+        let again = set_json_server(PI, &direct, "http://h:1/mcp/t").unwrap();
+        let v: serde_json::Value = serde_json::from_str(&again).unwrap();
+        assert_eq!(
+            v["mcpServers"]["writan"],
+            serde_json::json!({ "url": "http://h:1/mcp/t", "exposure": "direct" })
+        );
+        let removed = remove_json_server(PI, &again).unwrap();
+        assert!(!has_server(PI, &removed));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&removed).unwrap()["mcpServers"]["other"]
+                ["command"],
+            "x"
+        );
+    }
+
+    #[test]
+    fn a_shared_skill_goes_with_the_last_agent_that_has_writan() {
+        let home = tempfile::tempdir().unwrap();
+        let home = home.path();
+        let skill = home.join(".agents/skills/writan/SKILL.md");
+        let setup = || {
+            write(&skill, "skill").unwrap();
+            write(&home.join(".codex/config.toml"), &set_toml_server("", URL)).unwrap();
+            let pi = set_json_server(PI, "", URL).unwrap();
+            write(&home.join(PI), &pi).unwrap();
+        };
+        for (first, then, other) in [("pi", "codex", "Codex"), ("codex", "pi", "Pi")] {
+            setup();
+            assert_eq!(
+                remove(home, first).unwrap(),
+                format!("Removed its MCP server. Kept the skill, which {other} uses too.")
+            );
+            assert!(skill.is_file());
+            assert_eq!(
+                remove(home, then).unwrap(),
+                "Removed its MCP server and skill."
+            );
+            assert!(!skill.exists());
+        }
     }
 
     #[test]
@@ -633,8 +787,9 @@ mod tests {
         assert_eq!(server_url("c.toml", &toml).as_deref(), Some(URL));
         assert_eq!(server_url("c.toml", "model = \"x\"\n"), None);
         let json = format!("{{\"mcpServers\":{{\"writan\":{{\"serverUrl\":\"{URL}\"}}}}}}");
-        assert_eq!(server_url("c.json", &json).as_deref(), Some(URL));
-        assert_eq!(server_url("c.json", "{\"mcpServers\":{}}"), None);
+        assert_eq!(server_url(AG, &json).as_deref(), Some(URL));
+        assert_eq!(server_url(PI, &json), None);
+        assert_eq!(server_url(AG, "{\"mcpServers\":{}}"), None);
         let yaml =
             format!("mcp_servers:\n  writan:\n    url: \"{URL}\"\n  other:\n    url: \"a\"\n");
         assert_eq!(server_url("c.yaml", &yaml).as_deref(), Some(URL));
@@ -670,21 +825,25 @@ mod tests {
 
     #[test]
     fn json_loses_only_our_server() {
-        let added =
-            set_json_server(r#"{"mcpServers":{"other":{"serverUrl":"a"}},"x":1}"#, URL).unwrap();
-        let removed = remove_json_server(&added).unwrap();
+        let added = set_json_server(
+            AG,
+            r#"{"mcpServers":{"other":{"serverUrl":"a"}},"x":1}"#,
+            URL,
+        )
+        .unwrap();
+        let removed = remove_json_server(AG, &added).unwrap();
         let v: serde_json::Value = serde_json::from_str(&removed).unwrap();
         assert_eq!(v["mcpServers"]["other"]["serverUrl"], "a");
         assert!(v["mcpServers"].get("writan").is_none());
         assert_eq!(v["x"], 1);
         // The only server: the mcpServers key goes too.
-        let removed = remove_json_server(&set_json_server("", URL).unwrap()).unwrap();
+        let removed = remove_json_server(AG, &set_json_server(AG, "", URL).unwrap()).unwrap();
         assert_eq!(
             serde_json::from_str::<serde_json::Value>(&removed).unwrap(),
             serde_json::json!({})
         );
         assert!(!has_server("c.json", &removed));
-        assert!(remove_json_server("not json").is_err());
+        assert!(remove_json_server(AG, "not json").is_err());
     }
 
     #[test]

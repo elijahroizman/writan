@@ -30,6 +30,9 @@ export function AiPage() {
   const { setAgents, newAddress } = useAi.getState()
   const status = useAgentsStatus()
   const on = agents && status.state === 'on'
+  // Pi and Codex share one skill file, so a change in one row can change another's.
+  const [changes, setChanges] = useState(0)
+  const changed = () => setChanges((n) => n + 1)
   return (
     <>
       <p className="settings-intro">
@@ -42,7 +45,7 @@ export function AiPage() {
             Adds Writan’s MCP server to the agent, so it can join, and Writan’s skill, which tells it how to work alongside people. Start a new session in the agent afterwards.
           </p>
           {AGENT_IDS.map((id) => (
-            <AgentRow key={id} id={id} url={`${status.local}?agent=${id}`} />
+            <AgentRow key={id} id={id} url={`${status.local}?agent=${id}`} changes={changes} onChange={changed} />
           ))}
           <div className="plugin-row">
             <span className="agent-logo generic" aria-hidden>
@@ -92,7 +95,7 @@ export function AiPage() {
   )
 }
 
-function AgentRow({ id, url }: { id: AgentId; url: string }) {
+function AgentRow({ id, url, changes, onChange }: { id: AgentId; url: string; changes: number; onChange: () => void }) {
   const agent = AGENTS[id]
   const [installed, setInstalled] = useState<{ mcp: boolean; skill: boolean } | null>(null)
   const [busy, setBusy] = useState<'mcp' | 'skill' | 'remove' | null>(null)
@@ -103,7 +106,7 @@ function AgentRow({ id, url }: { id: AgentId; url: string }) {
     const { invoke } = await import('@tauri-apps/api/core')
     setInstalled(await invoke<{ mcp: boolean; skill: boolean }>('agents_installed', { agent: id }).catch(() => null))
   }
-  useEffect(() => void check(), [id])
+  useEffect(() => void check(), [id, changes])
 
   const add = async (what: 'mcp' | 'skill') => {
     setBusy(what)
@@ -116,7 +119,7 @@ function AgentRow({ id, url }: { id: AgentId; url: string }) {
       setNote({ text: String((err as Error)?.message ?? err), error: true })
     } finally {
       setBusy(null)
-      void check()
+      onChange()
     }
   }
 
@@ -131,7 +134,7 @@ function AgentRow({ id, url }: { id: AgentId; url: string }) {
       setNote({ text: String((err as Error)?.message ?? err), error: true })
     } finally {
       setBusy(null)
-      void check()
+      onChange()
     }
   }
 
