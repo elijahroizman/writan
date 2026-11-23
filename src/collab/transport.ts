@@ -60,9 +60,8 @@ export interface JoinRequest {
 
 const P2P = 'writan-p2p://'
 
-/** Reads an invite link (`ws://192.168.1.20:47811/v1/abc?token=…`, or `writan-p2p://…` from `findInvite`). */
+/** Reads an invite link (`ws://192.168.1.20:47811/v1/abc?token=…`). */
 export function parseInvite(text: string): Invite | null {
-  if (text.trim().startsWith(P2P)) return { url: text.trim(), token: '', p2p: true }
   try {
     const url = new URL(text.trim())
     if (url.protocol !== 'ws:' && url.protocol !== 'wss:') return null
@@ -83,13 +82,18 @@ export function parseCode(text: string): string | null {
 }
 
 /**
- * Finds who is sharing with `code` and returns their invite: from the code directory, or else from
- * the computers nearby (src-tauri/src/collab/mod.rs, `collab_find`).
+ * Finds who is sharing with `code` and returns their invite, with the link to show for it: from the
+ * code directory, or else from the computers nearby (src-tauri/src/collab/mod.rs, `collab_find`).
  */
-export async function findInvite(code: string): Promise<string> {
+export async function findInvite(code: string): Promise<{ invite: Invite; link: string | null }> {
   if (!isTauri) throw new Error('In the browser, join with the link instead of a code.')
   const { invoke } = await import('@tauri-apps/api/core')
-  return invoke<string>('collab_find', { code })
+  const found = await invoke<string>('collab_find', { code })
+  // From the directory: only Rust reads it, and there's no link to show for it.
+  if (found.startsWith(P2P)) return { invite: { url: found, token: '', p2p: true }, link: null }
+  const invite = parseInvite(found)
+  if (!invite) throw new Error('The computer sharing sent a link Writan can’t read.')
+  return { invite, link: found }
 }
 
 function randomId(bytes: number) {
@@ -174,8 +178,6 @@ export async function approveJoin(request: string, allow: boolean): Promise<void
 /** What the sharer's app says about guests from the internet. */
 export interface HostEvents {
   joinRequest(request: JoinRequest): void
-  /** Too many wrong codes ended `session`'s code. */
-  codeLocked(session: string): void
 }
 
 let hostEvents: HostEvents | null = null
@@ -197,7 +199,6 @@ function listenOnce() {
       route?.closed(e.payload.reason)
     })
     await listen<JoinRequest>('collab-join-request', (e) => hostEvents?.joinRequest(e.payload))
-    await listen<{ session: string }>('collab-code-locked', (e) => hostEvents?.codeLocked(e.payload.session))
   })()
   return listening
 }

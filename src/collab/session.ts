@@ -413,10 +413,6 @@ onHostEvents({
     const others = (now.waiting ?? []).filter((r) => r.request !== req.request)
     update(tabId, { waiting: req.waiting ? [...others, req] : others })
   },
-  codeLocked(session) {
-    const tabId = hostTab(session)
-    if (tabId) update(tabId, { expiresAt: Date.now(), message: 'Someone tried too many wrong codes, so this one stopped working. Make a new code to let people join.' })
-  },
 })
 
 /** Gives a shared tab's code ten more minutes, as a new code; the old one stops working. */
@@ -513,9 +509,9 @@ export async function share(tabId: string, name: string, approval = true): Promi
  */
 export async function join(codeOrLink: string, name: string, cancelled: () => boolean = () => false): Promise<void> {
   const code = parseCode(codeOrLink)
-  const inviteText = code ? await findInvite(code) : codeOrLink.trim()
+  const found = code ? await findInvite(code) : { invite: parseInvite(codeOrLink), link: codeOrLink.trim() }
   if (cancelled()) return
-  const invite = parseInvite(inviteText)
+  const invite = found.invite
   if (!invite) throw new Error('That isn’t a code or a link. A code is six digits.')
   const tabId = await follow(invite, newLink(name), ({ bytes, name: fileName, kind }) => {
     // Given up on (the dialog closed) while connecting: leave without opening anything.
@@ -525,8 +521,7 @@ export async function join(codeOrLink: string, name: string, cancelled: () => bo
     if (!id) throw new Error('Writan can’t open this kind of document.')
     return id
   })
-  // An internet invite only works with the code, once; there's no link to show for it.
-  update(tabId, { invite: invite.p2p ? null : inviteText })
+  update(tabId, { invite: found.link })
 }
 
 /** A shared document as the relay first sends it. */

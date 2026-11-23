@@ -3,15 +3,16 @@
 //! While something is shared over the internet, the app runs one `iroh` endpoint: QUIC, direct
 //! when hole punching works and through n0's public relays when it doesn't, encrypted end to end
 //! either way. The code directory (`directory.rs`) maps each session's six-digit code to the
-//! endpoint's address and the session id. A guest dials that address, sends the code and a name,
-//! waits for the host to let them in if the host asked for that, and gets the session's token.
+//! endpoint's address, the session id and a key that's new with each code. A guest dials that
+//! address, sends the key and a name, waits for the host to let them in if the host asked for
+//! that, and gets the session's token.
 //! From then on the stream carries the relay's messages (`relay.rs`), one per length-prefixed
 //! frame, into the host's relay as if they came over a WebSocket.
 //!
 //! The directory knows every code, so it's trusted to give out the right address, and iroh checks
-//! that the endpoint dialed is the one at that address. Sending the code over that connection tells
-//! nobody anything the directory doesn't already know. A code works for ten minutes, and five
-//! wrong ones for a session end it early; the host then makes a new one.
+//! that the endpoint dialed is the one at that address. The key is 128 random bits, so only someone
+//! who looked the current code up has it: guessing is the directory's to limit, and an invite from
+//! an earlier code stops working when the host makes a new one. A code works for ten minutes.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
@@ -24,6 +25,7 @@ use iroh::{Endpoint, EndpointAddr};
 use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, oneshot, OwnedSemaphorePermit, Semaphore};
 
+use super::client::MAX_INCOMING;
 use super::directory;
 use super::relay::MAX_FRAME;
 use super::server::RelayBridge;
@@ -47,9 +49,7 @@ const HELLO: Duration = Duration::from_secs(10);
 const ONLINE: Duration = Duration::from_secs(5);
 /// What's still being sent when a stream ends gets this long to arrive.
 const DRAIN: Duration = Duration::from_secs(2);
-/// This many wrong codes for a session end its code.
-const MAX_WRONG: u32 = 5;
-/// Guests that haven't been let in yet, at once, across sessions.
+/// Guests that haven't said hello to the relay yet, at once, across sessions.
 const MAX_HANDSHAKES: usize = 16;
 /// Guests waiting for the host to let them in, per session.
 const MAX_WAITING: usize = 5;
@@ -59,45 +59,31 @@ const MAX_WAITING: usize = 5;
 pub struct DirectoryEntry {
     pub addr: EndpointAddr,
     pub session: String,
+    /// New with each code, so an invite from an earlier one doesn't work.
+    pub key: String,
 }
 
-/// A session found in the directory, and the code it was found with.
-#[derive(Debug, Clone)]
-pub struct Invite {
-    pub entry: DirectoryEntry,
-    pub code: String,
-}
-
-/// `writan-p2p://<base64url(entry)>?code=<code>`.
-pub fn encode_invite(entry: &DirectoryEntry, code: &str) -> Result<String, String> {
+/// `writan-p2p://<base64url(entry)>`.
+pub fn encode_invite(entry: &DirectoryEntry) -> Result<String, String> {
     let raw = serde_json::to_vec(entry).map_err(|e| e.to_string())?;
-    Ok(format!(
-        "{SCHEME}{}?code={code}",
-        URL_SAFE_NO_PAD.encode(raw)
-    ))
+    Ok(format!("{SCHEME}{}", URL_SAFE_NO_PAD.encode(raw)))
 }
 
-pub fn parse_invite(uri: &str) -> Result<Invite, String> {
+pub fn parse_invite(uri: &str) -> Result<DirectoryEntry, String> {
     let bad = || "That isn't an internet invite.".to_owned();
-    let rest = uri.trim().strip_prefix(SCHEME).ok_or_else(bad)?;
-    let (payload, code) = rest.split_once("?code=").ok_or_else(bad)?;
+    let payload = uri.trim().strip_prefix(SCHEME).ok_or_else(bad)?;
     let bytes = URL_SAFE_NO_PAD.decode(payload).map_err(|_| bad())?;
-    let entry = serde_json::from_slice(&bytes).map_err(|_| bad())?;
-    Ok(Invite {
-        entry,
-        code: code.to_owned(),
-    })
+    serde_json::from_slice(&bytes).map_err(|_| bad())
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
+/// Sends one frame. The other side limits what it takes.
 async fn write_frame(send: &mut SendStream, payload: &[u8]) -> Result<(), String> {
-    if payload.len() > MAX_FRAME {
-        return Err("Frame too large.".into());
-    }
-    send.write_all(&(payload.len() as u32).to_be_bytes())
+    let len = u32::try_from(payload.len()).map_err(|_| "Frame too large.".to_owned())?;
+    send.write_all(&len.to_be_bytes())
         .await
         .map_err(|e| e.to_string())?;
     send.write_all(payload).await.map_err(|e| e.to_string())
@@ -132,12 +118,12 @@ async fn finish(send: &mut SendStream) {
 #[derive(Serialize, Deserialize)]
 struct Join {
     session: String,
-    code: String,
+    key: String,
     name: String,
 }
 
 /// The host's answers to it: `waiting` while the host decides, then `ok` with the token, or
-/// `error` (`no-session`, `expired`, `bad-code`, `busy`, `denied`, `bad-message`) and why.
+/// `error` (`no-session`, `expired`, `busy`, `denied`, `bad-message`) and why.
 #[derive(Serialize, Deserialize, Default)]
 struct Answer {
     #[serde(default)]
@@ -165,8 +151,6 @@ pub trait HostEvents: Send + Sync + 'static {
     /// Someone with the code asks to join `session` (`waiting`), or stopped waiting: let in,
     /// turned away, gave up, or ran out of time.
     fn join_request(&self, request: &str, session: &str, name: &str, waiting: bool);
-    /// Too many wrong codes ended `session`'s code.
-    fn code_locked(&self, session: &str);
 }
 
 /// The directory's room for a session, which only its secret changes.
@@ -178,8 +162,8 @@ struct Room {
 struct Entry {
     token: String,
     code: String,
+    key: String,
     expires: Instant,
-    wrong: u32,
     approval: bool,
     waiting: usize,
     room: Option<Room>,
@@ -212,7 +196,14 @@ impl P2pHost {
             .bind()
             .await
             .map_err(|e| format!("Couldn't start sharing over the internet: {e}"))?;
-        let _ = tokio::time::timeout(ONLINE, endpoint.online()).await;
+        // Without a relay, guests behind another router couldn't reach this one.
+        if tokio::time::timeout(ONLINE, endpoint.online())
+            .await
+            .is_err()
+        {
+            endpoint.close().await;
+            return Err("Couldn't reach the internet relays.".into());
+        }
         Ok(Self::with(endpoint, bridge, events))
     }
 
@@ -238,12 +229,16 @@ impl P2pHost {
         }
     }
 
-    fn entry(&self, session: &str) -> Result<serde_json::Value, String> {
-        serde_json::to_value(DirectoryEntry {
+    /// A new key, and the directory's entry with it.
+    fn entry(&self, session: &str) -> Result<(String, serde_json::Value), String> {
+        let key = super::random_text(16)?;
+        let entry = serde_json::to_value(DirectoryEntry {
             addr: self.endpoint.addr(),
             session: session.to_owned(),
+            key: key.clone(),
         })
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+        Ok((key, entry))
     }
 
     /// Puts `session` in the directory under a new code. Returns the code and when it expires
@@ -255,7 +250,7 @@ impl P2pHost {
         approval: bool,
         url: String,
     ) -> Result<(String, u64), String> {
-        let entry = self.entry(session)?;
+        let (key, entry) = self.entry(session)?;
         let base = url.clone();
         let room = tokio::task::spawn_blocking(move || directory::create_room(&base, &entry))
             .await
@@ -277,8 +272,8 @@ impl P2pHost {
             Entry {
                 token: token.to_owned(),
                 code: room.code.clone(),
+                key,
                 expires: Instant::now() + Duration::from_secs(room.ttl_secs),
-                wrong: 0,
                 approval,
                 waiting: 0,
                 room: Some(Room {
@@ -305,10 +300,10 @@ impl P2pHost {
                 .ok_or("This document isn't in the directory.")?;
             (s.code.clone(), room.url.clone(), room.secret.clone())
         };
-        let entry = self.entry(session)?;
-        let base = url.clone();
+        let (key, entry) = self.entry(session)?;
+        let (base, old_secret) = (url.clone(), secret.clone());
         let (code, expires_at, ttl, new_secret) = tokio::task::spawn_blocking(move || {
-            match directory::rotate_room(&base, &old, &secret, &entry)? {
+            match directory::rotate_room(&base, &old, &old_secret, &entry)? {
                 Some(r) => Ok::<_, String>((r.code, r.expires_at, r.ttl_secs, None)),
                 // The directory forgot the room (it keeps one a day after it expires).
                 None => {
@@ -321,15 +316,15 @@ impl P2pHost {
         .map_err(|e| e.to_string())??;
         let mut inner = self.inner.lock().unwrap();
         let Some(s) = inner.sessions.get_mut(session) else {
+            // Stopped sharing meanwhile, which removed the old code, not this one.
             drop(inner);
-            if let Some(secret) = new_secret {
-                delete_room(Room { url, secret }, code);
-            }
+            let secret = new_secret.unwrap_or(secret);
+            delete_room(Room { url, secret }, code);
             return Err("This document isn't shared any more.".into());
         };
         s.code = code.clone();
+        s.key = key;
         s.expires = Instant::now() + Duration::from_secs(ttl);
-        s.wrong = 0;
         if let (Some(secret), Some(room)) = (new_secret, s.room.as_mut()) {
             room.secret = secret;
         }
@@ -370,56 +365,57 @@ impl P2pHost {
     /// Unregisters everything and closes the endpoint, after what's being sent (the relay's
     /// `end`) has had a moment to arrive.
     pub fn shutdown(&self) {
-        let sessions: Vec<Entry> = {
-            let mut inner = self.inner.lock().unwrap();
-            inner.closed = true;
-            inner.approvals.clear();
-            inner.sessions.drain().map(|(_, e)| e).collect()
-        };
-        for e in sessions {
-            if let Some(room) = e.room {
-                delete_room(room, e.code);
-            }
-        }
-        self.accept.abort();
+        self.close();
         let endpoint = self.endpoint.clone();
         tokio::spawn(async move {
             tokio::time::sleep(DRAIN).await;
             endpoint.close().await;
         });
     }
-}
 
-fn delete_room(room: Room, code: String) {
-    std::thread::spawn(move || directory::delete_room(&room.url, &code, &room.secret));
-}
-
-/// Checks a guest's code. On success, the session's token and whether the host lets them in.
-/// Second in the error is whether this wrong code was the one that ended the session's code.
-fn check(
-    inner: &mut Inner,
-    join: &Join,
-) -> Result<(String, bool), (&'static str, &'static str, bool)> {
-    let Some(s) = inner.sessions.get_mut(&join.session) else {
-        return Err(("no-session", "This document isn't shared any more.", false));
-    };
-    if s.wrong >= MAX_WRONG || Instant::now() >= s.expires {
-        return Err((
-            "expired",
-            "That code has expired. Ask for a new one.",
-            false,
-        ));
+    /// `shutdown`, waiting until it's done, for quitting.
+    pub async fn shutdown_and_wait(&self) {
+        let deletes = self.close();
+        tokio::time::sleep(DRAIN).await;
+        let _ = tokio::time::timeout(DRAIN, self.endpoint.close()).await;
+        let joined =
+            tokio::task::spawn_blocking(move || deletes.into_iter().for_each(|d| drop(d.join())));
+        let _ = tokio::time::timeout(DRAIN, joined).await;
     }
-    if !constant_time_eq(s.code.as_bytes(), join.code.as_bytes()) {
-        s.wrong += 1;
-        return Err(("bad-code", "That code didn't match.", s.wrong == MAX_WRONG));
+
+    /// Lets nobody else in and takes every code out of the directory.
+    fn close(&self) -> Vec<std::thread::JoinHandle<()>> {
+        let sessions: Vec<Entry> = {
+            let mut inner = self.inner.lock().unwrap();
+            inner.closed = true;
+            inner.approvals.clear();
+            inner.sessions.drain().map(|(_, e)| e).collect()
+        };
+        self.accept.abort();
+        sessions
+            .into_iter()
+            .filter_map(|e| Some(delete_room(e.room?, e.code)))
+            .collect()
+    }
+}
+
+fn delete_room(room: Room, code: String) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || directory::delete_room(&room.url, &code, &room.secret))
+}
+
+/// Checks a guest's key. On success, the session's token and whether the host lets them in.
+fn check(inner: &mut Inner, join: &Join) -> Result<(String, bool), (&'static str, &'static str)> {
+    let Some(s) = inner.sessions.get_mut(&join.session) else {
+        return Err(("no-session", "This document isn't shared any more."));
+    };
+    if !constant_time_eq(s.key.as_bytes(), join.key.as_bytes()) || Instant::now() >= s.expires {
+        return Err(("expired", "That code has expired. Ask for a new one."));
     }
     if s.approval {
         if s.waiting >= MAX_WAITING {
             return Err((
                 "busy",
                 "Too many people are waiting to join. Try again in a minute.",
-                false,
             ));
         }
         s.waiting += 1;
@@ -445,10 +441,8 @@ async fn peer(
     let Ok(Some((conn, mut send, recv, text))) = opened else {
         return;
     };
-    let admitted = admit(&conn, &mut send, &text, &inner, &*events).await;
-    drop(permit);
-    match admitted {
-        Some(session) => relay(&conn, send, recv, &session, &bridge).await,
+    match admit(&conn, &mut send, &text, &inner, &*events).await {
+        Some(session) => relay(&conn, send, recv, &session, &bridge, permit).await,
         None => finish(&mut send).await,
     }
     conn.close(0u32.into(), b"");
@@ -478,10 +472,7 @@ async fn admit(
     let checked = check(&mut inner.lock().unwrap(), &join);
     let (token, approval) = match checked {
         Ok(v) => v,
-        Err((error, message, locked)) => {
-            if locked {
-                events.code_locked(&join.session);
-            }
+        Err((error, message)) => {
             let _ = answer(send, &refuse(error, message)).await;
             return None;
         }
@@ -555,13 +546,15 @@ async fn admit(
     Some(join.session)
 }
 
-/// Carries a guest's relay messages until either side stops.
+/// Carries a guest's relay messages until either side stops. The guest counts against
+/// `MAX_HANDSHAKES` (`permit`) until their hello.
 async fn relay(
     conn: &Connection,
     mut send: SendStream,
     mut recv: RecvStream,
     session: &str,
     bridge: &RelayBridge,
+    permit: OwnedSemaphorePermit,
 ) {
     let (id, mut out) = bridge.connect_async(session);
     let writer = async {
@@ -580,6 +573,7 @@ async fn relay(
             return;
         };
         bridge.handle(id, &hello);
+        drop(permit);
         while let Ok(Some(text)) = read_frame(&mut recv, MAX_FRAME).await {
             bridge.handle(id, &text);
         }
@@ -610,7 +604,7 @@ impl P2pClient {
 /// Joins a session found in the directory. Returns the connection and the session's token, for
 /// the hello. `on_text` gets each relay message, and `on_closed` why the connection ended.
 pub async fn connect(
-    invite: Invite,
+    invite: DirectoryEntry,
     name: String,
     on_text: impl FnMut(&str) + Send + 'static,
     on_closed: impl FnOnce(String) + Send + 'static,
@@ -623,7 +617,7 @@ pub async fn connect(
 
 async fn connect_with(
     endpoint: Endpoint,
-    invite: Invite,
+    invite: DirectoryEntry,
     name: String,
     mut on_text: impl FnMut(&str) + Send + 'static,
     on_closed: impl FnOnce(String) + Send + 'static,
@@ -649,7 +643,8 @@ async fn connect_with(
         };
         let reader = async {
             loop {
-                match read_frame(&mut recv, MAX_FRAME).await {
+                // A welcome holds the document and every change, so it can be big.
+                match read_frame(&mut recv, MAX_INCOMING).await {
                     Ok(Some(text)) => on_text(&text),
                     Ok(None) => break "closed".to_owned(),
                     Err(e) => break e,
@@ -669,13 +664,13 @@ async fn connect_with(
 
 async fn join(
     endpoint: &Endpoint,
-    invite: Invite,
+    invite: DirectoryEntry,
     name: String,
 ) -> Result<(Connection, SendStream, RecvStream, String), String> {
     let unreachable = |e: String| format!("Couldn't reach the person sharing: {e}");
     let (conn, send, mut recv) = tokio::time::timeout(HANDSHAKE, async {
         let conn = endpoint
-            .connect(invite.entry.addr, ALPN)
+            .connect(invite.addr, ALPN)
             .await
             .map_err(|e| unreachable(e.to_string()))?;
         let (mut send, recv) = conn
@@ -683,8 +678,8 @@ async fn join(
             .await
             .map_err(|e| unreachable(e.to_string()))?;
         let join = Join {
-            session: invite.entry.session,
-            code: invite.code,
+            session: invite.session,
+            key: invite.key,
             name,
         };
         write_frame(
@@ -728,7 +723,6 @@ mod tests {
     #[derive(Default)]
     struct Events {
         requests: Mutex<Vec<(String, String, bool)>>,
-        locked: Mutex<Vec<String>>,
     }
 
     impl HostEvents for Events {
@@ -737,9 +731,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((request.into(), name.into(), waiting));
-        }
-        fn code_locked(&self, session: &str) {
-            self.locked.lock().unwrap().push(session.into());
         }
     }
 
@@ -752,14 +743,14 @@ mod tests {
         P2pHost::with(endpoint, server.bridge(), events)
     }
 
-    fn add(host: &P2pHost, session: &str, token: &str, code: &str, approval: bool) {
+    fn add(host: &P2pHost, session: &str, token: &str, key: &str, approval: bool) {
         host.inner.lock().unwrap().sessions.insert(
             session.into(),
             Entry {
                 token: token.into(),
-                code: code.into(),
+                code: "123456".into(),
+                key: key.into(),
                 expires: Instant::now() + Duration::from_secs(60),
-                wrong: 0,
                 approval,
                 waiting: 0,
                 room: None,
@@ -767,18 +758,16 @@ mod tests {
         );
     }
 
-    fn invite(host: &P2pHost, session: &str, code: &str) -> Invite {
-        Invite {
-            entry: DirectoryEntry {
-                addr: host.endpoint.addr(),
-                session: session.into(),
-            },
-            code: code.into(),
+    fn invite(host: &P2pHost, session: &str, key: &str) -> DirectoryEntry {
+        DirectoryEntry {
+            addr: host.endpoint.addr(),
+            session: session.into(),
+            key: key.into(),
         }
     }
 
     async fn guest(
-        invite: Invite,
+        invite: DirectoryEntry,
         name: &str,
     ) -> Result<(P2pClient, String, mpsc::UnboundedReceiver<String>), String> {
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
@@ -807,23 +796,36 @@ mod tests {
         r##"{"t":"hello","v":1,"token":"tok","client":"g","name":"Alex","color":"#0f0"}"##;
 
     #[test]
-    fn joins_with_the_code_and_hears_the_end() {
+    fn joins_with_the_key_and_hears_the_end() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let server = Server::start(Policy::Registered, &[0]).unwrap();
             server.register("doc", "tok", "hk");
             let (h, _rx) = server.bridge().connect_async("doc");
             server.bridge().handle(h, HOST_HELLO);
             let host = host(&server, Arc::default()).await;
-            add(&host, "doc", "tok", "482913", false);
+            add(&host, "doc", "tok", "key-1", false);
 
-            let wrong = guest(invite(&host, "doc", "999999"), "Mallory").await;
-            assert_eq!(wrong.err().as_deref(), Some("That code didn't match."));
+            let wrong = guest(invite(&host, "doc", "key-0"), "Mallory").await;
+            assert_eq!(
+                wrong.err().as_deref(),
+                Some("That code has expired. Ask for a new one.")
+            );
 
             let (client, token, mut rx) =
-                guest(invite(&host, "doc", "482913"), "Alex").await.unwrap();
+                guest(invite(&host, "doc", "key-1"), "Alex").await.unwrap();
             assert_eq!(token, "tok");
             assert!(client.send(GUEST_HELLO.into()));
             assert!(next(&mut rx).await.contains(r#""t":"welcome""#));
+
+            // A new code's key turns away an invite from the old one.
+            host.inner
+                .lock()
+                .unwrap()
+                .sessions
+                .get_mut("doc")
+                .unwrap()
+                .key = "key-2".into();
+            assert!(guest(invite(&host, "doc", "key-1"), "Alex").await.is_err());
 
             // Stopping sharing reaches the guest as the relay's `end`, before the endpoint closes.
             server.end_session("doc");
@@ -835,22 +837,28 @@ mod tests {
     }
 
     #[test]
-    fn wrong_codes_end_the_code() {
+    fn a_welcome_bigger_than_a_guest_frame_arrives() {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             let server = Server::start(Policy::Registered, &[0]).unwrap();
             server.register("doc", "tok", "hk");
-            let events = Arc::new(Events::default());
-            let host = host(&server, events.clone()).await;
-            add(&host, "doc", "tok", "123456", false);
-            for _ in 0..MAX_WRONG {
-                assert!(guest(invite(&host, "doc", "000000"), "M").await.is_err());
+            let (h, _rx) = server.bridge().connect_async("doc");
+            server.bridge().handle(h, HOST_HELLO);
+            // Changes adding up to more than one frame from a guest may hold.
+            let steps = "x".repeat(MAX_FRAME / 4);
+            for base in 0..5 {
+                let op = format!(r#"{{"t":"op","id":"h:{base}","base":{base},"steps":"{steps}"}}"#);
+                server.bridge().handle(h, &op);
             }
-            assert_eq!(*events.locked.lock().unwrap(), vec!["doc".to_owned()]);
-            let right = guest(invite(&host, "doc", "123456"), "A").await;
-            assert_eq!(
-                right.err().as_deref(),
-                Some("That code has expired. Ask for a new one.")
-            );
+            let host = host(&server, Arc::default()).await;
+            add(&host, "doc", "tok", "key", false);
+            let (client, _, mut rx) = guest(invite(&host, "doc", "key"), "Alex").await.unwrap();
+            assert!(client.send(GUEST_HELLO.into()));
+            let welcome = tokio::time::timeout(Duration::from_secs(30), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(welcome.len() > MAX_FRAME, "{}", welcome.len());
+            assert!(welcome.starts_with(r#"{"t":"welcome""#));
         });
     }
 
@@ -861,7 +869,7 @@ mod tests {
             server.register("doc", "tok", "hk");
             let events = Arc::new(Events::default());
             let host = Arc::new(host(&server, events.clone()).await);
-            add(&host, "doc", "tok", "112233", true);
+            add(&host, "doc", "tok", "key", true);
 
             for (name, allow) in [("Bob", false), ("Carol", true)] {
                 let (host2, events2) = (host.clone(), events.clone());
@@ -881,7 +889,7 @@ mod tests {
                         tokio::time::sleep(Duration::from_millis(10)).await;
                     }
                 });
-                let joined = guest(invite(&host, "doc", "112233"), name).await;
+                let joined = guest(invite(&host, "doc", "key"), name).await;
                 decide.await.unwrap();
                 match joined {
                     Ok((_, token, _)) => assert!(allow && token == "tok"),
@@ -932,10 +940,8 @@ mod tests {
             assert!(!entry.addr.addrs.is_empty(), "the address has no relay");
             let (tx, mut rx) = mpsc::unbounded_channel();
             let endpoint = Endpoint::bind(presets::N0).await.unwrap();
-            let invite = Invite {
-                entry,
-                code: code.clone(),
-            };
+            let invite = entry;
+            let stale = invite.clone();
             let (client, token) = connect_with(
                 endpoint,
                 invite,
@@ -953,6 +959,9 @@ mod tests {
             assert_ne!(new, code);
             assert!(directory::lookup_room(&url, &code).unwrap().is_none());
             assert!(directory::lookup_room(&url, &new).unwrap().is_some());
+            let endpoint = Endpoint::bind(presets::N0).await.unwrap();
+            let old = connect_with(endpoint, stale, "Alex".into(), |_| {}, |_| {}).await;
+            assert!(old.is_err(), "an invite from the old code still works");
             host.unregister("doc");
             host.shutdown();
             tokio::time::sleep(Duration::from_secs(3)).await;

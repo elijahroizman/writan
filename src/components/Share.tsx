@@ -275,7 +275,6 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
             </label>
           )}
           {host && state.internetError && <p className="share-note">Sharing over the internet didn’t start ({state.internetError}), so the code works on your network only.</p>}
-          {host && state.message && <p className="share-note">{state.message}</p>}
           {error && <p className="share-error">{error}</p>}
           {host && !!state.waiting?.length && (
             <ul className="share-requests" aria-label="Waiting to join">
@@ -352,8 +351,9 @@ export function JoinDialog() {
   /** Goes up when the dialog closes, so an attempt from before doesn't open anything. */
   const attempts = useRef(0)
   if (!open) return null
+  // Closing while joining gives up: the attempt goes stale, and if the person sharing lets this
+  // copy in later, it leaves without opening anything.
   const close = () => {
-    if (busy && network !== 'waiting') return
     attempts.current++
     setBusy(false)
     setError(null)
@@ -423,7 +423,7 @@ export function JoinDialog() {
           {error && <p className="share-error">{error}</p>}
         </div>
         <div className="dialog-actions">
-          <Button onClick={close} disabled={busy}>
+          <Button onClick={close}>
             Cancel
           </Button>
           <button type="submit" className="btn primary" disabled={busy || !usable}>

@@ -15,6 +15,7 @@ const MAX_MISSES_PER_IP = 5;
 const CREATE_WINDOW_MS = 10 * 60 * 1000;
 const MAX_CREATES_PER_IP = 30;
 const MAX_ADDR_BYTES = 8192;
+const MAX_BODY_BYTES = 2 * MAX_ADDR_BYTES;
 
 const CODE_RE = /^\d{6}$/;
 
@@ -77,11 +78,38 @@ function clientKey(request) {
   return groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":") + "::/64";
 }
 
+// The body as text, reading at most `max` bytes: null when it's longer.
+async function readCapped(request, max) {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    // Past the limit, the rest is read and dropped: Cloudflare caps a body anyway, and a response
+    // before the body is read restarts the Worker.
+    if (size > max) {
+      chunks.length = 0;
+      continue;
+    }
+    chunks.push(value);
+  }
+  if (size > max) return null;
+  const bytes = new Uint8Array(size);
+  let at = 0;
+  for (const c of chunks) {
+    bytes.set(c, at);
+    at += c.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 // The request's `endpointAddr`, as JSON text: `{ addr }`, or `{ error }` as a
 // Response. With `optional`, an empty body gives `{ addr: null }`.
 async function readAddr(request, optional = false) {
   const text = await request.text();
-  if (text.length > MAX_ADDR_BYTES * 2) return { error: json({ error: "Request too large." }, 413) };
   if (optional && !text.trim()) return { addr: null };
   let payload;
   try {
@@ -287,12 +315,14 @@ export default {
     if (request.method === "GET" && url.pathname === "/health") {
       return json({ ok: true });
     }
-    // Too big to be an address: turned away here, before the Durable Object reads it.
-    if (Number(request.headers.get("content-length") || 0) > MAX_ADDR_BYTES * 2) {
-      return json({ error: "Request too large." }, 413);
-    }
-    const id = env.ROOMS.idFromName("global");
-    const stub = env.ROOMS.get(id);
-    return stub.fetch(request);
+    const stub = env.ROOMS.get(env.ROOMS.idFromName("global"));
+    if (request.method !== "POST") return stub.fetch(request);
+    // Read here, and no more than an address needs, so the one Durable Object never holds a big
+    // body.
+    const body = await readCapped(request, MAX_BODY_BYTES);
+    if (body === null) return json({ error: "Request too large." }, 413);
+    const headers = new Headers(request.headers);
+    headers.delete("content-length");
+    return stub.fetch(new Request(request.url, { method: "POST", headers, body }));
   },
 };

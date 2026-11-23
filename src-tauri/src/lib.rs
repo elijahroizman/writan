@@ -22,9 +22,7 @@ mod window_chrome;
 
 use std::sync::Mutex;
 
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-use tauri::RunEvent;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Manager, RunEvent};
 
 /// Paths the OS asked us to open (Finder "Open With", double-click, CLI args)
 /// that the frontend hasn't picked up yet. The frontend drains this on startup
@@ -262,6 +260,8 @@ pub fn run() {
                 }
             }
         }
+        // Quitting ends what's shared, as stopping would.
+        RunEvent::Exit => collab::end_on_exit(),
         _ => {
             let _ = app;
         }

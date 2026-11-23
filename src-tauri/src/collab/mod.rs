@@ -115,12 +115,6 @@ struct JoinRequestEvent<'a> {
     waiting: bool,
 }
 
-/// `collab-code-locked`: too many wrong codes ended a session's code.
-#[derive(Serialize, Clone, Debug)]
-struct CodeLockedEvent<'a> {
-    session: &'a str,
-}
-
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct P2pConnInfo {
@@ -153,12 +147,6 @@ impl<R: Runtime> HostEvents for AppHostEvents<R> {
             waiting,
         };
         let _ = self.app.emit("collab-join-request", event);
-    }
-
-    fn code_locked(&self, session: &str) {
-        let _ = self
-            .app
-            .emit("collab-code-locked", CodeLockedEvent { session });
     }
 }
 
@@ -359,8 +347,9 @@ pub async fn collab_approve_join(request: String, allow: bool) -> Result<(), Str
 /// Finds who is sharing with a six-digit code and returns their invite: a `writan-p2p://` one
 /// from the directory, or else a `ws://` link from the local network (`codes.rs`).
 ///
-/// The directory goes first, so a code shared over the internet is never asked for on the local
-/// network, where anyone could hear it and answer.
+/// The directory goes first, and the local network is asked only when the directory doesn't have
+/// the code or can't be reached, so a code shared over the internet isn't asked for nearby, where
+/// anyone could hear it and answer.
 #[tauri::command]
 pub async fn collab_find(code: String) -> Result<String, String> {
     let code: String = code.chars().filter(char::is_ascii_digit).collect();
@@ -371,31 +360,35 @@ pub async fn collab_find(code: String) -> Result<String, String> {
     let online = tauri::async_runtime::spawn_blocking(move || find_online(&asked))
         .await
         .map_err(|e| e.to_string())?;
-    if let Ok(Some(invite)) = online {
-        return Ok(invite);
-    }
+    // Why the directory couldn't be asked, when it couldn't.
+    let offline = match online {
+        Ok(Some(invite)) => return Ok(invite),
+        Ok(None) => None,
+        Err(directory::LookupError::Unreachable(e)) => Some(e),
+        Err(directory::LookupError::Refused(e)) => return Err(e),
+    };
     let lan = tauri::async_runtime::spawn_blocking(move || codes::find(&code, &lan_addresses()))
         .await
         .map_err(|e| e.to_string())?;
-    match (lan, online) {
+    match (lan, offline) {
         (Ok(url), _) => Ok(url),
         // The page waits for macOS's permission on this one (network.ts).
         (Err(e), _) if e.contains("no route to host") => Err(e),
-        (Err(_), Err(online)) => Err(format!(
-            "Nobody on your network is sharing with that code, and Writan couldn't look it up online: {online}"
+        (Err(_), Some(offline)) => Err(format!(
+            "Nobody on your network is sharing with that code, and Writan couldn't look it up online: {offline}"
         )),
-        (Err(e), Ok(None)) => Err(e),
-        (Err(_), Ok(Some(_))) => unreachable!("returned above"),
+        (Err(e), None) => Err(e),
     }
 }
 
-fn find_online(code: &str) -> Result<Option<String>, String> {
+fn find_online(code: &str) -> Result<Option<String>, directory::LookupError> {
     let Some(found) = directory::lookup_room(&directory::directory_url(), code)? else {
         return Ok(None);
     };
+    let refused = directory::LookupError::Refused;
     let entry: DirectoryEntry = serde_json::from_value(found.endpoint_addr)
-        .map_err(|_| "The directory sent an address Writan can't read.".to_owned())?;
-    p2p::encode_invite(&entry, code).map(Some)
+        .map_err(|_| refused("The directory sent an address Writan can't read.".into()))?;
+    p2p::encode_invite(&entry).map(Some).map_err(refused)
 }
 
 /// The relay's server, started if it isn't running.
@@ -487,6 +480,18 @@ pub async fn collab_reset() {
     }
     if let Some(host) = P2P_HOST.lock().await.take() {
         host.shutdown();
+    }
+}
+
+/// On quit: everyone in a shared document hears that it ended, and its codes leave the directory.
+/// Waits a few seconds at most, and only when something is shared over the internet.
+pub fn end_on_exit() {
+    if let Some(server) = SERVER.lock().unwrap().take() {
+        server.end_all();
+    }
+    let host = P2P_HOST.try_lock().ok().and_then(|mut slot| slot.take());
+    if let Some(host) = host {
+        tauri::async_runtime::block_on(async move { host.shutdown_and_wait().await });
     }
 }
 
