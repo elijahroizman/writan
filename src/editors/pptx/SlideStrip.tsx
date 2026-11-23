@@ -112,8 +112,8 @@ export const SlideStrip = memo(function SlideStrip({
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Delete' || e.key === 'Backspace') onDelete()
-        else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-          const next = activeIndex + (e.key === 'ArrowDown' ? 1 : -1)
+        else if (['ArrowDown', 'ArrowUp', 'ArrowRight', 'ArrowLeft'].includes(e.key)) {
+          const next = activeIndex + (e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1)
           if (next >= 0 && next < slides.length) onSelect(next, e.shiftKey ? 'range' : 'only')
         } else return
         // The slide editor listens on the window; these keys are the sidebar's.

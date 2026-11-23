@@ -26,6 +26,7 @@ const scripts = [
   'tests/stress/ui/sheet-rename.mjs',
   'tests/stress/ui/slides-animations.mjs',
   'tests/stress/ui/slides-clipboard.mjs',
+  'tests/stress/ui/slides-keyboard.mjs',
   'tests/stress/ui/slides-video.mjs',
   'tests/stress/ui/tracked-changes.mjs',
   'tests/stress/ui/ux-regressions.mjs',
