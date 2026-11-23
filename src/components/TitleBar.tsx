@@ -56,6 +56,8 @@ export function TitleBar() {
   /** Pointer-driven reordering (HTML5 drag-and-drop is owned by the native file drop handler). */
   const startDrag = (e: React.PointerEvent, id: string) => {
     if (e.button !== 0 || (e.target as HTMLElement).closest('.tab-close')) return
+    // Activating the tab can scroll it into view, and the strip can scroll mid-drag; the tab moves with it.
+    const scroll0 = scrollRef.current?.scrollLeft ?? 0
     activate(id)
     const el = e.currentTarget as HTMLElement
     el.setPointerCapture(e.pointerId)
@@ -78,7 +80,7 @@ export function TitleBar() {
         moveTab(id, index - 1)
         anchorX -= prev.width + 2
       }
-      setDrag({ id, dx: ev.clientX - anchorX })
+      setDrag({ id, dx: ev.clientX - anchorX + (scrollRef.current?.scrollLeft ?? 0) - scroll0 })
     }
     const onUp = () => {
       el.removeEventListener('pointermove', onMove)

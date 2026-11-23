@@ -66,6 +66,24 @@ try {
   const after = await order()
   check('dragging a tab past the next one swaps them', after[visible] === ids[visible + 1] && after[visible + 1] === ids[visible], `${visible} ${JSON.stringify(ids)} ${JSON.stringify(after)}`)
 
+  // Pressing a half-hidden tab scrolls it into view; dragging it keeps it under the pointer.
+  const cut = await strip.evaluate((el) => {
+    const t = el.querySelectorAll('.tab')[5]
+    el.scrollLeft = t.offsetLeft - el.offsetLeft + t.offsetWidth / 2
+    const r = t.getBoundingClientRect()
+    return { x: el.getBoundingClientRect().left + 10, y: r.top + r.height / 2 }
+  })
+  const half = tabs.nth(5)
+  const grip = (x) => half.evaluate((el, x) => x - el.getBoundingClientRect().left, x)
+  const pressed = await grip(cut.x)
+  await page.mouse.move(cut.x, cut.y)
+  await page.mouse.down()
+  await page.waitForTimeout(200)
+  await page.mouse.move(cut.x + 15, cut.y, { steps: 3 })
+  const held = await grip(cut.x + 15)
+  await page.mouse.up()
+  check('a half-hidden tab stays under the pointer while dragged', Math.abs(held - pressed) < 2, `pressed ${Math.round(pressed)}px into the tab, held ${Math.round(held)}px`)
+
   await page.screenshot({ path: '/tmp/writan-stress/tab-overflow.png' })
 } finally {
   await done(browser, logs)
