@@ -299,6 +299,13 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
     }
     // Objects.
     const nudge = e.shiftKey ? 10 : 1
+    const turn = slideKey(e, st.active, engine.slides.length, st.frames.length > 0)
+    if (turn !== null) {
+      if (turn >= 0 && turn < engine.slides.length && turn !== st.active) run({ cmd: 'setActive', index: turn })
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
     switch (e.key) {
       case 'Backspace':
       case 'Delete':
@@ -559,6 +566,34 @@ export function toggleText(engine: SlidesEngine, key: 'b' | 'i' | 'u') {
   const s = el?.textStyle
   const field = key === 'b' ? 'bold' : key === 'i' ? 'italic' : 'underline'
   engine.run({ cmd: 'textStyle', patch: { [field]: !s?.[field] } })
+}
+
+/**
+ * The slide a key turns to, or null when it isn't for turning slides. Page Up and Page Down
+ * always turn; the arrow keys, Home and End only when no object is picked (the arrows move a picked one).
+ */
+function slideKey(e: React.KeyboardEvent, active: number, count: number, picked: boolean): number | null {
+  if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return null
+  switch (e.key) {
+    case 'PageDown':
+      return active + 1
+    case 'PageUp':
+      return active - 1
+  }
+  if (picked) return null
+  switch (e.key) {
+    case 'ArrowRight':
+    case 'ArrowDown':
+      return active + 1
+    case 'ArrowLeft':
+    case 'ArrowUp':
+      return active - 1
+    case 'Home':
+      return 0
+    case 'End':
+      return count - 1
+  }
+  return null
 }
 
 function isPicture(engine: SlidesEngine, id: string) {
