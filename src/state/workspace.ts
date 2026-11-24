@@ -160,6 +160,8 @@ export const collabHooks = {
   keeper: (_tabId: string): string | null => null,
   /** For such a tab, waits a moment for what was done here to reach them; true once it has. */
   settled: async (_tabId: string): Promise<boolean> => false,
+  /** Whether this tab shares its document with others, who'd lose it if the tab loaded other bytes. */
+  hosting: (_tabId: string): boolean => false,
 }
 
 /** An unsaved document crash recovery kept (see lib/recovery.ts). */
@@ -263,6 +265,7 @@ interface WorkspaceState {
    * too), then the version is saved over the file, named `label`, and the tab reloads it.
    */
   restoreVersion(id: string, bytes: Uint8Array, label: string): Promise<boolean>
+  /** Reload the file from disk (⌘R), asking first when that loses changes or stops sharing. */
   revert(id?: string): Promise<void>
   closeTab(id?: string): Promise<boolean>
   closeAll(): Promise<boolean>
@@ -670,11 +673,12 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     revert: async (id) => {
       const tab = activeDoc(id)
       if (!tab?.path) return
-      if (tab.dirty) {
-        const ok = await platform.confirmDialog(`Revert “${tab.title}” to the last saved version? Your unsaved changes will be lost.`, {
-          okLabel: 'Revert',
-          danger: true,
-        })
+      // Loading other bytes ends the tab's sharing (session.ts, `attach`).
+      const sharing = collabHooks.hosting(tab.id)
+      if (tab.dirty || sharing) {
+        const lost = tab.dirty ? ' Your unsaved changes will be lost.' : ''
+        const message = sharing ? `Reload “${tab.title}” from disk? That stops sharing it with everyone.${lost}` : `Reload “${tab.title}” from disk?${lost}`
+        const ok = await platform.confirmDialog(message, { okLabel: 'Reload', danger: true })
         if (!ok) return
       }
       try {

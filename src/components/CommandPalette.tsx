@@ -46,6 +46,7 @@ import {
   Replace,
   Rocket,
   RotateCcw,
+  RotateCw,
   Save,
   ScrollText,
   Search,
@@ -154,6 +155,7 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   'close-folder': FolderX,
   save: Save,
   'save-as': Save,
+  revert: RotateCw,
   'convert-file': ArrowRightLeft,
   'copy-markdown': ClipboardCopy,
   'export-markdown': FileText,
@@ -230,6 +232,7 @@ const COMMAND_KEYWORDS: Record<string, string> = {
   replace: 'search',
   'split-view': 'side by side',
   'version-history': 'versions restore',
+  revert: 'revert refresh saved discard changes',
   share: 'collaborate invite network lan co-edit',
   'join-shared': 'collaborate invite network lan co-edit link',
   'focus-mode': 'distraction free',
@@ -244,7 +247,7 @@ const COMMAND_KEYWORDS: Record<string, string> = {
 }
 
 /** Commands that only work on a document. From Home they show greyed out, so searching for one explains itself. */
-const NEEDS_DOCUMENT = new Set(['share', 'save', 'save-as', 'convert-file', 'copy-markdown', 'export-markdown', 'export-pdf', 'bundle-pdf', 'print', 'close-tab', 'duplicate-tab', 'version-history', 'find', 'replace', 'split-view', 'toggle-left', 'toggle-right', 'zoom-in', 'zoom-out', 'zoom-reset', 'focus-mode', 'typewriter', 'focus-dim'])
+const NEEDS_DOCUMENT = new Set(['share', 'save', 'save-as', 'revert', 'convert-file', 'copy-markdown', 'export-markdown', 'export-pdf', 'bundle-pdf', 'print', 'close-tab', 'duplicate-tab', 'version-history', 'find', 'replace', 'split-view', 'toggle-left', 'toggle-right', 'zoom-in', 'zoom-out', 'zoom-reset', 'focus-mode', 'typewriter', 'focus-dim'])
 
 const SETTINGS_PAGES: { page: SettingsPage; label: string }[] = [
   { page: 'general', label: 'General' },

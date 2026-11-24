@@ -9,9 +9,12 @@
 //! guests anywhere reach the relay through an `iroh` connection to this app (`p2p.rs`). When that
 //! can't start, the code works on the local network only (`codes.rs`).
 //!
-//! Messages reach the page as `collab-message` events (`{ conn, data }`) and the end of a
-//! connection as `collab-closed` (`{ conn, reason }`). A relay says nothing until it has the
-//! client's hello, so no message arrives before `collab_connect` has returned the conn id.
+//! Each connection's messages reach the page on the channel it was opened with, as UTF-8 bytes,
+//! and then its end as `{ closed }` (`Frames`). Not as events: Tauri delivers an event as a
+//! script with the message inside, and the web view takes seconds to run one holding a picture
+//! of a few megabytes, where a channel lets the page fetch the bytes. A relay says nothing until
+//! it has the client's hello, so no message arrives before `collab_connect` has returned the conn
+//! id.
 
 pub mod client;
 pub mod codes;
@@ -30,6 +33,7 @@ use std::sync::{Arc, LazyLock, Mutex};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::Serialize;
+use tauri::ipc::{Channel, InvokeBody, InvokeResponseBody, Request};
 use tauri::{AppHandle, Emitter, Runtime};
 
 use p2p::{DirectoryEntry, HostEvents, P2pClient, P2pHost};
@@ -146,16 +150,19 @@ pub struct P2pConnInfo {
     pub seat: String,
 }
 
-#[derive(Serialize, Clone)]
-struct MessageEvent<'a> {
-    conn: u32,
-    data: &'a str,
-}
+/// Where a connection's messages go in the page, in order, and then its end.
+#[derive(Clone)]
+struct Frames(Channel<InvokeResponseBody>);
 
-#[derive(Serialize, Clone)]
-struct ClosedEvent {
-    conn: u32,
-    reason: String,
+impl Frames {
+    fn message(&self, data: &str) {
+        let _ = self.0.send(InvokeResponseBody::Raw(data.as_bytes().to_vec()));
+    }
+
+    fn closed(&self, reason: String) {
+        let body = serde_json::json!({ "closed": reason }).to_string();
+        let _ = self.0.send(InvokeResponseBody::Json(body));
+    }
 }
 
 struct AppHostEvents<R: Runtime> {
@@ -566,20 +573,18 @@ pub fn end_on_exit() {
 
 /// Opens a connection to a relay (`ws://` or `wss://`) and returns its id.
 #[tauri::command]
-pub async fn collab_connect<R: Runtime>(app: AppHandle<R>, url: String) -> Result<u32, String> {
+pub async fn collab_connect(url: String, events: Channel<InvokeResponseBody>) -> Result<u32, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let pending = client::connect(&url)?;
         let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
         // Held while the connection starts, so a quick close can't remove it before it's added.
         let mut clients = CLIENTS.lock().unwrap();
-        let (on_message, on_closed) = (app.clone(), app);
+        let (on_message, on_closed) = (Frames(events.clone()), Frames(events));
         let client = pending.run(
-            move |data| {
-                let _ = on_message.emit("collab-message", MessageEvent { conn, data });
-            },
+            move |data| on_message.message(data),
             move |reason| {
                 CLIENTS.lock().unwrap().remove(&conn);
-                let _ = on_closed.emit("collab-closed", ClosedEvent { conn, reason });
+                on_closed.closed(reason);
             },
         )?;
         clients.insert(conn, Conn::Ws(client));
@@ -597,13 +602,13 @@ pub async fn collab_connect<R: Runtime>(app: AppHandle<R>, url: String) -> Resul
 /// An AI agent in this app joins a document its person joined with their `seat` and which `agent`
 /// it is, and no `attempt`: closing the Join dialog doesn't give it up.
 #[tauri::command]
-pub async fn collab_connect_p2p<R: Runtime>(
-    app: AppHandle<R>,
+pub async fn collab_connect_p2p(
     url: String,
     name: String,
     attempt: Option<u32>,
     seat: Option<String>,
     agent: Option<String>,
+    events: Channel<InvokeResponseBody>,
 ) -> Result<P2pConnInfo, String> {
     let invite = p2p::parse_invite(&url)?;
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
@@ -611,7 +616,7 @@ pub async fn collab_connect_p2p<R: Runtime>(
         Some(attempt) => Some(start_join(conn, attempt)?),
         None => None,
     };
-    let (on_message, on_closed) = (app.clone(), app);
+    let (on_message, on_closed) = (Frames(events.clone()), Frames(events));
     let guest = p2p::Guest {
         name,
         seat: seat.unwrap_or_default(),
@@ -620,12 +625,10 @@ pub async fn collab_connect_p2p<R: Runtime>(
     let joined = p2p::connect(
         invite,
         guest,
-        move |data| {
-            let _ = on_message.emit("collab-message", MessageEvent { conn, data });
-        },
+        move |data: &str| on_message.message(data),
         move |reason| {
             CLIENTS.lock().unwrap().remove(&conn);
-            let _ = on_closed.emit("collab-closed", ClosedEvent { conn, reason });
+            on_closed.closed(reason);
         },
         async move {
             match cancelled {
@@ -666,9 +669,20 @@ pub fn collab_cancel_joins(up_to: u32) {
     }
 }
 
-/// Sends one text frame on a connection.
+/// Sends one text frame on a connection: the body, as UTF-8 bytes, on the connection named by
+/// the `x-conn` header. Raw, so a big change isn't escaped into JSON and read back out of it.
 #[tauri::command]
-pub fn collab_send(conn: u32, data: String) -> Result<(), String> {
+pub fn collab_send(request: Request<'_>) -> Result<(), String> {
+    let conn = request
+        .headers()
+        .get("x-conn")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u32>().ok())
+        .ok_or("Missing connection.")?;
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Expected the message as bytes.".into());
+    };
+    let data = String::from_utf8(bytes.clone()).map_err(|_| "The message isn't UTF-8.")?;
     let clients = CLIENTS.lock().unwrap();
     match clients.get(&conn) {
         Some(c) if c.send(data) => Ok(()),
@@ -676,7 +690,7 @@ pub fn collab_send(conn: u32, data: String) -> Result<(), String> {
     }
 }
 
-/// Closes a connection. `collab-closed` follows.
+/// Closes a connection. Its `{ closed }` frame follows.
 #[tauri::command]
 pub fn collab_close(conn: u32) {
     if let Some(c) = CLIENTS.lock().unwrap().get(&conn) {

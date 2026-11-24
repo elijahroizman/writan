@@ -37,6 +37,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'close-folder', label: 'Close folder', group: 'Files and tabs', scope: 'app', keys: '' },
   { id: 'save', label: 'Save', group: 'Files and tabs', scope: 'app', keys: '⌘S' },
   { id: 'save-as', label: 'Save as…', group: 'Files and tabs', scope: 'app', keys: '⇧⌘S' },
+  // A browser keeps ⌘R for reloading the page: its files aren't on a disk to reload from.
+  { id: 'revert', label: 'Reload from disk', group: 'Files and tabs', scope: 'app', keys: isTauri ? '⌘R' : '' },
   { id: 'convert-file', label: 'Convert file…', group: 'Files and tabs', scope: 'app', keys: '' },
   { id: 'copy-markdown', label: 'Copy as Markdown (for LLMs)', group: 'Files and tabs', scope: 'app', keys: '' },
   { id: 'export-markdown', label: 'Export as Markdown (.md)', group: 'Files and tabs', scope: 'app', keys: '' },

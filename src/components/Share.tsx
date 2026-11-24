@@ -280,13 +280,8 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
           )}
           {host && state.internetError && <p className="share-note">Sharing over the internet didn’t start ({state.internetError}), so the code works on your network only.</p>}
           {error && <p className="share-error">{error}</p>}
-          {host && !state.internet && state.code && state.invite && (
-            // For a guest the code can't find: another subnet, or a network that drops broadcasts.
-            <button type="button" className="share-link share-copy-link" onClick={() => void copy('link')}>
-              {copied === 'link' ? <Check size={12} /> : <Link2 size={12} />} {copied === 'link' ? 'Link copied' : 'Copy the link instead'}
-            </button>
-          )}
-          {host && !state.code && state.invite && (
+          {/* A browser has no code: only the relay's link, for development and the browser tests. */}
+          {host && !isTauri && !state.code && state.invite && (
             <div className="share-invite">
               <Link2 size={14} className="share-invite-icon" />
               <input readOnly value={state.invite} aria-label="Invite link" onFocus={(e) => e.currentTarget.select()} />
@@ -328,12 +323,12 @@ function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<
   )
 }
 
-/** Asks for the code (or link) and joins. */
+/** Asks for the code and joins. A browser joins with the link instead, as it has no codes. */
 export function JoinDialog() {
   const open = useSharePanel((s) => s.joining)
   const [name, setName] = useName()
   const [code, setCode] = useState('')
-  const usable = !!parseCode(code) || !!parseInvite(code)
+  const usable = !!parseCode(code) || (!isTauri && !!parseInvite(code))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [network, setNetwork] = useState<Network>(null)
@@ -394,17 +389,17 @@ export function JoinDialog() {
       >
         <div className="dialog-text">
           <h2 id="join-title">Join a shared document</h2>
-          <p>Type the code the person sharing sees in their Share panel, or paste the link they copied. {isTauri ? 'If they ask to let people in themselves, you wait for them here.' : 'You both need to be on the same network.'}</p>
+          <p>{isTauri ? 'Type the code the person sharing sees in their Share panel. If they ask to let people in themselves, you wait for them here.' : 'Paste the link the person sharing copied. You both need to be on the same network.'}</p>
         </div>
         <div className="share-body">
           <TextField
-            label="Code or link"
+            label={isTauri ? 'Code' : 'Code or link'}
             value={code}
-            placeholder="123 456 or ws://…"
+            placeholder={isTauri ? '123 456' : 'ws://…'}
             autoFocus
             autoComplete="off"
             spellCheck={false}
-            inputMode="numeric"
+            inputMode={isTauri ? 'numeric' : 'url'}
             className="share-code-field"
             onChange={(e) => setCode(e.target.value)}
           />

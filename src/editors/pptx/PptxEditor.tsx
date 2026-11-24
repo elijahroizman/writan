@@ -35,6 +35,7 @@ import type { Element } from '../../engine/slides/engine'
 import { SlidesEngine } from '../../engine/slides/engine'
 import { SlideCanvas, SLIDES_CLIPBOARD, toggleText } from '../../engine/slides/SlideCanvas'
 import { SlideImage } from '../../engine/slides/SlideImage'
+import { shrinkPicture } from '../../lib/pictures'
 import { usePinchZoom } from '../../lib/pinch'
 import * as platform from '../../lib/platform'
 import { keysFor, withKeys } from '../../state/shortcuts'
@@ -712,24 +713,9 @@ function isTextTarget(target: EventTarget | null) {
  * thumbnail and the saved file quick. Smaller ones are kept byte for byte.
  */
 async function loadImage(file: File, deck: { width: number; height: number }) {
-  const bitmap = await createImageBitmap(file).catch(() => null)
-  const own = async () => ({ bytes: new Uint8Array(await file.arrayBuffer()), type: file.type || 'image/png' })
-  if (!bitmap) return { ...(await own()), width: 400, height: 300 }
-  const { width, height } = bitmap
-  const scale = Math.min(1, (deck.width * 2) / width, (deck.height * 2) / height)
-  if (scale > 0.75 || file.type === 'image/gif' || file.type === 'image/svg+xml') {
-    bitmap.close()
-    return { ...(await own()), width, height }
-  }
-  const out = document.createElement('canvas')
-  out.width = Math.round(width * scale)
-  out.height = Math.round(height * scale)
-  out.getContext('2d')!.drawImage(bitmap, 0, 0, out.width, out.height)
-  bitmap.close()
-  // Photos stay JPEG; anything that may have transparency stays PNG.
-  const type = file.type === 'image/jpeg' ? 'image/jpeg' : 'image/png'
-  const blob = await new Promise<Blob>((resolve) => out.toBlob((b) => resolve(b!), type, 0.9))
-  return { bytes: new Uint8Array(await blob.arrayBuffer()), type, width: out.width, height: out.height }
+  const bytes = new Uint8Array(await file.arrayBuffer())
+  const type = file.type || 'image/png'
+  return (await shrinkPicture(bytes, type, deck.width * 2, deck.height * 2)) ?? { bytes, type, width: 400, height: 300 }
 }
 
 /** Render every visible slide into the print root at landscape page size, then print. */
