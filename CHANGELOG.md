@@ -2,6 +2,17 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.15.0 — 2026-11-24
+
+### Edit together
+- When someone types your code and you let people in yourself, a note pops up in the top right corner with **Let in** and **Deny**, whatever you're doing. You no longer need the Share panel open.
+- A code only stops new people from joining after ten minutes. Everyone already in stays, and the Share panel now says so.
+
+### AI agents
+- An agent can work in any Word document, presentation or workbook you have open, not just shared ones. One that isn't shared stays between you and your agents, and the share button shows who's in it. Sharing it later keeps them in.
+- Someone who joined your document can bring their own agent. It asks to join like a person, and you let it in from the same popup, even after the code has run out.
+- Everyone else's agents show with their person's name, like **Yoav's Claude**. Your own agents are still just **Claude** to you.
+
 ## 0.14.0 — 2026-11-23
 
 ### Edit together
