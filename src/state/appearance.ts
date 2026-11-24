@@ -138,7 +138,10 @@ export function refreshPublished(): Promise<void> {
 async function readFolder() {
   try {
     const { invoke } = await import('@tauri-apps/api/core')
-    const { dir, themes } = await invoke<{ dir: string; themes: { id: string; text: string; background: ThemeDef['background'] | null }[] }>('themes_read')
+    const read = await invoke<{ dir: string; themes: { id: string; text: string; background: ThemeDef['background'] | null }[] } | null>('themes_read')
+    // Nothing to read (a test build's stand-in for the app answers nothing).
+    if (!read || !Array.isArray(read.themes)) return
+    const { dir, themes } = read
     const published: ThemeDef[] = []
     for (const entry of themes) {
       if (!isThemeId(entry.id)) continue
