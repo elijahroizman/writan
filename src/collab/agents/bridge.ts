@@ -7,7 +7,7 @@ import { create } from 'zustand'
 import { isTauri } from '../../lib/platform'
 import { browserRelay, connect, resetNative, type Transport } from '../transport'
 import { agentFrom } from './identity'
-import { AgentSession, runTool, ToolError, TOOLS } from './tools'
+import { AgentSession, listTools, runTool, ToolError, TOOLS } from './tools'
 import SKILL from './SKILL.md?raw'
 
 /** Whether agents can connect, and where. */
@@ -39,7 +39,7 @@ interface Call {
 }
 
 async function answer(call: Call): Promise<unknown> {
-  if (call.method === 'tools/list') return { tools: TOOLS }
+  if (call.method === 'tools/list') return { tools: listTools() }
   let session = sessions.get(call.session)
   if (!session) {
     session = new AgentSession(agentFrom(call.agent, call.client))

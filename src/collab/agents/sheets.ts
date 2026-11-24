@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import type { ChartView, SheetsEngine } from '../../engine/sheets/engine'
 import { ChartSvg } from '../../engine/sheets/Chart'
 import type { PaintItem, PaintStyle } from '../../engine/paint'
-import { type Answer, type Args, bool, canvasPicture, doc, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
+import { type Answer, type Args, bool, canvasPicture, doc, found, foundAnswer, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
 import { draw, mark } from './picture'
 
 const sheet = { type: 'string', description: 'The sheet’s name (the first one if left out).' }
@@ -222,6 +222,28 @@ export function readSheets(e: SheetsEngine, args: Args): string {
   const charts = e.chartsOf(s)
   if (charts.length) out.push('', 'Charts:', ...charts.map((c, i) => `- ${describeChart(c, i + 1)}`))
   return out.join('\n')
+}
+
+/** find_text in a workbook: each cell, on every sheet, that shows the text or has it in its formula. */
+export function findInSheets(e: SheetsEngine, find: string, matchCase: boolean): string {
+  let total = 0
+  let looked = 0
+  const places: string[] = []
+  e.sheets.forEach((sheet, s) => {
+    const [rows, cols] = e.geometryOf(s).info.content
+    for (let r = 0; r < rows && looked < 400_000; r++) {
+      for (let c = 0; c < cols && looked < 400_000; c++, looked++) {
+        const cell = cellOf(e, s, r, c)
+        if (!cell.input) continue
+        const hit = found(cell.display, find, matchCase) ?? (cell.input.startsWith('=') ? found(cell.input, find, matchCase) : null)
+        if (!hit) continue
+        total++
+        places.push(`- ${sheet.name}!${cellText(e, s, r, c)}`)
+      }
+    }
+  })
+  const note = looked >= 400_000 ? '\n(The workbook is too big to search all of it; read_document a range to see the rest.)' : ''
+  return foundAnswer(find, places, total) + note
 }
 
 /** Shows the agent where it worked, as people see a selection. */

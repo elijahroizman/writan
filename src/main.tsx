@@ -5,6 +5,7 @@ import { startAppIcon } from './lib/app-icon'
 import { startAppearance } from './state/appearance'
 import { getEditor, useWorkspace } from './state/workspace'
 import { useCollab } from './collab/session'
+import { useAi } from './state/ai'
 import { isTauri, isWindows } from './lib/platform'
 import { stopWindowZoom } from './lib/pinch'
 // Inter, the UI font where the system has no San Francisco (Windows, Linux). Only declares the
@@ -21,7 +22,7 @@ if (isTauri && isWindows) stopWindowZoom()
 if (import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) {
   const paths = new URLSearchParams(location.search).getAll('open')
   if (paths.length) setTimeout(() => void useWorkspace.getState().openPaths(paths), 300)
-  Object.assign(window, { __workspace: { useWorkspace, getEditor }, __collab: { useCollab } })
+  Object.assign(window, { __workspace: { useWorkspace, getEditor }, __collab: { useCollab }, __ai: { useAi } })
 }
 
 createRoot(document.getElementById('root')!).render(

@@ -1175,6 +1175,79 @@ mod tests {
         });
     }
 
+    /// The next text the relay sends a connection on the host's computer.
+    async fn next_local(rx: &mut mpsc::UnboundedReceiver<crate::collab::socket::Cmd>) -> String {
+        loop {
+            let cmd = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if let crate::collab::socket::Cmd::Text(t) = cmd {
+                return t;
+            }
+        }
+    }
+
+    fn agent_hello(client: &str, owner: &str) -> String {
+        format!(
+            r##"{{"t":"hello","v":1,"token":"tok","client":"{client}","name":"Claude","color":"#D97757","agent":"claude","owner":"{owner}","listens":true}}"##
+        )
+    }
+
+    #[test]
+    fn the_hosts_agent_and_a_guests_agent_message_each_other() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let server = Server::start(Policy::Registered, &[0]).unwrap();
+            server.register("doc", "tok", "hk");
+            let (h, _hrx) = server.bridge().connect_async("doc");
+            server.bridge().handle(h, HOST_HELLO);
+            // The host's agent, on the host's computer.
+            let (a, mut arx) = server.bridge().connect_async("doc");
+            server.bridge().handle(a, &agent_hello("mine", "Host"));
+            assert!(next_local(&mut arx).await.contains(r#""features":["say"]"#));
+
+            // Alex joins from elsewhere, and Alex's agent with Alex's seat, over iroh.
+            let host = host(&server, Arc::default()).await;
+            add(&host, "doc", "tok", "key", false);
+            let (_alex, _, seat, _) = join_as(invite(&host, "doc", "key"), person("Alex"))
+                .await
+                .unwrap();
+            let theirs = Guest {
+                name: "Claude".into(),
+                seat,
+                agent: Some("claude".into()),
+            };
+            let (client, token, _, mut grx) =
+                join_as(invite(&host, "doc", "key"), theirs).await.unwrap();
+            assert!(client.send(agent_hello("theirs", "Alex").replace("tok", &token)));
+            let welcome = next(&mut grx).await;
+            assert!(welcome.contains(r#""features":["say"]"#), "{welcome}");
+            // The host's agent hears it arrive, able to get messages.
+            let join = next_local(&mut arx).await;
+            assert!(
+                join.contains(r#""t":"join""#) && join.contains(r#""listens":true"#),
+                "{join}"
+            );
+
+            server
+                .bridge()
+                .handle(a, r#"{"t":"say","text":"I'll take slides 1 to 3."}"#);
+            let heard = next(&mut grx).await;
+            assert_eq!(
+                heard,
+                r#"{"t":"say","client":"mine","text":"I'll take slides 1 to 3."}"#
+            );
+            assert!(
+                client.send(r#"{"t":"say","text":"OK, I'll do the rest.","to":["mine"]}"#.into())
+            );
+            let heard = next_local(&mut arx).await;
+            assert_eq!(
+                heard,
+                r#"{"t":"say","client":"theirs","text":"OK, I'll do the rest.","to":["mine"]}"#
+            );
+        });
+    }
+
     /// Through the real directory and n0's relays: `cargo test over_the_internet -- --ignored`.
     #[test]
     #[ignore = "needs the internet"]
@@ -1217,8 +1290,20 @@ mod tests {
             .await
             .unwrap();
             assert_eq!(token, "tok");
-            assert!(client.send(GUEST_HELLO.into()));
-            assert!(next(&mut rx).await.contains(r#""t":"welcome""#));
+            assert!(client.send(agent_hello("theirs", "Alex")));
+            assert!(next(&mut rx).await.contains(r#""features":["say"]"#));
+            // An agent on the host's computer and one on the guest's, through n0's relay only,
+            // message each other.
+            let (a, mut arx) = server.bridge().connect_async("doc");
+            server.bridge().handle(a, &agent_hello("mine", "Host"));
+            next_local(&mut arx).await;
+            assert!(next(&mut rx).await.contains(r#""t":"join""#));
+            server
+                .bridge()
+                .handle(a, r#"{"t":"say","text":"Hello from the host's side."}"#);
+            assert!(next(&mut rx).await.contains("Hello from the host's side."));
+            assert!(client.send(r#"{"t":"say","text":"Hello back.","to":["mine"]}"#.into()));
+            assert!(next_local(&mut arx).await.contains("Hello back."));
 
             let (new, _) = host.rotate("doc").await.unwrap();
             assert_ne!(new, code);

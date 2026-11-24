@@ -4,7 +4,7 @@
 // answers with the shape or slide as it is once everyone has the change.
 
 import type { Element, SlidesEngine } from '../../engine/slides/engine'
-import { type Answer, type Args, bool, canvasPicture, clip, doc, grouped, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
+import { type Answer, type Args, bool, canvasPicture, clip, doc, found, foundAnswer, grouped, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
 import { draw, type Mark, naturalSize } from './picture'
 import { pictureBytes, pictureType, scaledPicture } from './pictures'
 
@@ -288,6 +288,29 @@ export function readSlides(e: SlidesEngine, args: Args): string {
     out.push('', ...slideLines(e, i))
   })
   return out.join('\n')
+}
+
+/** find_text in a presentation: each shape or slide's notes with a match. */
+export function findInSlides(e: SlidesEngine, find: string, matchCase: boolean): string {
+  let total = 0
+  const places: string[] = []
+  const add = (where: string, text: string) => {
+    const hit = found(text, find, matchCase)
+    if (!hit) return
+    total += hit.count
+    places.push(`- ${where}${hit.count > 1 ? ` (${hit.count} times)` : ''}: ${hit.around}`)
+  }
+  e.slides.forEach((s, i) => {
+    const walk = (els: Element[]) => {
+      for (const el of els) {
+        if (el.text) add(`slide ${i + 1}, shape "${el.id}" “${el.name}”`, el.text)
+        if (el.children) walk(el.children)
+      }
+    }
+    walk(elementsOf(e, i))
+    if (s.notes) add(`slide ${i + 1}, notes`, s.notes)
+  })
+  return foundAnswer(find, places, total)
 }
 
 export function slideIndex(e: SlidesEngine, n: number | undefined): number {

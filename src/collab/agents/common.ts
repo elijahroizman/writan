@@ -102,3 +102,40 @@ export async function canvasPicture(canvas: HTMLCanvasElement, type: 'image/png'
   for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
   return { data: btoa(bin), mimeType: type }
 }
+
+/** Where `find` is in `text`: how many times, and the first with some text either side. */
+export function found(text: string, find: string, matchCase: boolean): { count: number; around: string } | null {
+  const [hay, needle] = matchCase ? [text, find] : [text.toLowerCase(), find.toLowerCase()]
+  let count = 0
+  let first = -1
+  for (let i = hay.indexOf(needle); i >= 0 && needle; i = hay.indexOf(needle, i + needle.length)) {
+    if (first < 0) first = i
+    count++
+  }
+  if (!count) return null
+  const from = Math.max(0, first - 40)
+  const to = Math.min(text.length, first + find.length + 40)
+  const around = `${from > 0 ? '…' : ''}${text.slice(from, to)}${to < text.length ? '…' : ''}`.replace(/\n/g, ' / ')
+  return { count, around }
+}
+
+/** At most this many places in find_text's answer. */
+export const MAX_FOUND = 60
+
+export const findTool: Tool = {
+  name: 'find_text',
+  description:
+    'Finds text without reading the whole document, and says where each match is: the paragraph numbers in Word, the slide and shape (or notes) in PowerPoint, the cells on every sheet in Excel (by what they show or their formula). Case doesn’t matter unless match_case is true.',
+  inputSchema: {
+    type: 'object',
+    properties: { document: doc, text: { type: 'string', description: 'The text to find.' }, match_case: { type: 'boolean' } },
+    required: ['document', 'text'],
+  },
+}
+
+/** find_text's answer from the places found, each a line. */
+export function foundAnswer(find: string, places: string[], total: number): string {
+  if (!places.length) return `“${find}” isn’t in it.`
+  const more = places.length > MAX_FOUND ? `\n(and ${places.length - MAX_FOUND} more places; give longer text to narrow it down)` : ''
+  return `${plural(total, 'match', 'matches')} for “${find}”:\n${places.slice(0, MAX_FOUND).join('\n')}${more}`
+}

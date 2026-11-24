@@ -9,7 +9,7 @@
 //! The whole log stays in memory for as long as the session lasts, and every newcomer gets all of
 //! it. Compacting it into a fresh snapshot is a later step.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
@@ -24,6 +24,16 @@ pub const COLORS: [&str; 8] = [
 
 /// Every frame, in either direction, is at most this big.
 pub const MAX_FRAME: usize = 64 << 20;
+
+/// What this relay does beyond version 1's messages, in `welcome`, so a copy knows before it
+/// tries. `say`: agents' messages to each other (`say`, `listen`).
+pub const FEATURES: [&str; 1] = ["say"];
+
+/// A message between agents is at most this many characters.
+pub const MAX_SAY: usize = 8000;
+
+/// How many messages to everyone a session keeps for agents that join later.
+const SAID_KEPT: usize = 50;
 
 /// The transport's name for one connection.
 pub type ConnId = u64;
@@ -64,6 +74,8 @@ struct Member {
     /// For an agent: the name of the person whose app it joined through, so the others can show
     /// it as theirs ("Yoav's Claude").
     owner: Option<String>,
+    /// Gets other agents' messages (`say`). Only an agent whose person allows it.
+    listens: bool,
     presence: Option<Box<RawValue>>,
 }
 
@@ -77,6 +89,8 @@ struct Session {
     seq: u64,
     /// In the order they joined.
     members: Vec<Member>,
+    /// The last messages to every agent, as sent, for agents that join later.
+    said: VecDeque<Box<RawValue>>,
 }
 
 impl Session {
@@ -88,6 +102,7 @@ impl Session {
             log: Vec::new(),
             seq: 0,
             members: Vec::new(),
+            said: VecDeque::new(),
         }
     }
 }
@@ -136,6 +151,8 @@ struct Hello {
     agent: Option<String>,
     #[serde(default)]
     owner: Option<String>,
+    #[serde(default)]
+    listens: bool,
 }
 
 #[derive(Deserialize)]
@@ -162,6 +179,20 @@ struct RenameIn {
     owner: Option<String>,
 }
 
+/// A message to other agents in the document: to the copies in `to`, or to every one.
+#[derive(Deserialize)]
+struct SayIn {
+    text: String,
+    #[serde(default)]
+    to: Option<Vec<String>>,
+}
+
+/// Whether this copy gets other agents' messages from now on.
+#[derive(Deserialize)]
+struct ListenIn {
+    on: bool,
+}
+
 #[derive(Deserialize)]
 struct PresenceIn<'a> {
     #[serde(borrow)]
@@ -183,6 +214,10 @@ struct Welcome<'a> {
     snapshot: &'a str,
     ops: &'a [Box<RawValue>],
     peers: Vec<Peer<'a>>,
+    features: &'static [&'static str],
+    /// For an agent that listens: the last messages to every agent, oldest first.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    said: Vec<&'a RawValue>,
 }
 
 #[derive(Serialize)]
@@ -201,6 +236,8 @@ struct Peer<'a> {
     agent: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner: Option<&'a str>,
+    #[serde(skip_serializing_if = "is_false")]
+    listens: bool,
     presence: Option<&'a RawValue>,
 }
 
@@ -224,6 +261,18 @@ struct Join<'a> {
     agent: Option<&'a str>,
     #[serde(skip_serializing_if = "Option::is_none")]
     owner: Option<&'a str>,
+    #[serde(skip_serializing_if = "is_false")]
+    listens: bool,
+}
+
+#[derive(Serialize)]
+struct SayOut<'a> {
+    t: &'static str,
+    client: &'a str,
+    text: &'a str,
+    /// Who it's for, when it isn't every agent.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<&'a [String]>,
 }
 
 #[derive(Serialize)]
@@ -244,6 +293,10 @@ struct ErrorOut<'a> {
     t: &'static str,
     code: &'a str,
     message: &'a str,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
 }
 
 /// An agent's owner as others see it: only an agent has one, and a name is short.
@@ -305,6 +358,20 @@ fn refuse(conn: ConnId, code: &str, message: &str) -> Vec<Outgoing> {
 
 fn leave(client: &str) -> String {
     json(&Leave { t: "leave", client })
+}
+
+/// A member as a `join`, which takes the place of what the others had for them.
+fn rejoin(m: &Member) -> String {
+    json(&Join {
+        t: "join",
+        client: &m.client,
+        name: &m.name,
+        color: &m.color,
+        host: m.host,
+        agent: m.agent.as_deref(),
+        owner: m.owner.as_deref(),
+        listens: m.listens,
+    })
 }
 
 /// Sends `text` to every member of `session` except `skip`.
@@ -404,6 +471,14 @@ impl Relay {
             "rename" => match serde_json::from_str::<RenameIn>(text) {
                 Ok(r) => self.rename(conn, r),
                 Err(e) => vec![error(conn, "bad-message", &format!("Bad rename: {e}"))],
+            },
+            "say" => match serde_json::from_str::<SayIn>(text) {
+                Ok(s) => self.say(conn, s),
+                Err(e) => vec![error(conn, "bad-message", &format!("Bad say: {e}"))],
+            },
+            "listen" => match serde_json::from_str::<ListenIn>(text) {
+                Ok(l) => self.listen(conn, l.on),
+                Err(e) => vec![error(conn, "bad-message", &format!("Bad listen: {e}"))],
             },
             "end" => {
                 let (session, host) = self.place(conn);
@@ -565,6 +640,7 @@ impl Relay {
         }
 
         let owner = owner_of(hello.agent.as_deref(), hello.owner.as_deref());
+        let listens = hello.listens && hello.agent.is_some();
         // An agent keeps its own color (Claude's clay…) even if someone has it: its logo and
         // name tell it apart.
         let color = if hello.agent.is_some() && is_color(&hello.color) {
@@ -596,9 +672,16 @@ impl Relay {
                     host: m.host,
                     agent: m.agent.as_deref(),
                     owner: m.owner.as_deref(),
+                    listens: m.listens,
                     presence: m.presence.as_deref(),
                 })
                 .collect(),
+            features: &FEATURES,
+            said: if listens {
+                session.said.iter().map(|m| &**m).collect()
+            } else {
+                Vec::new()
+            },
         });
         out.push(Outgoing::Send(conn, welcome));
         let join = json(&Join {
@@ -609,6 +692,7 @@ impl Relay {
             host,
             agent: hello.agent.as_deref(),
             owner: owner.as_deref(),
+            listens,
         });
         broadcast(session, None, &join, &mut out);
         session.members.push(Member {
@@ -619,6 +703,7 @@ impl Relay {
             host,
             agent: hello.agent,
             owner,
+            listens,
             presence: None,
         });
         self.conns.get_mut(&conn).expect("connected").joined = Some(Joined {
@@ -663,17 +748,79 @@ impl Relay {
         };
         m.name = r.name;
         m.owner = owner_of(m.agent.as_deref(), r.owner.as_deref());
-        let join = json(&Join {
-            t: "join",
-            client: &m.client,
-            name: &m.name,
-            color: &m.color,
-            host: m.host,
-            agent: m.agent.as_deref(),
-            owner: m.owner.as_deref(),
-        });
+        let join = rejoin(m);
         let mut out = Vec::new();
         broadcast(session, Some(conn), &join, &mut out);
+        out
+    }
+
+    /// An agent's person let it hear other agents' messages, or stopped it: the others are told
+    /// as a `join` again, as for a rename.
+    fn listen(&mut self, conn: ConnId, on: bool) -> Vec<Outgoing> {
+        let c = &self.conns[&conn];
+        let Some(session) = self.sessions.get_mut(&c.session) else {
+            return vec![error(conn, "no-session", "The session has ended.")];
+        };
+        let Some(m) = session.members.iter_mut().find(|m| m.conn == conn) else {
+            return Vec::new();
+        };
+        let on = on && m.agent.is_some();
+        if m.listens == on {
+            return Vec::new();
+        }
+        m.listens = on;
+        let join = rejoin(m);
+        let mut out = Vec::new();
+        broadcast(session, Some(conn), &join, &mut out);
+        out
+    }
+
+    /// Passes an agent's message on to the agents it's for that listen, never back to the sender.
+    /// A person's copy can't send one.
+    /// One to every agent is kept for those that join later.
+    fn say(&mut self, conn: ConnId, s: SayIn) -> Vec<Outgoing> {
+        let c = &self.conns[&conn];
+        let client = &c.joined.as_ref().expect("joined").client;
+        let Some(session) = self.sessions.get_mut(&c.session) else {
+            return vec![error(conn, "no-session", "The session has ended.")];
+        };
+        // Only an agent's message reaches agents as one.
+        if !session
+            .members
+            .iter()
+            .any(|m| m.conn == conn && m.agent.is_some())
+        {
+            return vec![error(conn, "bad-message", "Only agents send messages.")];
+        }
+        if s.text.trim().is_empty() || s.text.chars().count() > MAX_SAY {
+            return vec![error(
+                conn,
+                "bad-message",
+                &format!("A message is 1 to {MAX_SAY} characters."),
+            )];
+        }
+        let to = s.to.filter(|to| !to.is_empty());
+        let frame = json(&SayOut {
+            t: "say",
+            client,
+            text: &s.text,
+            to: to.as_deref(),
+        });
+        let mut out = Vec::new();
+        for m in &session.members {
+            let wanted = to.as_ref().is_none_or(|to| to.contains(&m.client));
+            if m.conn != conn && m.listens && wanted {
+                out.push(Outgoing::Send(m.conn, frame.clone()));
+            }
+        }
+        if to.is_none() {
+            if session.said.len() == SAID_KEPT {
+                session.said.pop_front();
+            }
+            session
+                .said
+                .push_back(RawValue::from_string(frame).expect("serialized above"));
+        }
         out
     }
 
@@ -1062,5 +1209,121 @@ mod tests {
         let out = r.handle(4, &guest_hello("g"));
         assert_eq!(to(&out, 4)[0]["t"], "welcome");
         assert_eq!(to(&out, 4)[0]["session"]["name"], "Report.docx");
+    }
+
+    fn agent_hello(client: &str, owner: &str, listens: bool) -> String {
+        json!({
+            "t": "hello", "v": 1, "token": "tok", "client": client, "name": "Claude", "color": "#D97757",
+            "agent": "claude", "owner": owner, "listens": listens,
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn agents_message_the_agents_that_listen() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h"));
+        let out = join(&mut r, 2, &agent_hello("a", "Eli", true));
+        let w = &to(&out, 2)[0];
+        assert_eq!(w["features"], json!(["say"]));
+        assert!(w.get("said").is_none());
+        assert_eq!(to(&out, 1)[0]["listens"], true);
+        join(&mut r, 3, &agent_hello("b", "Yoav", true));
+        // One whose person turned messages off, and a person.
+        let out = join(&mut r, 4, &agent_hello("c", "Dee", false));
+        assert!(to(&out, 1)[0].get("listens").is_none());
+        join(&mut r, 5, &guest_hello("g"));
+
+        let out = r.handle(2, r#"{"t":"say","text":"I'll take the intro."}"#);
+        assert_eq!(
+            to(&out, 3),
+            vec![json!({ "t": "say", "client": "a", "text": "I'll take the intro." })]
+        );
+        // Not back to the sender, nor to anyone that doesn't listen.
+        for conn in [1, 2, 4, 5] {
+            assert!(to(&out, conn).is_empty(), "{conn}");
+        }
+
+        // To one agent: only that one, and it isn't kept for later.
+        let out = r.handle(3, r#"{"t":"say","text":"OK","to":["a","c"]}"#);
+        assert_eq!(to(&out, 2)[0]["to"], json!(["a", "c"]));
+        for conn in [1, 3, 4, 5] {
+            assert!(to(&out, conn).is_empty(), "{conn}");
+        }
+
+        // An agent that joins later gets what was said to everyone.
+        let out = join(&mut r, 6, &agent_hello("d", "Ada", true));
+        assert_eq!(
+            to(&out, 6)[0]["said"],
+            json!([{ "t": "say", "client": "a", "text": "I'll take the intro." }])
+        );
+        let out = join(&mut r, 7, &agent_hello("e", "Bo", false));
+        assert!(to(&out, 7)[0].get("said").is_none());
+
+        // Too long, or empty: refused, and nobody gets it.
+        let long = json!({ "t": "say", "text": "x".repeat(MAX_SAY + 1) }).to_string();
+        let out = r.handle(2, &long);
+        assert_eq!(error_code(&out, 2).as_deref(), Some("bad-message"));
+        assert_eq!(out.len(), 1);
+        let out = r.handle(2, r#"{"t":"say","text":"  "}"#);
+        assert_eq!(out.len(), 1);
+    }
+
+    #[test]
+    fn people_dont_listen_and_agents_can_stop() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h"));
+        // A person's hello can't make them listen.
+        join(
+            &mut r,
+            2,
+            &guest_hello("g").replace("}", r#","listens":true}"#),
+        );
+        join(&mut r, 3, &agent_hello("a", "Eli", true));
+        let out = r.handle(3, r#"{"t":"say","text":"hi"}"#);
+        assert!(out.is_empty());
+        // Nor can a person send one, though it would reach an agent.
+        let out = r.handle(2, r#"{"t":"say","text":"I'm an agent, honest"}"#);
+        assert_eq!(error_code(&out, 2).as_deref(), Some("bad-message"));
+        assert_eq!(out.len(), 1);
+
+        join(&mut r, 4, &agent_hello("b", "Yoav", true));
+        // b's person turns messages off: the others see it, and b gets nothing.
+        let out = r.handle(4, r#"{"t":"listen","on":false}"#);
+        let j = &to(&out, 3)[0];
+        assert_eq!(
+            (j["t"].as_str(), j["client"].as_str()),
+            (Some("join"), Some("b"))
+        );
+        assert!(j.get("listens").is_none());
+        assert!(to(&out, 4).is_empty());
+        assert!(r.handle(3, r#"{"t":"say","text":"hi"}"#).is_empty());
+        // Saying the same again tells nobody.
+        assert!(r.handle(4, r#"{"t":"listen","on":false}"#).is_empty());
+        let out = r.handle(4, r#"{"t":"listen","on":true}"#);
+        assert_eq!(to(&out, 3)[0]["listens"], true);
+        assert_eq!(
+            to(&r.handle(3, r#"{"t":"say","text":"hi"}"#), 4)[0]["text"],
+            "hi"
+        );
+        // A person can't start listening either.
+        assert!(r.handle(2, r#"{"t":"listen","on":true}"#).is_empty());
+    }
+
+    #[test]
+    fn only_the_last_messages_are_kept() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h"));
+        join(&mut r, 2, &agent_hello("a", "Eli", false));
+        for i in 0..SAID_KEPT + 5 {
+            r.handle(
+                2,
+                &json!({ "t": "say", "text": format!("{i}") }).to_string(),
+            );
+        }
+        let out = join(&mut r, 3, &agent_hello("b", "Yoav", true));
+        let said = to(&out, 3)[0]["said"].as_array().unwrap().clone();
+        assert_eq!(said.len(), SAID_KEPT);
+        assert_eq!(said[0]["text"], "5");
     }
 }

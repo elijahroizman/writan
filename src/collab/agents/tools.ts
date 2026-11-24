@@ -10,13 +10,15 @@ import type { SlidesEngine } from '../../engine/slides/engine'
 import type { WordEngine } from '../../engine/word/engine'
 import { stripExtension } from '../../lib/kinds'
 import { useWorkspace } from '../../state/workspace'
-import { attach, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, useCollab, usePresence, type Opened, type Peer } from '../session'
-import { type Answer, type Args, doc, need, str, type Tool, ToolError } from './common'
+import { appliedSeq, attach, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, unread, useCollab, usePresence, type Opened, type Peer } from '../session'
+import { type Answer, type Args, bool, doc, findTool, need, plural, str, type Tool, ToolError } from './common'
+import { FILE_TOOLS, openDocument, saveDocument } from './files'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
-import { describeSheetsPlace, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
-import { readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
+import { MESSAGE_TOOL_NAMES, MESSAGE_TOOLS, messagesOn, nextMessage, OFF, readMessages, sendMessage, unreadNote } from './messages'
+import { describeSheetsPlace, findInSheets, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
+import { findInSlides, readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
 import { runThemeTool, THEME_TOOLS } from './theme'
-import { readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
+import { findInWord, readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
 
 export { ToolError } from './common'
 
@@ -98,6 +100,11 @@ export class AgentSession {
     }
   }
 
+  /** This agent's copy of a tab's document, if it has joined it. */
+  joinedCopy(tab: string): Copy | undefined {
+    return this.joined.get(tab)
+  }
+
   /** Whether `c` is still this agent's copy of its document. */
   has(c: Copy): boolean {
     return !this.ended && this.joined.get(c.tab) === c
@@ -114,7 +121,7 @@ export class AgentSession {
       resolveEngine = res
       rejectEngine = rej
     })
-    const id = await followAsAgent(tab, { name: who.name, color: who.id ? AGENTS[who.id].color : '#6E56CF', agent: who.id ?? 'ai' }, (copyId, opened) => {
+    const id = await followAsAgent(tab, { name: who.name, color: who.id ? AGENTS[who.id].color : '#6E56CF', agent: who.id ?? 'ai', listens: messagesOn() }, (copyId, opened) => {
       void openEngine(opened).then((e) => {
         attach(copyId, e)
         resolveEngine(e)
@@ -259,14 +266,21 @@ const SHARED_TOOLS: Tool[] = [
 ]
 
 const AFTER_TOOLS: Tool[] = [
+  findTool,
   {
     name: 'undo',
     description: 'Takes back your last change in a document (only yours, never someone else’s). In a workbook, that’s the last cell you wrote.',
     inputSchema: { type: 'object', properties: { document: doc }, required: ['document'] },
   },
   {
+    name: 'redo',
+    description: 'Puts back the change your last undo took back, if nobody has changed that part since.',
+    inputSchema: { type: 'object', properties: { document: doc }, required: ['document'] },
+  },
+  {
     name: 'wait_for_changes',
-    description: 'Waits until someone else changes the document, up to `seconds` (60 at most), and says who changed what: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel.',
+    description:
+      'Waits until someone else changes the document, up to `seconds` (60 at most), and says who changed what: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel. A message from another agent ends the wait too.',
     inputSchema: { type: 'object', properties: { document: doc, seconds: { type: 'number' } }, required: ['document'] },
   },
   {
@@ -302,17 +316,42 @@ const WORD_PICTURE: Tool = {
   inputSchema: { type: 'object', properties: { document: doc, after: { type: 'integer', description: 'Word: the paragraph to put it after.' } }, required: ['document'] },
 }
 
-export const TOOLS: Tool[] = [...merged([...SHARED_TOOLS, ...WORD_TOOLS, ...SLIDES_TOOLS, WORD_PICTURE, ...SHEETS_TOOLS, ...AFTER_TOOLS]), ...THEME_TOOLS]
+export const TOOLS: Tool[] = [...merged([...SHARED_TOOLS, ...WORD_TOOLS, ...SLIDES_TOOLS, WORD_PICTURE, ...SHEETS_TOOLS, ...AFTER_TOOLS]), ...MESSAGE_TOOLS, ...FILE_TOOLS, ...THEME_TOOLS]
+
+/** The tools as an agent here sees them: without messages when Settings › AI turned them off. */
+export function listTools(): Tool[] {
+  return messagesOn() ? TOOLS : TOOLS.filter((t) => !MESSAGE_TOOL_NAMES.has(t.name))
+}
 
 // ── Doing them
 
 /** Runs a tool for an agent. `local` says whether the agent is on this computer. */
 export async function runTool(session: AgentSession, name: string, args: Args, local = false): Promise<Answer> {
-  if (name === 'list_documents') return { text: listDocuments() }
+  if (name === 'list_documents') return { text: listDocuments(session) }
   if (THEME_TOOLS.some((t) => t.name === name)) return runThemeTool(name, args, local)
+  if (name === 'open_document') return { text: await openDocument(args, local, documents) }
+  if (MESSAGE_TOOL_NAMES.has(name) && !messagesOn()) throw new ToolError(OFF)
   const tab = need(str(args, 'document'), 'the document')
   if (name === 'leave_document') return { text: session.leave(tab) ? 'Left.' : 'You weren’t in it.' }
+  if (name === 'save_document') {
+    const d = documents().find((x) => x.document === tab)
+    if (!d) throw new ToolError(`No document “${tab}”. list_documents shows the ones you can work on.`)
+    // What this agent changed reaches the tab first: the relay has it, and the tab applied it.
+    const c = session.joinedCopy(tab)
+    if (c) {
+      const note = await delivered(session, c, await c.engine)
+      if (note) throw new ToolError(`Not saved: your last change hasn’t reached the document yet.${note}`)
+      if (!(await caughtUp(tab, appliedSeq(c.id)))) throw new ToolError('Not saved: the document hasn’t caught up with your last change yet. Try again in a moment.')
+    }
+    return { text: await saveDocument(tab, d.role, args, local) }
+  }
   const { copy, engine } = await session.copy(tab)
+  const text = await runOn(session, copy, engine, name, args, local)
+  return { ...text, text: `${text.text}${unreadNote(copy.id)}` }
+}
+
+/** Runs a tool on the agent's copy of a document. */
+async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: string, args: Args, local: boolean): Promise<Answer> {
   let answer: Answer
   switch (name) {
     case 'read_document':
@@ -323,11 +362,23 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
       return { text: whereIsEveryone(copy, engine) }
     case 'wait_for_changes':
       return { text: await waitForChanges(copy, engine, Math.min(60, Math.max(1, Number(args.seconds) || 30))) }
-    case 'undo': {
-      const e = engine as { run(c: { cmd: string }): unknown; state: { canUndo: boolean } }
-      if (!e.state.canUndo) return { text: 'Nothing of yours to undo.' }
-      e.run({ cmd: 'undo' })
-      answer = { text: 'Undone.' }
+    case 'send_message':
+      return { text: sendMessage(copy.id, args) }
+    case 'read_messages':
+      return { text: await readMessages(copy.id, Math.min(60, Math.max(0, Number(args.seconds) || 0))) }
+    case 'find_text': {
+      const find = need(str(args, 'text'), 'the text to find')
+      if (!find) throw new ToolError('Give the text to find.')
+      const matchCase = bool(args, 'match_case') === true
+      return { text: copy.kind === 'docx' ? findInWord(engine as WordEngine, find, matchCase) : copy.kind === 'pptx' ? findInSlides(engine as SlidesEngine, find, matchCase) : findInSheets(engine as SheetsEngine, find, matchCase) }
+    }
+    case 'undo':
+    case 'redo': {
+      const e = engine as { run(c: { cmd: string }): unknown; state: { canUndo: boolean; canRedo: boolean } }
+      if (name === 'undo' ? !e.state.canUndo : !e.state.canRedo) return { text: name === 'undo' ? 'Nothing of yours to undo.' : 'Nothing to redo.' }
+      // Someone else may have changed that part since; then it's left as they made it.
+      if (e.run({ cmd: name }) !== true) return { text: `Couldn’t ${name} it: someone else has changed that part since. Read it again.` }
+      answer = { text: name === 'undo' ? 'Undone.' : 'Redone.' }
       break
     }
     case 'replace_text':
@@ -361,19 +412,27 @@ async function delivered(session: AgentSession, copy: Copy, engine: Engine): Pro
   return engine.doc.collabPending() ? ' (Still on its way to the others.)' : ''
 }
 
+/** Waits up to three seconds for a tab to have applied the relay's changes up to `seq`. */
+async function caughtUp(tab: string, seq: number): Promise<boolean> {
+  for (let i = 0; i < 60 && appliedSeq(tab) < seq; i++) await new Promise((r) => setTimeout(r, 50))
+  return appliedSeq(tab) >= seq
+}
+
 function peopleIn(id: string): Peer[] {
   const s = useCollab.getState()[id]
   return s ? [...(s.you ? [s.you] : []), ...s.peers] : []
 }
 
-function listDocuments(): string {
+function listDocuments(session: AgentSession): string {
   const docs = documents()
-  if (!docs.length) return 'No Word document, presentation or workbook is open in Writan right now. Ask the person to open one.'
+  if (!docs.length) return 'No Word document, presentation or workbook is open in Writan right now. Ask the person to open one, or open_document one.'
   const roles = { sharing: 'shared from here', joined: 'joined from here', open: 'not shared: only the person here and agents on this computer' }
   return docs
     .map((d) => {
-      const people = peopleIn(d.document).map((p) => (p.agent ? `${p.name} (AI)` : p.name))
-      return `- ${d.title}  document: "${d.document}"  (${roles[d.role]}; in it: ${people.join(', ') || 'nobody yet'})`
+      const people = peopleIn(d.document).map((p) => (p.agent ? `${p.name} (AI${messagesOn() && !p.listens ? ', no messages' : ''})` : p.name))
+      const copy = session.joinedCopy(d.document)
+      const waiting = copy && messagesOn() ? unread(copy.id).length : 0
+      return `- ${d.title}  document: "${d.document}"  (${roles[d.role]}; in it: ${people.join(', ') || 'nobody yet'})${waiting ? `; ${plural(waiting, 'unread message')} for you` : ''}`
     })
     .join('\n')
 }
@@ -393,18 +452,27 @@ function snapshot(copy: Copy, engine: Engine): Snapshot {
 async function waitForChanges(copy: Copy, engine: Engine, seconds: number): Promise<string> {
   const before = snapshot(copy, engine)
   const who = new Set<string>()
-  const first = await new Promise<boolean>((resolve) => {
+  const said = messagesOn() ? nextMessage(copy.id) : null
+  const first = await new Promise<boolean | string>((resolve) => {
     const timer = window.setTimeout(() => {
       stop()
+      said?.stop()
       resolve(false)
     }, seconds * 1000)
     const stop = onOthersChange(copy.id, (client) => {
       who.add(client)
       window.clearTimeout(timer)
       stop()
+      said?.stop()
       resolve(true)
     })
+    void said?.message.then((m) => {
+      window.clearTimeout(timer)
+      stop()
+      resolve(m.name)
+    })
   })
+  if (typeof first === 'string') return `${first} sent you a message; read_messages shows it. Nobody changed the document meanwhile.`
   if (!first) return `Nobody changed it in ${seconds} seconds.`
   // Until they've stopped for a second, for five seconds at most.
   await new Promise<void>((resolve) => {
