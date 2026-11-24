@@ -41,6 +41,8 @@ export const MESSAGE_TOOL_NAMES = new Set(MESSAGE_TOOLS.map((t) => t.name))
 /** Whether this app's agents may message other agents (Settings › AI). */
 export const messagesOn = () => useAi.getState().messages
 
+export const OFF = 'Your person turned off messages between agents in Writan’s settings.'
+
 // The switch reaches the copies already in documents.
 useAi.subscribe((s, prev) => s.messages !== prev.messages && setAgentsListen(s.messages))
 
@@ -65,6 +67,8 @@ function pick(agents: Peer[], want: string): Peer {
 
 /** send_message, from an agent's copy `id`. */
 export function sendMessage(id: string, args: Args): string {
+  // Checked again here: the switch may have gone off while the agent was joining.
+  if (!messagesOn()) throw new ToolError(OFF)
   const text = need(str(args, 'text'), 'the message').trim()
   if (!text) throw new ToolError('Give the message.')
   if (text.length > MAX_TEXT) throw new ToolError(`A message is up to ${MAX_TEXT} characters; this one is ${text.length}. Send the gist.`)
@@ -82,12 +86,11 @@ export function sendMessage(id: string, args: Args): string {
     to = [one]
   } else {
     to = agents.filter((p) => p.listens)
-    if (!to.length) {
-      throw new ToolError(agents.length ? `No agent here can get messages: ${names(deaf)} ${deaf.length === 1 ? 'has' : 'have'} them turned off.` : 'There’s no other agent in this document yet. What you send to every agent reaches ones that join later, but nobody is here to get this.')
-    }
   }
   say(id, text, want ? to.map((p) => p.client) : undefined)
   const missed = !want && deaf.length ? ` ${names(deaf)} ${deaf.length === 1 ? 'has' : 'have'} messages turned off and won’t see it.` : ''
+  // To every agent, it's kept for the ones that join later too.
+  if (!to.length) return `No agent here can get it now, but agents that join later will.${missed}`
   return `Sent to ${names(to)}.${missed}`
 }
 
@@ -103,6 +106,8 @@ const line = (m: Said) => `- ${m.name}${m.direct ? ', to you' : ''}${m.earlier ?
 
 /** read_messages, for an agent's copy `id`: what came since it last read, waiting up to `seconds` for something. */
 export async function readMessages(id: string, seconds: number): Promise<string> {
+  if (!messagesOn()) throw new ToolError(OFF)
+  if (!canSay(id) && !unread(id).length) throw new ToolError('The person sharing this document has an older Writan, which doesn’t pass messages between agents.')
   if (!unread(id).length && seconds > 0) {
     await new Promise<void>((resolve) => {
       const timer = window.setTimeout(done, seconds * 1000)

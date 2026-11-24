@@ -97,7 +97,9 @@ try {
   const alone = await codex.call('send_message', { document: docA, text: 'Anyone here?', to: 'Claude' })
   check('naming an agent that isn’t there is explained', alone.error && alone.text.includes('no other agent'), alone.text)
 
-  // Ada's Codex says something to every agent before Bo's Claude arrives.
+  // Said to every agent with nobody here yet, it waits for the next to join.
+  const kept = await codex.call('send_message', { document: docA, text: 'Note for whoever comes: the intro is mine.' })
+  check('a message to every agent with nobody here is kept', !kept.error && kept.text.includes('agents that join later will'), kept.text)
   await claude.call('read_document', { document: docB })
   await a.page.waitForFunction(() => window.__collab.useCollab.getState()[window.__workspace.useWorkspace.getState().activeId].peers.some((p) => p.agent === 'claude' && p.listens))
   const listed = (await codex.call('list_documents')).text
@@ -109,9 +111,10 @@ try {
   // Bo's Claude is told on its next call, once the message has reached Bo's app, and reads it.
   await new Promise((r) => setTimeout(r, 300))
   const next = await claude.call('read_document', { document: docB })
-  check('another tool’s answer mentions the new message', next.text.includes('1 new message from other agents'), next.text)
+  check('another tool’s answer mentions the new message', next.text.includes('2 new messages from other agents'), next.text)
   const got = await claude.call('read_messages', { document: docB })
   check('read_messages shows who sent what', got.text.includes('Ada’s Codex') && got.text.includes('can you do the budget paragraph?') && got.text.includes('colleague'), got.text)
+  check('including what was left before it joined', got.text.includes('Ada’s Codex, before you joined: Note for whoever comes'), got.text)
   check('reading empties them', (await claude.call('read_messages', { document: docB })).text === 'No new messages.')
 
   // Codex waits for changes; a message ends the wait.
@@ -145,7 +148,9 @@ try {
   const offCall = await claude.call('send_message', { document: docB, text: 'hi' })
   check('with messages off, send_message is refused', offCall.error && offCall.text.includes('turned off messages'), offCall.text)
   const toDeaf = await codex.call('send_message', { document: docA, text: 'Still there?' })
-  check('other agents are told it has messages off', toDeaf.error && toDeaf.text.includes('Bo’s Claude has them turned off'), toDeaf.text)
+  check('other agents are told it has messages off', !toDeaf.error && toDeaf.text.includes('Bo’s Claude has messages turned off'), toDeaf.text)
+  const toDeafOne = await codex.call('send_message', { document: docA, to: 'Bo', text: 'Still there?' })
+  check('and one to it alone is refused', toDeafOne.error && toDeafOne.text.includes('can’t get messages'), toDeafOne.text)
   check('list_documents says so', (await codex.call('list_documents')).text.includes('Bo’s Claude (AI, no messages)'))
   await setMessages(b.page, true)
   await a.page.waitForFunction(() => window.__collab.useCollab.getState()[window.__workspace.useWorkspace.getState().activeId].peers.some((p) => p.agent === 'claude' && p.listens))
@@ -163,6 +168,20 @@ try {
   check('redo puts the change back', !redo.error && redo.text.startsWith('Redone'), redo.text)
   await b.page.waitForFunction(() => document.querySelector('.docx-pages')?.textContent?.includes('Introduction'))
   check('everyone gets the redone change', true)
+  // Someone else changes what the agent wrote: its undo leaves their change and says so.
+  await codex.call('replace_paragraphs', { document: docA, from: 2, text: 'Budget line' })
+  await b.page.waitForFunction(() => document.querySelector('.docx-pages')?.textContent?.includes('Budget line'))
+  await b.page.evaluate(() => {
+    const e = window.__docxEditor
+    const p = JSON.parse(e.doc.paragraphs())[1]
+    e.run({ cmd: 'select', anchor: [p.path, p.text.length], focus: [p.path, p.text.length] })
+    e.run({ cmd: 'insertText', text: ' by Bo' })
+  })
+  await a.page.waitForFunction(() => document.querySelector('.docx-pages')?.textContent?.includes('Budget line by Bo'))
+  await new Promise((r) => setTimeout(r, 300))
+  const refused = await codex.call('undo', { document: docA })
+  check('undo over someone else’s change says it couldn’t', refused.text.startsWith('Couldn’t undo'), refused.text)
+  check('and Bo’s change stays', (await codex.call('read_document', { document: docA })).text.includes('[2] Budget line by Bo'))
   const save = await claude.call('save_document', { document: docB })
   check('a guest’s agent can’t save the host’s document', save.error && save.text.includes('their file'), save.text)
 

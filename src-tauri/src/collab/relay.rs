@@ -776,6 +776,7 @@ impl Relay {
     }
 
     /// Passes an agent's message on to the agents it's for that listen, never back to the sender.
+    /// A person's copy can't send one.
     /// One to every agent is kept for those that join later.
     fn say(&mut self, conn: ConnId, s: SayIn) -> Vec<Outgoing> {
         let c = &self.conns[&conn];
@@ -783,6 +784,14 @@ impl Relay {
         let Some(session) = self.sessions.get_mut(&c.session) else {
             return vec![error(conn, "no-session", "The session has ended.")];
         };
+        // Only an agent's message reaches agents as one.
+        if !session
+            .members
+            .iter()
+            .any(|m| m.conn == conn && m.agent.is_some())
+        {
+            return vec![error(conn, "bad-message", "Only agents send messages.")];
+        }
         if s.text.trim().is_empty() || s.text.chars().count() > MAX_SAY {
             return vec![error(
                 conn,
@@ -1273,6 +1282,10 @@ mod tests {
         join(&mut r, 3, &agent_hello("a", "Eli", true));
         let out = r.handle(3, r#"{"t":"say","text":"hi"}"#);
         assert!(out.is_empty());
+        // Nor can a person send one, though it would reach an agent.
+        let out = r.handle(2, r#"{"t":"say","text":"I'm an agent, honest"}"#);
+        assert_eq!(error_code(&out, 2).as_deref(), Some("bad-message"));
+        assert_eq!(out.len(), 1);
 
         join(&mut r, 4, &agent_hello("b", "Yoav", true));
         // b's person turns messages off: the others see it, and b gets nothing.

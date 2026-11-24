@@ -10,11 +10,11 @@ import type { SlidesEngine } from '../../engine/slides/engine'
 import type { WordEngine } from '../../engine/word/engine'
 import { stripExtension } from '../../lib/kinds'
 import { useWorkspace } from '../../state/workspace'
-import { attach, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, unread, useCollab, usePresence, type Opened, type Peer } from '../session'
+import { appliedSeq, attach, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, unread, useCollab, usePresence, type Opened, type Peer } from '../session'
 import { type Answer, type Args, bool, doc, findTool, need, plural, str, type Tool, ToolError } from './common'
 import { FILE_TOOLS, openDocument, saveDocument } from './files'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
-import { MESSAGE_TOOL_NAMES, MESSAGE_TOOLS, messagesOn, nextMessage, readMessages, sendMessage, unreadNote } from './messages'
+import { MESSAGE_TOOL_NAMES, MESSAGE_TOOLS, messagesOn, nextMessage, OFF, readMessages, sendMessage, unreadNote } from './messages'
 import { describeSheetsPlace, findInSheets, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
 import { findInSlides, readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
 import { runThemeTool, THEME_TOOLS } from './theme'
@@ -330,15 +330,19 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
   if (name === 'list_documents') return { text: listDocuments(session) }
   if (THEME_TOOLS.some((t) => t.name === name)) return runThemeTool(name, args, local)
   if (name === 'open_document') return { text: await openDocument(args, local, documents) }
-  if (MESSAGE_TOOL_NAMES.has(name) && !messagesOn()) throw new ToolError('Your person turned off messages between agents in Writan’s settings.')
+  if (MESSAGE_TOOL_NAMES.has(name) && !messagesOn()) throw new ToolError(OFF)
   const tab = need(str(args, 'document'), 'the document')
   if (name === 'leave_document') return { text: session.leave(tab) ? 'Left.' : 'You weren’t in it.' }
   if (name === 'save_document') {
     const d = documents().find((x) => x.document === tab)
     if (!d) throw new ToolError(`No document “${tab}”. list_documents shows the ones you can work on.`)
-    // What this agent changed reaches the tab first.
+    // What this agent changed reaches the tab first: the relay has it, and the tab applied it.
     const c = session.joinedCopy(tab)
-    if (c) await delivered(session, c, await c.engine).then(() => new Promise((r) => setTimeout(r, 150)))
+    if (c) {
+      const note = await delivered(session, c, await c.engine)
+      if (note) throw new ToolError(`Not saved: your last change hasn’t reached the document yet.${note}`)
+      if (!(await caughtUp(tab, appliedSeq(c.id)))) throw new ToolError('Not saved: the document hasn’t caught up with your last change yet. Try again in a moment.')
+    }
     return { text: await saveDocument(tab, d.role, args, local) }
   }
   const { copy, engine } = await session.copy(tab)
@@ -372,7 +376,8 @@ async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: st
     case 'redo': {
       const e = engine as { run(c: { cmd: string }): unknown; state: { canUndo: boolean; canRedo: boolean } }
       if (name === 'undo' ? !e.state.canUndo : !e.state.canRedo) return { text: name === 'undo' ? 'Nothing of yours to undo.' : 'Nothing to redo.' }
-      e.run({ cmd: name })
+      // Someone else may have changed that part since; then it's left as they made it.
+      if (e.run({ cmd: name }) !== true) return { text: `Couldn’t ${name} it: someone else has changed that part since. Read it again.` }
       answer = { text: name === 'undo' ? 'Undone.' : 'Redone.' }
       break
     }
@@ -405,6 +410,12 @@ async function delivered(session: AgentSession, copy: Copy, engine: Engine): Pro
   for (let i = 0; i < 100 && here() && engine.doc.collabPending(); i++) await new Promise((r) => setTimeout(r, 50))
   if (!here()) return ' (Your connection to the document ended before it reached the others.)'
   return engine.doc.collabPending() ? ' (Still on its way to the others.)' : ''
+}
+
+/** Waits up to three seconds for a tab to have applied the relay's changes up to `seq`. */
+async function caughtUp(tab: string, seq: number): Promise<boolean> {
+  for (let i = 0; i < 60 && appliedSeq(tab) < seq; i++) await new Promise((r) => setTimeout(r, 50))
+  return appliedSeq(tab) >= seq
 }
 
 function peopleIn(id: string): Peer[] {

@@ -198,7 +198,7 @@ function fromBase64(text: string) {
 
 function newLink(name: string): Link {
   const client = newClient()
-  return { tabId: '', role: 'guest', client, name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false, presence: null, presenceTimer: null, invite: null, features: [], inbox: [] }
+  return { tabId: '', role: 'guest', client, name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false, presence: null, presenceTimer: null, invite: null, features: [], inbox: [], seq: 0, queuedSeq: 0 }
 }
 
 /** One shared tab's connection. */
@@ -229,6 +229,9 @@ interface Link {
   seat?: string
   /** What the relay does beyond version 1 (`say`), from its welcome. */
   features: string[]
+  /** The relay's number of the last change applied here, and of the last one waiting to be. */
+  seq: number
+  queuedSeq: number
   /** For an agent's copy: whether it gets other agents' messages, and the ones it hasn't read. */
   listens?: boolean
   inbox: Said[]
@@ -302,6 +305,7 @@ function start(link: Link) {
   link.live = true
   for (const op of link.queue) engine.doc.collabReceive(op)
   link.queue = []
+  link.seq = link.queuedSeq
   engine.refresh()
   flush(link)
   update(link.tabId, { status: 'live' })
@@ -415,6 +419,7 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       link.features = Array.isArray(msg.features) ? (msg.features as unknown[]).filter((f): f is string => typeof f === 'string') : []
       if (link.listens && Array.isArray(msg.said)) for (const m of msg.said as Record<string, unknown>[]) heard(link, m, true)
       link.queue.push(...(msg.ops as unknown[]).map((op) => JSON.stringify(op)))
+      link.queuedSeq = Number(msg.seq) || 0
       link.welcomed = true
       start(link)
       return
@@ -423,9 +428,11 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       if (msg.client !== link.client) for (const f of changeListeners.get(link.tabId) ?? []) f(msg.client as string)
       if (!link.live || !link.engine) {
         link.queue.push(data)
+        link.queuedSeq = Number(msg.seq) || link.queuedSeq
         return
       }
       if (link.engine.doc.collabReceive(data)) link.engine.refresh()
+      link.seq = Number(msg.seq) || link.seq
       // The next change made here goes once the last one is back.
       flush(link)
       return
@@ -518,6 +525,11 @@ export function unread(id: string, take = false): Said[] {
 export function canSay(id: string): boolean {
   const link = links.get(id)
   return !!link && link.live && !link.closed && link.features.includes('say')
+}
+
+/** The relay's number of the last change a shared tab or agent's copy has applied; -1 if it isn't shared. */
+export function appliedSeq(id: string): number {
+  return links.get(id)?.seq ?? -1
 }
 
 /** Sends a message from an agent's copy to the agents in `to` (their copies), or to every agent. */
