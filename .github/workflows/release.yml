@@ -1,15 +1,16 @@
 name: Release
 
-# Builds the Windows (x64) installer, the macOS (universal: Apple silicon and Intel) disk image,
+# Builds the Windows (x64) installer, the macOS disk images (one for Apple silicon, one for Intel),
 # and the Linux packages for x86_64 and ARM64: a .deb for Debian and Ubuntu, an .rpm for Fedora
 # and a .pkg.tar.zst for Arch Linux (and Arch Linux ARM and Omarchy). It attaches them to a GitHub
 # Release. Push a tag like v0.4.0 to publish one. Running it from the Actions tab only builds (and
 # signs and notarizes), unless "publish" is ticked.
-# It also signs the update bundles and publishes latest.json, which installed copies check
-# for updates (see plugins.updater in src-tauri/tauri.conf.json). The update bundles are only
-# made here, via tauri.release.conf.json, because signing them needs the private key. Linux
-# packages have no update bundle (Tauri's updater can't replace a package-managed install), so the
-# Linux jobs leave latest.json alone. Once both have built, the linux-repos job publishes an APT,
+# It also signs the update bundles, and once the builds are done the updater-feed job publishes
+# latest.json, which installed copies check for updates (see plugins.updater in
+# src-tauri/tauri.conf.json). The update bundles are only made here, via
+# tauri.release.conf.json, because signing them needs the private key. Linux packages have no
+# update bundle (Tauri's updater can't replace a package-managed install), so latest.json doesn't
+# list them. Once both have built, the linux-repos job publishes an APT,
 # a dnf and a pacman repository holding both architectures, which the packages add to the system.
 # The Arch packages are the .deb's files repacked (scripts/arch-package.sh).
 # The release notes are the version's section of CHANGELOG.md.
@@ -40,11 +41,18 @@ jobs:
           - name: Windows x64
             os: windows-latest
             args: --bundles nsis --config src-tauri/tauri.release.conf.json
-          - name: macOS universal
-            # One app for Apple silicon and Intel Macs. latest.json lists its update bundle under
-            # both darwin-aarch64 and darwin-x86_64.
+          # One build per Mac architecture, on two runners at once: a universal app compiled both
+          # in turn on one runner, which took a few minutes longer. Both run on Apple silicon;
+          # the Intel one cross-compiles. From 0.11 to 0.15 the Mac app was universal, and its copies
+          # update to the build for the Mac they run on.
+          - name: macOS Apple silicon
             os: macos-latest
-            args: --target universal-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
+          - name: macOS Intel
+            os: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin --bundles app,dmg --config src-tauri/tauri.release.conf.json
           - name: Linux x64 (Debian, Ubuntu, Fedora, Arch)
             # The oldest runner with webkit2gtk-4.1, so the .deb installs on Ubuntu 22.04+ and Debian 12+.
             # The .rpm is built from the same binary and is for Fedora, and so is the Arch package.
@@ -78,7 +86,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           # wasm32 for the document engine (crates/office-wasm), which npm run build compiles.
-          targets: ${{ matrix.os == 'macos-latest' && 'aarch64-apple-darwin,x86_64-apple-darwin,wasm32-unknown-unknown' || 'wasm32-unknown-unknown' }}
+          targets: ${{ matrix.target && format('{0},wasm32-unknown-unknown', matrix.target) || 'wasm32-unknown-unknown' }}
       # Tag runs can only read caches saved on main, so these two come from the Release cache
       # workflow (release-cache.yml), which builds the same way on main. Saving them here would
       # only store caches no other run can read.
@@ -95,7 +103,8 @@ jobs:
         run: touch src/engine/wasm/*
       - uses: swatinem/rust-cache@v2
         with:
-          shared-key: release
+          # The two Mac jobs share a runner type, so each needs its own key.
+          shared-key: release${{ matrix.target && format('-{0}', matrix.target) || '' }}
           save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: |
             src-tauri
@@ -125,7 +134,7 @@ jobs:
             echo 'RELEASE_NOTES_EOF'
           } >> "$GITHUB_OUTPUT"
       - name: App Store Connect key
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         env:
           KEY: ${{ secrets.APPLE_API_KEY }}
         run: |
@@ -156,19 +165,21 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
           # macOS only. Tauri imports the certificate into a temporary keychain and signs
           # with its identity, then notarizes and staples the app.
-          APPLE_CERTIFICATE: ${{ matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE || '' }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ matrix.os == 'macos-latest' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
-          APPLE_SIGNING_IDENTITY: ${{ matrix.os == 'macos-latest' && 'Developer ID Application' || '' }}
-          APPLE_API_KEY: ${{ matrix.os == 'macos-latest' && secrets.APPLE_API_KEY_ID || '' }}
-          APPLE_API_ISSUER: ${{ matrix.os == 'macos-latest' && secrets.APPLE_API_ISSUER || '' }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && 'Developer ID Application' || '' }}
+          APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
         with:
           tagName: ${{ env.PUBLISH == 'true' && 'v__VERSION__' || '' }}
           releaseName: ${{ env.PUBLISH == 'true' && 'Writan v__VERSION__' || '' }}
           releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: false
           prerelease: false
-          # A .deb or .rpm has no update bundle, so only the Mac and Windows jobs write latest.json.
-          uploadUpdaterJson: ${{ runner.os != 'Linux' }}
+          # The updater-feed job writes latest.json once every build is done. Here the two Mac
+          # jobs, finishing at about the same moment, would each read it, add their own entry and
+          # replace it, and one could drop the other's.
+          uploadUpdaterJson: false
           args: ${{ matrix.args }}
       - name: Finish the Linux packages
         # Tauri writes Provides and Replaces but no Breaks, so scripts/debian-repack.sh adds
@@ -208,16 +219,16 @@ jobs:
           if-no-files-found: error
           retention-days: 7
       - name: Check the Mac app is signed and notarized
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         run: |
-          app=src-tauri/target/universal-apple-darwin/release/bundle/macos/Writan.app
+          app=src-tauri/target/${{ matrix.target }}/release/bundle/macos/Writan.app
           set -euo pipefail
           codesign --verify --deep --strict --verbose=2 "$app"
           codesign -dv "$app" 2>&1 | grep -E '^(Authority|TeamIdentifier|Runtime)'
           xcrun stapler validate "$app"
           spctl --assess --type execute --verbose=4 "$app"
       - name: Notarize the disk image
-        if: matrix.os == 'macos-latest'
+        if: runner.os == 'macOS'
         env:
           KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
           ISSUER: ${{ secrets.APPLE_API_ISSUER }}
@@ -225,7 +236,7 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          dmgs=(src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg)
+          dmgs=(src-tauri/target/${{ matrix.target }}/release/bundle/dmg/*.dmg)
           if [ "${#dmgs[@]}" -ne 1 ]; then
             echo "expected one disk image, found ${#dmgs[@]}"
             exit 1
@@ -253,6 +264,66 @@ jobs:
             version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
             gh release upload "v${version}" "$dmg" --clobber
           fi
+
+  updater-feed:
+    # latest.json, the feed installed Mac and Windows copies check (plugins.updater.endpoints in
+    # src-tauri/tauri.conf.json), written once from the update bundles and signatures the build
+    # jobs uploaded. tauri-action writes it like this too, with the release body as the notes.
+    # A platform whose build failed is left out, so its copies stay on the version they have, and
+    # the job fails after publishing the rest. Copies of the universal app (0.11 to 0.15) look
+    # up darwin-aarch64 or darwin-x86_64 for the Mac they run on and get that build.
+    name: Update feed
+    needs: build
+    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) }}
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Publish latest.json
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          tag="v$version"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
+          cd "$RUNNER_TEMP"
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p '*.sig' || true
+          platforms='{}'
+          missing=0
+          # Each update bundle under the keys Tauri's updater looks up: {os}-{arch}-{installer},
+          # then {os}-{arch}.
+          add() {
+            local file="$1"
+            shift
+            if [ ! -s "$file.sig" ]; then
+              echo "::error::No $file.sig on the release, so latest.json leaves out $*"
+              missing=1
+              return
+            fi
+            for key in "$@"; do
+              platforms="$(jq --arg key "$key" --arg url "$base/$file" --rawfile sig "$file.sig" \
+                '.[$key] = {signature: $sig, url: $url}' <<< "$platforms")"
+            done
+          }
+          add "Writan_${version}_x64-setup.exe" windows-x86_64 windows-x86_64-nsis
+          add Writan_aarch64.app.tar.gz darwin-aarch64 darwin-aarch64-app
+          add Writan_x64.app.tar.gz darwin-x86_64 darwin-x86_64-app
+          if [ "$platforms" = '{}' ]; then
+            echo "::error::No update bundles on the release"
+            exit 1
+          fi
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json body > release.json
+          jq -n \
+            --arg version "$version" \
+            --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
+            --slurpfile release release.json \
+            --argjson platforms "$platforms" \
+            '{version: $version, notes: $release[0].body, pub_date: $pub_date, platforms: $platforms}' > latest.json
+          jq '.platforms | map_values(.url)' latest.json
+          gh release upload "$tag" -R "$GITHUB_REPOSITORY" latest.json --clobber
+          exit "$missing"
 
   linux-repos:
     # Publishes the APT, dnf and pacman repositories once both Linux jobs have built. It runs when

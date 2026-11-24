@@ -16,7 +16,7 @@ Download the latest build from [Releases](https://github.com/elijahroizman/writa
 
 | | |
 | --- | --- |
-| **Mac** | Open `Writan_…_universal.dmg` and drag Writan to Applications. It runs natively on Apple silicon and Intel Macs. |
+| **Mac** | Open `Writan_…_aarch64.dmg` (Apple silicon: M1 and later) or `Writan_…_x64.dmg` (Intel) and drag Writan to Applications. |
 | **Windows** | Run `Writan_…_x64-setup.exe`. If Windows says it protected your PC, click **More info → Run anyway** (the app isn't code-signed for Windows yet). |
 | **Debian, Ubuntu** | `sudo apt install ./Writan_…_amd64.deb`, or `Writan_…_arm64.deb` on ARM (Ubuntu 22.04 or Debian 12 and newer). |
 | **Fedora** | `sudo dnf install ./Writan-…x86_64.rpm`, or `Writan-…aarch64.rpm` on ARM (Asahi) |
