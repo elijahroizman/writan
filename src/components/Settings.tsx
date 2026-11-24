@@ -1,11 +1,11 @@
-import { ArrowLeft, Keyboard, Monitor, Moon, Palette, Pencil, Plus, RotateCcw, Save, Search, Settings2, Sparkles, Sun, Trash2, X } from 'lucide-react'
+import { ArrowLeft, Copy, Download, FolderOpen, Keyboard, MoreHorizontal, Monitor, Moon, Palette, Pencil, Plus, RotateCcw, Save, Search, Settings2, Share, Sparkles, Sun, Trash2, X } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canSetDefaults, defaultStatus, makeDefault, openDefaultAppsSettings } from '../lib/defaults'
 import type { CliStatus } from '../lib/platform'
-import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isMac, isTauri, isWindows, openExternal, setCliInstalled, shortcut, showError } from '../lib/platform'
+import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isMac, isTauri, isWindows, openExternal, revealInFinder, saveBytesAs, setCliInstalled, shortcut, showError } from '../lib/platform'
 import type { Appearance, ThemeDef } from '../lib/themes'
-import { isHex, orbBackground } from '../lib/themes'
+import { orbBackground, themeFile } from '../lib/themes'
 import { PLUGINS, isBuiltIn } from '../plugins/catalog'
 import { allThemes, useAppearance } from '../state/appearance'
 import { enabledKinds, usePlugins } from '../state/plugins'
@@ -17,10 +17,13 @@ import type { ShortcutDef } from '../state/shortcuts'
 import { SHORTCUTS, isValidKeys, keysFor, keysFromEvent, syncMenu, useShortcuts } from '../state/shortcuts'
 import { useFolder } from '../state/folder'
 import { useWorkspace } from '../state/workspace'
+import { AddTheme } from './AddTheme'
 import { AiPage } from './AiSettings'
+import { useThemeEditor } from './ThemeEditor'
 import { PluginRow } from './PluginList'
 import { formatSize as formatVersionSize } from './VersionHistory'
-import { Button, Checkbox, ChoiceTiles, DocBadge, IconButton, LinkButton, Logo, Modal, Segmented, SettingsRow, Spinner, Switch, TextField } from './ui'
+import type { MenuEntry } from './ui'
+import { Button, Checkbox, ChoiceTiles, DocBadge, IconButton, LinkButton, Logo, Modal, PopoverMenu, Segmented, SettingsRow, Spinner, Switch, TextField } from './ui'
 
 const LicensesPage = lazy(() => import('./Licenses'))
 
@@ -52,6 +55,9 @@ export default function SettingsPanel() {
     dialog.current?.focus()
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && !recording) {
+        // Add theme and the theme editor (with its color picking) close themselves first.
+        const target = e.target instanceof Element ? e.target : null
+        if (document.querySelector('.add-theme') || target?.closest('[data-theme-editor]') || document.documentElement.classList.contains('theme-picking')) return
         e.stopPropagation()
         setOpen(false)
       }
@@ -510,8 +516,10 @@ function AppearancePage() {
   const dark = useAppearance((s) => s.dark)
   const custom = useAppearance((s) => s.custom)
   const { use, remove } = useAppearance.getState()
-  const [editing, setEditing] = useState<ThemeDef | null>(null)
-  const themes = allThemes(custom)
+  const published = useAppearance((s) => s.published)
+  const themesDir = useAppearance((s) => s.themesDir)
+  const [adding, setAdding] = useState(false)
+  const themes = allThemes(custom, published)
   const current = themes.find((t) => t.id === (appearance === 'dark' ? dark : light)) ?? themes[0]
 
   return (
@@ -551,25 +559,14 @@ function AppearancePage() {
       <section className="theme-section">
         <div className="theme-section-header">
           <h4>Themes</h4>
-          {!editing && (
-            <Button title="Starts as a copy of the theme you’re using" onClick={() => setEditing(copyOf(current))}>
-              <Plus size={14} /> Create theme
-            </Button>
-          )}
+          <Button onClick={() => setAdding(true)}>
+            <Download size={14} /> Add theme
+          </Button>
+          <Button title="Starts as a copy of the theme you’re using" onClick={() => useThemeEditor.getState().open(copyOf(current), false)}>
+            <Plus size={14} /> Create theme
+          </Button>
         </div>
-        {editing && (
-          <ThemeEditor
-            theme={editing}
-            onChange={setEditing}
-            onCancel={() => setEditing(null)}
-            onSave={() => {
-              useAppearance.getState().save(editing)
-              // A new theme is used straight away.
-              if (!custom.some((t) => t.id === editing.id)) use(editing.id)
-              setEditing(null)
-            }}
-          />
-        )}
+        {adding && <AddTheme onClose={() => setAdding(false)} />}
         <div className="theme-grid">
           {themes.map((t) => (
             <div key={t.id} className="theme-card">
@@ -578,36 +575,85 @@ function AppearancePage() {
                 <Orb theme={t} mode="dark" selected={dark === t.id} onSelect={() => use(t.id, 'dark')} />
               </div>
               <div className="theme-card-foot">
-                <button type="button" className="theme-name" title="Use for light and dark" onClick={() => use(t.id)}>
+                <button type="button" className="theme-name" title={t.published ? 'From the themes folder. Use for light and dark' : 'Use for light and dark'} onClick={() => use(t.id)}>
                   {t.name}
+                  {t.published && <FolderOpen size={11} className="faint theme-folder-mark" aria-label="from the themes folder" />}
                 </button>
-                {t.custom && (
-                  <>
-                    <IconButton label="Edit theme" size="sm" onClick={() => setEditing({ ...t })}>
-                      <Pencil size={13} />
-                    </IconButton>
-                    <IconButton
-                      label="Delete theme"
-                      size="sm"
-                      onClick={() =>
-                        void confirmDialog('You can’t undo this.', { title: `Delete the theme “${t.name}”?`, okLabel: 'Delete', danger: true }).then((ok) => ok && remove(t.id))
-                      }
-                    >
-                      <Trash2 size={13} />
-                    </IconButton>
-                  </>
-                )}
+                <ThemeMenu
+                  name={t.name}
+                  items={[
+                    ...(t.custom ? [{ label: 'Edit…', icon: <Pencil size={14} />, onSelect: () => useThemeEditor.getState().open(t, true) }] : []),
+                    { label: 'Duplicate and edit…', icon: <Copy size={14} />, onSelect: () => useThemeEditor.getState().open(copyOf(t), false) },
+                    { label: 'Export…', icon: <Share size={14} />, onSelect: () => void exportTheme(t) },
+                    ...(t.custom
+                      ? [
+                          {
+                            label: 'Delete',
+                            icon: <Trash2 size={14} />,
+                            danger: true,
+                            onSelect: () =>
+                              void confirmDialog('You can’t undo this. If you exported it, you can add it again from its file.', { title: `Delete the theme “${t.name}”?`, okLabel: 'Delete', danger: true }).then((ok) => ok && remove(t.id)),
+                          },
+                        ]
+                      : []),
+                  ]}
+                />
               </div>
             </div>
           ))}
         </div>
+        {isTauri && themesDir && (
+          <SettingsRow
+            label="Themes folder"
+            hint={
+              <>
+                Themes saved here show up above as you save them, and agents with Writan’s MCP server publish their themes here. A picture beside a theme, like <code>dusk.jpg</code> beside <code>dusk.json</code>, becomes its background.
+              </>
+            }
+          >
+            <Button onClick={() => void revealInFinder(themesDir)}>
+              <FolderOpen size={14} /> {isMac ? 'Show in Finder' : 'Show folder'}
+            </Button>
+          </SettingsRow>
+        )}
       </section>
     </>
   )
 }
 
 const newThemeId = () => `custom-${Math.random().toString(36).slice(2, 8)}`
-const copyOf = (theme: ThemeDef): ThemeDef => ({ ...theme, id: newThemeId(), name: `${theme.name} copy`, custom: true })
+const copyOf = (theme: ThemeDef): ThemeDef => ({ ...structuredClone(theme), id: newThemeId(), name: `${theme.name} copy`.slice(0, 48), custom: true, published: undefined, background: undefined })
+
+/** Saves a theme as a .json file someone can add with Add theme, in Writan or T3 Code’s format. */
+async function exportTheme(theme: ThemeDef) {
+  const name = `${theme.name.replace(/[\\/:*?"<>|]+/g, '').trim() || 'theme'}.json`
+  try {
+    await saveBytesAs(name, new TextEncoder().encode(`${JSON.stringify(themeFile(theme), null, 2)}\n`))
+  } catch (err) {
+    await showError(String((err as Error)?.message ?? err), 'Couldn’t export the theme')
+  }
+}
+
+/** A theme card's ⋯ menu. */
+function ThemeMenu({ name, items }: { name: string; items: MenuEntry[] }) {
+  const [at, setAt] = useState<{ x: number; y: number; opener: HTMLElement } | null>(null)
+  return (
+    <>
+      <IconButton
+        label={`More for ${name}`}
+        size="sm"
+        active={!!at}
+        onClick={(e) => {
+          const r = e.currentTarget.getBoundingClientRect()
+          setAt({ x: r.right, y: r.bottom + 4, opener: e.currentTarget })
+        }}
+      >
+        <MoreHorizontal size={14} />
+      </IconButton>
+      {at && <PopoverMenu anchor={{ x: at.x, y: at.y, align: 'end' }} items={items} opener={at.opener} onClose={() => setAt(null)} />}
+    </>
+  )
+}
 
 /** Two orbs per theme: how it looks in light and in dark. Click one to use the theme for just that appearance. */
 function Orb({ theme, mode, selected, onSelect }: { theme: ThemeDef; mode: Appearance; selected: boolean; onSelect: () => void }) {
@@ -623,39 +669,6 @@ function Orb({ theme, mode, selected, onSelect }: { theme: ThemeDef; mode: Appea
       <span className="theme-orb-ball" style={{ background: orbBackground(theme, mode) }} />
       {selected && <span className="theme-orb-badge">{mode === 'light' ? <Sun size={11} /> : <Moon size={11} />}</span>}
     </button>
-  )
-}
-
-/** The name, the accent, and the tone each appearance takes its surfaces from. */
-function ThemeEditor({ theme, onChange, onSave, onCancel }: { theme: ThemeDef; onChange: (theme: ThemeDef) => void; onSave: () => void; onCancel: () => void }) {
-  const valid = theme.name.trim().length > 0 && isHex(theme.accent) && isHex(theme.light) && isHex(theme.dark)
-  const swatch = (label: string, key: 'accent' | 'light' | 'dark') => (
-    <label className="theme-color">
-      <input type="color" value={theme[key]} onChange={(e) => onChange({ ...theme, [key]: e.currentTarget.value })} />
-      <span>{label}</span>
-    </label>
-  )
-  return (
-    <div className="theme-editor">
-      <div className="theme-orbs preview" aria-hidden="true">
-        <span className="theme-orb-ball" style={{ background: orbBackground(theme, 'light') }} />
-        <span className="theme-orb-ball" style={{ background: orbBackground(theme, 'dark') }} />
-      </div>
-      <div className="theme-editor-fields">
-        <TextField value={theme.name} maxLength={40} placeholder="Theme name" onChange={(e) => onChange({ ...theme, name: e.currentTarget.value })} />
-        <div className="theme-colors">
-          {swatch('Accent', 'accent')}
-          {swatch('Light tone', 'light')}
-          {swatch('Dark tone', 'dark')}
-        </div>
-        <div className="theme-editor-actions">
-          <Button variant="primary" disabled={!valid} onClick={onSave}>
-            Save theme
-          </Button>
-          <Button onClick={onCancel}>Cancel</Button>
-        </div>
-      </div>
-    </div>
   )
 }
 

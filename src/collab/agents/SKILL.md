@@ -1,6 +1,6 @@
 ---
 name: writan
-description: Edit Word documents, PowerPoint presentations and Excel workbooks together with people in Writan, live, through Writan's MCP server. Use when someone asks you to work in a document they have open or shared in Writan.
+description: Edit Word documents, PowerPoint presentations and Excel workbooks together with people in Writan, live, through Writan's MCP server, and restyle Writan itself. Use when someone asks you to work in a document they have open or shared in Writan, or to change how Writan looks.
 ---
 
 # Working in Writan with people
@@ -67,3 +67,9 @@ Call `leave_document` when you are done, so people stop seeing you in the docume
 ## Saving
 
 Whoever shared the document saves it, or the person at this computer if it isn't shared. You don't need to save.
+
+## Changing how Writan looks
+
+When the person asks you to restyle Writan itself ("give Writan a solarized theme", "make the title bar taller"), call `read_theme` first. It lists the themes, the colors a theme can set, and the CSS selectors to use. Then call `set_theme` with a `theme_id` and a `theme`: an `accent` and a `light` and `dark` tone (hex), optional per-appearance colors in `variants`, and optional `css`. Writan saves it to its themes folder and switches to it. Prefer colors to CSS. `set_theme` with only `theme_id` switches to a theme that exists, like `workspace` (Writan's own) to undo, and `appearance` sets light, dark or system.
+
+You can't see the result: make small changes and ask how it looks. Only agents on the person's computer can do this.

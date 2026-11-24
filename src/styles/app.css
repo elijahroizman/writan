@@ -2323,14 +2323,24 @@ button.section-title:hover {
 .theme-section-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 12px;
 }
 
 .theme-section-header h4 {
+  flex: 1;
   margin: 0;
   font-size: 13px;
   font-weight: 600;
+}
+
+.theme-section > .settings-row {
+  margin-top: 14px;
+}
+
+.theme-folder-mark {
+  margin-left: 5px;
+  vertical-align: -1px;
 }
 
 .theme-grid {
@@ -2421,68 +2431,406 @@ button.section-title:hover {
   color: var(--accent);
 }
 
-.theme-editor {
+/* The theme editor (ThemeEditor.tsx): a panel over the app, above Settings, so the draft shows everywhere. */
+.theme-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 110;
+  width: min(380px, calc(100vw - 32px));
+  max-height: min(640px, calc(100vh - 32px));
   display: flex;
-  align-items: center;
-  gap: 18px;
-  margin-bottom: 14px;
-  padding: 14px;
+  flex-direction: column;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: var(--raised);
+  color: var(--fg);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
 }
 
-.theme-orbs.preview {
+.theme-panel.minimized {
+  max-height: none;
+}
+
+.theme-panel-head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 8px 8px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  cursor: grab;
+  touch-action: none;
+}
+
+.theme-panel.minimized .theme-panel-head {
+  border-bottom: 0;
+}
+
+.theme-panel-head:active {
+  cursor: grabbing;
+}
+
+.theme-panel-title {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.theme-panel-title h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.theme-panel-title span {
+  color: var(--fg-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.theme-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+}
+
+.theme-panel-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--fg-muted);
+}
+
+.theme-panel-colors {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.theme-panel-group h4 {
+  margin: 10px 0 4px;
+  color: var(--fg-muted);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.theme-color-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+}
+
+.theme-color-row.on {
+  background: var(--accent-soft);
+}
+
+.theme-color-row input[type='color'] {
   flex: none;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: none;
+  overflow: hidden;
+}
+
+.theme-color-row input[type='color']::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.theme-color-row input[type='color']::-webkit-color-swatch {
+  border: 0;
+}
+
+.theme-color-row input[type='color']::-moz-color-swatch {
+  border: 0;
+}
+
+.theme-color-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.3;
+}
+
+.theme-color-text .faint {
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.theme-color-value {
+  width: 92px;
+  height: 26px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--field);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+
+.theme-panel-css {
+  display: flex;
+  flex-direction: column;
   gap: 8px;
 }
 
-.theme-editor-fields {
+.theme-panel-css .section-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--fg);
+  font-weight: 500;
+}
+
+.theme-css {
+  width: 100%;
+  min-height: 140px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--field);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  resize: vertical;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.settings-hint.warn {
+  color: var(--danger);
+}
+
+.theme-panel-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--line-soft);
+}
+
+/* Picking a color from the app: what's under the pointer is outlined. */
+.theme-picking,
+.theme-picking * {
+  cursor: crosshair !important;
+}
+
+.theme-pick-outline {
+  position: fixed;
+  z-index: 109;
+  pointer-events: none;
+  border: 2px solid var(--accent);
+  border-radius: 4px;
+  box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.08);
+}
+
+.palette-theme-dot {
+  display: block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  box-shadow: inset 0 0 0 1px rgba(128, 128, 128, 0.3);
+}
+
+/* Add a theme (AddTheme.tsx) */
+.add-theme {
+  width: min(640px, calc(100vw - 32px));
+  max-height: min(720px, calc(100vh - 48px));
+  display: flex;
+  flex-direction: column;
+  border-radius: 12px;
+  background: var(--panel);
+  box-shadow: var(--shadow-pop);
+  overflow: hidden;
+}
+
+.add-theme-head {
+  display: flex;
+  align-items: center;
+  padding: 14px 12px 6px 20px;
+}
+
+.add-theme-head h2 {
   flex: 1;
-  min-width: 0;
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.add-theme-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 6px 20px 20px;
+}
+
+.add-theme-body section {
   display: flex;
   flex-direction: column;
   gap: 10px;
 }
 
-.theme-colors {
+.add-theme-label {
   display: flex;
-  flex-wrap: wrap;
-  gap: 14px;
+  flex-direction: column;
+  gap: 2px;
 }
 
-.theme-color {
-  display: inline-flex;
-  align-items: center;
+.add-theme-search {
+  display: grid;
+  grid-template-columns: 1fr 170px;
   gap: 8px;
+}
+
+.add-theme-popular {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.add-theme-popular .pill {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: var(--raised);
   color: var(--fg-muted);
 }
 
-.theme-color input[type='color'] {
-  width: 28px;
-  height: 28px;
+.add-theme-popular .pill:hover {
+  color: var(--fg);
+  border-color: var(--fg-faint);
+}
+
+.add-theme-note,
+.add-theme-error {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  white-space: pre-line;
+}
+
+.add-theme-note {
+  background: var(--accent-soft);
+}
+
+.add-theme-error {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--fg);
+}
+
+.add-theme-empty {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 18px 4px;
+  color: var(--fg-muted);
+}
+
+.add-theme-results {
+  margin: 0;
   padding: 0;
+  list-style: none;
   border: 1px solid var(--line);
-  border-radius: 50%;
-  background: none;
+  border-radius: 10px;
+  background: var(--raised);
   overflow: hidden;
 }
 
-.theme-color input[type='color']::-webkit-color-swatch-wrapper {
-  padding: 0;
+.add-theme-results.stale {
+  opacity: 0.6;
 }
 
-.theme-color input[type='color']::-webkit-color-swatch {
-  border: 0;
-  border-radius: 50%;
+.add-theme-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 12px;
 }
 
-.theme-color input[type='color']::-moz-color-swatch {
-  border: 0;
-  border-radius: 50%;
+.add-theme-result + .add-theme-result {
+  border-top: 1px solid var(--line-soft);
 }
 
-.theme-editor-actions {
+.add-theme-icon {
+  flex: none;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: var(--field);
+  color: var(--fg-muted);
+  overflow: hidden;
+}
+
+.add-theme-icon img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.add-theme-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.add-theme-text .faint {
+  font-size: 12px;
+}
+
+.add-theme-name {
+  font-weight: 500;
+}
+
+.add-theme-desc {
+  color: var(--fg-muted);
+  font-size: 12px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.add-theme-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.add-theme-file {
+  padding-top: 18px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.add-theme-file-actions {
   display: flex;
   gap: 8px;
 }

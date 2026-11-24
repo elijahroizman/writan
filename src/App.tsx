@@ -1,10 +1,11 @@
 import { Component, lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentType, ErrorInfo, ReactNode } from 'react'
 import type { PaletteItem } from './components/CommandPalette'
-import { CommandPalette, recentItems, sourceItems, usePalette } from './components/CommandPalette'
+import { CommandPalette, openThemePicker, recentItems, sourceItems, usePalette } from './components/CommandPalette'
 import { KindIcon } from './components/ui'
 import { FocusMode } from './components/FocusMode'
 import { Explorer, startFolderPalette } from './components/Explorer'
+import { ThemeEditorHost } from './components/ThemeEditor'
 import { Home } from './components/Home'
 import { showVersionHistory, useVersionHistory, VersionHistory } from './components/VersionHistory'
 import { NewFilePicker, useNewFile } from './components/NewFile'
@@ -403,6 +404,9 @@ export async function runCommand(id: string) {
     case 'toggle-theme':
       ws.setTheme(ws.theme === 'dark' ? 'light' : 'dark')
       break
+    case 'change-theme':
+      openThemePicker()
+      break
     case 'next-tab':
       ws.activateOffset(1)
       break
@@ -714,6 +718,7 @@ export default function App() {
       {newFileOpen && <NewFilePicker />}
       {convertOpen && <ConvertModal />}
       {paletteOpen && <CommandPalette />}
+      <ThemeEditorHost />
       {historyOpen && <VersionHistory />}
       {setupOpen && (
         <Suspense fallback={null}>

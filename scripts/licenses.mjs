@@ -154,6 +154,14 @@ function bundledFonts() {
   ].map(([name, file, homepage]) => ({ group: 'App', name, version: 'bundled', license: 'OFL-1.1', homepage, files: [{ file, text: textId(readFileSync(join(fonts, file), 'utf8').trim()) }] }))
 }
 
+/** Code adapted from other projects rather than installed as a package. */
+function adaptedCode() {
+  return [
+    // Themes: the editor, custom CSS's safety checks, the Open VSX search and the agent tools.
+    ['T3 Code (themes)', 'T3-Code-LICENSE.txt', 'https://github.com/pingdotgg/t3code'],
+  ].map(([name, file, homepage]) => ({ group: 'App', name, version: 'adapted', license: 'MIT', homepage, files: [{ file, text: textId(readFileSync(join(root, 'assets', 'third-party', file), 'utf8').trim()) }] }))
+}
+
 const byName = (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version)
 const packages = [
   // libheif-js decodes HEIC in the Images viewer, which ships inside the app.
@@ -161,6 +169,7 @@ const packages = [
   ...Object.entries(PLUGIN_PACKAGES).flatMap(([plugin, names]) => npmPackages(names, `${plugin} plugin`).sort(byName)),
   ...cratePackages().sort(byName),
   ...bundledFonts(),
+  ...adaptedCode(),
 ]
 writeFileSync(join(root, 'public', 'licenses.json'), JSON.stringify({ packages, texts: Object.fromEntries(texts) }))
 console.log(`licenses: ${packages.length} packages, ${texts.size} license texts`)

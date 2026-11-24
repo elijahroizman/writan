@@ -15,6 +15,7 @@ import { type Answer, type Args, doc, need, str, type Tool, ToolError } from './
 import { AGENTS, type Agent, type OtherAgent } from './identity'
 import { describeSheetsPlace, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
 import { readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
+import { runThemeTool, THEME_TOOLS } from './theme'
 import { readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
 
 export { ToolError } from './common'
@@ -301,13 +302,14 @@ const WORD_PICTURE: Tool = {
   inputSchema: { type: 'object', properties: { document: doc, after: { type: 'integer', description: 'Word: the paragraph to put it after.' } }, required: ['document'] },
 }
 
-export const TOOLS: Tool[] = merged([...SHARED_TOOLS, ...WORD_TOOLS, ...SLIDES_TOOLS, WORD_PICTURE, ...SHEETS_TOOLS, ...AFTER_TOOLS])
+export const TOOLS: Tool[] = [...merged([...SHARED_TOOLS, ...WORD_TOOLS, ...SLIDES_TOOLS, WORD_PICTURE, ...SHEETS_TOOLS, ...AFTER_TOOLS]), ...THEME_TOOLS]
 
 // ── Doing them
 
 /** Runs a tool for an agent. `local` says whether the agent is on this computer. */
 export async function runTool(session: AgentSession, name: string, args: Args, local = false): Promise<Answer> {
   if (name === 'list_documents') return { text: listDocuments() }
+  if (THEME_TOOLS.some((t) => t.name === name)) return runThemeTool(name, args, local)
   const tab = need(str(args, 'document'), 'the document')
   if (name === 'leave_document') return { text: session.leave(tab) ? 'Left.' : 'You weren’t in it.' }
   const { copy, engine } = await session.copy(tab)

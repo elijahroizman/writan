@@ -16,6 +16,7 @@ mod plugins;
 mod quit;
 mod spelling;
 mod tex;
+mod themes;
 mod update;
 #[cfg(windows)]
 mod window_chrome;
@@ -160,6 +161,7 @@ pub fn run() {
             });
         })
         .setup(|app| {
+            themes::watch(app.handle().clone());
             // A second Writan.app (an old install, a target/ build, a mounted
             // disk image) shows up in Open With as another version. Unregister
             // the others in the background. A dev run has no app bundle, so
@@ -176,8 +178,6 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 configure_webview2(&window);
             }
-            #[cfg(not(any(target_os = "macos", windows)))]
-            let _ = app;
             Ok(())
         })
         .menu(menu::build)
@@ -246,6 +246,9 @@ pub fn run() {
             agents::agents_install_skill,
             agents::agents_remove,
             agents::agents_sync,
+            themes::themes_read,
+            themes::theme_background,
+            themes::theme_publish,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Writan");
