@@ -28,16 +28,15 @@ export interface Invite {
   /** Empty for `writan-p2p://`, whose token comes once the sharer lets this copy in. */
   token: string
   p2p?: boolean
+  /** For `writan-p2p://`: what this person's agents join with instead of the code (p2p.rs). */
+  seat?: string
 }
 
-/** What sharing a document gives: the invite to pass on and the sharer's own way in. */
-export interface Hosting {
-  session: string
+/** How people join a shared document. */
+export interface Published {
   invite: string
   /** Six digits guests join with instead of the link: anywhere when `internet`, else on the network. None in a browser. */
   code: string | null
-  local: Invite
-  hostKey: string
   /** This computer's addresses on the network, for showing. */
   addresses: string[]
   /** Whether the code is in the directory, for guests anywhere. */
@@ -50,11 +49,23 @@ export interface Hosting {
   internetError: string | null
 }
 
+/** What sharing a document gives: the sharer's own way in, and how others join unless only this
+ * computer's agents can (`published` is null). */
+export interface Hosting {
+  session: string
+  local: Invite
+  hostKey: string
+  published: Published | null
+}
+
 /** Someone with the code waiting to be let in, or who stopped waiting. */
 export interface JoinRequest {
   request: string
   session: string
+  /** For a guest's agent, already as theirs (“Yoav’s Claude”). */
   name: string
+  /** For a guest's agent: which (`claude`, `codex`…). */
+  agent?: string
   waiting: boolean
 }
 
@@ -123,31 +134,54 @@ export function resetNative() {
   return reset
 }
 
-/** Starts hosting a session for a document. In the app, guests from the internet wait to be let in when `requireApproval`. */
-export async function host(name: string, kind: string, requireApproval: boolean): Promise<Hosting> {
+type PublishedInfo = { addresses: string[]; inviteUrl: string; code: string; internet: boolean; expiresAt: number | null; requireApproval: boolean; internetError: string | null }
+
+function published(info: PublishedInfo): Published {
+  return {
+    invite: info.inviteUrl,
+    code: info.code,
+    addresses: info.addresses,
+    internet: info.internet,
+    expiresAt: info.expiresAt,
+    requireApproval: info.requireApproval,
+    internetError: info.internetError,
+  }
+}
+
+/** In a browser, how people join through the relay. */
+function browserPublished(local: Invite): Published {
+  return { invite: `${local.url}?token=${local.token}`, code: null, addresses: [], internet: false, expiresAt: null, requireApproval: false, internetError: null }
+}
+
+/**
+ * Starts hosting a session for a document. In the app, guests from the internet wait to be let in
+ * when `requireApproval`. A `private` session has no code: only this computer's agents join it,
+ * until `publish` gives it one.
+ */
+export async function host(name: string, kind: string, requireApproval: boolean, isPrivate = false): Promise<Hosting> {
   await resetNative()
   if (isTauri) {
     await listenOnce()
     const { invoke } = await import('@tauri-apps/api/core')
-    type Info = { session: string; token: string; hostKey: string; addresses: string[]; inviteUrl: string; code: string; localUrl: string; internet: boolean; expiresAt: number | null; requireApproval: boolean; internetError: string | null }
-    const info = await invoke<Info>('collab_share', { name, kind, requireApproval })
+    type Info = Partial<PublishedInfo> & { session: string; token: string; hostKey: string; localUrl: string }
+    const info = await invoke<Info>('collab_share', { name, kind, requireApproval, private: isPrivate })
     return {
       session: info.session,
-      invite: info.inviteUrl,
-      code: info.code,
       local: { url: info.localUrl, token: info.token },
       hostKey: info.hostKey,
-      addresses: info.addresses,
-      internet: info.internet,
-      expiresAt: info.expiresAt,
-      requireApproval: info.requireApproval,
-      internetError: info.internetError,
+      published: info.inviteUrl === undefined ? null : published(info as PublishedInfo),
     }
   }
   const session = randomId(12)
-  const token = randomId(24)
-  const url = `${browserRelay()}/v1/${session}`
-  return { session, invite: `${url}?token=${token}`, code: null, local: { url, token }, hostKey: randomId(24), addresses: [], internet: false, expiresAt: null, requireApproval: false, internetError: null }
+  const local = { url: `${browserRelay()}/v1/${session}`, token: randomId(24) }
+  return { session, local, hostKey: randomId(24), published: isPrivate ? null : browserPublished(local) }
+}
+
+/** Gives a private session (`host` with `isPrivate`) a code, so people can join it too. */
+export async function publish(session: string, local: Invite, requireApproval: boolean): Promise<Published> {
+  if (!isTauri) return browserPublished(local)
+  const { invoke } = await import('@tauri-apps/api/core')
+  return published(await invoke<PublishedInfo>('collab_publish', { session, token: local.token, requireApproval }))
 }
 
 /** Ends hosting: the relay tells everyone and forgets the session. */
@@ -223,17 +257,19 @@ async function native(conn: number, events: TransportEvents): Promise<Transport>
 
 /**
  * Joins a session found in the directory (`writan-p2p://…`) as `name`. Resolves once the sharer
- * has let this copy in, with the token for the hello.
+ * has let this copy in, with the token for the hello and, for a person, the seat their agents join
+ * with. An agent joins with its person's seat (`as`), and closing the Join dialog doesn't give it
+ * up.
  */
-export async function connectP2p(url: string, name: string, events: TransportEvents): Promise<{ transport: Transport; token: string }> {
+export async function connectP2p(url: string, name: string, events: TransportEvents, as?: { seat: string; agent: string }): Promise<{ transport: Transport; token: string; seat: string }> {
   // Numbered before anything waits, so `cancelJoins` covers it from the start, even when Rust
   // hears the cancel first.
-  const attempt = ++joinAttempts
+  const attempt = as ? null : ++joinAttempts
   await resetNative()
   await listenOnce()
   const { invoke } = await import('@tauri-apps/api/core')
-  const { conn, token } = await invoke<{ conn: number; token: string }>('collab_connect_p2p', { url, name, attempt })
-  return { transport: await native(conn, events), token }
+  const { conn, token, seat } = await invoke<{ conn: number; token: string; seat: string }>('collab_connect_p2p', { url, name, attempt, seat: as?.seat ?? null, agent: as?.agent ?? null })
+  return { transport: await native(conn, events), token, seat }
 }
 
 let joinAttempts = 0

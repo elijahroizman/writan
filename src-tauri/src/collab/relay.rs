@@ -61,6 +61,9 @@ struct Member {
     host: bool,
     /// Which AI agent, for one that joined through Writan's MCP server (`claude`, `codex`…).
     agent: Option<String>,
+    /// For an agent: the name of the person whose app it joined through, so the others can show
+    /// it as theirs ("Yoav's Claude").
+    owner: Option<String>,
     presence: Option<Box<RawValue>>,
 }
 
@@ -131,6 +134,8 @@ struct Hello {
     snapshot: Option<SnapshotIn>,
     #[serde(default)]
     agent: Option<String>,
+    #[serde(default)]
+    owner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -146,6 +151,15 @@ struct OpIn<'a> {
     base: u64,
     #[serde(borrow)]
     steps: &'a RawValue,
+}
+
+/// A new name for this copy: the host's, once they type it to share what only their agents were
+/// in, and their agents' owner with it.
+#[derive(Deserialize)]
+struct RenameIn {
+    name: String,
+    #[serde(default)]
+    owner: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -185,6 +199,8 @@ struct Peer<'a> {
     host: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<&'a str>,
     presence: Option<&'a RawValue>,
 }
 
@@ -206,6 +222,8 @@ struct Join<'a> {
     host: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     agent: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -226,6 +244,14 @@ struct ErrorOut<'a> {
     t: &'static str,
     code: &'a str,
     message: &'a str,
+}
+
+/// An agent's owner as others see it: only an agent has one, and a name is short.
+fn owner_of(agent: Option<&str>, owner: Option<&str>) -> Option<String> {
+    agent
+        .and(owner)
+        .map(|o| o.trim().chars().take(64).collect::<String>())
+        .filter(|o| !o.is_empty())
 }
 
 /// Compares secrets in time that doesn't depend on where they differ.
@@ -374,6 +400,10 @@ impl Relay {
             "presence" => match serde_json::from_str::<PresenceIn>(text) {
                 Ok(p) => self.presence(conn, p.data),
                 Err(e) => vec![error(conn, "bad-message", &format!("Bad presence: {e}"))],
+            },
+            "rename" => match serde_json::from_str::<RenameIn>(text) {
+                Ok(r) => self.rename(conn, r),
+                Err(e) => vec![error(conn, "bad-message", &format!("Bad rename: {e}"))],
             },
             "end" => {
                 let (session, host) = self.place(conn);
@@ -534,6 +564,7 @@ impl Relay {
             broadcast(session, None, &leave(&old.client), &mut out);
         }
 
+        let owner = owner_of(hello.agent.as_deref(), hello.owner.as_deref());
         // An agent keeps its own color (Claude's clay…) even if someone has it: its logo and
         // name tell it apart.
         let color = if hello.agent.is_some() && is_color(&hello.color) {
@@ -564,6 +595,7 @@ impl Relay {
                     color: &m.color,
                     host: m.host,
                     agent: m.agent.as_deref(),
+                    owner: m.owner.as_deref(),
                     presence: m.presence.as_deref(),
                 })
                 .collect(),
@@ -576,6 +608,7 @@ impl Relay {
             color: &color,
             host,
             agent: hello.agent.as_deref(),
+            owner: owner.as_deref(),
         });
         broadcast(session, None, &join, &mut out);
         session.members.push(Member {
@@ -585,6 +618,7 @@ impl Relay {
             color,
             host,
             agent: hello.agent,
+            owner,
             presence: None,
         });
         self.conns.get_mut(&conn).expect("connected").joined = Some(Joined {
@@ -615,6 +649,31 @@ impl Relay {
         session
             .log
             .push(RawValue::from_string(entry).expect("serialized above"));
+        out
+    }
+
+    /// Tells the others the new name as a `join` again, which takes the old one's place.
+    fn rename(&mut self, conn: ConnId, r: RenameIn) -> Vec<Outgoing> {
+        let c = &self.conns[&conn];
+        let Some(session) = self.sessions.get_mut(&c.session) else {
+            return vec![error(conn, "no-session", "The session has ended.")];
+        };
+        let Some(m) = session.members.iter_mut().find(|m| m.conn == conn) else {
+            return Vec::new();
+        };
+        m.name = r.name;
+        m.owner = owner_of(m.agent.as_deref(), r.owner.as_deref());
+        let join = json(&Join {
+            t: "join",
+            client: &m.client,
+            name: &m.name,
+            color: &m.color,
+            host: m.host,
+            agent: m.agent.as_deref(),
+            owner: m.owner.as_deref(),
+        });
+        let mut out = Vec::new();
+        broadcast(session, Some(conn), &join, &mut out);
         out
     }
 
@@ -777,6 +836,34 @@ mod tests {
         assert_eq!(peers[1]["agent"], "claude");
         // People don't get an agent field at all.
         assert!(peers[0].get("agent").is_none());
+    }
+
+    #[test]
+    fn an_agent_says_whose_it_is() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h"));
+        let claude = json!({ "t": "hello", "v": 1, "token": "tok", "client": "a", "name": "Claude", "color": "#D97757", "agent": "claude", "owner": " Yoav " });
+        let out = join(&mut r, 2, &claude.to_string());
+        assert_eq!(to(&out, 1)[0]["owner"], "Yoav");
+        let out = join(&mut r, 3, &guest_hello("g"));
+        assert_eq!(to(&out, 3)[0]["peers"][1]["owner"], "Yoav");
+        // A person has no owner, even if their hello names one.
+        let person = json!({ "t": "hello", "v": 1, "token": "tok", "client": "p", "name": "Dana", "color": "#0f0", "owner": "Yoav" });
+        let out = join(&mut r, 4, &person.to_string());
+        assert!(to(&out, 1)[0].get("owner").is_none());
+
+        // A rename reaches the others as a join, and a late joiner sees the new names.
+        let out = r.handle(1, r#"{"t":"rename","name":"Ada"}"#);
+        assert!(to(&out, 1).is_empty());
+        assert_eq!(to(&out, 2)[0]["t"], "join");
+        assert_eq!(to(&out, 2)[0]["name"], "Ada");
+        assert_eq!(to(&out, 2)[0]["host"], true);
+        let out = r.handle(2, r#"{"t":"rename","name":"Claude","owner":"Ada"}"#);
+        assert_eq!(to(&out, 1)[0]["owner"], "Ada");
+        let out = join(&mut r, 5, &guest_hello("late"));
+        let peers = &to(&out, 5)[0]["peers"];
+        assert_eq!(peers[0]["name"], "Ada");
+        assert_eq!(peers[1]["owner"], "Ada");
     }
 
     #[test]

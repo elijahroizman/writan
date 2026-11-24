@@ -5,14 +5,17 @@
 //! either way. The code directory (`directory.rs`) maps each session's six-digit code to the
 //! endpoint's address, the session id and a key that's new with each code. A guest dials that
 //! address, sends the key and a name, waits for the host to let them in if the host asked for
-//! that, and gets the session's token.
+//! that, and gets the session's token and a seat: a secret of their own that their AI agents join
+//! with later, after the code has stopped working too. An agent asks to be let in like a person,
+//! and the host sees it as theirs ("Yoav's Claude").
 //! From then on the stream carries the relay's messages (`relay.rs`), one per length-prefixed
 //! frame, into the host's relay as if they came over a WebSocket.
 //!
 //! The directory knows every code, so it's trusted to give out the right address, and iroh checks
 //! that the endpoint dialed is the one at that address. The key is 128 random bits, so only someone
 //! who looked the current code up has it: guessing is the directory's to limit, and an invite from
-//! an earlier code stops working when the host makes a new one. A code works for ten minutes.
+//! an earlier code stops working when the host makes a new one. A code works for ten minutes, for
+//! joining: who's in stays in.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -132,16 +135,23 @@ async fn finish(send: &mut SendStream) {
     let _ = tokio::time::timeout(DRAIN, send.stopped()).await;
 }
 
-/// A guest's first frame.
+/// A guest's first frame. An agent joining through a guest's app sends the guest's `seat`
+/// instead of the code's key, and which agent it is.
 #[derive(Serialize, Deserialize)]
 struct Join {
     session: String,
+    #[serde(default)]
     key: String,
     name: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    seat: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<String>,
 }
 
-/// The host's answers to it: `waiting` while the host decides, then `ok` with the token, or
-/// `error` (`no-session`, `expired`, `busy`, `denied`, `bad-message`) and why.
+/// The host's answers to it: `waiting` while the host decides, then `ok` with the token (and for a
+/// person, their seat), or `error` (`no-session`, `expired`, `no-seat`, `busy`, `denied`,
+/// `bad-message`) and why.
 #[derive(Serialize, Deserialize, Default)]
 struct Answer {
     #[serde(default)]
@@ -150,6 +160,8 @@ struct Answer {
     waiting: bool,
     #[serde(default)]
     token: String,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    seat: String,
     #[serde(default)]
     error: String,
     #[serde(default)]
@@ -166,9 +178,16 @@ async fn answer(send: &mut SendStream, a: &Answer) -> Result<(), String> {
 
 /// What the host's page hears about.
 pub trait HostEvents: Send + Sync + 'static {
-    /// Someone with the code asks to join `session` (`waiting`), or stopped waiting: let in,
-    /// turned away, gave up, or ran out of time.
-    fn join_request(&self, request: &str, session: &str, name: &str, waiting: bool);
+    /// Someone with the code, or a guest's agent (`agent`), asks to join `session` (`waiting`), or
+    /// stopped waiting: let in, turned away, gave up, or ran out of time.
+    fn join_request(
+        &self,
+        request: &str,
+        session: &str,
+        name: &str,
+        agent: Option<&str>,
+        waiting: bool,
+    );
 }
 
 /// The directory's room for a session, which only its secret changes.
@@ -185,6 +204,8 @@ struct Entry {
     approval: bool,
     waiting: usize,
     room: Option<Room>,
+    /// The guests let in so far, by their seat: their names, for their agents'.
+    seats: HashMap<String, String>,
 }
 
 #[derive(Default)]
@@ -303,6 +324,7 @@ impl P2pHost {
                     url,
                     secret: room.host_secret,
                 }),
+                seats: HashMap::new(),
             },
         );
         Ok((room.code, room.expires_at))
@@ -428,14 +450,43 @@ fn delete_room(room: Room, code: String) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || directory::delete_room(&room.url, &code, &room.secret))
 }
 
-/// Checks a guest's key. On success, the session's token and whether the host lets them in.
-fn check(inner: &mut Inner, join: &Join) -> Result<(String, bool), (&'static str, &'static str)> {
+/// Who a checked `Join` is.
+struct Checked {
+    token: String,
+    /// Whether the host lets them in.
+    approval: bool,
+    /// For an agent joining with a guest's seat: that guest's name.
+    owner: Option<String>,
+}
+
+/// Checks a guest's key, or an agent's seat. A code stops working after ten minutes; a seat lasts
+/// as long as the session.
+fn check(inner: &mut Inner, join: &Join) -> Result<Checked, (&'static str, &'static str)> {
     let Some(s) = inner.sessions.get_mut(&join.session) else {
         return Err(("no-session", "This document isn't shared any more."));
     };
-    if !constant_time_eq(s.key.as_bytes(), join.key.as_bytes()) || Instant::now() >= s.expires {
-        return Err(("expired", "That code has expired. Ask for a new one."));
-    }
+    let owner = if join.seat.is_empty() {
+        if !constant_time_eq(s.key.as_bytes(), join.key.as_bytes()) || Instant::now() >= s.expires {
+            return Err(("expired", "That code has expired. Ask for a new one."));
+        }
+        None
+    } else {
+        // Every seat is compared, so how long it takes doesn't say which came close.
+        let found = s.seats.iter().fold(None, |found, (seat, name)| {
+            if constant_time_eq(seat.as_bytes(), join.seat.as_bytes()) {
+                Some(name.clone())
+            } else {
+                found
+            }
+        });
+        if found.is_none() || join.agent.is_none() {
+            return Err((
+                "no-seat",
+                "The person sharing doesn't know this copy any more. Join with a new code.",
+            ));
+        }
+        found
+    };
     if s.approval {
         if s.waiting >= MAX_WAITING {
             return Err((
@@ -445,7 +496,21 @@ fn check(inner: &mut Inner, join: &Join) -> Result<(String, bool), (&'static str
         }
         s.waiting += 1;
     }
-    Ok((s.token.clone(), s.approval))
+    Ok(Checked {
+        token: s.token.clone(),
+        approval: s.approval,
+        owner,
+    })
+}
+
+/// A name as people see it: trimmed, at most 64 characters, `Someone` when empty.
+fn clean_name(name: &str) -> String {
+    let name: String = name.trim().chars().take(64).collect();
+    if name.is_empty() {
+        "Someone".to_owned()
+    } else {
+        name
+    }
 }
 
 /// One guest: the code, the host's approval, then the relay.
@@ -495,20 +560,25 @@ async fn admit(
         return None;
     };
     let checked = check(&mut inner.lock().unwrap(), &join);
-    let (token, approval) = match checked {
+    let Checked {
+        token,
+        approval,
+        owner,
+    } = match checked {
         Ok(v) => v,
         Err((error, message)) => {
             let _ = answer(send, &refuse(error, message)).await;
             return None;
         }
     };
+    let name = clean_name(&join.name);
     let token = if approval {
-        let name: String = join.name.trim().chars().take(64).collect();
-        let name = if name.is_empty() {
-            "Someone".to_owned()
-        } else {
-            name
+        // A guest's agent shows as theirs.
+        let shown = match &owner {
+            Some(owner) => format!("{owner}'s {name}"),
+            None => name.clone(),
         };
+        let agent = owner.as_ref().and(join.agent.as_deref());
         let (tx, rx) = oneshot::channel();
         let request = {
             let mut inner = inner.lock().unwrap();
@@ -524,7 +594,7 @@ async fn admit(
             ..Answer::default()
         };
         let allowed = answer(send, &waiting).await.is_ok() && {
-            events.join_request(&request, &join.session, &name, true);
+            events.join_request(&request, &join.session, &shown, agent, true);
             tokio::select! {
                 r = rx => r.unwrap_or(false),
                 () = tokio::time::sleep(APPROVAL) => false,
@@ -539,7 +609,7 @@ async fn admit(
                 s.token.clone()
             })
         };
-        events.join_request(&request, &join.session, &name, false);
+        events.join_request(&request, &join.session, &shown, agent, false);
         match token {
             Some(t) if allowed => t,
             Some(_) => {
@@ -562,9 +632,20 @@ async fn admit(
     } else {
         token
     };
+    // A person gets a seat for their agents; an agent doesn't pass one on.
+    let seat = if owner.is_none() {
+        let seat = super::random_text(16).ok()?;
+        let mut inner = inner.lock().unwrap();
+        let s = inner.sessions.get_mut(&join.session)?;
+        s.seats.insert(seat.clone(), name);
+        seat
+    } else {
+        String::new()
+    };
     let ok = Answer {
         ok: true,
         token,
+        seat,
         ..Answer::default()
     };
     answer(send, &ok).await.ok()?;
@@ -626,35 +707,47 @@ impl P2pClient {
     }
 }
 
-/// Joins a session found in the directory. Returns the connection and the session's token, for
-/// the hello. `on_text` gets each relay message, and `on_closed` why the connection ended. When
-/// `cancel` finishes first, the join is given up, and the host hears that.
+/// Who joins: a person with the code's key, or an agent with its person's seat.
+pub struct Guest {
+    pub name: String,
+    /// Empty for a person.
+    pub seat: String,
+    pub agent: Option<String>,
+}
+
+/// What joining gives: the connection, the session's token for the hello, and for a person the
+/// seat their agents join with (empty from a host that has none).
+pub type Joined = (P2pClient, String, String);
+
+/// Joins a session found in the directory. `on_text` gets each relay message, and `on_closed` why
+/// the connection ended. When `cancel` finishes first, the join is given up, and the host hears
+/// that.
 pub async fn connect(
     invite: DirectoryEntry,
-    name: String,
+    guest: Guest,
     on_text: impl FnMut(&str) + Send + 'static,
     on_closed: impl FnOnce(String) + Send + 'static,
     cancel: impl Future<Output = ()>,
-) -> Result<(P2pClient, String), String> {
+) -> Result<Joined, String> {
     let endpoint = Endpoint::bind(presets::N0)
         .await
         .map_err(|e| format!("Couldn't connect over the internet: {e}"))?;
-    connect_with(endpoint, invite, name, on_text, on_closed, cancel).await
+    connect_with(endpoint, invite, guest, on_text, on_closed, cancel).await
 }
 
 async fn connect_with(
     endpoint: Endpoint,
     invite: DirectoryEntry,
-    name: String,
+    guest: Guest,
     mut on_text: impl FnMut(&str) + Send + 'static,
     on_closed: impl FnOnce(String) + Send + 'static,
     cancel: impl Future<Output = ()>,
-) -> Result<(P2pClient, String), String> {
+) -> Result<Joined, String> {
     let joined = tokio::select! {
-        r = join(&endpoint, invite, name) => r,
+        r = join(&endpoint, invite, guest) => r,
         () = cancel => Err("Cancelled.".to_owned()),
     };
-    let (conn, mut send, mut recv, token) = match joined {
+    let (conn, mut send, mut recv, token, seat) = match joined {
         Ok(v) => v,
         Err(e) => {
             endpoint.close().await;
@@ -690,14 +783,14 @@ async fn connect_with(
         endpoint.close().await;
         on_closed(reason);
     });
-    Ok((P2pClient { tx }, token))
+    Ok((P2pClient { tx }, token, seat))
 }
 
 async fn join(
     endpoint: &Endpoint,
     invite: DirectoryEntry,
-    name: String,
-) -> Result<(Connection, SendStream, RecvStream, String), String> {
+    guest: Guest,
+) -> Result<(Connection, SendStream, RecvStream, String, String), String> {
     let unreachable = |e: String| format!("Couldn't reach the person sharing: {e}");
     let (conn, send, mut recv) = tokio::time::timeout(HANDSHAKE, async {
         let conn = endpoint
@@ -711,7 +804,9 @@ async fn join(
         let join = Join {
             session: invite.session,
             key: invite.key,
-            name,
+            name: guest.name,
+            seat: guest.seat,
+            agent: guest.agent,
         };
         write_frame(
             &mut send,
@@ -731,7 +826,7 @@ async fn join(
         let a: Answer = serde_json::from_str(&text)
             .map_err(|_| "The person sharing sent something unexpected.".to_owned())?;
         if a.ok {
-            return Ok((conn, send, recv, a.token));
+            return Ok((conn, send, recv, a.token, a.seat));
         }
         if !a.waiting {
             conn.close(0u32.into(), b"");
@@ -754,14 +849,23 @@ mod tests {
     #[derive(Default)]
     struct Events {
         requests: Mutex<Vec<(String, String, bool)>>,
+        agents: Mutex<Vec<Option<String>>>,
     }
 
     impl HostEvents for Events {
-        fn join_request(&self, request: &str, _session: &str, name: &str, waiting: bool) {
+        fn join_request(
+            &self,
+            request: &str,
+            _session: &str,
+            name: &str,
+            agent: Option<&str>,
+            waiting: bool,
+        ) {
             self.requests
                 .lock()
                 .unwrap()
                 .push((request.into(), name.into(), waiting));
+            self.agents.lock().unwrap().push(agent.map(str::to_owned));
         }
     }
 
@@ -785,6 +889,7 @@ mod tests {
                 approval,
                 waiting: 0,
                 room: None,
+                seats: HashMap::new(),
             },
         );
     }
@@ -797,23 +902,40 @@ mod tests {
         }
     }
 
-    async fn guest(
+    fn person(name: &str) -> Guest {
+        Guest {
+            name: name.into(),
+            seat: String::new(),
+            agent: None,
+        }
+    }
+
+    async fn join_as(
         invite: DirectoryEntry,
-        name: &str,
-    ) -> Result<(P2pClient, String, mpsc::UnboundedReceiver<String>), String> {
+        who: Guest,
+    ) -> Result<(P2pClient, String, String, mpsc::UnboundedReceiver<String>), String> {
         let endpoint = Endpoint::bind(presets::Minimal).await.unwrap();
         let (tx, rx) = mpsc::unbounded_channel();
         let tx2 = tx.clone();
-        let (client, token) = connect_with(
+        let (client, token, seat) = connect_with(
             endpoint,
             invite,
-            name.into(),
+            who,
             move |t| drop(tx.send(t.to_owned())),
             move |_| drop(tx2.send("<closed>".into())),
             std::future::pending(),
         )
         .await?;
-        Ok((client, token, rx))
+        Ok((client, token, seat, rx))
+    }
+
+    async fn guest(
+        invite: DirectoryEntry,
+        name: &str,
+    ) -> Result<(P2pClient, String, mpsc::UnboundedReceiver<String>), String> {
+        join_as(invite, person(name))
+            .await
+            .map(|(client, token, _, rx)| (client, token, rx))
     }
 
     async fn next(rx: &mut mpsc::UnboundedReceiver<String>) -> String {
@@ -957,7 +1079,7 @@ mod tests {
             let joining = tokio::spawn(connect_with(
                 endpoint,
                 invite(&host, "doc", "key"),
-                "Dee".into(),
+                person("Dee"),
                 |_| {},
                 |_| {},
                 async move { drop(cancelled.await) },
@@ -986,6 +1108,70 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(host.inner.lock().unwrap().sessions["doc"].waiting, 0);
+        });
+    }
+
+    #[test]
+    fn a_guests_agent_joins_with_their_seat_after_the_code_expires() {
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let server = Server::start(Policy::Registered, &[0]).unwrap();
+            server.register("doc", "tok", "hk");
+            let events = Arc::new(Events::default());
+            let host = Arc::new(host(&server, events.clone()).await);
+            add(&host, "doc", "tok", "key", false);
+            let (_alex, _, seat, _rx) = join_as(invite(&host, "doc", "key"), person("Alex"))
+                .await
+                .unwrap();
+            assert!(!seat.is_empty());
+
+            // The code runs out and the host starts asking: Alex's agent still gets to ask.
+            {
+                let mut inner = host.inner.lock().unwrap();
+                let s = inner.sessions.get_mut("doc").unwrap();
+                s.expires = Instant::now();
+                s.approval = true;
+            }
+            assert!(guest(invite(&host, "doc", "key"), "Late").await.is_err());
+            let agent = |seat: &str| Guest {
+                name: "Claude".into(),
+                seat: seat.into(),
+                agent: Some("claude".into()),
+            };
+            let host2 = host.clone();
+            let events2 = events.clone();
+            let decide = tokio::spawn(async move {
+                loop {
+                    let asked = events2
+                        .requests
+                        .lock()
+                        .unwrap()
+                        .iter()
+                        .find(|r| r.2)
+                        .cloned();
+                    if let Some((id, name, _)) = asked {
+                        assert!(host2.answer(&id, true));
+                        return name;
+                    }
+                    tokio::time::sleep(Duration::from_millis(10)).await;
+                }
+            });
+            let (_, token, agent_seat, _) = join_as(invite(&host, "doc", "stale"), agent(&seat))
+                .await
+                .unwrap();
+            assert_eq!(decide.await.unwrap(), "Alex's Claude");
+            assert_eq!(events.agents.lock().unwrap()[0].as_deref(), Some("claude"));
+            assert_eq!(token, "tok");
+            // An agent doesn't pass a seat on.
+            assert!(agent_seat.is_empty());
+
+            // A seat nobody was given, or one used by something that isn't an agent, doesn't work.
+            let wrong = join_as(invite(&host, "doc", "key"), agent("nope")).await;
+            assert!(wrong.err().unwrap().contains("doesn't know this copy"));
+            let mut not_agent = agent(&seat);
+            not_agent.agent = None;
+            assert!(join_as(invite(&host, "doc", "key"), not_agent)
+                .await
+                .is_err());
         });
     }
 
@@ -1020,10 +1206,10 @@ mod tests {
             let endpoint = Endpoint::bind(presets::N0).await.unwrap();
             let invite = entry;
             let stale = invite.clone();
-            let (client, token) = connect_with(
+            let (client, token, _) = connect_with(
                 endpoint,
                 invite,
-                "Alex".into(),
+                person("Alex"),
                 move |t| drop(tx.send(t.to_owned())),
                 |_| {},
                 std::future::pending(),
@@ -1042,7 +1228,7 @@ mod tests {
             let old = connect_with(
                 endpoint,
                 stale,
-                "Alex".into(),
+                person("Alex"),
                 |_| {},
                 |_| {},
                 std::future::pending(),

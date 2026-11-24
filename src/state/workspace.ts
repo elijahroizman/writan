@@ -76,6 +76,13 @@ export const registerEditor = (tabId: string, handle: EditorHandle) => {
 }
 export const getEditor = (tabId: string) => handles.get(tabId)
 
+/** Tabs whose editor loads in the background though nobody has looked at them yet, for an AI
+ * agent to work in (App.tsx `EditorSlot`). */
+export const useWoken = create<Record<string, true>>(() => ({}))
+export function wakeTab(tabId: string) {
+  if (!useWoken.getState()[tabId]) useWoken.setState({ [tabId]: true })
+}
+
 /** Counts edits per tab, so a save can tell whether the document changed while it was writing. */
 const edits = new Map<string, number>()
 
@@ -238,9 +245,11 @@ interface WorkspaceState {
   refreshUnsaved(id: string, bytes: Uint8Array): boolean
   /**
    * Load `bytes` into a tab's editor in place of what it has, keeping its file and unsaved
-   * state: sharing starts everyone, the sharer too, from the same bytes.
+   * state: sharing starts everyone, the sharer too, from the same bytes. With `unsaved`, they
+   * aren't what's on disk, so the tab stays unsaved even when undo takes it back to them (as for
+   * `recovered`).
    */
-  reloadBytes(id: string, bytes: Uint8Array): void
+  reloadBytes(id: string, bytes: Uint8Array, unsaved?: boolean): void
   newDocument(kind: DocKind): void
   markDirty(id: string, dirty: boolean): void
   /**
@@ -534,8 +543,8 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       return true
     },
 
-    reloadBytes: (id, bytes) => {
-      set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1 } : t)) })
+    reloadBytes: (id, bytes, unsaved) => {
+      set({ tabs: get().tabs.map((t) => (t.id === id ? { ...t, bytes, loadId: t.loadId + 1, ...(unsaved ? { dirty: true, recovered: true } : {}) } : t)) })
     },
 
     newDocument: (kind) => {

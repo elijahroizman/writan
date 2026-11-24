@@ -89,19 +89,28 @@ pub struct ShareInfo {
     pub token: String,
     pub host_key: String,
     pub port: u16,
+    /// For the host's own connection, and agents on this computer.
+    pub local_url: String,
+    /// How others find it. Absent for a document only agents on this computer are let into.
+    #[serde(flatten)]
+    pub published: Option<Published>,
+}
+
+/// How others join a session.
+#[derive(Serialize, Clone, Debug)]
+#[serde(rename_all = "camelCase")]
+pub struct Published {
     /// This machine's addresses on the local network, the likeliest first.
     pub addresses: Vec<String>,
     /// For guests on the network: `ws://<first address>:<port>/v1/<session>?token=<token>`.
     pub invite_url: String,
     /// Six digits a guest joins with: anywhere when `internet`, else on the network (`codes.rs`).
     pub code: String,
-    /// For the host's own connection.
-    pub local_url: String,
     /// Whether the code is in the directory, for guests anywhere.
     pub internet: bool,
-    /// When the code stops working (Unix ms), when `internet`.
+    /// When the code stops working for joining (Unix ms), when `internet`. Who's in stays.
     pub expires_at: Option<u64>,
-    /// Whether guests from the internet wait for the host to let them in.
+    /// Whether guests from the internet, and their agents, wait for the host to let them in.
     pub require_approval: bool,
     /// Why sharing over the internet didn't start, when it didn't.
     pub internet_error: Option<String>,
@@ -115,13 +124,16 @@ pub struct CodeUpdate {
     pub expires_at: u64,
 }
 
-/// `collab-join-request`: someone waits to be let in (`waiting`), or stopped waiting.
+/// `collab-join-request`: someone waits to be let in (`waiting`), or stopped waiting. `agent` is
+/// set for a guest's AI agent, whose `name` already says whose it is.
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 struct JoinRequestEvent<'a> {
     request: &'a str,
     session: &'a str,
     name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<&'a str>,
     waiting: bool,
 }
 
@@ -130,6 +142,8 @@ struct JoinRequestEvent<'a> {
 pub struct P2pConnInfo {
     pub conn: u32,
     pub token: String,
+    /// For a person: what their agents join the same session with. Empty for an agent.
+    pub seat: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -149,11 +163,19 @@ struct AppHostEvents<R: Runtime> {
 }
 
 impl<R: Runtime> HostEvents for AppHostEvents<R> {
-    fn join_request(&self, request: &str, session: &str, name: &str, waiting: bool) {
+    fn join_request(
+        &self,
+        request: &str,
+        session: &str,
+        name: &str,
+        agent: Option<&str>,
+        waiting: bool,
+    ) {
         let event = JoinRequestEvent {
             request,
             session,
             name,
+            agent,
             waiting,
         };
         let _ = self.app.emit("collab-join-request", event);
@@ -230,9 +252,8 @@ pub fn collab_network_settings() {
 /// connects to `localUrl` and says hello with `hostKey` and the document. `name` and `kind` are
 /// for the page's own records; guests see the ones in the host's hello.
 ///
-/// Unless `internet` is false, the session's code goes in the directory too, for guests anywhere,
-/// who wait for the host to let them in unless `requireApproval` is false. When that fails
-/// (offline, say), the code is for the local network, as `internetError` says.
+/// With `private`, only agents on this computer can join, through the MCP server, until
+/// `collab_publish` gives it a code. Otherwise it gets one now (see `collab_publish`).
 #[tauri::command]
 pub async fn collab_share<R: Runtime>(
     app: AppHandle<R>,
@@ -240,20 +261,75 @@ pub async fn collab_share<R: Runtime>(
     kind: String,
     internet: Option<bool>,
     require_approval: Option<bool>,
+    private: Option<bool>,
 ) -> Result<ShareInfo, String> {
     let _ = (name, kind);
-    let approval = require_approval.unwrap_or(true);
-    let (session, token, host_key, port, bridge) = {
+    let (session, token, host_key, port) = {
         let mut slot = SERVER.lock().unwrap();
         let server = running(&mut slot).map_err(|e| format!("Couldn't start sharing: {e}"))?;
         let session = random_text(12)?;
         let token = random_text(24)?;
         let host_key = random_text(24)?;
         server.register(&session, &token, &host_key);
-        (session, token, host_key, server.port(), server.bridge())
+        (session, token, host_key, server.port())
     };
-    let online = if internet.unwrap_or(true) {
-        Some(share_online(&app, bridge, &session, &token, approval).await)
+    let published = if private.unwrap_or(false) {
+        None
+    } else {
+        Some(
+            publish(
+                &app,
+                &session,
+                &token,
+                internet.unwrap_or(true),
+                require_approval,
+            )
+            .await?,
+        )
+    };
+    Ok(ShareInfo {
+        local_url: format!("ws://127.0.0.1:{port}/v1/{session}"),
+        session,
+        token,
+        host_key,
+        port,
+        published,
+    })
+}
+
+/// Gives a session shared with this computer's agents only (`collab_share` with `private`) a code,
+/// so people can join it too.
+#[tauri::command]
+pub async fn collab_publish<R: Runtime>(
+    app: AppHandle<R>,
+    session: String,
+    token: String,
+    require_approval: Option<bool>,
+) -> Result<Published, String> {
+    publish(&app, &session, &token, true, require_approval).await
+}
+
+/// Gives `session` its code. Unless `internet` is false, the code goes in the directory, for
+/// guests anywhere, who wait for the host to let them in unless `requireApproval` is false. When
+/// that fails (offline, say), the code is for the local network, as `internetError` says.
+async fn publish<R: Runtime>(
+    app: &AppHandle<R>,
+    session: &str,
+    token: &str,
+    internet: bool,
+    require_approval: Option<bool>,
+) -> Result<Published, String> {
+    let approval = require_approval.unwrap_or(true);
+    let (port, bridge) = {
+        let slot = SERVER.lock().unwrap();
+        let server = slot
+            .as_ref()
+            .filter(|s| s.has_session(session))
+            .ok_or("Sharing stopped before it started.")?;
+        (server.port(), server.bridge())
+    };
+    let online = if internet {
+        Some(share_online(app, bridge, session, token, approval).await)
     } else {
         None
     };
@@ -265,7 +341,7 @@ pub async fn collab_share<R: Runtime>(
             let slot = SERVER.lock().unwrap();
             let server = slot.as_ref().ok_or("Sharing stopped before it started.")?;
             (
-                server.add_code(&session, &token)?,
+                server.add_code(session, token)?,
                 None,
                 other.and_then(Result::err),
             )
@@ -273,14 +349,9 @@ pub async fn collab_share<R: Runtime>(
     };
     let addresses: Vec<String> = lan_addresses().iter().map(Ipv4Addr::to_string).collect();
     let first = addresses.first().map_or("127.0.0.1", String::as_str);
-    Ok(ShareInfo {
+    Ok(Published {
         invite_url: format!("ws://{first}:{port}/v1/{session}?token={token}"),
-        local_url: format!("ws://127.0.0.1:{port}/v1/{session}"),
         code,
-        session,
-        token,
-        host_key,
-        port,
         addresses,
         internet: expires_at.is_some(),
         expires_at,
@@ -519,22 +590,36 @@ pub async fn collab_connect<R: Runtime>(app: AppHandle<R>, url: String) -> Resul
 }
 
 /// Joins a session found in the directory (`writan-p2p://…` from `collab_find`), as `name`, and
-/// returns the connection's id and the session's token for the hello. If the host lets guests in
-/// themselves, this waits for them. `attempt` goes up with each join, for `collab_cancel_joins`.
+/// returns the connection's id, the session's token for the hello and the seat for this person's
+/// agents. If the host lets guests in themselves, this waits for them. `attempt` goes up with each
+/// join from the Join dialog, for `collab_cancel_joins`.
+///
+/// An AI agent in this app joins a document its person joined with their `seat` and which `agent`
+/// it is, and no `attempt`: closing the Join dialog doesn't give it up.
 #[tauri::command]
 pub async fn collab_connect_p2p<R: Runtime>(
     app: AppHandle<R>,
     url: String,
     name: String,
-    attempt: u32,
+    attempt: Option<u32>,
+    seat: Option<String>,
+    agent: Option<String>,
 ) -> Result<P2pConnInfo, String> {
     let invite = p2p::parse_invite(&url)?;
     let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
-    let cancelled = start_join(conn, attempt)?;
+    let cancelled = match attempt {
+        Some(attempt) => Some(start_join(conn, attempt)?),
+        None => None,
+    };
     let (on_message, on_closed) = (app.clone(), app);
+    let guest = p2p::Guest {
+        name,
+        seat: seat.unwrap_or_default(),
+        agent,
+    };
     let joined = p2p::connect(
         invite,
-        name,
+        guest,
         move |data| {
             let _ = on_message.emit("collab-message", MessageEvent { conn, data });
         },
@@ -542,13 +627,18 @@ pub async fn collab_connect_p2p<R: Runtime>(
             CLIENTS.lock().unwrap().remove(&conn);
             let _ = on_closed.emit("collab-closed", ClosedEvent { conn, reason });
         },
-        async move { drop(cancelled.await) },
+        async move {
+            match cancelled {
+                Some(cancelled) => drop(cancelled.await),
+                None => std::future::pending().await,
+            }
+        },
     )
     .await;
     JOINING.lock().unwrap().waiting.remove(&conn);
-    let (client, token) = joined?;
+    let (client, token, seat) = joined?;
     CLIENTS.lock().unwrap().insert(conn, Conn::P2p(client));
-    Ok(P2pConnInfo { conn, token })
+    Ok(P2pConnInfo { conn, token, seat })
 }
 
 /// Notes a join as waiting, unless it was given up already. What finishes when it's given up.

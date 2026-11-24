@@ -34,7 +34,7 @@ import { useTex } from './state/tex'
 import type { Scope } from './state/shortcuts'
 import { engineKeysOf, keysFor, keysFromEvent, movedBuiltIn, shortcutFor, syncMenu } from './state/shortcuts'
 import type { DocTab } from './state/workspace'
-import { collabHooks, getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWorkspace } from './state/workspace'
+import { collabHooks, getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWoken, useWorkspace } from './state/workspace'
 
 export interface EditorProps {
   tab: DocTab
@@ -128,8 +128,10 @@ const EditorSlot = memo(function EditorSlot({ tab, active, pane }: EditorProps &
   // Keep the same component when an editor finishes preloading, so the first edit cannot remount it.
   const Editor = useMemo(() => editorFor(tab.kind), [tab.kind])
   const visible = !!pane && !active
-  const [shown, setShown] = useState(active || visible)
-  if ((active || visible) && !shown) setShown(true)
+  // An agent can wake a tab nobody has looked at yet, to work in it.
+  const woken = useWoken((s) => !!s[tab.id])
+  const [shown, setShown] = useState(active || visible || woken)
+  if ((active || visible || woken) && !shown) setShown(true)
   return (
     <div
       className="view"
