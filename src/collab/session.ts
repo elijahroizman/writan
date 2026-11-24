@@ -48,6 +48,23 @@ export interface Peer {
   /** For an AI agent: the person whose app it joined through. `name` already says so (“Yoav’s
    * Claude”), except for this app's own agents, which are just “Claude” here. */
   owner?: string
+  /** For an AI agent: whether it gets other agents' messages (its person allows them). */
+  listens?: boolean
+}
+
+/** A message from another agent in a document, as an agent's copy got it. */
+export interface Said {
+  /** The sender's copy. */
+  client: string
+  /** The sender as people here see it (“Yoav’s Claude”), when it arrived. */
+  name: string
+  /** To this agent alone (and maybe others named), not to every agent. */
+  direct: boolean
+  text: string
+  /** When it arrived here (Unix ms). */
+  at: number
+  /** Said before this agent joined. */
+  earlier?: boolean
 }
 
 /** Where someone else is in a document: what their engine's `presence` gave. */
@@ -181,7 +198,7 @@ function fromBase64(text: string) {
 
 function newLink(name: string): Link {
   const client = newClient()
-  return { tabId: '', role: 'guest', client, name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false, presence: null, presenceTimer: null, invite: null }
+  return { tabId: '', role: 'guest', client, name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false, presence: null, presenceTimer: null, invite: null, features: [], inbox: [] }
 }
 
 /** One shared tab's connection. */
@@ -210,6 +227,11 @@ interface Link {
   follows?: string
   /** For a guest over the internet: what this app's agents join the same document with. */
   seat?: string
+  /** What the relay does beyond version 1 (`say`), from its welcome. */
+  features: string[]
+  /** For an agent's copy: whether it gets other agents' messages, and the ones it hasn't read. */
+  listens?: boolean
+  inbox: Said[]
   /** For a host sharing what only its agents were in: getting its code, once. */
   publishing?: Promise<void>
   /** Until the welcome: gives up joining, for `finish`. */
@@ -230,7 +252,7 @@ function hello(link: Link, token: string, extra: Record<string, unknown> = {}) {
   // The color asked for, from the name so a person tends to keep theirs from one document to
   // the next; the relay gives another if someone has it. An agent asks for its own.
   const color = link.agent ? (extra.color as string) : colorFor(link.name || link.client)
-  link.transport?.send(JSON.stringify({ t: 'hello', v: 1, token, client: link.client, name: link.name, ...extra, color, ...(link.agent ? { agent: link.agent, owner: link.owner } : {}) }))
+  link.transport?.send(JSON.stringify({ t: 'hello', v: 1, token, client: link.client, name: link.name, ...extra, color, ...(link.agent ? { agent: link.agent, owner: link.owner, listens: !!link.listens } : {}) }))
 }
 
 /** Sends what changed here, then where the caret is if that changed. */
@@ -265,7 +287,7 @@ function peerOf(p: Record<string, unknown>): Peer {
   const agent = typeof p.agent === 'string' ? p.agent : undefined
   const owner = agent && typeof p.owner === 'string' && p.owner ? p.owner : undefined
   const name = owner && !ownAgents.has(client) ? `${owner}’s ${p.name as string}` : (p.name as string)
-  return { client, name, color: p.color as string, host: !!p.host, ...(agent ? { agent } : {}), ...(owner ? { owner } : {}) }
+  return { client, name, color: p.color as string, host: !!p.host, ...(agent ? { agent } : {}), ...(owner ? { owner } : {}), ...(agent && p.listens === true ? { listens: true } : {}) }
 }
 
 /** Someone's place, from a presence message or a welcome's peer. */
@@ -390,6 +412,8 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
         update(link.tabId, { peers, you })
       }
       raw.forEach((p, i) => p.presence != null && place(link.tabId, peers[i], p.presence))
+      link.features = Array.isArray(msg.features) ? (msg.features as unknown[]).filter((f): f is string => typeof f === 'string') : []
+      if (link.listens && Array.isArray(msg.said)) for (const m of msg.said as Record<string, unknown>[]) heard(link, m, true)
       link.queue.push(...(msg.ops as unknown[]).map((op) => JSON.stringify(op)))
       link.welcomed = true
       start(link)
@@ -434,6 +458,9 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       if (peer) place(link.tabId, peer, msg.data)
       return
     }
+    case 'say':
+      if (link.listens) heard(link, msg, false)
+      return
     case 'end': {
       const host = hostOf(link.tabId)
       finish(link, 'ended', 'Sharing has stopped. This is your own copy now; save it to keep it.')
@@ -445,6 +472,70 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       if (code === 'bad-message' && link.welcomed) return
       return finish(link, 'disconnected', ERRORS[code] ?? (msg.message as string) ?? 'Something went wrong with sharing.')
     }
+  }
+}
+
+/** An agent's copy keeps at most this many unread messages; the oldest go first. */
+const INBOX = 200
+
+/** A message for an agent's copy, from the relay's `say` or its welcome's `said`. */
+function heard(link: Link, msg: Record<string, unknown>, earlier: boolean) {
+  if (typeof msg.text !== 'string' || typeof msg.client !== 'string' || msg.client === link.client) return
+  const from = useCollab.getState()[link.tabId]?.peers.find((p) => p.client === msg.client)
+  const said: Said = { client: msg.client, name: from?.name ?? 'An agent that has left', direct: Array.isArray(msg.to), text: msg.text, at: Date.now(), ...(earlier ? { earlier } : {}) }
+  link.inbox.push(said)
+  if (link.inbox.length > INBOX) link.inbox.splice(0, link.inbox.length - INBOX)
+  for (const f of saidListeners.get(link.tabId) ?? []) f(said)
+}
+
+/** Heard when an agent's copy gets a message, by the copy's id. */
+const saidListeners = new Map<string, Set<(m: Said) => void>>()
+
+/** Calls `f` each time the agent's copy `id` gets a message. Returns the undo. */
+export function onSaid(id: string, f: (m: Said) => void): () => void {
+  const set = saidListeners.get(id) ?? new Set()
+  set.add(f)
+  saidListeners.set(id, set)
+  return () => {
+    set.delete(f)
+    if (!set.size) saidListeners.delete(id)
+  }
+}
+
+/** The messages an agent's copy hasn't read; `take` marks them read. */
+export function unread(id: string, take = false): Said[] {
+  const link = links.get(id)
+  if (!link) return []
+  const out = link.inbox
+  if (take) link.inbox = []
+  return out
+}
+
+/**
+ * Whether an agent's copy can send messages: it's live and the relay passes them on. A relay in
+ * Writan before 0.16 doesn't.
+ */
+export function canSay(id: string): boolean {
+  const link = links.get(id)
+  return !!link && link.live && !link.closed && link.features.includes('say')
+}
+
+/** Sends a message from an agent's copy to the agents in `to` (their copies), or to every agent. */
+export function say(id: string, text: string, to?: string[]): boolean {
+  const link = links.get(id)
+  if (!link || !canSay(id) || !link.transport) return false
+  link.transport.send(JSON.stringify({ t: 'say', text, ...(to?.length ? { to } : {}) }))
+  return true
+}
+
+/** This app's agents get other agents' messages from now on, or stop: the others are told. */
+export function setAgentsListen(on: boolean) {
+  for (const link of agentLinks) {
+    if (link.closed || link.listens === on) continue
+    link.listens = on
+    if (!on) link.inbox = []
+    // Once its hello is out (it goes as soon as there's a connection); before that, the hello says it.
+    link.transport?.send(JSON.stringify({ t: 'listen', on }))
   }
 }
 
@@ -742,12 +833,13 @@ export function inviteOf(tabId: string): Invite | null {
  * other computers as the tab's person's (“Eli’s Claude”). Resolves to the copy's id, which
  * `useCollab` and `usePresence` use like a tab's.
  */
-export async function followAsAgent(tabId: string, who: { name: string; color: string; agent: string }, open: (id: string, doc: Opened) => void): Promise<string> {
+export async function followAsAgent(tabId: string, who: { name: string; color: string; agent: string; listens?: boolean }, open: (id: string, doc: Opened) => void): Promise<string> {
   const invite = inviteOf(tabId)
   const owner = links.get(tabId)
   if (!invite || !owner) throw new Error('This document isn’t open to agents.')
   const link = newLink(who.name)
   link.agent = who.agent
+  link.listens = !!who.listens
   link.owner = owner.name
   link.follows = tabId
   const id = `agent:${link.client}`

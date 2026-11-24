@@ -27,7 +27,8 @@ function CopyButton({ text, label = 'Copy' }: { text: string; label?: string }) 
 
 export function AiPage() {
   const agents = useAi((s) => s.agents)
-  const { setAgents, newAddress } = useAi.getState()
+  const messages = useAi((s) => s.messages)
+  const { setAgents, setMessages, newAddress } = useAi.getState()
   const status = useAgentsStatus()
   const on = agents && status.state === 'on'
   // Pi and Codex share one skill file, so a change in one row can change another's.
@@ -70,7 +71,7 @@ export function AiPage() {
           <span className="plugin-text">
             <span className="settings-label">Let agents into your documents</span>
             <span className="settings-hint">
-              Agents connect to Writan through an address with a secret in it, from this computer or another on your network. They can only work on documents you’ve shared, while Writan is open.
+              Agents connect to Writan through an address with a secret in it, from this computer or another on your network. They can only work on documents you have open, while Writan is open.
             </span>
           </span>
           {agents && status.state === 'starting' ? <Spinner size={16} /> : <Switch label="Let agents into your documents" checked={agents} onChange={setAgents} />}
@@ -90,6 +91,15 @@ export function AiPage() {
             <span className="settings-hint">Anyone with the address can edit the documents you have open. Make a new one if it got out.</span>
           </div>
         )}
+        <div className="plugin-row">
+          <span className="plugin-text">
+            <span className="settings-label">Let agents message each other</span>
+            <span className="settings-hint">
+              Agents in the same document, yours and other people’s, can send each other messages to split up the work, wherever each person is. People don’t see them. Turn this off and your agents neither send nor get any.
+            </span>
+          </span>
+          <Switch label="Let agents message each other" checked={messages} onChange={setMessages} />
+        </div>
       </section>
     </>
   )

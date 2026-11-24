@@ -4,7 +4,7 @@
 // they are once everyone has the change.
 
 import type { WordEngine } from '../../engine/word/engine'
-import { type Answer, type Args, bool, canvasPicture, clip, doc, grouped, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
+import { type Answer, type Args, bool, canvasPicture, clip, doc, found, foundAnswer, grouped, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
 import { draw } from './picture'
 import { pictureBytes, pictureType, scaledPicture } from './pictures'
 
@@ -546,6 +546,18 @@ export async function viewPage(e: WordEngine, args: Args): Promise<Answer> {
 }
 
 // ── What changed, for wait_for_changes
+
+/** find_text in a Word document: each paragraph with a match, by number. */
+export function findInWord(e: WordEngine, find: string, matchCase: boolean): string {
+  let total = 0
+  const places = paragraphsOf(e).flatMap((p, i) => {
+    const hit = found(shown(p.text), find, matchCase)
+    if (!hit) return []
+    total += hit.count
+    return [`[${i + 1}]${hit.count > 1 ? ` (${hit.count} times)` : ''} ${hit.around}`]
+  })
+  return foundAnswer(find, places, total)
+}
 
 export const snapshotWord = (e: WordEngine) => paragraphsOf(e).map((p) => p.text)
 
