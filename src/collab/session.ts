@@ -210,8 +210,8 @@ interface Link {
   follows?: string
   /** For a guest over the internet: what this app's agents join the same document with. */
   seat?: string
-  /** For a host sharing what only its agents were in: getting its code. */
-  publishing?: boolean
+  /** For a host sharing what only its agents were in: getting its code, once. */
+  publishing?: Promise<void>
   /** Until the welcome: gives up joining, for `finish`. */
   abort?: (reason: string) => void
 }
@@ -500,24 +500,27 @@ function shown(p: Published): Partial<Share> {
  */
 export async function share(tabId: string, name: string, approval = true): Promise<void> {
   const link = links.get(tabId)
+  // Asked again while it gets its code (Enter pressed twice): the same code.
+  if (link?.publishing) return link.publishing
   if (link?.role === 'host' && useCollab.getState()[tabId]?.private) {
     // It stays open while it gets its code, even if the last agent leaves meanwhile.
-    link.publishing = true
-    try {
-      await opened(link)
-      const p = await publish(link.session!, link.invite!, approval)
-      if (link.closed) {
-        // Stopped meanwhile: the code it just got goes too.
-        void unhost(link.session!)
-        throw new Error('Sharing was stopped.')
+    link.publishing = (async () => {
+      try {
+        await opened(link)
+        const p = await publish(link.session!, link.invite!, approval)
+        if (link.closed) {
+          // Stopped meanwhile: the code it just got goes too.
+          void unhost(link.session!)
+          throw new Error('Sharing was stopped.')
+        }
+        if (link.name !== name) rename(link, name)
+        update(tabId, { ...shown(p), private: false, waiting: [], message: null })
+      } finally {
+        link.publishing = undefined
+        closeIfNoAgents(tabId)
       }
-      if (link.name !== name) rename(link, name)
-      update(tabId, { ...shown(p), private: false, waiting: [], message: null })
-    } finally {
-      link.publishing = false
-      closeIfNoAgents(tabId)
-    }
-    return
+    })()
+    return link.publishing
   }
   await startHosting(tabId, name, approval, false)
 }
