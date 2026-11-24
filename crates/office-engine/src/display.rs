@@ -345,7 +345,8 @@ pub fn selection_rects(ctx: &mut Ctx, p: &ParaBox, x: f64, y: f64, from: u32, to
             x1 += 5.0;
         }
         if x1 > x0 || from != to {
-            out.push((r(x + x0), r(y + p.y + line.top), r((x1 - x0).max(2.0)), r(line.height)));
+            let (top, h) = line.bar();
+            out.push((r(x + x0), r(y + p.y + line.top + top), r((x1 - x0).max(2.0)), r(h)));
         }
     }
     out
@@ -394,7 +395,8 @@ fn bidi_line_rects(
             _ => merged.push(s),
         }
     }
-    merged.into_iter().map(|(x0, x1)| (r(x + x0), r(y + p.y + line.top), r((x1 - x0).max(2.0)), r(line.height))).collect()
+    let (top, h) = line.bar();
+    merged.into_iter().map(|(x0, x1)| (r(x + x0), r(y + p.y + line.top + top), r((x1 - x0).max(2.0)), r(h))).collect()
 }
 
 /// The caret for `offset` in a laid-out paragraph whose box is at (`x`, `y`): a vertical bar
@@ -415,7 +417,8 @@ pub fn caret_rect_near(ctx: &mut Ctx, p: &ParaBox, x: f64, y: f64, offset: u32, 
             }
         }
     }
-    (r(x + cx), r(y + p.y + line.top), r(line.height))
+    let (top, h) = line.bar();
+    (r(x + cx), r(y + p.y + line.top + top), r(h))
 }
 
 /// Paint styles the host hasn't been sent yet.

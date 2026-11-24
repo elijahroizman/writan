@@ -325,6 +325,20 @@ pub struct Line {
     pub origin: f64,
     /// Frags are in text order. With mixed directions their x order differs; this says so.
     pub bidi: bool,
+    /// When a picture is the tallest thing on the line: the part of the line it and the text
+    /// fill, as (top, bottom) from the line's top. Line spacing scales the picture's height too,
+    /// which leaves a gap above it. The caret and selection leave that gap out.
+    pub filled: Option<(f64, f64)>,
+}
+
+impl Line {
+    /// The caret's and selection's extent on this line: (top from the line's top, height).
+    pub fn bar(&self) -> (f64, f64) {
+        match self.filled {
+            Some((top, bottom)) => (top, bottom - top),
+            None => (0.0, self.height),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -961,6 +975,7 @@ impl Builder<'_, '_, '_> {
         let mut descent: f64 = 0.0;
         let mut gap: f64 = 0.0;
         let mut any = false;
+        let mut object: f64 = 0.0;
         for f in &frags {
             match &f.kind {
                 FragKind::Text(s) | FragKind::Tab(s) | FragKind::Atomic { style: s, .. } | FragKind::Label { style: s, .. } => {
@@ -971,11 +986,14 @@ impl Builder<'_, '_, '_> {
                     any = true;
                 }
                 FragKind::Object { height, .. } => {
-                    ascent = ascent.max(*height);
+                    object = object.max(*height);
                     any = true;
                 }
             }
         }
+        let text_descent = descent;
+        let picture_sets_height = object > ascent;
+        ascent = ascent.max(object);
         if !any || frags.iter().all(|f| matches!(f.kind, FragKind::Object { .. })) {
             let (m, _) = self.ctx.metrics(break_style.unwrap_or(self.spec.mark));
             if !any {
@@ -1006,7 +1024,8 @@ impl Builder<'_, '_, '_> {
         if self.spec.rtl {
             origin = self.width - origin;
         }
-        self.lines.push(Line { top: self.top, height, baseline, start, end, frags, ends, origin, bidi });
+        let filled = picture_sets_height.then(|| ((baseline - ascent).clamp(0.0, height), (baseline + text_descent).clamp(0.0, height)));
+        self.lines.push(Line { top: self.top, height, baseline, start, end, frags, ends, origin, bidi, filled });
         self.top += height;
         self.line_start = end;
     }
@@ -1413,6 +1432,47 @@ mod tests {
         assert_eq!(l.lines[0].height, 42.0);
         assert_eq!(l.lines[0].baseline, 40.0);
         assert_eq!(l.lines[0].frags[2].x, 55.0);
+    }
+
+    #[test]
+    fn caret_and_selection_beside_a_picture_leave_out_the_spacing_above_it() {
+        use crate::display::{caret_rect, selection_rects};
+        use crate::flow::{Keep, ParaBox};
+        use crate::pos::Path;
+        use std::sync::Arc;
+        let (mut host, mut measure, mut styles, s) = setup();
+        let mut ctx = Ctx { host: &mut host, measure: &mut measure, styles: &mut styles };
+        // A 40 px picture alone in its paragraph, at 1.5 lines: the line is (40 + 2) * 1.5 = 63
+        // px, with the picture at its bottom.
+        let mut spec = ParaSpec::plain("\u{FFFC}", s);
+        spec.items = vec![Item { start: 0, end: 3, kind: ItemKind::Object { width: 50.0, height: 40.0, inline: 0 } }];
+        spec.spacing = Spacing::Multiple(1.5);
+        let l = layout(&mut ctx, &spec, 500.0);
+        assert_eq!((l.lines[0].height, l.lines[0].baseline), (63.0, 61.0));
+        let p = ParaBox { path: Path::top(0), spec: Arc::new(spec), layout: Arc::new(l), keep: Keep::default(), y: 0.0 };
+        assert_eq!(caret_rect(&mut ctx, &p, 0.0, 0.0, 0, false), (0.0, 21.0, 40.0));
+        assert_eq!(selection_rects(&mut ctx, &p, 0.0, 0.0, 0, 3, false), vec![(0.0, 21.0, 50.0, 40.0)]);
+        // Text beside it: down to the bottom of the text.
+        let mut spec = ParaSpec::plain("\u{FFFC}a", s);
+        spec.items = vec![
+            Item { start: 0, end: 3, kind: ItemKind::Object { width: 50.0, height: 40.0, inline: 0 } },
+            Item { start: 3, end: 4, kind: ItemKind::Text(s) },
+        ];
+        spec.spacing = Spacing::Multiple(1.5);
+        let l = layout(&mut ctx, &spec, 500.0);
+        let p = ParaBox { path: Path::top(0), spec: Arc::new(spec), layout: Arc::new(l), keep: Keep::default(), y: 0.0 };
+        assert_eq!(caret_rect(&mut ctx, &p, 0.0, 0.0, 4, false), (55.0, 21.0, 42.0));
+        // Text taller than a small picture: the whole line, as before.
+        let mut spec = ParaSpec::plain("a\u{FFFC}", s);
+        spec.items = vec![
+            Item { start: 0, end: 1, kind: ItemKind::Text(s) },
+            Item { start: 1, end: 4, kind: ItemKind::Object { width: 5.0, height: 5.0, inline: 0 } },
+        ];
+        spec.spacing = Spacing::Multiple(1.5);
+        let l = layout(&mut ctx, &spec, 500.0);
+        assert_eq!(l.lines[0].filled, None);
+        let p = ParaBox { path: Path::top(0), spec: Arc::new(spec), layout: Arc::new(l), keep: Keep::default(), y: 0.0 };
+        assert_eq!(caret_rect(&mut ctx, &p, 0.0, 0.0, 0, false), (0.0, 0.0, 15.0));
     }
 
     #[test]
