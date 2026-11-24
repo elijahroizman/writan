@@ -11,6 +11,7 @@ On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. Ctrl+Tab 
 | Open files or a folder (the dialog's **Open Folder** button, or pick a folder on a Mac) | ⌘O |
 | Show or hide the folder | ⇧⌘E |
 | Save / Save As… | ⌘S / ⇧⌘S |
+| Reload the file from disk (asks first if that loses changes or stops sharing) | ⌘R |
 | Close tab / Reopen closed tab | ⌘W / ⇧⌘T |
 | Home tab | ⌘T or ⌘1 |
 | Switch tabs | ⌘1–⌘9, ⇧⌘] / ⇧⌘[ |
@@ -33,6 +34,6 @@ On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. Ctrl+Tab 
 | PowerPoint: group / ungroup | ⌘G / ⇧⌘G |
 | PowerPoint: play from this slide / from the start | ⌘↩ / ⇧⌘↩ |
 
-In a question Writan asks (Save changes?, Revert?), Enter picks the highlighted button and Esc cancels. When the other choice throws something away (Revert, Delete), Cancel is the highlighted one.
+In a question Writan asks (Save changes?, Reload?), Enter picks the highlighted button and Esc cancels. When the other choice throws something away (Reload, Delete), Cancel is the highlighted one.
 
 You can also drop files onto the window or the Dock icon.

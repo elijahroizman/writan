@@ -23,6 +23,7 @@ const scripts = [
   'tests/stress/ui/linked-excel.mjs',
   'tests/stress/ui/nasty.mjs',
   'tests/stress/ui/new-presentation.mjs',
+  'tests/stress/ui/reload.mjs',
   'tests/stress/ui/row-header-menu.mjs',
   'tests/stress/ui/security.mjs',
   'tests/stress/ui/session.mjs',

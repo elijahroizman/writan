@@ -156,7 +156,9 @@ struct Frames(Channel<InvokeResponseBody>);
 
 impl Frames {
     fn message(&self, data: &str) {
-        let _ = self.0.send(InvokeResponseBody::Raw(data.as_bytes().to_vec()));
+        let _ = self
+            .0
+            .send(InvokeResponseBody::Raw(data.as_bytes().to_vec()));
     }
 
     fn closed(&self, reason: String) {
@@ -573,7 +575,10 @@ pub fn end_on_exit() {
 
 /// Opens a connection to a relay (`ws://` or `wss://`) and returns its id.
 #[tauri::command]
-pub async fn collab_connect(url: String, events: Channel<InvokeResponseBody>) -> Result<u32, String> {
+pub async fn collab_connect(
+    url: String,
+    events: Channel<InvokeResponseBody>,
+) -> Result<u32, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let pending = client::connect(&url)?;
         let conn = NEXT_CONN.fetch_add(1, Ordering::Relaxed);
