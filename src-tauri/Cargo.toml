@@ -54,7 +54,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = ["std", 
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 tauri-plugin-single-instance = "2"
 
-# Turns off WebView2's browser shortcuts (Ctrl+R reload, Ctrl+F find bar…). Same versions wry uses.
+# Turns off WebView2's browser shortcuts (Ctrl+R reload, Ctrl+F find bar…) and turns its pinch back on. Same versions wry uses.
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows-core = "0.62"
