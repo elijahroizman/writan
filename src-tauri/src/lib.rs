@@ -76,10 +76,19 @@ fn enable_spell_checking() {
 /// WebView2 runs browser shortcuts before the page can stop them: Ctrl+R and F5 reload the
 /// app (losing unsaved work), Ctrl+F opens Edge's find bar. Turn those off; the page still gets
 /// every key, and editing keys (copy, paste, undo) keep working.
+///
+/// Tauri turns WebView2's pinch zoom off, and WebView2 then drops a touchpad pinch before the
+/// page sees it, so documents couldn't be pinch-zoomed. Turn it back on: the page gets the
+/// pinch as ctrl+wheel and zooms the document itself (`usePinchZoom`), and stops it from
+/// scaling the window anywhere else (`stopWindowZoom`). Ctrl+wheel and the zoom keys stay off.
+///
+/// Both settings apply from the next navigation, which here is the app's first page.
 #[cfg(windows)]
-fn disable_browser_shortcuts(window: &tauri::WebviewWindow) {
+fn configure_webview2(window: &tauri::WebviewWindow) {
     let _ = window.with_webview(|webview| unsafe {
-        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2Settings3;
+        use webview2_com::Microsoft::Web::WebView2::Win32::{
+            ICoreWebView2Settings3, ICoreWebView2Settings5,
+        };
         use windows_core::Interface;
         let Ok(core) = webview.controller().CoreWebView2() else {
             return;
@@ -89,6 +98,9 @@ fn disable_browser_shortcuts(window: &tauri::WebviewWindow) {
         };
         if let Ok(settings) = settings.cast::<ICoreWebView2Settings3>() {
             let _ = settings.SetAreBrowserAcceleratorKeysEnabled(false);
+        }
+        if let Ok(settings) = settings.cast::<ICoreWebView2Settings5>() {
+            let _ = settings.SetIsPinchZoomEnabled(true);
         }
     });
 }
@@ -162,7 +174,7 @@ pub fn run() {
             }
             #[cfg(windows)]
             if let Some(window) = app.get_webview_window("main") {
-                disable_browser_shortcuts(&window);
+                configure_webview2(&window);
             }
             #[cfg(not(any(target_os = "macos", windows)))]
             let _ = app;

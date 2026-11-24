@@ -10,6 +10,17 @@ export function wheelZoomFactor(e: WheelEvent): number {
   return e.deltaY < 0 ? 1.2 : 1 / 1.2
 }
 
+/**
+ * Windows: WebView2's pinch zoom is on so a touchpad pinch reaches the page (see
+ * `configure_webview2` in src-tauri/src/lib.rs), and a pinch nobody takes would scale the whole
+ * window. Documents take theirs in usePinchZoom; this stops the rest. A touchpad pinch arrives as
+ * ctrl+wheel, so cancelling that cancels it; touch-action does the same for a touch screen.
+ */
+export function stopWindowZoom() {
+  window.addEventListener('wheel', (e) => e.ctrlKey && e.preventDefault(), { passive: false })
+  document.documentElement.style.touchAction = 'pan-x pan-y'
+}
+
 interface PinchOptions {
   getZoom: () => number
   setZoom: (zoom: number) => void
