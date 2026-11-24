@@ -2,6 +2,19 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.15.1 — 2026-11-24
+
+### Themes
+- Themes are much bolder. The sidebars, title bar, menus and the space around documents all take the theme's color now, in light and dark.
+- **Create theme** opens a theme editor beside the app, and the whole window shows your changes as you make them. Set any color for light or dark mode on its own, pick a color by clicking anything in Writan, or add your own CSS.
+- **Add theme** finds community themes on Open VSX, like Dracula, Nord or Tokyo Night, and adds theme files from Writan, T3 Code and VS Code. Export a theme from its **⋯** menu to share it.
+- **Change theme…** in the command palette, or ⌃⌘T on a Mac and Ctrl+Alt+A on Windows and Linux, switches theme without opening Settings.
+- Ask your agent to restyle Writan, like "give Writan a solarized theme". It saves the theme to a themes folder, where you can keep your own too, with a background picture if you like.
+- All of this follows [T3 Code](https://github.com/pingdotgg/t3code)'s themes.
+
+### Windows
+- Pinching the touchpad zooms documents.
+
 ## 0.15.0 — 2026-11-24
 
 ### Edit together
