@@ -433,7 +433,8 @@ export function parseThemeFile(text: string | unknown, fallbackName = 'Imported 
     }
     const own = t3(d.colors)
     // T3 Code allows a theme of CSS or a few colors alone; Writan's own colors fill in the rest.
-    const canvas = (typeof d.canvas === 'string' && toHex6(d.canvas)) || (own.canvas && toHex6(own.canvas)) || (mode === 'dark' ? PRESET_THEMES[0].dark : PRESET_THEMES[0].light)
+    const given = (typeof d.canvas === 'string' && toHex6(d.canvas)) || (own.canvas && toHex6(own.canvas))
+    const canvas = given || (mode === 'dark' ? PRESET_THEMES[0].dark : PRESET_THEMES[0].light)
     const accent = (typeof d.accent === 'string' && toHex6(d.accent)) || (own.accent && toHex6(own.accent)) || PRESET_THEMES[0].accent
     const vs = (d.variants ?? {}) as Record<string, unknown>
     const other: Appearance = mode === 'dark' ? 'light' : 'dark'
@@ -442,8 +443,8 @@ export function parseThemeFile(text: string | unknown, fallbackName = 'Imported 
     return tidy({
       name: name(d.name, fallbackName),
       accent,
-      light: mode === 'light' ? canvas : (otherCanvas ?? otherTone(canvas, 'dark')),
-      dark: mode === 'dark' ? canvas : (otherCanvas ?? otherTone(canvas, 'light')),
+      light: mode === 'light' ? canvas : (otherCanvas ?? (given ? otherTone(canvas, 'dark') : PRESET_THEMES[0].light)),
+      dark: mode === 'dark' ? canvas : (otherCanvas ?? (given ? otherTone(canvas, 'light') : PRESET_THEMES[0].dark)),
       variants: { [mode]: { ...own, ...t3(vs[mode]) }, [other]: otherColors },
       css: cssOf(d.css),
     })

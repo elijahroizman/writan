@@ -114,40 +114,44 @@ export const themeById = (id: string, custom = useAppearance.getState().custom, 
 // ── The themes folder
 
 let reading: Promise<void> | null = null
-let readAgain = false
+let again: Promise<void> | null = null
 
-/** Reads the themes folder again. Files that aren't valid themes are left out. */
+/**
+ * Reads the themes folder again. Files that aren't valid themes are left out. Asked while a read
+ * is under way, it resolves after a fresh one, so a file just written is in it.
+ */
 export function refreshPublished(): Promise<void> {
   if (!isTauri) return Promise.resolve()
   if (reading) {
-    readAgain = true
-    return reading
+    again ??= reading.then(() => {
+      again = null
+      return refreshPublished()
+    })
+    return again
   }
-  reading = (async () => {
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      const { dir, themes } = await invoke<{ dir: string; themes: { id: string; text: string; background: ThemeDef['background'] | null }[] }>('themes_read')
-      const published: ThemeDef[] = []
-      for (const entry of themes) {
-        if (!isThemeId(entry.id)) continue
-        try {
-          published.push({ ...parseThemeFile(entry.text, entry.id), id: entry.id, published: true, ...(entry.background ? { background: entry.background } : {}) })
-        } catch (err) {
-          console.warn(`Theme ${entry.id}.json left out: ${(err as Error).message}`)
-        }
-      }
-      useAppearance.setState({ themesDir: dir, published })
-    } catch (err) {
-      console.warn('Themes folder', err)
-    } finally {
-      reading = null
-      if (readAgain) {
-        readAgain = false
-        void refreshPublished()
+  reading = readFolder().finally(() => {
+    reading = null
+  })
+  return reading
+}
+
+async function readFolder() {
+  try {
+    const { invoke } = await import('@tauri-apps/api/core')
+    const { dir, themes } = await invoke<{ dir: string; themes: { id: string; text: string; background: ThemeDef['background'] | null }[] }>('themes_read')
+    const published: ThemeDef[] = []
+    for (const entry of themes) {
+      if (!isThemeId(entry.id)) continue
+      try {
+        published.push({ ...parseThemeFile(entry.text, entry.id), id: entry.id, published: true, ...(entry.background ? { background: entry.background } : {}) })
+      } catch (err) {
+        console.warn(`Theme ${entry.id}.json left out: ${(err as Error).message}`)
       }
     }
-  })()
-  return reading
+    useAppearance.setState({ themesDir: dir, published })
+  } catch (err) {
+    console.warn('Themes folder', err)
+  }
 }
 
 /** Writes a theme into the themes folder as `<id>.json`, and reads the folder again. */

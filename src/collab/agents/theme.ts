@@ -58,7 +58,7 @@ function readTheme(themeId: string | undefined): string {
     'Themes:',
     ...themes.map(describe),
     '',
-    isTauri && themesDir ? `Themes folder: ${themesDir}` : 'There’s no themes folder in the browser version; set_theme saves the theme in the browser instead.',
+    isTauri && themesDir ? `Themes folder: ${themesDir}` : 'There’s no themes folder in the browser version; set_theme keeps the theme until the page reloads.',
   ]
   if (themeId) {
     const t = themes.find((x) => x.id === themeId)
@@ -89,15 +89,17 @@ async function setTheme(args: Args): Promise<string> {
       }
       if (parsed.css && cssLoadsFiles(parsed.css)) throw new ToolError('The CSS loads files. Remove @import, image-set(), and url() that isn’t data: or #id.')
       const def: ThemeDef = { ...parsed, id: themeId }
+      if (useAppearance.getState().custom.some((t) => t.id === themeId)) throw new ToolError(`“${themeId}” is a theme the person made in Writan. Use another id.`)
       if (isTauri) {
-        if (useAppearance.getState().custom.some((t) => t.id === themeId)) throw new ToolError(`“${themeId}” is a theme the person made in Writan. Use another id.`)
         const path = await publishTheme(themeId, themeFile(def)).catch((err) => Promise.reject(new ToolError(`The theme wasn’t published: ${String((err as Error)?.message ?? err)}`)))
         // The folder holds 32 themes and 2 MB at most; past that, a file is left out.
         if (!useAppearance.getState().published.some((t) => t.id === themeId)) throw new ToolError(`The theme was saved to ${path}, but Writan didn’t load it: the themes folder may be full (32 themes, 2 MB).`)
         done.push(`Published “${def.name}” to ${path}.`)
       } else {
-        useAppearance.getState().save(def)
-        done.push(`Saved “${def.name}” in this browser.`)
+        // No folder in the browser: published until the page reloads, apart from the person's own.
+        const published = useAppearance.getState().published.filter((t) => t.id !== themeId)
+        useAppearance.setState({ published: [...published, { ...def, published: true }] })
+        done.push(`Loaded “${def.name}” in this browser until the page reloads (the browser version has no themes folder).`)
       }
     } else if (!allThemes().some((t) => t.id === themeId)) {
       throw new ToolError(`There’s no theme “${themeId}”. The themes are: ${allThemes().map((t) => t.id).join(', ')}.`)
