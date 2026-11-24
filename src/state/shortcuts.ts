@@ -72,6 +72,8 @@ export const SHORTCUTS: ShortcutDef[] = [
   { id: 'typewriter', label: 'Typewriter scrolling', group: 'View', scope: 'app', keys: '⌥⌘T' },
   { id: 'focus-dim', label: 'Dim other paragraphs in focus mode', group: 'View', scope: 'app', keys: '' },
   { id: 'toggle-theme', label: 'Switch between light and dark', group: 'View', scope: 'app', keys: '⇧⌘L' },
+  // ⌥⌘A is Add comment on a Mac.
+  { id: 'change-theme', label: 'Change theme…', group: 'View', scope: 'app', keys: isMac ? '⌃⌘T' : '⌥⌘A' },
   { id: 'toggle-fullscreen', label: 'Full screen', group: 'View', scope: 'app', keys: 'F11', platform: 'windows' },
   { id: 'fullscreen-mac', label: 'Full screen', group: 'View', scope: 'app', keys: '⌃⌘F', fixed: true, platform: 'mac' },
   { id: 'view-read', label: 'Read', group: 'View', scope: 'app', keys: '⌥⌘1' },

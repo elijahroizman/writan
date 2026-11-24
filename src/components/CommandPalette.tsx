@@ -33,6 +33,7 @@ import {
   Link,
   LogOut,
   MessageSquarePlus,
+  Palette,
   Monitor,
   Moon,
   PanelBottom,
@@ -77,6 +78,8 @@ import { useSettings } from '../state/settings'
 import type { Scope } from '../state/shortcuts'
 import { SHORTCUTS, keysFor } from '../state/shortcuts'
 import { getEditor, HOME_TAB_ID, useWorkspace } from '../state/workspace'
+import { orbBackground } from '../lib/themes'
+import { allThemes, useAppearance } from '../state/appearance'
 import { Kbd, KindIcon, Modal } from './ui'
 
 /**
@@ -97,6 +100,28 @@ export const usePalette = create<{
   setOpen: (open, query = '') => set({ open, query, picker: null }),
   pick: (picker) => set({ open: true, query: '', picker }),
 }))
+
+/** Change theme…: every theme, the one in use first. Picking one uses it for light and dark. */
+export function openThemePicker() {
+  usePalette.getState().pick({
+    placeholder: 'Pick a theme',
+    items: () => {
+      const { light, dark } = useAppearance.getState()
+      const mode = useWorkspace.getState().theme
+      const current = mode === 'dark' ? dark : light
+      const themes = allThemes()
+      return [...themes.filter((t) => t.id === current), ...themes.filter((t) => t.id !== current)].map((t) => ({
+        id: `theme-pick:${t.id}`,
+        label: t.name,
+        detail: t.id === current ? 'In use' : t.published ? 'Themes folder' : t.custom ? 'Yours' : undefined,
+        group: 'Commands' as const,
+        icon: <span className="palette-theme-dot" style={{ background: orbBackground(t, mode) }} />,
+        keywords: 'theme',
+        run: () => useAppearance.getState().use(t.id),
+      }))
+    },
+  })
+}
 
 export interface Picker {
   placeholder: string
@@ -159,6 +184,7 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   typewriter: ScrollText,
   'focus-dim': SunMoon,
   'toggle-theme': SunMoon,
+  'change-theme': Palette,
   'toggle-fullscreen': Fullscreen,
   'view-read': Eye,
   'view-split': Columns2,
@@ -199,6 +225,7 @@ const COMMAND_KEYWORDS: Record<string, string> = {
   open: 'file folder',
   'zoom-reset': 'zoom actual size',
   'toggle-theme': 'dark light theme appearance',
+  'change-theme': 'theme color colour look style appearance',
   find: 'search',
   replace: 'search',
   'split-view': 'side by side',

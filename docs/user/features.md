@@ -110,7 +110,36 @@ Word documents use open-licensed stand-ins for Calibri, Cambria, Arial, Times Ne
 
 ## Appearance
 
-**Settings › Appearance** picks light, dark or the system's setting (⇧⌘L switches), and a color theme for each. You can make your own themes: two tones and an accent.
+**Settings › Appearance** picks light, dark or the system's setting (⇧⌘L switches), and a color theme for each: click a theme's sun or moon to use it for just that appearance. **Change theme…** in the command palette (⌃⌘T on a Mac, Ctrl+Alt+A on Windows and Linux) picks one without opening Settings.
+
+### Your own themes
+
+**Create theme** opens the theme editor beside the app, starting from the theme you're using, and the whole window shows your changes as you make them. A theme is an accent and two tones, one for light and one for dark, that tint every surface, border and text. Turn on **Every color** to set any single color for one appearance, like the sidebars or the selection. The pointer button picks a color from the app: click anything in Writan and the editor jumps to the color that paints it. **Custom CSS** changes what colors can't, after Writan's own styles. It can't load files: `@import`, `image-set()` and `url()` other than `data:` are left out, so a theme someone sends you can't send what's on your screen anywhere.
+
+A theme's **⋯** menu edits, duplicates, exports (as a .json file) or deletes it.
+
+### Adding themes
+
+**Add theme** searches community color themes on [Open VSX](https://open-vsx.org), the open registry of VS Code extensions, and adds the ones with an open license. Writan takes their window colors: one with a light and a dark version becomes one theme with both. It also adds theme files: ones exported from Writan or [T3 Code](https://github.com/pingdotgg/t3code), and VS Code color themes.
+
+### The themes folder and agents
+
+Themes saved as `<name>.json` in the themes folder show up in Settings as you save them (**Show folder** opens it). A JPEG, PNG or WebP picture of up to 16 MB beside one, like `dusk.jpg` beside `dusk.json`, becomes its background, which its CSS shows with `var(--theme-background-image)`. A theme file looks like this:
+
+```json
+{
+  "name": "Dusk",
+  "accent": "#7aa2f7",
+  "light": "#dfe3f5",
+  "dark": "#1a1b26",
+  "variants": { "dark": { "panel": "#16161e" } },
+  "css": ".titlebar { border-bottom: 1px solid var(--accent); }"
+}
+```
+
+An agent on this computer with Writan's MCP server can restyle Writan for you: ask it, for example, to "give Writan a solarized theme". It publishes a theme to the themes folder and switches Writan to it. Ask it to go back to Writan's own theme to undo it.
+
+This all follows [T3 Code](https://github.com/pingdotgg/t3code)'s themes.
 
 **App icon** offers Dark (the default), Blue and Light. On macOS, it changes the Dock icon while the app is open. Finder always uses the default, as does the Dock when the app is closed. On Windows and Linux, it changes the window and taskbar icon. The choice is saved and applied each time the app opens.
 

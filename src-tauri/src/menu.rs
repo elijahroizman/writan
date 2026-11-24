@@ -315,6 +315,17 @@ fn build_with<R: Runtime>(app: &AppHandle<R>, keys: &Shortcuts) -> tauri::Result
             "Toggle Light/Dark",
             Some("CmdOrCtrl+Shift+L"),
         )?)
+        .item(&item(
+            app,
+            keys,
+            "change-theme",
+            "Change Theme…",
+            Some(if cfg!(target_os = "macos") {
+                "Ctrl+Cmd+T"
+            } else {
+                "Ctrl+Alt+A"
+            }),
+        )?)
         .separator();
     #[cfg(target_os = "macos")]
     let view_menu = view_menu.fullscreen();

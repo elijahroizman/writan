@@ -24,6 +24,7 @@ On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. Ctrl+Tab 
 | Zoom (Word, PowerPoint, PDF) | Pinch on the trackpad, or ⌘ + scroll |
 | Focus mode (Esc also leaves it) / typewriter scrolling | ⌥⌘F / ⌥⌘T |
 | Light / dark appearance | ⇧⌘L |
+| Change theme | ⌃⌘T (Ctrl+Alt+A on Windows and Linux) |
 | Word: add a link to the selected text | ⇧⌘K (⌘K opens the command palette) |
 | Word: add comment | ⌥⌘A (Ctrl+Alt+M on Windows) |
 | Word: open a link in the browser | ⌘-click (Ctrl+click on Windows) |
