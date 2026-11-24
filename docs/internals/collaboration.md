@@ -55,7 +55,7 @@ JSON text frames over WebSocket, at `/v1/<session>`:
 | host | `end` | The host stopped sharing. The relay tells everyone with `end` and forgets the session. |
 | relay | `error { code, message }` | `bad-token`, `not-ready`, `no-session`, `version`, `bad-message`, `not-host`. |
 
-The invite is the relay's address with the token as a query parameter: `ws://192.168.1.20:47811/v1/<session>?token=<token>`. The token is 192 random bits. Anyone with the link can edit while the host's tab is open. People don't see it unless they ask for it; they join with a code.
+The invite is the relay's address with the token as a query parameter: `ws://192.168.1.20:47811/v1/<session>?token=<token>`. The token is 192 random bits. Anyone with the link can edit while the host's tab is open. In the app nobody sees it: people join with a code, and the app builds the link from what the code finds. Only the browser version, which has no codes, shows the link and takes one in the Join dialog.
 
 ## Over the internet
 

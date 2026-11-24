@@ -941,6 +941,10 @@ export function keeperOf(tabId: string): string | null {
   return share.peers.find((p) => p.host)?.name || 'The person sharing'
 }
 collabHooks.keeper = keeperOf
+collabHooks.hosting = (tabId) => {
+  const share = useCollab.getState()[tabId]
+  return share?.role === 'host' && !share.private && (share.status === 'live' || share.status === 'connecting')
+}
 
 /** For a tab following someone else's shared document: waits up to a few seconds for every
  * change made here to reach the relay, which sends it on to them. True once none is left. */

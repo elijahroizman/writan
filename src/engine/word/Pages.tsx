@@ -5,6 +5,7 @@
 import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { MenuEntry } from '../../components/ui'
 import { PopoverMenu } from '../../components/ui'
+import { shrinkPicture } from '../../lib/pictures'
 import { isMac, openExternal, shortcut } from '../../lib/platform'
 import { spellingMenu } from '../../lib/spelling'
 import { PeerCaret, PeerSelection, together } from '../../collab/cursors'
@@ -599,13 +600,18 @@ const PageFrame = memo(function PageFrame({ index, width, height, top, zoom, els
   )
 })
 
-/** Reads a picture file and puts it in at the caret. */
+/**
+ * Reads a picture file and puts it in at the caret. One far wider than twice the text (a phone
+ * photo) is scaled down to that, as on a slide: it still shows sharp on any screen, and it's a
+ * fraction of the bytes to save, or to send to everyone in a shared document.
+ */
 export async function insertImageFile(engine: WordEngine, file: File) {
   const bytes = new Uint8Array(await file.arrayBuffer())
-  const bitmap = await createImageBitmap(file).catch(() => null)
-  const width = bitmap?.width ?? 400
-  const height = bitmap?.height ?? 300
-  bitmap?.close()
-  engine.doc.insertImage(bytes, file.type || 'image/png', width, height)
+  const type = file.type || 'image/png'
+  const setup = JSON.parse(engine.doc.pageSetup()) as { pageWidthTwips: number; marginsTwips: { left: number; right: number } }
+  // 15 twips to a pixel.
+  const textWidth = (setup.pageWidthTwips - setup.marginsTwips.left - setup.marginsTwips.right) / 15
+  const pic = (await shrinkPicture(bytes, type, 2 * (textWidth > 0 ? textWidth : 624), Infinity)) ?? { bytes, type, width: 400, height: 300 }
+  engine.doc.insertImage(pic.bytes, pic.type, pic.width, pic.height)
   engine.refresh()
 }

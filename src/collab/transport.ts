@@ -220,37 +220,58 @@ export function onHostEvents(events: HostEvents) {
   hostEvents = events
 }
 
-const routes = new Map<number, TransportEvents>()
 let listening: Promise<void> | null = null
 
 function listenOnce() {
   listening ??= (async () => {
     const { listen } = await import('@tauri-apps/api/event')
-    await listen<{ conn: number; data: string }>('collab-message', (e) => routes.get(e.payload.conn)?.message(e.payload.data))
-    await listen<{ conn: number; reason: string }>('collab-closed', (e) => {
-      const route = routes.get(e.payload.conn)
-      routes.delete(e.payload.conn)
-      route?.closed(e.payload.reason)
-    })
     await listen<JoinRequest>('collab-join-request', (e) => hostEvents?.joinRequest(e.payload))
   })()
   return listening
 }
 
-/** A connection Rust holds, by its id. */
-async function native(conn: number, events: TransportEvents): Promise<Transport> {
-  routes.set(conn, events)
-  const { invoke } = await import('@tauri-apps/api/core')
+/** What a connection's channel carries: each message as UTF-8 bytes, then `{ closed }` once. */
+type Frame = ArrayBuffer | ArrayBufferView | number[] | { closed: string }
+
+const utf8 = new TextDecoder()
+const toUtf8 = new TextEncoder()
+
+/**
+ * A connection Rust holds. `open` starts it with a channel for what arrives, and returns its id.
+ * Messages come on a channel, not as events: an event is a script the web view runs with the
+ * message inside, which takes seconds for a picture of a few megabytes, and a channel fetches
+ * big ones as bytes instead. A channel also keeps them in order with the close.
+ */
+async function native(open: (channel: unknown) => Promise<number>, events: TransportEvents): Promise<{ conn: number; transport: Transport }> {
+  const { Channel, invoke } = await import('@tauri-apps/api/core')
+  let done = false
+  const end = (reason: string) => {
+    if (done) return
+    done = true
+    events.closed(reason)
+  }
+  const channel = new Channel<Frame>((frame) => {
+    if (done) return
+    if (frame instanceof ArrayBuffer) events.message(utf8.decode(frame))
+    else if (ArrayBuffer.isView(frame)) events.message(utf8.decode(frame))
+    else if (Array.isArray(frame)) events.message(utf8.decode(new Uint8Array(frame)))
+    else end(frame.closed)
+  })
+  const conn = await open(channel)
   const fail = (err: unknown) => {
-    if (!routes.delete(conn)) return
+    if (done) return
     void invoke('collab_close', { conn }).catch(() => {})
-    events.closed(String((err as Error)?.message ?? err))
+    end(String((err as Error)?.message ?? err))
   }
   return {
-    send: (data) => void invoke('collab_send', { conn, data }).catch(fail),
-    close: () => {
-      routes.delete(conn)
-      void invoke('collab_close', { conn }).catch(() => {})
+    conn,
+    transport: {
+      // As bytes, so a big change isn't escaped into JSON here and read back out of it in Rust.
+      send: (data) => void invoke('collab_send', toUtf8.encode(data), { headers: { 'x-conn': String(conn) } }).catch(fail),
+      close: () => {
+        done = true
+        void invoke('collab_close', { conn }).catch(() => {})
+      },
     },
   }
 }
@@ -266,10 +287,14 @@ export async function connectP2p(url: string, name: string, events: TransportEve
   // hears the cancel first.
   const attempt = as ? null : ++joinAttempts
   await resetNative()
-  await listenOnce()
   const { invoke } = await import('@tauri-apps/api/core')
-  const { conn, token, seat } = await invoke<{ conn: number; token: string; seat: string }>('collab_connect_p2p', { url, name, attempt, seat: as?.seat ?? null, agent: as?.agent ?? null })
-  return { transport: await native(conn, events), token, seat }
+  let joined: { token: string; seat: string } | undefined
+  const { transport } = await native(async (channel) => {
+    const info = await invoke<{ conn: number; token: string; seat: string }>('collab_connect_p2p', { url, name, attempt, seat: as?.seat ?? null, agent: as?.agent ?? null, events: channel })
+    joined = info
+    return info.conn
+  }, events)
+  return { transport, token: joined!.token, seat: joined!.seat }
 }
 
 let joinAttempts = 0
@@ -285,9 +310,8 @@ export function cancelJoins() {
 export async function connect(url: string, events: TransportEvents): Promise<Transport> {
   await resetNative()
   if (isTauri) {
-    await listenOnce()
     const { invoke } = await import('@tauri-apps/api/core')
-    return native(await invoke<number>('collab_connect', { url }), events)
+    return (await native((channel) => invoke<number>('collab_connect', { url, events: channel }), events)).transport
   }
   const ws = new WebSocket(url)
   await new Promise<void>((resolve, reject) => {

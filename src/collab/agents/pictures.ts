@@ -1,6 +1,7 @@
 // Pictures an agent puts in a document: from a file, an address or base64, checked to be a
 // picture, and scaled down when far bigger than the document could show.
 
+import { shrinkPicture } from '../../lib/pictures'
 import { fetchBytes, readFile } from '../../lib/platform'
 import { type Args, str, ToolError } from './common'
 
@@ -69,28 +70,7 @@ export function pictureType(b: Uint8Array): string | null {
  * down to fit, as the editor does with a phone photo; smaller ones are kept byte for byte.
  */
 export async function scaledPicture(bytes: Uint8Array, type: string, maxW: number, maxH: number): Promise<{ bytes: Uint8Array; type: string; width: number; height: number }> {
-  const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type }))
-  try {
-    const img = new Image()
-    img.src = url
-    try {
-      await img.decode()
-    } catch {
-      throw new ToolError('That picture can’t be opened. Give a PNG, JPEG, GIF, WebP or SVG.')
-    }
-    const width = img.naturalWidth || 400
-    const height = img.naturalHeight || 300
-    const scale = Math.min(1, maxW / width, maxH / height)
-    if (scale > 0.75 || type === 'image/gif' || type === 'image/svg+xml') return { bytes, type, width, height }
-    const out = document.createElement('canvas')
-    out.width = Math.round(width * scale)
-    out.height = Math.round(height * scale)
-    out.getContext('2d')!.drawImage(img, 0, 0, out.width, out.height)
-    // Photos stay JPEG; anything that may have transparency stays PNG.
-    const kind = type === 'image/jpeg' ? 'image/jpeg' : 'image/png'
-    const small = await new Promise<Blob>((res, rej) => out.toBlob((b) => (b ? res(b) : rej(new ToolError('Couldn’t scale the picture down.'))), kind, 0.9))
-    return { bytes: new Uint8Array(await small.arrayBuffer()), type: kind, width: out.width, height: out.height }
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+  const pic = await shrinkPicture(bytes, type, maxW, maxH)
+  if (!pic) throw new ToolError('That picture can’t be opened. Give a PNG, JPEG, GIF, WebP or SVG.')
+  return pic
 }
