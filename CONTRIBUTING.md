@@ -37,7 +37,7 @@ VITE_TEST_HOOKS=1 npm run build
 npm run test:browser
 ```
 
-The browser runner starts and stops its own preview on `127.0.0.1:4173` (leave that port free), runs curated local-fixture tests sequentially, and fails on assertions or a per-script timeout. It tests a fake native bridge, not the installed desktop app. See [the stress suite](tests/stress/README.md) for broader coverage and limits.
+The browser runner starts and stops its own preview on `127.0.0.1:4173` (leave that port free), runs curated local-fixture tests a few at a time (`BROWSER_TEST_JOBS=1` runs them one by one, with live output), and fails on assertions or a per-script timeout. It tests a fake native bridge, not the installed desktop app. See [the stress suite](tests/stress/README.md) for broader coverage and limits.
 
 ## Releases
 

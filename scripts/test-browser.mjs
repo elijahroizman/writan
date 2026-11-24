@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:net'
+import { availableParallelism } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { setTimeout as delay } from 'node:timers/promises'
 
@@ -10,6 +11,8 @@ const host = '127.0.0.1'
 const port = 4173
 const url = `http://${host}:${port}/`
 const timeout = 180_000
+// Each test opens its own browser, so several run at once. BROWSER_TEST_JOBS=1 runs them in turn.
+const jobs = Math.max(1, Number(process.env.BROWSER_TEST_JOBS) || Math.min(4, availableParallelism() - 1))
 const scripts = [
   'tests/stress/ui/circular-reference.mjs',
   'tests/stress/ui/css-fonts.mjs',
@@ -61,19 +64,27 @@ for (const signal of ['SIGINT', 'SIGTERM']) {
   })
 }
 
-function launch(args, env = {}) {
+// With `output`, the child's output is collected there instead of printed, so tests running at
+// the same time don't interleave their lines.
+function launch(args, env = {}, output) {
   const child = spawn(process.execPath, args, {
     cwd: root,
     env: { ...process.env, ...env },
-    stdio: 'inherit',
+    stdio: output ? ['ignore', 'pipe', 'pipe'] : 'inherit',
     detached,
   })
   children.add(child)
+  if (output) {
+    child.stdout.on('data', (chunk) => output.push(chunk))
+    child.stderr.on('data', (chunk) => output.push(chunk))
+  }
   const finished = new Promise((resolve, reject) => {
     child.once('error', reject)
     child.once('exit', (code, signal) => resolve({ code, signal }))
   })
-  return { child, finished }
+  // The last output can arrive after the exit.
+  const closed = once(child, 'close').catch(() => {})
+  return { child, finished, closed }
 }
 
 async function checkPort() {
@@ -113,11 +124,13 @@ try {
   await checkPort()
   const server = launch(['node_modules/vite/bin/vite.js', 'preview', '--host', host, '--port', String(port), '--strictPort'])
   await ready(server.child)
-  for (const script of scripts) {
-    if (interrupted) break
+  const stopped = server.finished.then(() => { throw new Error('Vite preview stopped during browser tests') })
+  stopped.catch(() => {})
+  async function run(script) {
     const start = performance.now()
     const args = script.includes('/native/') ? [script, url, 'chromium'] : [script]
-    const test = launch(args, { WRITAN_URL: url, ENGINE: 'chromium' })
+    const output = []
+    const test = launch(args, { WRITAN_URL: url, ENGINE: 'chromium' }, jobs > 1 ? output : undefined)
     let timedOut = false
     const timer = setTimeout(() => {
       timedOut = true
@@ -125,14 +138,13 @@ try {
     }, timeout)
     let result
     try {
-      result = await Promise.race([
-        test.finished,
-        server.finished.then(() => { throw new Error('Vite preview stopped during browser tests') }),
-      ])
+      result = await Promise.race([test.finished, stopped])
     } finally {
       clearTimeout(timer)
       kill(test.child)
       children.delete(test.child)
+      await Promise.race([test.closed, delay(2000)])
+      if (output.length) process.stdout.write(Buffer.concat(output))
     }
     const ok = result.code === 0 && !timedOut
     if (ok) passed++
@@ -140,6 +152,10 @@ try {
     const detail = timedOut ? 'timed out after 180s' : `exit ${result.code ?? result.signal}`
     console.log(`${ok ? 'PASS' : 'FAIL'} ${script} (${((performance.now() - start) / 1000).toFixed(2)}s, ${detail})`)
   }
+  const queue = [...scripts]
+  await Promise.all(Array.from({ length: Math.min(jobs, queue.length) }, async () => {
+    while (queue.length && !interrupted) await run(queue.shift())
+  }))
 } catch (error) {
   failed++
   console.error(`FAIL browser runner: ${error.message}`)

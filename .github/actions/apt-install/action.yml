@@ -1,0 +1,81 @@
+name: Install apt packages, with the downloads cached
+description: >
+  Runs an apt-get install with the .deb files kept in the Actions cache. Ubuntu's mirror for
+  the runners is sometimes very slow (100 kB/s has made LibreOffice take 19 minutes and
+  Playwright's fonts 5), so the packages come from the cache and apt downloads only what is
+  missing or newer. It caches the downloads, not the installed files, so apt still installs
+  exactly what it would without the cache, whatever the runner image already has.
+
+inputs:
+  name:
+    description: Cache name, one per package list.
+    required: true
+  run:
+    description: The install command, such as `sudo apt-get install -y <packages>`.
+    required: true
+  update:
+    description: Run apt-get update first. Off when the command updates by itself.
+    default: 'true'
+  save:
+    description: Save new downloads. Off where nothing else could read the cache (tag runs).
+    default: 'true'
+
+runs:
+  using: composite
+  steps:
+    - name: Keep apt's downloads
+      id: setup
+      shell: bash
+      run: |
+        set -euo pipefail
+        . /etc/os-release
+        dir="$HOME/.cache/apt-archives"
+        mkdir -p "$dir/partial"
+        # apt fetches as the _apt user, which can't reach the runner's home directory.
+        sudo tee /etc/apt/apt.conf.d/90ci-archives > /dev/null <<CONF
+        Dir::Cache::Archives "$dir";
+        APT::Keep-Downloaded-Packages "true";
+        Binary::apt::APT::Keep-Downloaded-Packages "true";
+        APT::Sandbox::User "root";
+        CONF
+        # Rebuilding the man page index after every install takes up to a minute, for nothing.
+        sudo rm -f /var/lib/man-db/auto-update
+        echo "dir=$dir" >> "$GITHUB_OUTPUT"
+        echo "prefix=apt-${{ inputs.name }}-${VERSION_CODENAME}-$(dpkg --print-architecture)-" >> "$GITHUB_OUTPUT"
+    - name: Restore apt's downloads
+      id: restore
+      uses: actions/cache/restore@v4
+      with:
+        path: ${{ steps.setup.outputs.dir }}
+        # Never an exact hit: the newest cache for this list and system is restored, and a new
+        # one saved when the downloads changed.
+        key: ${{ steps.setup.outputs.prefix }}latest
+        restore-keys: ${{ steps.setup.outputs.prefix }}
+    - name: Refresh package index
+      if: inputs.update == 'true'
+      shell: bash
+      run: sudo apt-get update
+    - name: Install
+      shell: bash
+      run: ${{ inputs.run }}
+    - name: Tidy apt's downloads
+      id: tidy
+      shell: bash
+      env:
+        DIR: ${{ steps.setup.outputs.dir }}
+        PREFIX: ${{ steps.setup.outputs.prefix }}
+      run: |
+        set -euo pipefail
+        # Drop versions the mirror no longer has, so the cache doesn't grow with every update.
+        sudo apt-get autoclean -y > /dev/null
+        sudo rm -rf "$DIR/lock" "$DIR/partial"
+        sudo chown -R "$(id -u):$(id -g)" "$DIR"
+        hash="$(find "$DIR" -maxdepth 1 -name '*.deb' -printf '%f\n' | sort | sha256sum | cut -c1-16)"
+        echo "key=$PREFIX$hash" >> "$GITHUB_OUTPUT"
+        du -sh "$DIR"
+    - name: Save apt's downloads
+      if: inputs.save == 'true' && steps.tidy.outputs.key != steps.restore.outputs.cache-matched-key
+      uses: actions/cache/save@v4
+      with:
+        path: ${{ steps.setup.outputs.dir }}
+        key: ${{ steps.tidy.outputs.key }}
