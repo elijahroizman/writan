@@ -80,10 +80,12 @@ gtk = "0.18"
 # Spelling in Word documents and presentations with the system's Hunspell dictionaries (spelling.rs).
 spellbook = "0.4"
 
-# Thin LTO and the default codegen units: a few minutes off each CI build, for a slightly bigger
-# binary. Full LTO with codegen-units = 1 is smallest, if size ever matters more than build time.
+# No LTO across crates, and the default codegen units: the app compiles in 40s instead of 106s
+# with thin LTO (measured on Linux, and the Mac release compiles it once per architecture), for a
+# binary 1.7% bigger (18.8 MB instead of 18.5). Thin or full LTO with codegen-units = 1 is
+# smaller, if size ever matters more than build time.
 [profile.release]
-lto = "thin"
+lto = false
 opt-level = "s"
 panic = "abort"
 strip = true
