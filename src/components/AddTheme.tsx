@@ -53,6 +53,7 @@ export function AddTheme({ onClose }: { onClose: () => void }) {
     if (!q) {
       setResults(null)
       setError(null)
+      setSearching(false)
       return
     }
     const abort = new AbortController()

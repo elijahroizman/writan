@@ -347,7 +347,7 @@ function hex6(value: unknown, what: string): string {
 }
 
 function cssOf(value: unknown): string | undefined {
-  if (value === undefined || value === '') return undefined
+  if (value === undefined || value === null || value === '') return undefined
   if (typeof value !== 'string') throw new ThemeFileError('css should be a string.')
   if (value.length > THEME_CSS_MAX_LENGTH) throw new ThemeFileError(`css is longer than ${THEME_CSS_MAX_LENGTH} characters.`)
   return value
@@ -432,9 +432,9 @@ export function parseThemeFile(text: string | unknown, fallbackName = 'Imported 
       return out
     }
     const own = t3(d.colors)
-    const canvas = (typeof d.canvas === 'string' && toHex6(d.canvas)) || (own.canvas && toHex6(own.canvas))
-    const accent = (typeof d.accent === 'string' && toHex6(d.accent)) || (own.accent && toHex6(own.accent))
-    if (!canvas || !accent) throw new ThemeFileError('This T3 Code theme has no canvas and accent colors.')
+    // T3 Code allows a theme of CSS or a few colors alone; Writan's own colors fill in the rest.
+    const canvas = (typeof d.canvas === 'string' && toHex6(d.canvas)) || (own.canvas && toHex6(own.canvas)) || (mode === 'dark' ? PRESET_THEMES[0].dark : PRESET_THEMES[0].light)
+    const accent = (typeof d.accent === 'string' && toHex6(d.accent)) || (own.accent && toHex6(own.accent)) || PRESET_THEMES[0].accent
     const vs = (d.variants ?? {}) as Record<string, unknown>
     const other: Appearance = mode === 'dark' ? 'light' : 'dark'
     const otherColors = t3(vs[other])

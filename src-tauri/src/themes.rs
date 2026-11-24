@@ -191,7 +191,11 @@ pub fn publish(folder: &Path, id: &str, text: &str) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
-pub fn theme_publish<R: Runtime>(app: AppHandle<R>, id: String, text: String) -> Result<String, String> {
+pub fn theme_publish<R: Runtime>(
+    app: AppHandle<R>,
+    id: String,
+    text: String,
+) -> Result<String, String> {
     let path = publish(&dir(&app)?, &id, &text)?;
     // Tell the page now rather than at the next look at the folder.
     let _ = app.emit("themes-changed", ());
@@ -257,7 +261,18 @@ mod tests {
     fn ids() {
         assert!(valid_id("nightfall"));
         assert!(valid_id("solarized-2"));
-        for bad in ["", "dark", "light", "system", "-x", "Night", "a/b", "../x", "a.b", &"a".repeat(49)] {
+        for bad in [
+            "",
+            "dark",
+            "light",
+            "system",
+            "-x",
+            "Night",
+            "a/b",
+            "../x",
+            "a.b",
+            &"a".repeat(49),
+        ] {
             assert!(!valid_id(bad), "{bad}");
         }
     }
@@ -276,9 +291,11 @@ mod tests {
         assert_eq!(read[0].text, r#"{"name":"Dusk 2"}"#);
         assert_eq!(read[0].background.as_ref().unwrap().ext, "png");
         // Nothing left over from staging.
-        assert!(fs::read_dir(&d)
+        assert!(fs::read_dir(&d).unwrap().all(|e| !e
             .unwrap()
-            .all(|e| !e.unwrap().file_name().to_string_lossy().ends_with(".tmp")));
+            .file_name()
+            .to_string_lossy()
+            .ends_with(".tmp")));
         assert!(publish(&d, "../escape", "{}").is_err());
         let _ = fs::remove_dir_all(&d);
     }
@@ -286,7 +303,11 @@ mod tests {
     #[test]
     fn skips_oversized_files() {
         let d = temp();
-        fs::write(d.join("huge.json"), vec![b' '; (MAX_FILE_BYTES + 1) as usize]).unwrap();
+        fs::write(
+            d.join("huge.json"),
+            vec![b' '; (MAX_FILE_BYTES + 1) as usize],
+        )
+        .unwrap();
         assert!(read_folder(&d).is_empty());
         let _ = fs::remove_dir_all(&d);
     }

@@ -10,7 +10,7 @@ import { create } from 'zustand'
 import { cssLoadsFiles } from '../lib/themeCss'
 import { inspectRole } from '../lib/themeInspector'
 import type { Appearance, Role, ThemeDef } from '../lib/themes'
-import { isColor, isHex, ROLES, toHex6 } from '../lib/themes'
+import { isColor, isHex, ROLES, THEME_CSS_MAX_LENGTH, toHex6 } from '../lib/themes'
 import { useAppearance } from '../state/appearance'
 import { useWorkspace } from '../state/workspace'
 import { Button, IconButton, Segmented, Switch, TextField } from './ui'
@@ -71,7 +71,8 @@ function ThemeEditorPanel({ session }: { session: Session }) {
     // Read the colors the page now has, for the fields that show them.
     setTick((t) => t + 1)
   }, [draft, mode])
-  useEffect(() => () => useAppearance.getState().setPreview(null), [])
+  // A layout cleanup, so a panel that replaces this one has set its own preview after it.
+  useLayoutEffect(() => () => useAppearance.getState().setPreview(null), [])
 
   const own = draft.variants?.[mode] ?? {}
   const shown = (css: string) => getComputedStyle(document.documentElement).getPropertyValue(css).trim()
@@ -82,7 +83,8 @@ function ThemeEditorPanel({ session }: { session: Session }) {
     setDraft({ ...draft, variants: { ...draft.variants, [mode]: colors } })
   }
 
-  const valid = draft.name.trim().length > 0 && isHex(draft.accent) && isHex(draft.light) && isHex(draft.dark)
+  const cssTooLong = (draft.css?.length ?? 0) > THEME_CSS_MAX_LENGTH
+  const valid = draft.name.trim().length > 0 && isHex(draft.accent) && isHex(draft.light) && isHex(draft.dark) && !cssTooLong
   const cssWarning = draft.css && cssLoadsFiles(draft.css) ? 'Rules that load files (@import, url() other than data:) are left out.' : null
 
   // Pick: hover outlines what's under the pointer; a click finds its color.
@@ -228,7 +230,7 @@ function ThemeEditorPanel({ session }: { session: Session }) {
       {!minimized && (
         <>
           <div className="theme-panel-body">
-            <TextField label="Name" value={draft.name} maxLength={48} placeholder="Theme name" onChange={(e) => setDraft({ ...draft, name: e.currentTarget.value })} />
+            <TextField label="Name" autoFocus value={draft.name} maxLength={48} placeholder="Theme name" onChange={(e) => setDraft({ ...draft, name: e.currentTarget.value })} />
             <div className="theme-panel-row">
               <span>Editing</span>
               <Segmented
@@ -300,6 +302,7 @@ function ThemeEditorPanel({ session }: { session: Session }) {
                   <p className="settings-hint">For what colors can’t change. Applied after Writan’s own styles and saved with the theme. Use :root[data-theme='dark'] for one appearance.</p>
                   <textarea className="theme-css" spellCheck={false} value={draft.css ?? ''} placeholder={'.titlebar {\n  border-bottom: 2px solid var(--accent);\n}'} onChange={(e) => setDraft({ ...draft, css: e.currentTarget.value })} />
                   {cssWarning && <p className="settings-hint warn">{cssWarning}</p>}
+                  {cssTooLong && <p className="settings-hint warn">Custom CSS can be {THEME_CSS_MAX_LENGTH.toLocaleString()} characters at most.</p>}
                 </>
               )}
             </div>

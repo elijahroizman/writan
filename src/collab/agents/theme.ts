@@ -90,7 +90,10 @@ async function setTheme(args: Args): Promise<string> {
       if (parsed.css && cssLoadsFiles(parsed.css)) throw new ToolError('The CSS loads files. Remove @import, image-set(), and url() that isn’t data: or #id.')
       const def: ThemeDef = { ...parsed, id: themeId }
       if (isTauri) {
+        if (useAppearance.getState().custom.some((t) => t.id === themeId)) throw new ToolError(`“${themeId}” is a theme the person made in Writan. Use another id.`)
         const path = await publishTheme(themeId, themeFile(def)).catch((err) => Promise.reject(new ToolError(`The theme wasn’t published: ${String((err as Error)?.message ?? err)}`)))
+        // The folder holds 32 themes and 2 MB at most; past that, a file is left out.
+        if (!useAppearance.getState().published.some((t) => t.id === themeId)) throw new ToolError(`The theme was saved to ${path}, but Writan didn’t load it: the themes folder may be full (32 themes, 2 MB).`)
         done.push(`Published “${def.name}” to ${path}.`)
       } else {
         useAppearance.getState().save(def)

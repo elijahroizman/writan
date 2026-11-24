@@ -89,19 +89,23 @@ function stripFetches(parent: RuleParent) {
 
 /** Puts a theme's CSS after the app's own styles, without anything that loads a file. */
 export function applyThemeCss(css: string | undefined) {
-  if (typeof document === 'undefined' || typeof CSSStyleSheet === 'undefined') return
+  // Constructed sheets came in Safari 16.4; on older WebKit (macOS 12) a theme keeps its colors
+  // and goes without its CSS.
+  if (typeof document === 'undefined' || !('adoptedStyleSheets' in document) || typeof CSSStyleSheet === 'undefined' || !('replaceSync' in CSSStyleSheet.prototype)) return
   const next = css ?? ''
   if (next === applied) return
   applied = next
-  if (!sheet) {
-    // Adopted sheets come after the document's own, and can't hold @import.
-    sheet = new CSSStyleSheet()
-    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet]
-  }
   try {
-    sheet.replaceSync(next)
-  } catch {
-    sheet.replaceSync('')
+    // A new sheet, checked before it's adopted, so nothing in it can load before it's stripped.
+    const fresh = new CSSStyleSheet()
+    fresh.replaceSync(next)
+    stripFetches(fresh)
+    // Adopted sheets come after the document's own, and can't hold @import.
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets.filter((s) => s !== sheet), fresh]
+    sheet = fresh
+  } catch (err) {
+    document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet)
+    sheet = null
+    console.warn('Theme CSS left out', err)
   }
-  stripFetches(sheet)
 }

@@ -212,11 +212,48 @@ function packagePath(path: string, from = 'extension/'): string {
   return parts.join('/')
 }
 
+type Streamable = JSZip.JSZipObject & { internalStream?: (type: 'uint8array') => JSZip.JSZipStreamHelper<Uint8Array> }
+
+/**
+ * A file in the package as text. Read as a stream and dropped once it passes the limit, since the
+ * sizes a ZIP's directory claims aren't what inflating actually makes.
+ */
 async function zipText(zip: JSZip, path: string): Promise<string> {
-  const file = zip.file(path)
-  if (!file) throw new Error(`${path} is missing from the package.`)
-  const bytes = await file.async('uint8array')
-  if (bytes.byteLength > MAX_THEME_BYTES) throw new Error(`${path} is too big.`)
+  const file = zip.file(path) as Streamable | null
+  if (!file?.internalStream) throw new Error(`${path} is missing from the package.`)
+  const stream = file.internalStream('uint8array')
+  const bytes = await new Promise<Uint8Array>((resolve, reject) => {
+    const chunks: Uint8Array[] = []
+    let size = 0
+    let done = false
+    stream
+      .on('data', (chunk) => {
+        if (done) return
+        size += chunk.byteLength
+        if (size > MAX_THEME_BYTES) {
+          done = true
+          stream.pause()
+          reject(new Error(`${path} is too big.`))
+          return
+        }
+        chunks.push(chunk)
+      })
+      .on('error', (err) => {
+        if (!done) (done = true), reject(err)
+      })
+      .on('end', () => {
+        if (done) return
+        done = true
+        const out = new Uint8Array(size)
+        let at = 0
+        for (const c of chunks) {
+          out.set(c, at)
+          at += c.byteLength
+        }
+        resolve(out)
+      })
+      .resume()
+  })
   return new TextDecoder().decode(bytes)
 }
 

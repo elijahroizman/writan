@@ -57,7 +57,8 @@ export default function SettingsPanel() {
       if (e.key === 'Escape' && !recording) {
         // Add theme and the theme editor (with its color picking) close themselves first.
         const target = e.target instanceof Element ? e.target : null
-        if (document.querySelector('.add-theme') || target?.closest('[data-theme-editor]') || document.documentElement.classList.contains('theme-picking')) return
+        // So does an open menu (a theme's ⋯).
+        if (document.querySelector('.add-theme, .menu-backdrop') || target?.closest('[data-theme-editor]') || document.documentElement.classList.contains('theme-picking')) return
         e.stopPropagation()
         setOpen(false)
       }

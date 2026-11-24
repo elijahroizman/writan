@@ -178,9 +178,11 @@ async function applyBackground(theme: ThemeDef) {
   if (backdrop?.key !== key) {
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      const bytes = await invoke<ArrayBuffer>('theme_background', { id: theme.id, ext: bg.ext })
+      const data = await invoke<ArrayBuffer | number[]>('theme_background', { id: theme.id, ext: bg.ext })
+      // Tauri's fallback transport sends bytes as a list of numbers.
+      const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data)
       const type = bg.ext === 'jpg' || bg.ext === 'jpeg' ? 'image/jpeg' : `image/${bg.ext}`
-      const url = URL.createObjectURL(new Blob([bytes], { type }))
+      const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }))
       if (backdropWanted !== key) return URL.revokeObjectURL(url)
       if (backdrop) URL.revokeObjectURL(backdrop.url)
       backdrop = { key, url }
