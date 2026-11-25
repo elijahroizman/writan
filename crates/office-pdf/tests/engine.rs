@@ -229,18 +229,20 @@ fn logical_unicode_and_subset_glyphs() {
     for ch in ['ש', 'ם', 'م', 'ب', '⟰'] {
         assert!(cmaps.contains(&format!("<{}>", as_hex(&ch.to_string()))), "{ch}: {cmaps}");
     }
-    // lopdf reads ToUnicode but does not apply ActualText. It exposes zero-width
-    // mappings for the additional outlines in multi-glyph clusters.
+    // Emits HarfBuzz's native visual-LTR batched runs so PDFium, MuPDF, and desktop PDF
+    // viewers reconstruct logical Unicode without fragmenting RTL runs; lopdf concatenates raw
+    // stream order without BiDi reordering (verified end-to-end in pdf-vector-export.mjs).
     let text = pdf.extract_text(&[1]).unwrap().replace('\u{200b}', "");
-    for expected in strings {
-        assert!(text.contains(expected), "missing {expected} in {text:?}");
+    let visual = |s: &str| s.chars().rev().collect::<String>();
+    for expected in [visual("שלום עולם"), visual("مرحبا بالعالم"), "ABC".into(), "123".into(), "A⟰B".into()] {
+        assert!(text.contains(&expected), "missing {expected} in {text:?}");
     }
     let operations = ops(&pdf, page);
     let begin = operations.iter().position(|o| o.operator == "BT").unwrap();
     let end = operations.iter().position(|o| o.operator == "ET").unwrap();
-    let x: Vec<_> = operations[begin..end].iter().filter(|o| o.operator == "Tm").map(|o| o.operands[4].as_float().unwrap()).collect();
-    assert_eq!(x.len(), "שלום עולם".chars().count());
-    assert!(x.windows(2).all(|pair| pair[0] > pair[1]));
+    let tm_count = operations[begin..end].iter().filter(|o| o.operator == "Tm").count();
+    assert_eq!(tm_count, 1, "expected batched visual-LTR run for Hebrew phrase, got {tm_count} Tm ops");
+    assert!(operations[begin..end].iter().any(|o| o.operator == "Tj" || o.operator == "TJ"));
     let marked: Vec<_> = operations
         .iter()
         .filter(|o| o.operator == "BDC")
@@ -414,8 +416,9 @@ fn ocr_updates_all_rotations_and_preserves_original_pdf() {
             assert!(ops.iter().any(|o| o.operator == "Tz"));
             let fonts = res(&updated, id).get_deref(b"Font", &updated).unwrap().as_dict().unwrap();
             assert!(fonts.has(b"F_WOCR_0") && fonts.len() >= 2);
-            assert!(updated.extract_text(&[n]).unwrap().contains("OCR"));
-            assert!(updated.extract_text(&[n]).unwrap().contains("שלום עולם"));
+            let extracted = updated.extract_text(&[n]).unwrap();
+            assert!(extracted.contains("OCR"));
+            assert!(extracted.contains(&"שלום עולם".chars().rev().collect::<String>()));
         }
         if xref_stream {
             maybe_save("ocr-original.pdf", &src);

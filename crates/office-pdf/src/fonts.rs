@@ -261,16 +261,36 @@ impl<'a> Fonts<'a> {
 
         let bidi = ParagraphBidiInfo::new(text, rtl.map(|rtl| if rtl { Level::rtl() } else { Level::ltr() }));
         let (levels, visual_runs) = bidi.visual_runs(0..text.len());
-        let mut logical = BTreeMap::new();
+        let mut clusters = Vec::new();
         for bidi_run in visual_runs {
             let rtl = levels[bidi_run.start].is_rtl();
+            let first_strong = text[bidi_run.clone()]
+                .chars()
+                .map(|ch| ch.script())
+                .find(|s| !matches!(s, Script::Common | Script::Inherited | Script::Unknown));
+            let preferred_font = text[bidi_run.clone()]
+                .graphemes(true)
+                .find(|grapheme| grapheme.chars().any(|ch| !matches!(ch.script(), Script::Common | Script::Inherited | Script::Unknown)))
+                .map(|grapheme| self.choose_font(&candidates, grapheme, false));
             let mut runs = Vec::<Run>::new();
-            let mut script = Script::Common;
+            let mut script = first_strong.unwrap_or(Script::Common);
             for (offset, grapheme) in text[bidi_run.clone()].grapheme_indices(true) {
                 let start = bidi_run.start + offset;
                 let end = start + grapheme.len();
                 let small = small_caps && grapheme.chars().any(char::is_lowercase);
-                let font = self.choose_font(&candidates, grapheme, small);
+                let is_neutral = grapheme
+                    .chars()
+                    .all(|ch| is_format_only(ch) || matches!(ch.script(), Script::Common | Script::Inherited | Script::Unknown));
+                let font = if !small && is_neutral {
+                    preferred_font
+                        .filter(|&pref| {
+                            let face = &self.fonts[pref].face;
+                            grapheme.chars().all(|ch| is_format_only(ch) || face.glyph_index(ch).is_some())
+                        })
+                        .unwrap_or_else(|| self.choose_font(&candidates, grapheme, small))
+                } else {
+                    self.choose_font(&candidates, grapheme, small)
+                };
                 let caps = if !small {
                     Caps::Normal
                 } else if self.fonts[font].face.tables().gsub.is_some_and(|table| table.features.find(SMALL_CAPS).is_some()) {
@@ -294,24 +314,15 @@ impl<'a> Fonts<'a> {
                 runs.reverse();
             }
             for run in runs {
-                self.shape_run(text, run, spec.size, rtl, spacing, &mut shaped.width, &mut logical);
+                self.shape_run(text, run, spec.size, rtl, spacing, &mut shaped.width, &mut clusters);
             }
         }
-        shaped.clusters = logical.into_values().collect();
+        shaped.clusters = clusters;
         Ok(shaped)
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn shape_run(
-        &mut self,
-        text: &str,
-        run: Run,
-        size: f64,
-        rtl: bool,
-        spacing: f64,
-        cursor: &mut f64,
-        logical: &mut BTreeMap<usize, Cluster>,
-    ) {
+    fn shape_run(&mut self, text: &str, run: Run, size: f64, rtl: bool, spacing: f64, cursor: &mut f64, clusters: &mut Vec<Cluster>) {
         let font = &mut self.fonts[run.style.font];
         let size = if run.style.caps == Caps::Synthetic { size * 0.78 } else { size };
         let unit = size / f64::from(font.face.units_per_em());
@@ -381,10 +392,7 @@ impl<'a> Fonts<'a> {
             }
             glyphs[..=base].rotate_right(1);
             *cursor += original.chars().filter(|&ch| ch == ' ').count() as f64 * spacing;
-            logical.insert(
-                run.range.start + from,
-                Cluster { font: run.style.font, size, glyphs, actual_text: actual.then(|| original.to_owned()) },
-            );
+            clusters.push(Cluster { font: run.style.font, size, glyphs, actual_text: actual.then(|| original.to_owned()) });
             start = end;
         }
     }
@@ -567,7 +575,9 @@ impl ShapedText {
                 let key = (id, cluster.size);
                 let gx = x + glyph.x * sx;
                 let gy = baseline + glyph.y * sy;
-                let can_extend = batch.as_ref().is_some_and(|b| b.key == key && (gy - b.y).abs() < 1e-3 && gx >= b.pen_x - 0.01);
+                let can_extend = batch.as_ref().is_some_and(|b| {
+                    b.key == key && (gy - b.y).abs() < 1e-3 && (gx - b.pen_x) > -0.5 * cluster.size && (gx - b.pen_x) < 3.0 * cluster.size
+                });
                 if can_extend {
                     let b = batch.as_mut().unwrap();
                     let scale = cluster.size * sx;
