@@ -18,6 +18,11 @@ export interface OcrLayerInput {
     wPt: number
     hPt: number
     baselineYPt?: number
+    baselineX0Pt?: number
+    baselineY0Pt?: number
+    baselineX1Pt?: number
+    baselineY1Pt?: number
+    orientedHPt?: number
     rtl: boolean
   }>
 }
@@ -41,6 +46,11 @@ interface SvgOverlayInput {
   svg: string
 }
 
+type PdfPaintItem =
+  | Exclude<PaintItem, { t: 'text' | 'group' }>
+  | (Extract<PaintItem, { t: 'text' }> & { invisible?: boolean })
+  | (Omit<Extract<PaintItem, { t: 'group' }>, 'items'> & { items: PdfPaintItem[] })
+
 interface PdfPageInput {
   widthPt: number
   heightPt: number
@@ -49,7 +59,7 @@ interface PdfPageInput {
   offsetXPt: number
   offsetYPt: number
   clipRectPx?: [number, number, number, number]
-  items: PaintItem[]
+  items: PdfPaintItem[]
   svgs: SvgOverlayInput[]
 }
 
@@ -218,8 +228,88 @@ function pngDimensions(bytes: Uint8Array): { width: number; height: number } | n
   return { width: view.getUint32(16, false), height: view.getUint32(20, false) }
 }
 
+async function rasterizeSvgToPng(bytes: Uint8Array, scale = 4): Promise<Uint8Array> {
+  const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/svg+xml' }))
+  try {
+    const img = new Image()
+    img.src = url
+    await img.decode()
+    const w = Math.max(1, Math.round((img.naturalWidth || 128) * scale))
+    const h = Math.max(1, Math.round((img.naturalHeight || 128) * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = w
+    canvas.height = h
+    const ctx = canvas.getContext('2d')!
+    ctx.drawImage(img, 0, 0, w, h)
+    const pngBlob = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode SVG PNG fallback.'))), 'image/png'),
+    )
+    return new Uint8Array(await pngBlob.arrayBuffer())
+  } finally {
+    URL.revokeObjectURL(url)
+  }
+}
+
+function svgNeedsRasterFallback(bytes: Uint8Array): boolean {
+  const text = utf8Decoder.decode(bytes)
+  return /url\(\s*#|<(?:linearGradient|radialGradient|filter|mask|pattern|image|foreignObject|clipPath)\b/i.test(text)
+}
+
+function jpegExifOrientation(bytes: Uint8Array): number {
+  if (!isJpeg(bytes)) return 1
+  let i = 2
+  while (i + 4 <= bytes.length) {
+    if (bytes[i] !== 0xff) {
+      i++
+      continue
+    }
+    while (i < bytes.length && bytes[i] === 0xff) i++
+    if (i >= bytes.length) break
+    const marker = bytes[i++]
+    if (marker === 0xd9 || marker === 0xda) break
+    if (marker === 0x01 || (marker >= 0xd0 && marker <= 0xd7)) continue
+    if (i + 2 > bytes.length) break
+    const len = (bytes[i] << 8) | bytes[i + 1]
+    if (len < 2 || i + len > bytes.length) break
+    if (
+      marker === 0xe1 &&
+      len >= 16 &&
+      bytes[i + 2] === 0x45 &&
+      bytes[i + 3] === 0x78 &&
+      bytes[i + 4] === 0x69 &&
+      bytes[i + 5] === 0x66 &&
+      bytes[i + 6] === 0x00 &&
+      bytes[i + 7] === 0x00
+    ) {
+      const tiffStart = i + 8
+      const view = new DataView(bytes.buffer, bytes.byteOffset + tiffStart, i + len - tiffStart)
+      if (view.byteLength >= 8) {
+        const tag = view.getUint16(0, false)
+        const le = tag === 0x4949 ? true : tag === 0x4d4d ? false : null
+        if (le !== null && view.getUint16(2, le) === 42) {
+          const ifd = view.getUint32(4, le)
+          if (ifd + 2 <= view.byteLength) {
+            const count = Math.min(128, view.getUint16(ifd, le))
+            for (let k = 0; k < count; k++) {
+              const entry = ifd + 2 + k * 12
+              if (entry + 12 > view.byteLength) break
+              if (view.getUint16(entry, le) === 0x0112 && view.getUint16(entry + 2, le) === 3 && view.getUint32(entry + 4, le) === 1) {
+                const val = view.getUint16(entry + 8, le)
+                if (val >= 1 && val <= 8) return val
+              }
+            }
+          }
+        }
+      }
+    }
+    i += len
+  }
+  return 1
+}
+
 function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | null {
   if (!isJpeg(bytes)) return null
+  const orientation = jpegExifOrientation(bytes)
   let i = 2
   while (i + 4 <= bytes.length) {
     if (bytes[i] !== 0xff) {
@@ -236,10 +326,9 @@ function jpegDimensions(bytes: Uint8Array): { width: number; height: number } | 
     if (len < 2 || i + len > bytes.length) break
     if ((marker >= 0xc0 && marker <= 0xc3) || (marker >= 0xc5 && marker <= 0xc7) || (marker >= 0xc9 && marker <= 0xcb) || (marker >= 0xcd && marker <= 0xcf)) {
       if (len >= 7) {
-        return {
-          height: (bytes[i + 3] << 8) | bytes[i + 4],
-          width: (bytes[i + 5] << 8) | bytes[i + 6],
-        }
+        const height = (bytes[i + 3] << 8) | bytes[i + 4]
+        const width = (bytes[i + 5] << 8) | bytes[i + 6]
+        return orientation >= 5 && orientation <= 8 ? { width: height, height: width } : { width, height }
       }
     }
     i += len
@@ -320,10 +409,16 @@ function buildStyleTable(styleSheet: StyleSheet, usedStyleIds: Set<number>): { a
 async function resolveMediaPack(
   keys: Set<string>,
   lookup: (id: string) => { bytes: Uint8Array | undefined; type: string } | null,
+  extraEntries: ReadonlyMap<string, Uint8Array> = new Map(),
 ): Promise<{ pack: Uint8Array; hasSvg: boolean }> {
   const entries: Array<[string, Uint8Array]> = []
   let hasSvg = false
   for (const id of keys) {
+    const extra = extraEntries.get(id)
+    if (extra) {
+      entries.push([id, extra])
+      continue
+    }
     if (id.startsWith(LATEX_MATH_PREFIX)) {
       const rendered = renderLatexTagToSvgBytes(id)
       if (rendered) {
@@ -335,6 +430,14 @@ async function resolveMediaPack(
     const raw = lookup(id)
     if (!raw?.bytes?.length) continue
     if (isSvg(raw.bytes, raw.type)) {
+      if (svgNeedsRasterFallback(raw.bytes)) {
+        try {
+          entries.push([id, await rasterizeSvgToPng(raw.bytes)])
+          continue
+        } catch {
+          // Fall back to direct SVG path parser if browser rasterization fails.
+        }
+      }
       hasSvg = true
       entries.push([id, raw.bytes])
     } else if (isJpeg(raw.bytes) || isPng(raw.bytes)) {
@@ -351,6 +454,108 @@ async function resolveMediaPack(
   return { pack: packBlobs(entries), hasSvg }
 }
 
+const CJK_RE = /[\u3000-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/
+
+async function renderCjkTextToPng(
+  text: string,
+  font: string,
+  color: string,
+  widthPx: number,
+  ascent: number,
+  descent: number,
+  rtl: boolean,
+): Promise<{ bytes: Uint8Array; boxW: number }> {
+  const scale = 4
+  const probe = document.createElement('canvas').getContext('2d')!
+  probe.font = font
+  const measuredW = probe.measureText(text).width
+  const boxW = Math.max(1, widthPx > 0 ? widthPx : measuredW)
+  const hPx = Math.max(1, ascent + descent)
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.ceil(boxW * scale))
+  canvas.height = Math.max(1, Math.ceil(hPx * scale))
+  const ctx = canvas.getContext('2d')!
+  ctx.scale(scale, scale)
+  ctx.font = font
+  ctx.fillStyle = color || '#000000'
+  ctx.textBaseline = 'alphabetic'
+  let sx = 1
+  let drawX = 0
+  if (widthPx > 0 && measuredW > 0) {
+    if (measuredW > widthPx * 1.005) sx = Math.max(0.5, widthPx / measuredW)
+    else if (rtl && widthPx - measuredW > 0.5) drawX = widthPx - measuredW
+  }
+  if (sx !== 1) ctx.scale(sx, 1)
+  ctx.fillText(text, drawX / sx, ascent)
+  const blob = await new Promise<Blob>((resolve, reject) =>
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode CJK text fallback PNG.'))), 'image/png'),
+  )
+  return { bytes: new Uint8Array(await blob.arrayBuffer()), boxW }
+}
+
+async function prepareCjkOverlays(
+  items: PaintItem[],
+  styleSheet: StyleSheet,
+  ctx: CollectContext,
+  extraMedia: Map<string, Uint8Array>,
+): Promise<PdfPaintItem[]> {
+  const out: PdfPaintItem[] = []
+  for (const item of items) {
+    if (item.t === 'group') {
+      out.push({ ...item, items: await prepareCjkOverlays(item.items, styleSheet, ctx, extraMedia) })
+      continue
+    }
+    if (item.t !== 'text' || !CJK_RE.test(item.text)) {
+      out.push(item)
+      continue
+    }
+    const resolved = styleSheet.style(item.s)
+    const color = resolved?.style.color ?? '#000000'
+    if (color === 'transparent') {
+      out.push(item)
+      continue
+    }
+    const font = resolved?.style.font ?? '16px sans-serif'
+    const fontSize = parseFloat(/(\d+(?:\.\d+)?)px/.exec(font)?.[1] ?? '16') || 16
+    const ascent = resolved?.ascent ?? fontSize * 0.85
+    const descent = resolved?.descent ?? fontSize * 0.25
+    const baseline = item.y - (resolved?.style.shift ?? 0)
+    const { bytes, boxW } = await renderCjkTextToPng(item.text, font, color, item.w, ascent, descent, !!item.rtl)
+    const key = `__wpdf_cjk_${extraMedia.size}`
+    extraMedia.set(key, bytes)
+    ctx.mediaKeys.add(key)
+    const yTop = baseline - ascent
+    if (resolved?.style.background) {
+      out.push({ t: 'rect', x: item.x, y: yTop, w: boxW, h: ascent + descent, fill: resolved.style.background })
+    }
+    out.push({ t: 'image', media: key, x: item.x, y: yTop, w: boxW, h: ascent + descent })
+    out.push({ ...item, invisible: true })
+  }
+  return out
+}
+
+function itemIntersectsYRange(item: PdfPaintItem, yMin: number, yMax: number): boolean {
+  switch (item.t) {
+    case 'rect':
+    case 'image':
+      return item.y + item.h >= yMin && item.y <= yMax
+    case 'line':
+      return Math.max(item.y1, item.y2) + item.w >= yMin && Math.min(item.y1, item.y2) - item.w <= yMax
+    case 'text':
+      return item.y + 40 >= yMin && item.y - 80 <= yMax
+    case 'group': {
+      const pad = item.rot ? Math.hypot(item.w, item.h) * 0.5 : 0
+      return item.y + item.h + pad >= yMin && item.y - pad <= yMax
+    }
+    case 'path':
+      return true
+  }
+}
+
+function filterItemsForYRange(items: readonly PdfPaintItem[], yMin: number, yMax: number): PdfPaintItem[] {
+  return items.filter((item) => itemIntersectsYRange(item, yMin, yMax))
+}
+
 export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?: AbortSignal): Promise<Uint8Array> {
   const { WordEngine } = await import('../../engine/word/engine')
   const engine = await WordEngine.open(bytes.length ? bytes : null)
@@ -358,12 +563,14 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
     const sizes = engine.sizes
     if (!sizes.length) throw new Error('This document has no pages to export.')
     const ctx: CollectContext = { usedStyleIds: new Set(), texts: [], mediaKeys: new Set(), hasSvg: false }
+    const extraMedia = new Map<string, Uint8Array>()
     const pages: PdfPageInput[] = []
     for (let i = 0; i < sizes.length; i++) {
       signal?.throwIfAborted?.()
       const p = engine.paint(i, true)
       if (!p) continue
       walkItems(p.items, ctx)
+      const items = await prepareCjkOverlays(p.items, engine.styles, ctx, extraMedia)
       pages.push({
         widthPt: p.width * PX_TO_PT,
         heightPt: p.height * PX_TO_PT,
@@ -371,17 +578,21 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
         scaleY: PX_TO_PT,
         offsetXPt: 0,
         offsetYPt: 0,
-        items: p.items,
+        items,
         svgs: [],
       })
     }
     if (!pages.length) throw new Error('This document has no pages to export.')
     const { all: styles, used } = buildStyleTable(engine.styles, ctx.usedStyleIds)
     const [{ pack: mediaPack, hasSvg }, fontPack] = await Promise.all([
-      resolveMediaPack(ctx.mediaKeys, (id) => {
-        const b = engine.doc.media(id)
-        return b ? { bytes: b, type: engine.doc.mediaType(id) ?? '' } : null
-      }),
+      resolveMediaPack(
+        ctx.mediaKeys,
+        (id) => {
+          const b = engine.doc.media(id)
+          return b ? { bytes: b, type: engine.doc.mediaType(id) ?? '' } : null
+        },
+        extraMedia,
+      ),
       loadFontsForDocument(used, ctx.texts, ctx.hasSvg),
     ])
     const finalFontPack = hasSvg && !ctx.hasSvg ? await loadFontsForDocument(used, ctx.texts, true) : fontPack
@@ -403,13 +614,15 @@ export async function exportSlidesToPdf(bytes: Uint8Array, title?: string, signa
     const visible = engine.slides.map((s, i) => ({ s, i })).filter(({ s }) => !s.hidden)
     if (!visible.length) throw new Error('This presentation has no visible slides.')
     const ctx: CollectContext = { usedStyleIds: new Set(), texts: [], mediaKeys: new Set(), hasSvg: false }
+    const extraMedia = new Map<string, Uint8Array>()
     const wPt = engine.width * PX_TO_PT
     const hPt = engine.height * PX_TO_PT
     const pages: PdfPageInput[] = []
     for (const { i } of visible) {
       signal?.throwIfAborted?.()
-      const items = engine.paintItems(i)
-      walkItems(items, ctx)
+      const rawItems = engine.paintItems(i)
+      walkItems(rawItems, ctx)
+      const items = await prepareCjkOverlays(rawItems, engine.styles, ctx, extraMedia)
       pages.push({
         widthPt: wPt,
         heightPt: hPt,
@@ -423,10 +636,14 @@ export async function exportSlidesToPdf(bytes: Uint8Array, title?: string, signa
     }
     const { all: styles, used } = buildStyleTable(engine.styles, ctx.usedStyleIds)
     const [{ pack: mediaPack, hasSvg }, fontPack] = await Promise.all([
-      resolveMediaPack(ctx.mediaKeys, (id) => {
-        const b = engine.doc.media(id)
-        return b ? { bytes: b, type: engine.doc.mediaType(id) ?? '' } : null
-      }),
+      resolveMediaPack(
+        ctx.mediaKeys,
+        (id) => {
+          const b = engine.doc.media(id)
+          return b ? { bytes: b, type: engine.doc.mediaType(id) ?? '' } : null
+        },
+        extraMedia,
+      ),
       loadFontsForDocument(used, ctx.texts, ctx.hasSvg),
     ])
     const finalFontPack = hasSvg && !ctx.hasSvg ? await loadFontsForDocument(used, ctx.texts, true) : fontPack
@@ -488,6 +705,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
     const contentH = pageH - margin * 2
 
     const ctx: CollectContext = { usedStyleIds: new Set(), texts: [], mediaKeys: new Set(), hasSvg: false }
+    const extraMedia = new Map<string, Uint8Array>()
     const pages: PdfPageInput[] = []
     let chartTools: {
       createElement: typeof import('react').createElement
@@ -505,11 +723,12 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
       engine.styles.add(raw.styles)
       const pictures: PictureView[] = engine.picturesOf(sheetIdx)
       const charts: ChartView[] = engine.chartsOf(sheetIdx)
-      const items: PaintItem[] = [
+      const rawPaintItems: PaintItem[] = [
         ...raw.items,
         ...pictures.map((p): PaintItem => ({ t: 'image', media: p.media, x: p.x, y: p.y, w: p.w, h: p.h, crop: p.crop })),
       ]
-      walkItems(items, ctx)
+      walkItems(rawPaintItems, ctx)
+      const preparedItems = await prepareCjkOverlays(rawPaintItems, engine.styles, ctx, extraMedia)
 
       let usedW = Math.max(1, g.x(cols))
       let usedH = Math.max(1, g.y(rows))
@@ -565,7 +784,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
           offsetXPt: margin,
           offsetYPt: margin - yStart * scale,
           clipRectPx: [0, yStart, usedW, sliceH],
-          items,
+          items: filterItemsForYRange(preparedItems, yStart - 24, yEnd + 24),
           svgs,
         })
       }
@@ -573,10 +792,14 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
 
     const { all: styles, used } = buildStyleTable(engine.styles, ctx.usedStyleIds)
     const [{ pack: mediaPack, hasSvg }, fontPack] = await Promise.all([
-      resolveMediaPack(ctx.mediaKeys, (id) => {
-        const b = engine.doc.media(id)
-        return b ? { bytes: b, type: engine.doc.mediaType(id) ?? '' } : null
-      }),
+      resolveMediaPack(
+        ctx.mediaKeys,
+        (id) => {
+          const b = engine.doc.media(id)
+          return b ? { bytes: b, type: engine.doc.mediaType(id) ?? '' } : null
+        },
+        extraMedia,
+      ),
       loadFontsForDocument(used, ctx.texts, ctx.hasSvg),
     ])
     const finalFontPack = hasSvg && !ctx.hasSvg ? await loadFontsForDocument(used, ctx.texts, true) : fontPack

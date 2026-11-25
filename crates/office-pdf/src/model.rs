@@ -51,6 +51,8 @@ pub enum PaintItemInput {
         link: Option<String>,
         #[serde(default)]
         rtl: bool,
+        #[serde(default)]
+        invisible: bool,
     },
     Rect {
         x: f64,
@@ -142,6 +144,11 @@ pub struct OcrWordBox {
     pub w_pt: f64,
     pub h_pt: f64,
     pub baseline_y_pt: Option<f64>,
+    pub baseline_x0_pt: Option<f64>,
+    pub baseline_y0_pt: Option<f64>,
+    pub baseline_x1_pt: Option<f64>,
+    pub baseline_y1_pt: Option<f64>,
+    pub oriented_h_pt: Option<f64>,
     #[serde(default)]
     pub rtl: bool,
 }

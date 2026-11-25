@@ -153,6 +153,7 @@
   WriteRegStr HKCU "Software\Writan\Capabilities\FileAssociations" ".jpeg" "JPEG Image"
   WriteRegStr HKCU "Software\Writan\Capabilities\FileAssociations" ".heic" "HEIC Image"
   WriteRegStr HKCU "Software\Writan\Capabilities\FileAssociations" ".heif" "HEIC Image"
+  WriteRegStr HKCU "Software\Writan\Capabilities\FileAssociations" ".webp" "WebP Image"
   WriteRegStr HKCU "Software\RegisteredApplications" "Writan" "Software\Writan\Capabilities"
   DeleteRegValue HKCU "Software\RegisteredApplications" "Workspace"
   DeleteRegKey HKCU "Software\Workspace\Capabilities"

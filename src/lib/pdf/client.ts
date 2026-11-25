@@ -83,7 +83,7 @@ export class PdfEngineClient {
       const cleanup = () => signal?.removeEventListener('abort', onAbort)
       const onAbort = () => {
         this.pending.delete(id)
-        this.stopWorker()
+        if (this.pending.size === 0) this.stopWorker()
         cleanup()
         reject(signal?.reason instanceof Error ? signal.reason : new DOMException('Cancelled', 'AbortError'))
       }

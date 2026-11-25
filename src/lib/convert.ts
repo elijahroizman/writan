@@ -149,7 +149,7 @@ export async function saveOcrCopy(name: string, bytes: Uint8Array, signal?: Abor
   if (!path) return false
   if (await platform.pathExists(path)) throw new Error('Choose a new file name for the OCR copy.')
   signal?.throwIfAborted()
-  await platform.writeFile(path, bytes)
+  await platform.writeFile(path, bytes, { noClobber: true })
   return true
 }
 

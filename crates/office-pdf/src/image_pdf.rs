@@ -45,14 +45,79 @@ fn is_png(bytes: &[u8]) -> bool {
     bytes.starts_with(b"\x89PNG\r\n\x1a\n")
 }
 
-pub(crate) fn embed(pdf: &mut Pdf, next: &mut Ref, bytes: &[u8]) -> Result<Ref, String> {
+pub(crate) fn embed(pdf: &mut Pdf, next: &mut Ref, bytes: &[u8]) -> Result<(Ref, u8), String> {
     if is_png(bytes) {
-        embed_png(pdf, next, bytes)
+        Ok((embed_png(pdf, next, bytes)?, 1))
     } else if bytes.starts_with(&[0xff, 0xd8]) {
-        embed_jpeg(pdf, next, bytes)
+        Ok((embed_jpeg(pdf, next, bytes)?, jpeg_exif_orientation(bytes)))
     } else {
         Err("PDF image must be PNG or JPEG".into())
     }
+}
+
+fn jpeg_exif_orientation(mut bytes: &[u8]) -> u8 {
+    if !bytes.starts_with(&[0xff, 0xd8]) {
+        return 1;
+    }
+    bytes = &bytes[2..];
+    while let Some(rest) = bytes.strip_prefix(&[0xff]) {
+        bytes = rest;
+        while let Some(rest) = bytes.strip_prefix(&[0xff]) {
+            bytes = rest;
+        }
+        let Some((&marker, tail)) = bytes.split_first() else {
+            break;
+        };
+        if marker == 0xda || marker == 0xd9 {
+            break;
+        }
+        let Some((len_bytes, _)) = tail.split_at_checked(2) else {
+            break;
+        };
+        let len = u16::from_be_bytes([len_bytes[0], len_bytes[1]]) as usize;
+        let Some((segment, remaining)) = tail.split_at_checked(len) else {
+            break;
+        };
+        if marker == 0xe1 && segment.get(2..8) == Some(b"Exif\0\0") {
+            let tiff = &segment[8..];
+            if tiff.len() >= 8 {
+                let le = match &tiff[0..2] {
+                    b"II" => true,
+                    b"MM" => false,
+                    _ => return 1,
+                };
+                let r16 = |off: usize| -> Option<u16> {
+                    let b = tiff.get(off..off + 2)?;
+                    Some(if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
+                };
+                let r32 = |off: usize| -> Option<u32> {
+                    let b = tiff.get(off..off + 4)?;
+                    Some(if le { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) })
+                };
+                if r16(2) == Some(42) {
+                    if let Some(ifd) = r32(4).map(|v| v as usize) {
+                        if let Some(count) = r16(ifd).map(|c| c.min(128) as usize) {
+                            for i in 0..count {
+                                let entry = ifd + 2 + i * 12;
+                                if r16(entry) == Some(0x0112) && r16(entry + 2) == Some(3) && r32(entry + 4) == Some(1) {
+                                    if let Some(val) = r16(entry + 8) {
+                                        if (1..=8).contains(&val) {
+                                            return val as u8;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if len < 2 {
+            break;
+        }
+        bytes = remaining;
+    }
+    1
 }
 
 fn embed_jpeg(pdf: &mut Pdf, next: &mut Ref, bytes: &[u8]) -> Result<Ref, String> {

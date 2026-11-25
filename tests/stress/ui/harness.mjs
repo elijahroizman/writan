@@ -98,6 +98,7 @@ function fakeTauri() {
         case 'write_file': {
           const path = decodeURIComponent(opts.headers['x-path'])
           if (fake.failWrite) throw fake.failWrite
+          if (opts?.headers?.['x-no-clobber'] && fake.files.has(path)) throw 'Choose a new file name for the OCR copy.'
           const bytes = new Uint8Array(args)
           if (fake.writeDelay) await new Promise((r) => setTimeout(r, fake.writeDelay))
           bytes.mtime = ++fake.clock

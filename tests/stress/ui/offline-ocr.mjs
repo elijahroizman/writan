@@ -604,9 +604,40 @@ async function verifyTransformsAndCancellation(page, scan) {
     for (const { bbox } of line.words) {
       assert(bbox.x >= 0 && bbox.y >= 0 && bbox.x + bbox.w <= result.widthPx && bbox.y + bbox.h <= result.heightPx)
     }
+
+    const scanInfo = await getScan(page, name)
+    const targetWord = line.words.find(w => /quick/i.test(w.text))
+    assert(targetWord, `Expected word "quick" in ${name} OCR result`)
+    const injected = await ocrPdf(page, scanPdf([scanInfo]), ['eng'])
+    const [pageInfo] = await page.evaluate(readPdf, { base64: injected.searchablePdfBytes, query: 'quick' })
+    const matchBoxes = pageInfo.hits.flat()
+    assert(matchBoxes.length > 0, `PDFium search missed "quick" on ${name} PDF`)
+    const hitBox = matchBoxes[0]
+    const scaleX = (scanInfo.width * 72 / 96) / result.widthPx
+    const scaleY = (scanInfo.height * 72 / 96) / result.heightPx
+    const wordCenterX = (targetWord.bbox.x + targetWord.bbox.w / 2) * scaleX
+    const wordCenterY = (targetWord.bbox.y + targetWord.bbox.h / 2) * scaleY
+    const hitCenterX = hitBox.x + hitBox.w / 2
+    const hitCenterY = hitBox.y + hitBox.h / 2
+    assert(Math.abs(hitCenterX - wordCenterX) < 18 && Math.abs(hitCenterY - wordCenterY) < 18,
+      `${name} highlight center (${hitCenterX.toFixed(1)},${hitCenterY.toFixed(1)}) drifted from OCR word center (${wordCenterX.toFixed(1)},${wordCenterY.toFixed(1)})`)
   }
   assert(Math.abs(transformed.skewed.originalAngle + 6) < 1, 'Deskewed horizontal coordinates should map back to -6°')
-  console.log('PASS  90° rotation and -6° skew recover readable text and accurately mapped original-image coordinates')
+  console.log('PASS  90° rotation and -6° skew recover readable text, aligned PDF search highlights, and mapped coordinates')
+
+  const concurrent = await page.evaluate(async encoded => {
+    const bytes = Uint8Array.fromBase64(encoded)
+    const { pdfEngineClient } = window.ocrApi.pdfClient
+    const acA = new AbortController()
+    const pA = pdfEngineClient.inspectPdf(bytes, acA.signal).catch(err => ({ aborted: err.name }))
+    const pB = pdfEngineClient.inspectPdf(bytes)
+    acA.abort()
+    const [resA, resB] = await Promise.all([pA, pB])
+    return { resA, resB }
+  }, base64(scanPdf([scan])))
+  assert.equal(concurrent.resA.aborted, 'AbortError')
+  assert.equal(concurrent.resB.pageCount, 1)
+  console.log('PASS  Aborting one PDF client call leaves concurrent calls alive')
 
   const report = await page.evaluate(async encoded => {
     const { pdfOcr } = window.ocrApi

@@ -445,6 +445,137 @@ fn signed_ocr_copy_strips_signature_and_keeps_annotations_and_outlines() {
     assert!(loaded(&allowed).extract_text(&[1]).unwrap().contains("Verified"));
 }
 
+#[test]
+fn kerned_latin_emits_tj_adjustments_from_nominal_widths() {
+    let input = doc(vec![page(json!([text(10., 40., 0, "AVATAR To Wave")]))], json!([{"font":"24px Calibri","color":"black"}]));
+    let bytes = render_document_to_pdf(&input, &HashMap::new(), &fonts()).unwrap();
+    let pdf = loaded(&bytes);
+    let page_id = pdf.get_pages()[&1];
+    let page_ops = ops(&pdf, page_id);
+    let has_tj_kerning = page_ops.iter().any(|op| {
+        op.operator == "TJ"
+            && op.operands.first().and_then(|o| o.as_array().ok()).is_some_and(|arr| {
+                arr.iter().any(|el| matches!(el, Object::Real(r) if r.abs() >= 0.5) || matches!(el, Object::Integer(i) if *i != 0))
+            })
+    });
+    assert!(has_tj_kerning, "expected non-zero TJ kerning adjustment in AVATAR To Wave");
+    assert!(pdf.extract_text(&[1]).unwrap().contains("AVATAR To Wave"));
+}
+
+#[test]
+fn jpeg_exif_orientation_6_preserves_dct_and_rotates_transform() {
+    let app1: &[u8] = &[
+        0xff, 0xe1, 0x00, 0x1e, b'E', b'x', b'i', b'f', 0x00, 0x00, b'M', b'M', 0x00, 0x2a, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x01, 0x12,
+        0x00, 0x03, 0x00, 0x00, 0x00, 0x01, 0x00, 0x06, 0x00, 0x00,
+    ];
+    let mut exif_jpeg = Vec::with_capacity(JPEG.len() + app1.len());
+    exif_jpeg.extend_from_slice(&JPEG[..2]);
+    exif_jpeg.extend_from_slice(app1);
+    exif_jpeg.extend_from_slice(&JPEG[2..]);
+    let pages =
+        vec![ImagePdfPageInput { media_key: "photo".into(), mime: "image/jpeg".into(), width_pt: 200., height_pt: 100., ocr_layer: None }];
+    let bytes = images_to_pdf(&pages, &HashMap::from([("photo".into(), exif_jpeg.clone())]), &fonts()).unwrap();
+    let pdf = loaded(&bytes);
+    let xobjs = res(&pdf, pdf.get_pages()[&1]).get_deref(b"XObject", &pdf).unwrap().as_dict().unwrap();
+    let img_ref = xobjs.iter().next().unwrap().1.as_reference().unwrap();
+    let img_stream = pdf.get_object(img_ref).unwrap().as_stream().unwrap();
+    assert_eq!(img_stream.dict.get(b"Filter").unwrap().as_name().unwrap(), b"DCTDecode");
+    assert_eq!(img_stream.content, exif_jpeg);
+    assert!(ops(&pdf, pdf.get_pages()[&1])
+        .iter()
+        .any(|op| op.operator == "cm" && op.operands == [0.into(), 100.into(), 200.into(), 0.into(), 0.into(), 0.into()]));
+}
+
+#[test]
+fn oriented_ocr_word_emits_rotated_matrix_and_extracts_text() {
+    let src = original_pdf(false, false);
+    let layers: Vec<OcrPageLayer> = vec![serde_json::from_value(json!({
+        "pageIndex": 0,
+        "pageWidthPt": 200,
+        "pageHeightPt": 100,
+        "words": [
+            {
+                "text": "VERTICAL",
+                "xPt": 34, "yPt": 20, "wPt": 12, "hPt": 60,
+                "baselineX0Pt": 40, "baselineY0Pt": 20,
+                "baselineX1Pt": 40, "baselineY1Pt": 80,
+                "orientedHPt": 12
+            },
+            {
+                "text": "SKEWED",
+                "xPt": 90, "yPt": 40, "wPt": 60, "hPt": 18,
+                "baselineX0Pt": 90, "baselineY0Pt": 55,
+                "baselineX1Pt": 150, "baselineY1Pt": 45,
+                "orientedHPt": 10
+            }
+        ]
+    }))
+    .unwrap()];
+    let bytes = inject_ocr_text_layer(&src, &layers, &fonts(), false).unwrap();
+    let pdf = loaded(&bytes);
+    let page_ops = ops(&pdf, pdf.get_pages()[&1]);
+    assert!(page_ops
+        .iter()
+        .any(|op| op.operator == "cm" && op.operands == [0.into(), 1.into(), (-1).into(), 0.into(), 40.into(), 20.into()]));
+    let extracted = pdf.extract_text(&[1]).unwrap();
+    assert!(extracted.contains("VERTICAL"), "{extracted:?}");
+    assert!(extracted.contains("SKEWED"), "{extracted:?}");
+}
+
+#[test]
+fn signed_form_widget_kids_are_stripped_while_regular_fields_survive() {
+    let mut pdf = Document::with_version("1.7");
+    let pages = pdf.new_object_id();
+    let page = pdf.new_object_id();
+    let sig_val = pdf.add_object(dictionary! {"Type" => "Sig", "ByteRange" => vec![0.into(), 100.into(), 150.into(), 50.into()]});
+    let sig_field = pdf.new_object_id();
+    let sig_ap = pdf.add_object(Stream::new(
+        dictionary! {"Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 50.into(), 20.into()]},
+        b"q Q".to_vec(),
+    ));
+    let sig_widget = pdf.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "Parent" => sig_field,
+        "Rect" => vec![10.into(), 10.into(), 60.into(), 30.into()],
+        "AP" => dictionary! {"N" => sig_ap}
+    });
+    pdf.set_object(
+        sig_field,
+        dictionary! {"FT" => "Sig", "T" => Object::string_literal("Signer"), "V" => sig_val, "Kids" => vec![Object::Reference(sig_widget)]},
+    );
+    let tx_widget = pdf.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "T" => Object::string_literal("Notes"),
+        "Rect" => vec![10.into(), 40.into(), 120.into(), 60.into()], "V" => Object::string_literal("ok")
+    });
+    let form = pdf.add_object(dictionary! {"SigFlags" => 3, "Fields" => vec![Object::Reference(sig_field), Object::Reference(tx_widget)]});
+    let content = pdf.add_object(Stream::new(Dictionary::new(), b"q Q".to_vec()));
+    pdf.set_object(
+        page,
+        dictionary! {"Type" => "Page", "Parent" => pages, "MediaBox" => vec![0.into(), 0.into(), 200.into(), 100.into()],
+        "Annots" => vec![Object::Reference(sig_widget), Object::Reference(tx_widget)], "Contents" => content},
+    );
+    pdf.set_object(pages, dictionary! {"Type" => "Pages", "Kids" => vec![Object::Reference(page)], "Count" => 1});
+    let root = pdf.add_object(dictionary! {"Type" => "Catalog", "Pages" => pages, "AcroForm" => form});
+    pdf.trailer.set("Root", root);
+    let mut src = Vec::new();
+    pdf.save_to(&mut src).unwrap();
+
+    let layers: Vec<OcrPageLayer> = vec![serde_json::from_value(json!({
+        "pageIndex": 0, "pageWidthPt": 200, "pageHeightPt": 100,
+        "words": [{"text": "Clean", "xPt": 10, "yPt": 20, "wPt": 30, "hPt": 10}]
+    }))
+    .unwrap()];
+    let out = inject_ocr_text_layer(&src, &layers, &fonts(), true).unwrap();
+    let inspected = inspect_pdf(&out).unwrap();
+    assert!(!inspected.has_digital_signature);
+    assert!(inspected.has_forms);
+    assert_eq!(inspected.annotation_count, 1);
+    let cleaned = loaded(&out);
+    assert!(!cleaned.objects.contains_key(&sig_widget));
+    let remaining_form = cleaned.catalog().unwrap().get_deref(b"AcroForm", &cleaned).unwrap().as_dict().unwrap();
+    assert!(!remaining_form.has(b"SigFlags"));
+    assert_eq!(remaining_form.get_deref(b"Fields", &cleaned).unwrap().as_array().unwrap().len(), 1);
+}
+
 fn maybe_save(filename: &str, bytes: &[u8]) {
     if let Some(dir) = std::env::var_os("WRITAN_PDF_TEST_OUTPUT") {
         std::fs::write(std::path::PathBuf::from(dir).join(filename), bytes).unwrap();

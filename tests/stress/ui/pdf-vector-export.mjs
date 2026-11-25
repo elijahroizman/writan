@@ -248,7 +248,7 @@ function streamText(object) {
   return object.stream.toString('latin1')
 }
 
-function inspectBinary(bytes, sizes, imageCount) {
+function inspectBinary(bytes, sizes, imageCount, smaskCount = 0) {
   const objects = pdfObjects(bytes)
   const entries = [...objects.values()]
   const pages = entries.filter(({ dict }) => /\/Type\s*\/Page\b/.test(dict))
@@ -272,7 +272,7 @@ function inspectBinary(bytes, sizes, imageCount) {
   }).join('\n')
 
   const images = entries.filter(({ dict }) => /\/Subtype\s*\/Image\b/.test(dict))
-  assert.equal(images.length, imageCount, 'Unexpected raster image XObjects')
+  assert.equal(images.length, imageCount + smaskCount, 'Unexpected raster image XObjects')
   const draws = [...content.matchAll(/\/\S+\s+Do\b/g)]
   assert.equal(draws.length, imageCount, 'Unexpected raster draw count')
   for (const draw of draws) {
@@ -309,7 +309,7 @@ async function openFixture(page, file, base64) {
   assert.ok(id, `Could not open fixture ${file}`)
 }
 
-async function inspectExport(page, { sizes, expected, contiguous = [], imageCount = 0, absent = [], annotations = false, zoom = false }) {
+async function inspectExport(page, { sizes, expected, contiguous = [], imageCount = 0, smaskCount = 0, absent = [], annotations = false, zoom = false }) {
   const view = page.locator('.view[data-active=true] .pdf-pages [data-page-number="1"]')
   await view.waitFor()
   const result = await page.evaluate(async ({ expected, absent, annotations, zoom }) => {
@@ -369,7 +369,7 @@ async function inspectExport(page, { sizes, expected, contiguous = [], imageCoun
     }
   }, { expected, absent, annotations, zoom })
   const bytes = Buffer.from(result.bytes)
-  const binary = inspectBinary(bytes, sizes, imageCount)
+  const binary = inspectBinary(bytes, sizes, imageCount, smaskCount)
   assert.deepEqual(result.details.map(({ info }) => [info.width, info.height]), sizes, 'PDFium page dimensions and count')
   for (const [i, { runs, hits }] of result.details.entries()) {
     const missing = {
@@ -501,6 +501,18 @@ try {
         assert.match(content, /0\.8 0 0 (?:rg|RG)\b/, 'Missing colored cell border')
         const bars = content.match(/0 0 0\.8 rg\s+[\s\S]*?\bc\s[\s\S]*?\bf\b/g) ?? []
         assert.equal(bars.length, 2, 'Expected two rounded vector chart bars')
+      },
+    },
+    {
+      name: 'Word CJK hybrid text renders crisp glyphs cleanly', file: 'cjk.docx',
+      source: word(paragraph('東京 売上 レポート') + paragraph('안녕하세요')),
+      sizes: [letter], expected: [['東京 売上 レポート', '안녕하세요']], contiguous: [['東京 売上 レポート', '안녕하세요']],
+      imageCount: 2, smaskCount: 2, zoom: true,
+      check({ content, images, tile }) {
+        assert.equal(images.length, 4, 'Expected two CJK fallback PNG overlays with two alpha SMasks')
+        assert.ok(images.every(({ dict }) => /\/FlateDecode\b/.test(dict)), 'Expected lossless PNG overlays for CJK runs')
+        assert.match(content, /\b3 Tr\b/, 'Expected invisible searchable text layer alongside CJK PNG overlays')
+        assert.ok(tile.ink > 100, `Expected visible dark CJK ink pixels at 4x: ${JSON.stringify(tile)}`)
       },
     },
     {

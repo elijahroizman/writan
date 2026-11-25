@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 
 use pdf_writer::{
-    types::{ActionType, AnnotationType, FunctionShadingType, LineCapStyle, LineJoinStyle, MaskType},
+    types::{ActionType, AnnotationType, FunctionShadingType, LineCapStyle, LineJoinStyle, MaskType, TextRenderingMode},
     Content, Filter, Finish, Name, Pdf, Rect, Ref, Str, TextStr,
 };
 
@@ -72,7 +72,7 @@ pub(crate) struct Engine<'a> {
     next: Ref,
     pages: Vec<Ref>,
     media: &'a HashMap<String, Vec<u8>>,
-    images: HashMap<String, Ref>,
+    images: HashMap<String, (Ref, u8)>,
     opacities: HashMap<(u32, u32), Ref>,
     pub fonts: Fonts<'a>,
     pub font_names: BTreeMap<usize, String>,
@@ -166,12 +166,13 @@ impl<'a> Engine<'a> {
                 return self.draw_svg(page, prefix, rect, crop);
             }
         }
-        let id = match self.images.get(key) {
-            Some(&id) => id,
+        let (id, orientation) = match self.images.get(key) {
+            Some(&entry) => entry,
             None => {
-                let id = image_pdf::embed(&mut self.pdf, &mut self.next, bytes).map_err(|e| format!("Could not embed image {key}: {e}"))?;
-                self.images.insert(key.to_owned(), id);
-                id
+                let entry =
+                    image_pdf::embed(&mut self.pdf, &mut self.next, bytes).map_err(|e| format!("Could not embed image {key}: {e}"))?;
+                self.images.insert(key.to_owned(), entry);
+                entry
             }
         };
         let name = page.xobjects.entry(id).or_insert_with(|| format!("Im{}", id.get()));
@@ -180,7 +181,17 @@ impl<'a> Engine<'a> {
             clip_rect(&mut page.content, rect);
         }
         let [x, y, w, h] = cropped_rect(rect, crop);
-        Matrix([w, 0., 0., -h, x, y + h]).apply(&mut page.content);
+        let matrix = match orientation {
+            2 => Matrix([-w, 0., 0., -h, x + w, y + h]),
+            3 => Matrix([-w, 0., 0., h, x + w, y]),
+            4 => Matrix([w, 0., 0., h, x, y]),
+            5 => Matrix([0., h, -w, 0., x + w, y]),
+            6 => Matrix([0., h, w, 0., x, y]),
+            7 => Matrix([0., -h, w, 0., x, y + h]),
+            8 => Matrix([0., -h, -w, 0., x + w, y + h]),
+            _ => Matrix([w, 0., 0., -h, x, y + h]),
+        };
+        matrix.apply(&mut page.content);
         page.content.x_object(Name(name.as_bytes())).restore_state();
         Ok(())
     }
@@ -309,7 +320,7 @@ impl<'a> Engine<'a> {
                     self.draw_items(drawing, items, styles, specs, transform.then_local(local))?;
                     drawing.content.restore_state();
                 }
-                PaintItemInput::Text { x, y, w, s, text, ws, link, rtl } => {
+                PaintItemInput::Text { x, y, w, s, text, ws, link, rtl, invisible } => {
                     let style = styles.get(*s).ok_or_else(|| format!("Unknown PDF paint style {s}"))?;
                     let spec = &specs[*s];
                     let shaped = self.fonts.shape(text, spec, Some(*rtl), style.small_caps, ws.unwrap_or(0.))?;
@@ -318,9 +329,11 @@ impl<'a> Engine<'a> {
                     let descent = style.descent.unwrap_or(shaped.descent);
                     let width = if *w > 0. { *w } else { shaped.width };
                     let rect = [*x, baseline - ascent, width, ascent + descent];
-                    self.draw_rect(drawing, rect, style.background.as_deref())?;
+                    if !*invisible {
+                        self.draw_rect(drawing, rect, style.background.as_deref())?;
+                    }
                     let color = Color::parse(&style.color).unwrap_or(Color::BLACK);
-                    if color.alpha() > 0. {
+                    if *invisible || color.alpha() > 0. {
                         let (draw_x, sx) = if *w > 0. && shaped.width > 0. {
                             if shaped.width > *w * 1.005 {
                                 (*x, (*w / shaped.width).max(0.5))
@@ -333,12 +346,19 @@ impl<'a> Engine<'a> {
                             (*x, 1.0)
                         };
                         drawing.content.save_state();
-                        self.path_style(drawing, Some(color), Some(color), spec.size / 16., None);
+                        if !*invisible {
+                            self.path_style(drawing, Some(color), Some(color), spec.size / 16., None);
+                        }
                         drawing.content.begin_text();
+                        if *invisible {
+                            drawing.content.set_text_rendering_mode(TextRenderingMode::Invisible);
+                        }
                         shaped.write(&mut drawing.content, &self.font_names, [draw_x, baseline], [sx, 1.]);
                         drawing.content.end_text();
-                        if let Some(decoration) = &style.decoration {
-                            draw_decoration(&mut drawing.content, [*x, baseline, width, spec.size], decoration);
+                        if !*invisible {
+                            if let Some(decoration) = &style.decoration {
+                                draw_decoration(&mut drawing.content, [*x, baseline, width, spec.size], decoration);
+                            }
                         }
                         drawing.content.restore_state();
                     }

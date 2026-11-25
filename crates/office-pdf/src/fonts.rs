@@ -132,7 +132,7 @@ struct Glyph {
     cid: u16,
     x: f64,
     y: f64,
-    advance: f64,
+    nominal_advance: f64,
 }
 
 struct Cluster {
@@ -377,6 +377,7 @@ impl<'a> Fonts<'a> {
                     }
                     actual = true;
                 }
+                let nominal = f64::from(font.face.glyph_hor_advance(GlyphId(gid)).unwrap_or(0)) * unit;
                 let cid = font.remapper.remap(gid);
                 let mapping = if index == base { original } else { "\u{200b}" };
                 let encoding = font.map_unicode(cid, mapping);
@@ -386,7 +387,7 @@ impl<'a> Fonts<'a> {
                     cid,
                     x: *cursor + f64::from(pos.x_offset) * unit,
                     y: -f64::from(pos.y_offset) * unit,
-                    advance: adv,
+                    nominal_advance: nominal,
                 });
                 *cursor += adv;
             }
@@ -593,7 +594,7 @@ impl ShapedText {
                     } else {
                         b.items.push(TjItem::Bytes(glyph.cid.to_be_bytes().to_vec()));
                     }
-                    b.pen_x += extra + glyph.advance * sx;
+                    b.pen_x += extra + glyph.nominal_advance * sx;
                 } else {
                     flush_batch(content, batch.take(), sy, &mut active_font, names);
                     if active_font != Some(key) {
@@ -604,7 +605,7 @@ impl ShapedText {
                     batch = Some(TextBatch {
                         key,
                         y: gy,
-                        pen_x: gx + glyph.advance * sx,
+                        pen_x: gx + glyph.nominal_advance * sx,
                         items: vec![TjItem::Bytes(glyph.cid.to_be_bytes().to_vec())],
                     });
                 }

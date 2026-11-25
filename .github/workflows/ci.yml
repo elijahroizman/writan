@@ -251,7 +251,35 @@ jobs:
           update: 'false'
           run: npx playwright install-deps chromium
       - run: npx playwright install chromium
+      - name: Cache offline OCR language packs
+        uses: actions/cache@v4
+        with:
+          path: .cache/tessdata
+          key: tessdata-fast-87416418657359cb625c412a48b6e1d6d41c29bd-eng-heb-ara-v1
+      - name: Fetch verified OCR packs for CI
+        run: |
+          mkdir -p .cache/tessdata
+          BASE="https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd"
+          verify_pack() {
+            local code="$1" expected="$2"
+            local file=".cache/tessdata/${code}.traineddata"
+            if [ ! -f "$file" ] || [ "$(sha256sum "$file" | cut -d' ' -f1)" != "$expected" ]; then
+              curl -fsSL "$BASE/${code}.traineddata" -o "${file}.tmp"
+              echo "${expected}  ${file}.tmp" | sha256sum -c -
+              mv "${file}.tmp" "$file"
+            fi
+          }
+          verify_pack eng 7d4322bd2a7749724879683fc3912cb542f19906c83bcc1a52132556427170b2
+          verify_pack heb 11f9e43ab227f786352a48b6e1d6d41c2e9906f1baba86d93276da19da7ce0904db
+          verify_pack ara e3206d3dc87fd50c24a0fb9f01838615911d25168f4e64415244b67d2bb3e729
       - run: npm run test:browser
+      - name: Run offline OCR accuracy checks
+        run: |
+          npx vite preview --host 127.0.0.1 --port 4173 --strictPort >/tmp/vite-ocr-preview.log 2>&1 &
+          PID=$!
+          trap "kill $PID || true" EXIT
+          for i in $(seq 1 30); do curl -sf http://127.0.0.1:4173/ >/dev/null && break; sleep 0.5; done
+          WRITAN_URL=http://127.0.0.1:4173/ node tests/stress/ui/offline-ocr-accuracy.mjs
 
   packaging:
     name: Linux packages

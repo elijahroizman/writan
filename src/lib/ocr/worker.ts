@@ -167,10 +167,16 @@ function extract(core: TessCore, iterator: TessIterator, image: PreparedImage, r
     }
   }
 
-  function baseline(level: number): number | undefined {
-    const { x0, y0, x1, y1, has_baseline } = iterator.getBaseline(level)
+  function baselineRaw(level: number, bounds: IteratorBox): number | undefined {
+    const { y0, y1, has_baseline } = iterator.getBaseline(level)
     if (!has_baseline) return
-    return image.mapPoint((x0 + x1) / 2, (y0 + y1) / 2).y
+    return Math.max(bounds.y0, Math.min(bounds.y1, (y0 + y1) / 2))
+  }
+
+  function baseline(level: number, bounds: IteratorBox): number | undefined {
+    const raw = baselineRaw(level, bounds)
+    if (raw === undefined) return
+    return image.mapPoint((bounds.x0 + bounds.x1) / 2, raw).y
   }
 
   do {
@@ -207,7 +213,8 @@ function extract(core: TessCore, iterator: TessIterator, image: PreparedImage, r
     }
     if (!line) {
       const text = readText(lineLevel)
-      line = { text, bbox: box(iterator.getBoundingBox(lineLevel)), baseline: baseline(lineLevel), confidence: confidence(iterator.Confidence(lineLevel)), rtl: hasRtl(text), words: [] }
+      const lineBounds = iterator.getBoundingBox(lineLevel)
+      line = { text, bbox: box(lineBounds), baseline: baseline(lineLevel, lineBounds), confidence: confidence(iterator.Confidence(lineLevel)), rtl: hasRtl(text), words: [] }
       paragraph.lines.push(line)
     }
     const bounds = iterator.getBoundingBox(wordLevel)
@@ -217,10 +224,17 @@ function extract(core: TessCore, iterator: TessIterator, image: PreparedImage, r
     // For those scripts the direction of the baseline reveals the quarter-turn.
     const horizontalScript = /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Hebrew}\p{Script=Arabic}]/u.test(text)
     orientationCounts[(horizontalScript && sidewaysOrientation) || blockOrientation]++
+    const wordBlRaw = baselineRaw(wordLevel, bounds) ?? baselineRaw(lineLevel, bounds) ?? (bounds.y0 + (bounds.y1 - bounds.y0) * 0.8)
+    const blStart = image.mapPoint(bounds.x0, wordBlRaw)
+    const blEnd = image.mapPoint(bounds.x1, wordBlRaw)
+    const boxTop = image.mapPoint(bounds.x0, bounds.y0)
+    const boxBot = image.mapPoint(bounds.x0, bounds.y1)
     line.words.push({
       text,
       bbox: box(bounds),
-      baseline: baseline(wordLevel) ?? line.baseline,
+      baseline: (blStart.y + blEnd.y) / 2,
+      baselineLine: { x0: blStart.x, y0: blStart.y, x1: blEnd.x, y1: blEnd.y },
+      orientedHeightPx: Math.max(1, Math.hypot(boxBot.x - boxTop.x, boxBot.y - boxTop.y)),
       confidence: confidence(iterator.Confidence(wordLevel)),
       rtl: hasRtl(text),
       fontSizePx: Math.max(1, (fontSize || bounds.y1 - bounds.y0) / image.scale),

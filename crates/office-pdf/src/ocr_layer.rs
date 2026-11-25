@@ -239,16 +239,34 @@ fn is_sig_dict(dict: &Dictionary, doc: &Document) -> bool {
 
 fn collect_sig_ids(doc: &Document) -> HashSet<ObjectId> {
     let mut ids = HashSet::new();
+    let mut pending = Vec::new();
     for (&id, object) in &doc.objects {
         let dict = match object {
             Object::Dictionary(dict) => dict,
             Object::Stream(stream) => &stream.dict,
             _ => continue,
         };
-        if is_sig_dict(dict, doc) {
-            ids.insert(id);
-            if let Ok(sig_val) = dict.get(b"V").and_then(Object::as_reference) {
-                ids.insert(sig_val);
+        if is_sig_dict(dict, doc) && ids.insert(id) {
+            pending.push(id);
+        }
+    }
+    while let Some(id) = pending.pop() {
+        let Some(dict) = doc.get_dictionary(id).ok().or_else(|| doc.get_object(id).ok().and_then(|o| o.as_stream().ok().map(|s| &s.dict)))
+        else {
+            continue;
+        };
+        if let Ok(sig_val) = dict.get(b"V").and_then(Object::as_reference) {
+            if ids.insert(sig_val) {
+                pending.push(sig_val);
+            }
+        }
+        if let Ok(kids) = dict.get_deref(b"Kids", doc).and_then(Object::as_array) {
+            for kid in kids {
+                if let Ok(kid_id) = kid.as_reference() {
+                    if ids.insert(kid_id) {
+                        pending.push(kid_id);
+                    }
+                }
             }
         }
     }
@@ -478,21 +496,60 @@ pub(crate) fn write_words(
         if word.text.trim().is_empty() {
             continue;
         }
+        let oriented_h = word.oriented_h_pt.filter(|h| h.is_finite() && *h > 0. && *h <= 1e12);
         if word.w_pt <= 0.
             || word.h_pt <= 0.
-            || ![word.x_pt, word.y_pt, word.w_pt, word.h_pt, word.baseline_y_pt.unwrap_or(0.)]
-                .iter()
-                .all(|v| v.is_finite() && v.abs() <= 1e12)
+            || ![
+                word.x_pt,
+                word.y_pt,
+                word.w_pt,
+                word.h_pt,
+                word.baseline_y_pt.unwrap_or(0.),
+                word.baseline_x0_pt.unwrap_or(0.),
+                word.baseline_y0_pt.unwrap_or(0.),
+                word.baseline_x1_pt.unwrap_or(0.),
+                word.baseline_y1_pt.unwrap_or(0.),
+            ]
+            .iter()
+            .all(|v| v.is_finite() && v.abs() <= 1e12)
         {
             return Err("Invalid OCR word box".into());
         }
-        let spec = FontSpec::from_family("Liberation Sans", word.h_pt, false, false);
+        if let (Some(bx0), Some(by0), Some(bx1), Some(by1)) =
+            (word.baseline_x0_pt, word.baseline_y0_pt, word.baseline_x1_pt, word.baseline_y1_pt)
+        {
+            let vx = bx1 - bx0;
+            let vy = by1 - by0;
+            let len = vx.hypot(vy);
+            if len > 0.5 && (vy.abs() > 1e-3 || vx < 0.) {
+                let word_h = oriented_h.unwrap_or_else(|| word.h_pt.min(word.w_pt).max(1.));
+                let spec = FontSpec::from_family("Liberation Sans", word_h, false, false);
+                let shaped = fonts.shape(&word.text, &spec, Some(word.rtl), false, 0.)?;
+                if shaped.width <= 0. {
+                    continue;
+                }
+                let scale_y = word_h / (shaped.ascent + shaped.descent).max(f64::EPSILON);
+                let cos = vx / len;
+                let sin = vy / len;
+                content.end_text();
+                content.save_state();
+                Matrix([cos, sin, -sin, cos, bx0, by0]).apply(content);
+                content.begin_text().set_text_rendering_mode(TextRenderingMode::Invisible);
+                shaped.write(content, names, [0., 0.], [len / shaped.width, scale_y]);
+                content.end_text();
+                content.restore_state();
+                content.begin_text().set_text_rendering_mode(TextRenderingMode::Invisible);
+                continue;
+            }
+        }
+        let word_h = oriented_h.unwrap_or(word.h_pt);
+        let spec = FontSpec::from_family("Liberation Sans", word_h, false, false);
         let shaped = fonts.shape(&word.text, &spec, Some(word.rtl), false, 0.)?;
         if shaped.width <= 0. {
             continue;
         }
-        let scale_y = word.h_pt / (shaped.ascent + shaped.descent).max(f64::EPSILON);
-        let baseline = word.baseline_y_pt.unwrap_or(word.y_pt + shaped.ascent * scale_y);
+        let scale_y = word_h / (shaped.ascent + shaped.descent).max(f64::EPSILON);
+        let baseline = word.baseline_y_pt.or(word.baseline_y0_pt).unwrap_or(word.y_pt + shaped.ascent * scale_y);
         shaped.write(content, names, [word.x_pt, baseline], [word.w_pt / shaped.width, scale_y]);
     }
     content.end_text();

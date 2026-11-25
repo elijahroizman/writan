@@ -52,6 +52,14 @@ function pageToOcrLayer(page: OcrPageResult, pageWidthPt: number, pageHeightPt: 
       for (const line of para.lines) {
         for (const word of line.words) {
           if (!word.text.trim()) continue
+          const bl = word.baselineLine
+          let orientedHPt: number | undefined
+          if (word.orientedHeightPx !== undefined) {
+            const vx = bl ? bl.x1 - bl.x0 : word.bbox.w
+            const vy = bl ? bl.y1 - bl.y0 : 0
+            const len = Math.hypot(vx, vy) || 1
+            orientedHPt = Math.max(0.5, word.orientedHeightPx * Math.hypot((vy / len) * scaleX, (vx / len) * scaleY))
+          }
           words.push({
             text: word.text,
             xPt: word.bbox.x * scaleX,
@@ -59,6 +67,11 @@ function pageToOcrLayer(page: OcrPageResult, pageWidthPt: number, pageHeightPt: 
             wPt: Math.max(0.5, word.bbox.w * scaleX),
             hPt: Math.max(0.5, word.bbox.h * scaleY),
             baselineYPt: word.baseline !== undefined ? word.baseline * scaleY : undefined,
+            baselineX0Pt: bl ? bl.x0 * scaleX : undefined,
+            baselineY0Pt: bl ? bl.y0 * scaleY : undefined,
+            baselineX1Pt: bl ? bl.x1 * scaleX : undefined,
+            baselineY1Pt: bl ? bl.y1 * scaleY : undefined,
+            orientedHPt,
             rtl: word.rtl,
           })
         }

@@ -4,6 +4,8 @@ export interface OcrWord {
   text: string
   bbox: OcrBBox
   baseline?: number
+  baselineLine?: { x0: number; y0: number; x1: number; y1: number }
+  orientedHeightPx?: number
   confidence: number
   rtl: boolean
   fontSizePx: number
