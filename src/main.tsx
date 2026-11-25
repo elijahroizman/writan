@@ -22,7 +22,38 @@ if (isTauri && isWindows) stopWindowZoom()
 if (import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) {
   const paths = new URLSearchParams(location.search).getAll('open')
   if (paths.length) setTimeout(() => void useWorkspace.getState().openPaths(paths), 300)
-  Object.assign(window, { __workspace: { useWorkspace, getEditor }, __collab: { useCollab, useChat }, __ai: { useAi } })
+  Object.assign(window, {
+    __workspace: { useWorkspace, getEditor },
+    __collab: { useCollab, useChat },
+    __ai: { useAi },
+    __loadPdfOcrTestApi: async () => {
+      const [pdfOcr, packs, toDocx, exporter, pdfClient, ocrClient, preprocess, catalog, convert, pdfEngine] =
+        await Promise.all([
+          import('./lib/ocr/pdfOcr'),
+          import('./lib/ocr/packs'),
+          import('./lib/ocr/toDocx'),
+          import('./lib/pdf/exporter'),
+          import('./lib/pdf/client'),
+          import('./lib/ocr/client'),
+          import('./lib/ocr/preprocess'),
+          import('./lib/ocr/catalog'),
+          import('./lib/convert'),
+          import('./editors/pdf/engine/client'),
+        ])
+      return {
+        pdfOcr,
+        packs,
+        toDocx,
+        exporter,
+        pdfClient,
+        ocrClient,
+        preprocess,
+        catalog,
+        convert,
+        PdfEngine: pdfEngine.PdfEngine,
+      }
+    },
+  })
 }
 
 createRoot(document.getElementById('root')!).render(
