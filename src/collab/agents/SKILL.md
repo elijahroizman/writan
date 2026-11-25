@@ -19,7 +19,14 @@ Pass a document's `document` id from that list to the other tools. The first too
 
 Call `read_document` before you edit, and again after anyone else has changed the document.
 
-In a Word document, `read_document` returns numbered paragraphs. Each paragraph's style is in brackets, like `(Title)` or `(Heading 1)`, and a paragraph without one is Normal. Table paragraphs say which cell they're in. `{by Yoav's Claude}` marks a paragraph someone else wrote since you joined. The editing tools take the paragraph numbers. In a long document, read part of it with `from` and `to`.
+In a Word document, `read_document` returns paragraphs like `[7 #k3f9x2] (Heading 1) {by Yoav's Claude} Methods`:
+
+- `7` is the paragraph's number and `#k3f9x2` its id. The editing tools take either. A number changes whenever someone adds or deletes a paragraph above it. An id doesn't, so use ids when others are writing, and always in messages. An empty paragraph has no id, and neither does one whose text is in another paragraph too; use its number.
+- The style is in brackets, like `(Title)` or `(Heading 1)`. A paragraph without one is Normal. Table paragraphs say which cell they're in.
+- `{by …}` says who last changed the paragraph's text, from you, your person and other people's agents to people who have since left, including what they wrote before you joined. A paragraph without one was there before anyone joined.
+- A chat message that names a paragraph's id shows under it, after `↳`.
+
+The answer starts with its version, like "version 142". Later, `read_document` with `since: 142` gives only the paragraphs that changed after that and who deleted any, so you can catch up without reading everything again. In a long document, read part of it with `from` and `to`.
 
 In a presentation, `read_document` returns the slide size in pixels (96 to an inch), then each slide's layout, shapes and speaker notes. Every shape has an id in quotes, like `shape "4"`, which you pass as `shape`. Each shape says what it is, where it is (`at x 80, y 120, 400 × 300`), how it looks and what text it has. Its look includes the font, size, color, fill, outline and crop. Shapes are listed back to front, so a later one covers an earlier one.
 
@@ -37,7 +44,7 @@ Word:
 - `delete_paragraphs`, `set_style` (like "Heading 1"), and `format_text` for font, size, bold, italic, underline, color, highlight, alignment, lists and line spacing, on whole paragraphs or only the words in `find`.
 - `insert_table` and `change_table`, `add_picture` and `format_picture` to resize and crop, and `replace_text`.
 
-Paragraph numbers change after an insert or delete above them, so read again before the next edit.
+Paragraph numbers change after an insert or delete above them, so read again before the next edit, or use ids. An id changes when its paragraph's text does, but the old one still finds the paragraph, and the answer says what it is now. `replace_paragraphs` and `delete_paragraphs` refuse an id whose paragraph someone else has changed since, so you don't write over what you haven't read. Read the paragraph, then use its new id.
 
 PowerPoint:
 - Text: `set_shape_text`, `format_text` (a whole shape, paragraphs `from` to `to` of it, or the words in `find`), `replace_text`, `set_table_text`.
@@ -68,7 +75,9 @@ In Word, deleting or replacing a paragraph that someone else wrote since you joi
 
 Make one change at a time, then say what you changed. Keep to what you were asked to do.
 
-Call `wait_for_changes` to wait for someone else's edit, for example after asking them to look something over, or while they type and you tidy up after them. It answers once they've stopped for a moment, and says who changed what. In Word that's the paragraphs, in PowerPoint each slide and shape, and in Excel where they were. If they were still typing when the wait ran out, it says so. Wait again before acting on half a sentence.
+Call `wait_for_changes` to wait for someone else's edit, for example after asking them to look something over, or while they type and you tidy up after them. It answers once they've stopped for a moment, and says who changed what. In Word that's the paragraphs, in PowerPoint each slide and shape, and in Excel where they were. Word paragraphs are cut short unless you pass `full: true`. If they were still typing when the wait ran out, it says so. Wait again before acting on half a sentence.
+
+When someone comes into the document or leaves it, the answer to your next call says so, whatever the tool. It also ends `wait_for_changes` and `read_messages` with `seconds`.
 
 `find_text` gives the paragraph numbers, slides and shapes, or cells where some text is, without reading a long document whole. `redo` puts back what your last `undo` took back.
 
@@ -86,6 +95,8 @@ When you join a document with another agent in it, agree how you'll work before 
 
 While you work:
 
+- Name paragraphs by id in messages: "#k3f9x2 repeats the intro." Paragraph numbers will have changed by the time the others read it. A message that names an id shows under that paragraph whenever an agent reads the document, including agents that join after you've left. That makes it a review note that stays with its paragraph.
+- Claim a part before you write it, on its heading: "Claiming #h4k2m1 (Methods): drafting it now." The claim shows under the heading for every agent that reads it. Say when you're done: "#h4k2m1 Methods is drafted, ready for review."
 - Say what you're about to change, so you don't both edit the same paragraph, slide or cells, and say when you're done with it.
 - Hand over or ask for a check: "The budget table is filled in. Can you check the totals?"
 - If your edit didn't stick because theirs came first, ask before redoing it.

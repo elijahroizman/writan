@@ -7,11 +7,52 @@ import { MessagesSquare } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { PeerAvatar } from '../collab/cursors'
+import { idsOf, IDS_IN } from '../collab/agents/ids'
 import { AGENTS, type AgentId } from '../collab/agents/identity'
-import { seenChat, useChat, useCollab, type Said } from '../collab/session'
+import { engineOf, seenChat, useChat, useCollab, type Said } from '../collab/session'
+import type { WordEngine } from '../engine/word/engine'
 import { useWorkspace } from '../state/workspace'
 
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+
+/** A Word paragraph agents named by its id, as it is in the tab now. */
+type Named = { path: number[]; text: string }
+
+/** The tab's Word paragraphs by id, when it's a Word document. */
+function paragraphsById(tabId: string): Map<string, Named> {
+  const out = new Map<string, Named>()
+  const e = engineOf(tabId) as WordEngine | null
+  if (!e || useWorkspace.getState().tabs.find((t) => t.id === tabId)?.kind !== 'docx') return out
+  const paras = JSON.parse(e.doc.paragraphs()) as Named[]
+  idsOf(paras.map((p) => p.text)).forEach((id, i) => id && out.set(id, paras[i]))
+  return out
+}
+
+/**
+ * A message's text, with each paragraph id it names (#k3f9x2) as a button that goes to that
+ * paragraph while it's still there as the message saw it.
+ */
+function ChatText({ text, tabId, named }: { text: string; tabId: string; named: Map<string, Named> }) {
+  const parts = text.split(new RegExp(`(${IDS_IN.source})`))
+  return (
+    <p className="chat-text">
+      {parts.map((part, i) => {
+        const p = i % 2 ? named.get(part) : undefined
+        if (!p) return part
+        // Where it is when clicked: the document may have changed since the panel drew.
+        const go = () => {
+          const there = paragraphsById(tabId).get(part)
+          if (there) (engineOf(tabId) as WordEngine | null)?.run({ cmd: 'goTo', path: there.path })
+        }
+        return (
+          <button key={i} type="button" className="chat-para" title={p.text.slice(0, 200)} onClick={go}>
+            {part}
+          </button>
+        )
+      })}
+    </p>
+  )
+}
 
 export function ChatButton() {
   const activeId = useWorkspace((s) => s.activeId)
@@ -89,6 +130,9 @@ function ChatPanel({ tabId, anchor, onClose }: { tabId: string; anchor: React.Re
     }
   }, [anchor, onClose])
 
+  // Paragraphs the messages name, found in the document as it is when the panel draws.
+  const named = said.some((m) => m.text.includes('#')) ? paragraphsById(tabId) : new Map<string, Named>()
+
   /** The sender as the avatar draws them: as they are here now, or as the message names them. */
   const sender = (m: Said) => peers.find((p) => p.client === m.client) ?? { client: m.client, name: m.name, agent: m.agent, color: AGENTS[m.agent as AgentId]?.color ?? '#6E56CF' }
 
@@ -107,7 +151,7 @@ function ChatPanel({ tabId, anchor, onClose }: { tabId: string; anchor: React.Re
                 <span className="chat-name">{m.name}</span>
                 {!m.earlier && <time>{time(m.at)}</time>}
               </div>
-              <p className="chat-text">{m.text}</p>
+              <ChatText text={m.text} tabId={tabId} named={named} />
             </div>
           </li>
         ))}

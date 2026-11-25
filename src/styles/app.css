@@ -5193,6 +5193,23 @@ button.section-title:hover {
   user-select: text;
 }
 
+/* A paragraph an agent named by its id: goes to it in the document. */
+.chat-para {
+  padding: 0 2px;
+  border: none;
+  border-radius: 3px;
+  background: var(--accent-soft);
+  color: inherit;
+  font: inherit;
+  font-family: var(--font-mono);
+  font-size: 0.95em;
+  cursor: pointer;
+}
+
+.chat-para:hover {
+  text-decoration: underline;
+}
+
 .share-role {
   margin-left: auto;
   color: var(--fg-faint);

@@ -7,7 +7,7 @@
 // Needs two standalone relays, one per person, both with MCP on:
 //   cd src-tauri && cargo run --example collab_relay -- --port 47812 --mcp agents-test-token --bridge agents-test-key
 //   cd src-tauri && cargo run --example collab_relay -- --port 47813 --mcp agents-test-token-2 --bridge agents-test-key-2
-import { launch, start, check, done } from './harness.mjs'
+import { launch, start, check, done, shot } from './harness.mjs'
 
 const MCP_A = process.env.MCP_URL ?? 'http://127.0.0.1:47812/mcp/agents-test-token'
 const MCP_B = process.env.MCP_URL_2 ?? 'http://127.0.0.1:47813/mcp/agents-test-token-2'
@@ -32,6 +32,10 @@ const logs = []
 a.page.on('pageerror', (e) => logs.push(`[pageerror a] ${e.message}`))
 b.page.on('pageerror', (e) => logs.push(`[pageerror b] ${e.message}`))
 
+/** An answer as the checks written before paragraph ids read it: without the ids, and without
+ * the marks on the agent's own and its person's paragraphs. `raw` keeps them. */
+const plain = (t) => t.replace(/\[(\d+) #[a-z][0-9a-z]{5}(?:-\d+)?\]/g, '[$1]').replace(/ \{by (?:you|[^{}]+, your person)\}/g, '')
+
 /** An MCP client: initialize, then calls with the session it got. */
 async function mcpClient(url, agent, clientName) {
   let session = null
@@ -52,7 +56,8 @@ async function mcpClient(url, agent, clientName) {
     call: async (name, args = {}) => {
       const r = await post({ jsonrpc: '2.0', id: ++id, method: 'tools/call', params: { name, arguments: args } })
       if (r.error) throw new Error(`${name}: ${JSON.stringify(r.error)}`)
-      return { text: r.result.content.map((c) => c.text).join('\n'), error: !!r.result.isError }
+      const raw = r.result.content.map((c) => c.text).join('\n')
+      return { text: plain(raw), raw, error: !!r.result.isError }
     },
   }
 }
@@ -253,6 +258,8 @@ try {
   const own = (await codex.call('read_document', { document: docA })).text
   const adaN = Number(/\[(\d+)\][^\n]*Ada typed this\./.exec(own)?.[1])
   check('its own person’s paragraph isn’t marked as someone else’s', own.includes(`[${adaN}] Ada typed this.`), own)
+  const ownRaw = (await codex.call('read_document', { document: docA })).raw
+  check('but it says it’s its person’s', /\{by Ada, your person\} Ada typed this\./.test(ownRaw), ownRaw)
   const ownDel = await codex.call('delete_paragraphs', { document: docA, from: adaN })
   check('and deleting it needs no confirm', !ownDel.error, ownDel.text)
   // Tidy up for what follows: back to the two paragraphs it started with.
@@ -263,13 +270,16 @@ try {
   // A paragraph with the same text as the one after it: the answer gives the new one's place.
   const same = await codex.call('insert_paragraphs', { document: docA, after: 0, text: 'Intro' })
   check('the answer gives where a paragraph went, even beside one with the same text', same.text.includes('It’s paragraph 1.'), same.text)
-  await codex.call('delete_paragraphs', { document: docA, from: 1 })
+  // Beside one with the same text, which of the two is whose can't be told, so it takes confirm.
+  const sameDel = await codex.call('delete_paragraphs', { document: docA, from: 1 })
+  check('deleting one of two same paragraphs side by side needs confirm', sameDel.error && sameDel.raw.includes('can’t tell whose'), sameDel.raw)
+  await codex.call('delete_paragraphs', { document: docA, from: 1, confirm: true })
 
   // ── The other new tools
   const find = await codex.call('find_text', { document: docA, text: 'budget' })
   check('find_text gives paragraph numbers and counts', find.text.startsWith('2 matches') && find.text.includes('[2] (2 times)'), find.text)
   check('find_text says when nothing matches', (await codex.call('find_text', { document: docA, text: 'zebra' })).text.includes('isn’t in it'))
-  await codex.call('replace_paragraphs', { document: docA, from: 1, text: 'Introduction' })
+  await codex.call('replace_paragraphs', { document: docA, from: 1, text: 'Introduction', confirm: true })
   await codex.call('undo', { document: docA })
   const redo = await codex.call('redo', { document: docA })
   check('redo puts the change back', !redo.error && redo.text.startsWith('Redone'), redo.text)
@@ -289,6 +299,126 @@ try {
   const refused = await codex.call('undo', { document: docA })
   check('undo over someone else’s change says it couldn’t', refused.text.startsWith('Couldn’t undo'), refused.text)
   check('and Bo’s change stays, as his', (await codex.call('read_document', { document: docA })).text.includes('[2] {by Bo} Budget line by Bo'))
+  // ── Paragraph ids, who wrote what before an agent came, catching up, and who comes and goes
+  const idOf = (text, line) => new RegExp(`\\[(\\d+) (#[a-z0-9-]+)\\][^\\n]*${line}`).exec(text)
+  const readA = (await codex.call('read_document', { document: docA })).raw
+  const readB = (await claude.call('read_document', { document: docB })).raw
+  const budget = idOf(readA, 'Budget line by Bo')
+  check('read_document gives each paragraph an id', !!budget, readA)
+  check('every agent’s copy gives a paragraph the same id', idOf(readB, 'Budget line by Bo')?.[2] === budget?.[2], readB)
+  const version = Number(/version (\d+)/.exec(readA)?.[1])
+  check('read_document says which version it read', version > 0, readA)
+  // Bo's Claude adds paragraphs above it; Codex's id still finds it.
+  await claude.call('insert_paragraphs', { document: docB, after: 0, text: 'Agenda\nWho comes' })
+  await new Promise((r) => setTimeout(r, 300))
+  const byId = await codex.call('insert_paragraphs', { document: docA, after: budget[2], text: 'Totals follow.' })
+  const moved = Number(budget[1]) + 2
+  check('an id finds its paragraph after others put paragraphs above it', !byId.error && byId.text.includes(`It’s paragraph ${moved + 1}.`), byId.raw)
+  // What changed since: only Claude's two and Codex's own.
+  const since = (await codex.call('read_document', { document: docA, since: version })).raw
+  check('read_document since a version gives only what changed after it', since.includes('{by Bo’s Claude} Agenda') && since.includes('{by you} Totals follow.') && !since.includes('Budget line by Bo') && !since.includes('Introduction'), since)
+  // Bo changes the paragraph: the old id is followed to it, but replacing it by the old id is refused.
+  await b.page.evaluate(() => {
+    const e = window.__docxEditor
+    const p = JSON.parse(e.doc.paragraphs()).find((x) => x.text.startsWith('Budget line by Bo'))
+    e.run({ cmd: 'select', anchor: [p.path, p.text.length], focus: [p.path, p.text.length] })
+    e.run({ cmd: 'insertText', text: ', checked' })
+  })
+  await a.page.waitForFunction(() => document.querySelector('.docx-pages')?.textContent?.includes('by Bo, checked'))
+  await new Promise((r) => setTimeout(r, 300))
+  const stale = await codex.call('replace_paragraphs', { document: docA, from: budget[2], text: 'Budget, final', confirm: true })
+  check('replacing by an id someone else has changed since is refused', stale.error && stale.raw.includes(`${budget[2]} has changed since (Bo changed it)`) && stale.raw.includes('Budget line by Bo, checked'), stale.raw)
+  const followed = await codex.call('format_text', { document: docA, from: budget[2], bold: true })
+  check('formatting by that id follows it to the paragraph, and says so', !followed.error && followed.raw.includes(`${budget[2]} has changed since`) && followed.raw.includes('Budget line by Bo, checked'), followed.raw)
+  // A message that names a paragraph's id shows under it.
+  const totals = idOf((await codex.call('read_document', { document: docA })).raw, 'Totals follow\\.')[2]
+  await claude.call('send_message', { document: docB, text: `${totals} needs the numbers from the budget sheet.` })
+  await new Promise((r) => setTimeout(r, 300))
+  const noted = (await codex.call('read_document', { document: docA })).raw
+  check('a message naming a paragraph’s id shows under it', new RegExp(`Totals follow\\.\\n    ↳ Bo’s Claude: ${totals} needs the numbers`).test(noted), noted)
+  // Bo's window links the id to its paragraph.
+  await b.page.getByRole('button', { name: /Agents’ chat/ }).click()
+  const idButton = b.page.locator('.chat-para', { hasText: totals })
+  await idButton.waitFor()
+  if (process.env.SHOTS) await shot(b.page, `${process.env.SHOTS}/chat-ids.png`, '.chat-panel')
+  check('people’s chat links a paragraph id to the paragraph', (await idButton.getAttribute('title')) === 'Totals follow.')
+  await idButton.click()
+  const atTotals = await b.page.evaluate(() => {
+    const e = window.__docxEditor
+    const sel = JSON.parse(e.doc.selection())
+    return JSON.parse(e.doc.paragraphs()).find((p) => JSON.stringify(p.path) === JSON.stringify(sel.focus[0]))?.text
+  })
+  check('and clicking it goes there', atTotals === 'Totals follow.', atTotals)
+  await b.page.keyboard.press('Escape')
+  // Someone coming in ends a wait, and every agent hears of it with its next answer.
+  const waitJoin = codex.call('wait_for_changes', { document: docA, seconds: 20 })
+  await new Promise((r) => setTimeout(r, 300))
+  const grok = await mcpClient(MCP_A, 'grok', 'grok-build')
+  const grokRead = (await grok.call('read_document', { document: docA })).raw
+  const joinedWait = await waitJoin
+  check('someone coming in ends wait_for_changes, and says who', joinedWait.raw.startsWith('Someone came into the document') && /Grok \(AI\) came into the document (just now|\d+ seconds ago)/.test(joinedWait.raw), joinedWait.raw)
+  // A new agent knows who wrote what before it came.
+  check('an agent that joins later sees who wrote what before it came', grokRead.includes('{by Bo’s Claude} Agenda') && grokRead.includes('{by Bo} Budget line by Bo, checked') && grokRead.includes('{by Codex} Totals follow.'), grokRead)
+  check('and a summary of who wrote how much', /Who last changed each paragraph: [^\n]*Bo’s Claude \d/.test(grokRead), grokRead)
+  check('and the notes on paragraphs from before it came', grokRead.includes(`↳ Bo’s Claude: ${totals} needs the numbers`), grokRead)
+  await grok.call('insert_paragraphs', { document: docA, at_end: true, text: 'Grok was here.' })
+  await grok.call('leave_document', { document: docA })
+  await new Promise((r) => setTimeout(r, 300))
+  const left = await claude.call('find_text', { document: docB, text: 'zebra' })
+  check('every answer says who came and went', /Ada’s Grok \(AI\) came into the document/.test(left.raw) && /Ada’s Grok \(AI\) left the document/.test(left.raw), left.raw)
+  // Joining after it left, another agent still knows its name.
+  const claude2 = await mcpClient(MCP_B, 'claude', 'claude-code')
+  const later = (await claude2.call('read_document', { document: docB })).raw
+  check('an agent that joins later still names who wrote what and left', later.includes('{by Ada’s Grok} Grok was here.'), later)
+  await claude2.call('leave_document', { document: docB })
+  // A paragraph whose text another has too has no id: which one an id meant couldn't be told.
+  const mineSame = await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Same line' })
+  const sameId = idOf(mineSame.raw, 'Same line')
+  await claude.call('insert_paragraphs', { document: docB, after: 1, text: 'Same line' })
+  await new Promise((r) => setTimeout(r, 300))
+  const twinRead = (await codex.call('read_document', { document: docA })).raw
+  check('paragraphs with the same text have no id', /\[2\] \{by Bo’s Claude\} Same line/.test(twinRead) && /\[\d+\] \{by you\} Same line/.test(twinRead), twinRead)
+  const ownSame = await codex.call('replace_paragraphs', { document: docA, from: sameId[2], text: 'Same line, mine' })
+  check('and an id from before is refused, not guessed', ownSame.error && ownSame.raw.includes(`No paragraph ${sameId[2]} now`), ownSame.raw)
+  // Side by side, who wrote which can't be told, so changing them needs confirm.
+  await codex.call('delete_paragraphs', { document: docA, from: 2, confirm: true })
+  const nextTo = Number(/\[(\d+)\] \{by you\} Same line/.exec((await codex.call('read_document', { document: docA })).raw)?.[1] ?? sameId[1])
+  await claude.call('insert_paragraphs', { document: docB, after: nextTo, text: 'Same line' })
+  await new Promise((r) => setTimeout(r, 300))
+  const unclear = (await codex.call('read_document', { document: docA })).raw
+  check('who wrote two same paragraphs side by side is unclear', (unclear.match(/\{by unclear: one next to it has the same text\} Same line/g) ?? []).length === 2, unclear)
+  await codex.call('delete_paragraphs', { document: docA, from: nextTo, to: nextTo + 1, confirm: true })
+  // An old id follows its paragraph's changes, but never to a new paragraph that has text it once had.
+  const alpha = idOf((await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Alpha one' })).raw, 'Alpha one')
+  const beta = idOf((await codex.call('replace_paragraphs', { document: docA, from: alpha[2], text: 'Beta one' })).raw, 'Beta one')
+  await new Promise((r) => setTimeout(r, 300))
+  await claude.call('replace_paragraphs', { document: docB, from: beta[2], text: 'Gamma one', confirm: true })
+  await new Promise((r) => setTimeout(r, 300))
+  await codex.call('insert_paragraphs', { document: docA, after: 0, text: 'Beta one' })
+  const oldAlpha = await codex.call('delete_paragraphs', { document: docA, from: alpha[2] })
+  check('an old id isn’t followed to a new paragraph with text it once had', oldAlpha.error && oldAlpha.raw.includes(`No paragraph ${alpha[2]} now`), oldAlpha.raw)
+  await codex.call('delete_paragraphs', { document: docA, from: 1 })
+  await codex.call('delete_paragraphs', { document: docA, from: beta[1], confirm: true })
+  // Nor once its paragraph is deleted and the text written again.
+  const delta = idOf((await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Delta one' })).raw, 'Delta one')
+  const epsilon = idOf((await codex.call('replace_paragraphs', { document: docA, from: delta[2], text: 'Epsilon one' })).raw, 'Epsilon one')
+  await new Promise((r) => setTimeout(r, 300))
+  await claude.call('delete_paragraphs', { document: docB, from: epsilon[2], confirm: true })
+  await new Promise((r) => setTimeout(r, 300))
+  await codex.call('insert_paragraphs', { document: docA, after: 0, text: 'Epsilon one' })
+  const oldDelta = await codex.call('delete_paragraphs', { document: docA, from: delta[2] })
+  check('an old id isn’t followed to text written again after its paragraph was deleted', oldDelta.error && oldDelta.raw.includes(`No paragraph ${delta[2]} now`), oldDelta.raw)
+  await codex.call('delete_paragraphs', { document: docA, from: 1 })
+  // full: true gives a long changed paragraph whole.
+  const long = `Long ${'word '.repeat(90)}end.`
+  // (Hearing first of who came and went meanwhile, which would end the wait at once.)
+  await codex.call('find_text', { document: docA, text: 'zebra' })
+  const waitLong = codex.call('wait_for_changes', { document: docA, seconds: 20, full: true })
+  await new Promise((r) => setTimeout(r, 300))
+  await claude.call('insert_paragraphs', { document: docB, at_end: true, text: long })
+  const whole2 = await waitLong
+  check('wait_for_changes with full gives changed paragraphs whole', whole2.raw.includes(long), whole2.raw)
+
   const save = await claude.call('save_document', { document: docB })
   check('a guest’s agent can’t save the host’s document', save.error && save.text.includes('their file'), save.text)
 

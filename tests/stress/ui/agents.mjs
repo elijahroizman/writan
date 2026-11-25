@@ -22,6 +22,10 @@ const logs = []
 a.page.on('pageerror', (e) => logs.push(`[pageerror a] ${e.message}`))
 b.page.on('pageerror', (e) => logs.push(`[pageerror b] ${e.message}`))
 
+/** An answer as the checks written before paragraph ids read it: without the ids, and without
+ * the marks on the agent's own and its person's paragraphs. `raw` keeps them. */
+const plain = (t) => t.replace(/\[(\d+) #[a-z][0-9a-z]{5}(?:-\d+)?\]/g, '[$1]').replace(/ \{by (?:you|[^{}]+, your person)\}/g, '')
+
 /** An MCP client: initialize, then calls with the session it got. */
 async function mcpClient(agent, clientName) {
   let session = null
@@ -43,7 +47,8 @@ async function mcpClient(agent, clientName) {
     call: async (name, args = {}) => {
       const r = await post({ jsonrpc: '2.0', id: ++id, method: 'tools/call', params: { name, arguments: args } })
       if (r.error) throw new Error(`${name}: ${JSON.stringify(r.error)}`)
-      return { text: r.result.content.map((c) => c.text).join('\n'), error: !!r.result.isError }
+      const raw = r.result.content.map((c) => c.text).join('\n')
+      return { text: plain(raw), raw, error: !!r.result.isError }
     },
   }
 }

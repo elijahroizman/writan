@@ -22,6 +22,10 @@ const a = await launch({
 const logs = []
 a.page.on('pageerror', (e) => logs.push(`[pageerror a] ${e.message}`))
 
+/** An answer as the checks written before paragraph ids read it: without the ids, and without
+ * the marks on the agent's own and its person's paragraphs. `raw` keeps them. */
+const plain = (t) => t.replace(/\[(\d+) #[a-z][0-9a-z]{5}(?:-\d+)?\]/g, '[$1]').replace(/ \{by (?:you|[^{}]+, your person)\}/g, '')
+
 async function mcpClient(agent, clientName) {
   let session = null
   let id = 0
@@ -42,7 +46,8 @@ async function mcpClient(agent, clientName) {
       const r = await post({ jsonrpc: '2.0', id: ++id, method: 'tools/call', params: { name, arguments: args } })
       if (r.error) throw new Error(`${name}: ${JSON.stringify(r.error)}`)
       const content = r.result.content
-      return { text: content.filter((c) => c.type === 'text').map((c) => c.text).join('\n'), images: content.filter((c) => c.type === 'image'), error: !!r.result.isError }
+      const raw = content.filter((c) => c.type === 'text').map((c) => c.text).join('\n')
+      return { text: plain(raw), raw, images: content.filter((c) => c.type === 'image'), error: !!r.result.isError }
     },
   }
 }
