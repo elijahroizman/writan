@@ -3,7 +3,6 @@
 
 import type { TextRun } from '../editors/pdf/engine/protocol'
 import { loadEngine } from '../engine/load'
-import type { PaintItem, PaintStyle } from '../engine/paint'
 import type { DocKind } from './kinds'
 import { KINDS } from './kinds'
 import * as platform from './platform'
@@ -136,20 +135,17 @@ export async function copyTabAsMarkdown(tabId?: string): Promise<string | null> 
 
 // ── PDF rendering per document kind
 
-/** Pixels (96 DPI CSS) to PDF points (72 DPI). */
-const PX_TO_PT = 72 / 96
-const RENDER_SCALE = 2
-
 /** Renders any supported open tab to PDF bytes. */
-export async function tabToPdf(tab: DocTab): Promise<Uint8Array> {
+export async function tabToPdf(tab: DocTab, title?: string): Promise<Uint8Array> {
   const bytes = await readTabBytes(tab)
+  const docTitle = title ?? tab.title
   switch (tab.kind) {
     case 'pdf':
       return bytes
     case 'docx':
-      return await docxBytesToPdf(bytes)
+      return await docxBytesToPdf(bytes, docTitle)
     case 'pptx':
-      return await pptxBytesToPdf(bytes)
+      return await pptxBytesToPdf(bytes, docTitle)
     case 'xlsx':
     case 'csv':
       return await sheetBytesToPdf(bytes, fileNameForTab(tab))
@@ -157,7 +153,7 @@ export async function tabToPdf(tab: DocTab): Promise<Uint8Array> {
     case 'txt': {
       const engine = await loadEngine()
       const docxBytes = new Uint8Array(engine.convertDocument(bytes, fileNameForTab(tab), 'docx'))
-      return await docxBytesToPdf(docxBytes)
+      return await docxBytesToPdf(docxBytes, docTitle)
     }
     case 'image':
       return await imageBytesToPdf(bytes, fileNameForTab(tab))
@@ -166,274 +162,24 @@ export async function tabToPdf(tab: DocTab): Promise<Uint8Array> {
   }
 }
 
-async function docxBytesToPdf(bytes: Uint8Array): Promise<Uint8Array> {
-  const [{ jsPDF }, { draw }, { WordEngine }] = await Promise.all([
-    import('jspdf'),
-    import('../collab/agents/picture'),
-    import('../engine/word/engine'),
-  ])
-  const engine = await WordEngine.open(bytes.length ? bytes : null)
-  try {
-    const sizes = engine.sizes
-    if (!sizes.length) throw new Error('This document has no pages to export.')
-    const firstW = sizes[0][0] * PX_TO_PT
-    const firstH = sizes[0][1] * PX_TO_PT
-    const pdf = new jsPDF({
-      unit: 'pt',
-      format: [firstW, firstH],
-      orientation: firstW > firstH ? 'landscape' : 'portrait',
-      compress: true,
-    })
-    for (let i = 0; i < sizes.length; i++) {
-      const p = engine.paint(i, true)
-      if (!p) continue
-      const wPt = p.width * PX_TO_PT
-      const hPt = p.height * PX_TO_PT
-      if (i > 0) pdf.addPage([wPt, hPt], wPt > hPt ? 'landscape' : 'portrait')
-      const canvas = await draw({ width: p.width, height: p.height, items: p.items, styles: engine.styles, media: engine.media }, RENDER_SCALE)
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.94)
-      pdf.addImage(dataUrl, 'JPEG', 0, 0, wPt, hPt, undefined, 'FAST')
-    }
-    return new Uint8Array(pdf.output('arraybuffer'))
-  } finally {
-    engine.dispose()
-  }
+async function docxBytesToPdf(bytes: Uint8Array, title?: string): Promise<Uint8Array> {
+  const { exportWordToPdf } = await import('./pdf/exporter')
+  return await exportWordToPdf(bytes, title)
 }
 
-async function pptxBytesToPdf(bytes: Uint8Array): Promise<Uint8Array> {
-  const [{ jsPDF }, { draw }, { SlidesEngine }] = await Promise.all([
-    import('jspdf'),
-    import('../collab/agents/picture'),
-    import('../engine/slides/engine'),
-  ])
-  const engine = await SlidesEngine.open(bytes.length ? bytes : null)
-  try {
-    const visible = engine.slides.map((s, i) => ({ s, i })).filter(({ s }) => !s.hidden)
-    if (!visible.length) throw new Error('This presentation has no visible slides.')
-    const wPt = engine.width * PX_TO_PT
-    const hPt = engine.height * PX_TO_PT
-    const pdf = new jsPDF({
-      unit: 'pt',
-      format: [wPt, hPt],
-      orientation: wPt > hPt ? 'landscape' : 'portrait',
-      compress: true,
-    })
-    for (let idx = 0; idx < visible.length; idx++) {
-      const slideIdx = visible[idx].i
-      if (idx > 0) pdf.addPage([wPt, hPt], wPt > hPt ? 'landscape' : 'portrait')
-      const canvas = await draw(
-        { width: engine.width, height: engine.height, items: engine.paintItems(slideIdx), styles: engine.styles, media: engine.media },
-        RENDER_SCALE,
-      )
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.94)
-      pdf.addImage(dataUrl, 'JPEG', 0, 0, wPt, hPt, undefined, 'FAST')
-    }
-    return new Uint8Array(pdf.output('arraybuffer'))
-  } finally {
-    engine.dispose()
-  }
+async function pptxBytesToPdf(bytes: Uint8Array, title?: string): Promise<Uint8Array> {
+  const { exportSlidesToPdf } = await import('./pdf/exporter')
+  return await exportSlidesToPdf(bytes, title)
 }
 
 async function sheetBytesToPdf(bytes: Uint8Array, name: string): Promise<Uint8Array> {
-  const [{ jsPDF }, { draw }, { SheetsEngine }] = await Promise.all([
-    import('jspdf'),
-    import('../collab/agents/picture'),
-    import('../engine/sheets/engine'),
-  ])
-  const engine = await SheetsEngine.open(bytes.length ? bytes : null, name)
-  try {
-    const visible = engine.sheets.map((s, i) => ({ s, i })).filter(({ s }) => !s.hidden)
-    if (!visible.length) throw new Error('This workbook has no visible sheets.')
-
-    // Landscape Letter (792 x 612 pt) with 36pt margins.
-    const pageW = 792
-    const pageH = 612
-    const margin = 36
-    const innerW = pageW - margin * 2
-    const innerH = pageH - margin * 2
-
-    const pdf = new jsPDF({ unit: 'pt', format: 'letter', orientation: 'landscape', compress: true })
-    let pagesAdded = 0
-
-    for (const { i: sheetIdx } of visible) {
-      const g = engine.geometryOf(sheetIdx)
-      const [contentRows, contentCols] = g.info.content
-      const rows = Math.max(1, contentRows)
-      const cols = Math.max(1, contentCols)
-      const raw = JSON.parse(engine.doc.paint(sheetIdx, 0, rows, 0, cols)) as { items: PaintItem[]; styles: PaintStyle[] }
-      engine.styles.add(raw.styles)
-      const pictures = engine.picturesOf(sheetIdx)
-      const charts = engine.chartsOf(sheetIdx)
-      const items: PaintItem[] = [
-        ...raw.items,
-        ...pictures.map((p): PaintItem => ({ t: 'image', media: p.media, x: p.x, y: p.y, w: p.w, h: p.h, crop: p.crop })),
-      ]
-      let usedW = Math.max(1, g.x(cols))
-      let usedH = Math.max(1, g.y(rows))
-      for (const b of [...pictures, ...charts]) {
-        usedW = Math.max(usedW, b.x + b.w)
-        usedH = Math.max(usedH, b.y + b.h)
-      }
-
-      // Scale width to fit cleanly within page width, then paginate vertically.
-      const fitScalePt = Math.min(PX_TO_PT, innerW / usedW)
-      const slicePxH = Math.max(1, Math.floor(innerH / fitScalePt))
-
-      let chartTools: {
-        createElement: typeof import('react').createElement
-        renderToStaticMarkup: typeof import('react-dom/server').renderToStaticMarkup
-        ChartSvg: typeof import('../engine/sheets/Chart').ChartSvg
-      } | null = null
-      if (charts.length) {
-        const [react, reactDomServer, chartMod] = await Promise.all([
-          import('react'),
-          import('react-dom/server'),
-          import('../engine/sheets/Chart'),
-        ])
-        chartTools = {
-          createElement: react.createElement,
-          renderToStaticMarkup: reactDomServer.renderToStaticMarkup,
-          ChartSvg: chartMod.ChartSvg,
-        }
-      }
-
-      for (let y = 0; y < usedH; y += slicePxH) {
-        if (pagesAdded > 0) pdf.addPage('letter', 'landscape')
-        pagesAdded++
-        const h = Math.min(slicePxH, usedH - y)
-        const canvas = await draw(
-          { width: Math.max(g.width, usedW), height: Math.max(g.height, usedH), items, styles: engine.styles, media: engine.media },
-          RENDER_SCALE,
-          [],
-          { x: 0, y, w: usedW, h },
-        )
-        if (chartTools) {
-          const ctx = canvas.getContext('2d')!
-          for (const c of charts) {
-            if (c.y + c.h <= y || c.y >= y + h) continue
-            const markup = chartTools.renderToStaticMarkup(chartTools.createElement(chartTools.ChartSvg, { chart: c, width: c.w, height: c.h }))
-            const svg = markup
-              .slice(markup.indexOf('<svg'), markup.lastIndexOf('</svg>') + 6)
-              .replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"')
-            const img = new Image()
-            const svgUrl = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
-            img.src = svgUrl
-            try {
-              await img.decode()
-              ctx.drawImage(img, c.x, c.y, c.w, c.h)
-            } catch {
-              // Skip unrenderable chart SVG rather than failing export.
-            } finally {
-              URL.revokeObjectURL(svgUrl)
-            }
-          }
-        }
-        const drawW = usedW * fitScalePt
-        const drawH = h * fitScalePt
-        pdf.addImage(canvas.toDataURL('image/jpeg', 0.94), 'JPEG', margin, margin, drawW, drawH, undefined, 'FAST')
-      }
-    }
-
-    return new Uint8Array(pdf.output('arraybuffer'))
-  } finally {
-    engine.dispose()
-  }
-}
-
-function isHeicBytes(bytes: Uint8Array, ext: string): boolean {
-  if (ext === 'heic' || ext === 'heif') return true
-  if (bytes.length < 12) return false
-  const box = String.fromCharCode(...bytes.slice(4, 12))
-  return box.startsWith('ftyp') && /^(hei[cmsx]|hev[cmsx]|mif1|msf1)$/.test(box.slice(4))
-}
-
-async function decodeImageToCanvas(bytes: Uint8Array, name: string): Promise<HTMLCanvasElement> {
-  const ext = name.split('.').pop()?.toLowerCase() ?? 'png'
-  const heic = isHeicBytes(bytes, ext)
-  const mime = heic
-    ? 'image/heic'
-    : ext === 'jpg' || ext === 'jpeg'
-      ? 'image/jpeg'
-      : ext === 'webp'
-        ? 'image/webp'
-        : ext === 'gif'
-          ? 'image/gif'
-          : 'image/png'
-  const blob = new Blob([bytes as Uint8Array<ArrayBuffer>], { type: mime })
-  const url = URL.createObjectURL(blob)
-  try {
-    const img = new Image()
-    img.src = url
-    await img.decode()
-    const canvas = document.createElement('canvas')
-    canvas.width = img.naturalWidth
-    canvas.height = img.naturalHeight
-    const ctx = canvas.getContext('2d')!
-    ctx.fillStyle = '#ffffff'
-    ctx.fillRect(0, 0, canvas.width, canvas.height)
-    ctx.drawImage(img, 0, 0)
-    return canvas
-  } catch (err) {
-    if (!heic) throw err
-    // @ts-expect-error -- libheif-js ships no TypeScript declarations (see plugins/images/libheif.d.ts)
-    const mod = (await import('libheif-js/libheif-wasm/libheif-bundle.mjs')) as {
-      default: () => {
-        HeifDecoder: new () => {
-          decode(data: Uint8Array): Array<{
-            is_primary(): boolean
-            get_width(): number
-            get_height(): number
-            display(
-              buf: { data: Uint8ClampedArray; width: number; height: number },
-              cb: (out: { data: Uint8ClampedArray; width: number; height: number } | null) => void,
-            ): void
-            free(): void
-          }>
-        }
-      }
-    }
-    const decoder = new (mod.default().HeifDecoder)()
-    const images = decoder.decode(bytes)
-    if (!images.length) throw new Error('This HEIC file has no picture in it.')
-    const image = images.find((i) => i.is_primary()) ?? images[0]
-    try {
-      const width = image.get_width()
-      const height = image.get_height()
-      const imgData = await new Promise<ImageData>((resolve, reject) => {
-        image.display({ data: new Uint8ClampedArray(width * height * 4), width, height }, (data) => {
-          if (data) resolve(new ImageData(new Uint8ClampedArray(data.data), data.width, data.height))
-          else reject(new Error('Could not decode this HEIC photo.'))
-        })
-      })
-      const canvas = document.createElement('canvas')
-      canvas.width = width
-      canvas.height = height
-      const ctx = canvas.getContext('2d')!
-      ctx.fillStyle = '#ffffff'
-      ctx.fillRect(0, 0, width, height)
-      ctx.putImageData(imgData, 0, 0)
-      return canvas
-    } finally {
-      for (const each of images) each.free()
-    }
-  } finally {
-    URL.revokeObjectURL(url)
-  }
+  const { exportSheetsToPdf } = await import('./pdf/exporter')
+  return await exportSheetsToPdf(bytes, name)
 }
 
 async function imageBytesToPdf(bytes: Uint8Array, name: string): Promise<Uint8Array> {
-  const { jsPDF } = await import('jspdf')
-  const canvas = await decodeImageToCanvas(bytes, name)
-  const wPt = Math.max(72, canvas.width * PX_TO_PT)
-  const hPt = Math.max(72, canvas.height * PX_TO_PT)
-  const pdf = new jsPDF({
-    unit: 'pt',
-    format: [wPt, hPt],
-    orientation: wPt > hPt ? 'landscape' : 'portrait',
-    compress: true,
-  })
-  pdf.addImage(canvas.toDataURL('image/jpeg', 0.95), 'JPEG', 0, 0, wPt, hPt, undefined, 'FAST')
-  return new Uint8Array(pdf.output('arraybuffer'))
+  const { exportImageToPdf } = await import('./pdf/exporter')
+  return await exportImageToPdf(bytes, name)
 }
 
 // ── PDFium lossless merge & text extraction
