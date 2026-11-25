@@ -1,15 +1,15 @@
-// A small viewer for PNG, JPEG and HEIC, with a few touch-ups: highlight, draw, lines and arrows,
+// A small viewer for PNG, JPEG, HEIC and WebP, with a few touch-ups: highlight, draw, lines and arrows,
 // box, crop and rotate, and copy to the clipboard. Edits are a list replayed over the decoded picture, so undo
 // is exact and saving re-encodes once from the original pixels. An unedited file is saved back
 // byte for byte. HEIC can't be written, so HEIC photos open for viewing, with a button that makes
 // a JPEG copy to mark up.
 
-import type { PluginEditor, PluginEditorContext } from '../../src/plugins/api'
+import type { ImageOcrResult, PluginEditor, PluginEditorContext } from '../../src/plugins/api'
 import type { IconName } from './icons'
 import { icon } from './icons'
 import css from './images.css?inline'
 
-type Format = 'png' | 'jpeg' | 'heic'
+type Format = 'png' | 'jpeg' | 'heic' | 'webp'
 type Tool = 'pan' | 'highlight' | 'pen' | 'line' | 'arrow' | 'box' | 'crop'
 /** The tools that draw in a colour. */
 type Marker = 'highlight' | 'pen' | 'line' | 'arrow' | 'box'
@@ -59,12 +59,13 @@ const context2d = (c: HTMLCanvasElement) => c.getContext('2d')!
 export function sniff(bytes: Uint8Array): Format | null {
   if (bytes[0] === 0x89 && bytes[1] === 0x50 && bytes[2] === 0x4e && bytes[3] === 0x47) return 'png'
   if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'jpeg'
+  if (String.fromCharCode(...bytes.subarray(0, 4)) === 'RIFF' && String.fromCharCode(...bytes.subarray(8, 12)) === 'WEBP') return 'webp'
   const box = String.fromCharCode(...bytes.subarray(4, 12))
   if (box.startsWith('ftyp') && /^(hei[cmsx]|hev[cmsx]|mif1|msf1)$/.test(box.slice(4))) return 'heic'
   return null
 }
 
-const MIME: Record<Format, string> = { png: 'image/png', jpeg: 'image/jpeg', heic: 'image/heic' }
+const MIME: Record<Format, string> = { png: 'image/png', jpeg: 'image/jpeg', heic: 'image/heic', webp: 'image/webp' }
 
 /** The picture as a canvas. The web view decodes PNG and JPEG (turning them as their EXIF says); HEIC falls back to libheif. */
 async function decode(bytes: Uint8Array, format: Format | null): Promise<HTMLCanvasElement> {
@@ -81,7 +82,7 @@ async function decode(bytes: Uint8Array, format: Format | null): Promise<HTMLCan
       URL.revokeObjectURL(url)
     }
   } catch (err) {
-    if (format !== 'heic') throw new Error(format ? 'This picture is damaged, or in a form Writan can’t read.' : 'This file isn’t a PNG, JPEG or HEIC picture, or it’s damaged.', { cause: err })
+    if (format !== 'heic') throw new Error(format ? 'This picture is damaged, or in a form Writan can’t read.' : 'Writan couldn’t read this picture.', { cause: err })
   }
   const { decodeHeic } = await import('./heic')
   const data = await decodeHeic(bytes)
@@ -510,6 +511,101 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     context.openDocument({ bytes: await encode(work, 'jpeg'), name: `${context.title}.jpg` })
   }
 
+  const ocrPanel = el('section', 'img-ocr-panel')
+  ocrPanel.hidden = true
+  ocrPanel.setAttribute('aria-label', 'Recognized text')
+  const ocrHeading = el('h3', undefined, 'Recognized text')
+  const ocrLanguages = el('p', 'muted')
+  const ocrStatus = el('p', 'muted')
+  ocrStatus.setAttribute('role', 'status')
+  const ocrText = el('textarea')
+  ocrText.readOnly = true
+  ocrText.dir = 'auto'
+  ocrText.hidden = true
+  ocrText.setAttribute('aria-label', 'Recognized text')
+  const ocrActions = el('div', 'img-ocr-actions')
+  let ocrJob: AbortController | undefined
+  let ocrResult: ImageOcrResult | undefined
+  let ocrWork: HTMLCanvasElement | undefined
+  const ocrAction = (label: string, action: () => void) => {
+    const btn = el('button', 'btn', label)
+    btn.type = 'button'
+    btn.addEventListener('click', action)
+    return btn
+  }
+  const copyText = ocrAction('Copy Text', () => void deliver(() => navigator.clipboard.writeText(ocrResult!.text)))
+  const copyMarkdown = ocrAction('Copy Markdown', () => void deliver(() => navigator.clipboard.writeText(ocrResult!.markdown)))
+  const saveDocx = ocrAction('Save as DOCX', () => void deliver(() => ocrResult!.saveDocx()))
+  const savePdf = ocrAction('Save as Searchable PDF', () => void runOcr(true, true))
+  const cancelOcr = ocrAction('Cancel', () => ocrJob?.abort())
+  const closeOcr = ocrAction('Close', () => {
+    ocrJob?.abort()
+    ocrPanel.hidden = true
+    recognizeButton?.focus()
+  })
+  ocrActions.append(copyText, copyMarkdown, saveDocx, savePdf, cancelOcr, closeOcr)
+  ocrPanel.append(ocrHeading, ocrLanguages, ocrStatus, ocrText, ocrActions)
+  root.append(ocrPanel)
+
+  function showOcrStatus(message: string) {
+    ocrStatus.textContent = message
+  }
+
+  function refreshOcrActions() {
+    ocrText.hidden = !ocrResult
+    copyText.hidden = copyMarkdown.hidden = saveDocx.hidden = savePdf.hidden = !ocrResult
+    copyText.disabled = copyMarkdown.disabled = saveDocx.disabled = savePdf.disabled = !!ocrJob
+    cancelOcr.hidden = !ocrJob
+  }
+
+  async function deliver(action: () => Promise<boolean | void>) {
+    try {
+      if (await action() !== false) showOcrStatus('Done.')
+    } catch (err) {
+      showOcrStatus(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function runOcr(searchable = false, reuse = false) {
+    const service = context.imageOcr
+    if (!service || ocrJob || destroyed) return
+    const job = new AbortController()
+    ocrJob = job
+    ocrPanel.hidden = false
+    ocrLanguages.textContent = service.selectedLanguages().join(', ')
+    showOcrStatus('Preparing picture…')
+    if (!reuse || ocrWork !== work) ocrResult = undefined
+    refreshOcrActions()
+    try {
+      await ready
+      job.signal.throwIfAborted()
+      if (!work) throw new Error('Open a picture to recognize text.')
+      if (!ocrResult) {
+        const snapshot = work
+        const useOriginal = format && format !== 'heic' && !edits.length
+        const bytes = useOriginal ? original : await encode(snapshot, 'png')
+        ocrResult = await service.recognize(
+          { bytes, mime: useOriginal ? MIME[format] : MIME.png },
+          { signal: job.signal, onProgress: showOcrStatus },
+        )
+        ocrWork = snapshot
+      }
+      ocrText.value = ocrResult.text
+      if (searchable) {
+        showOcrStatus('Building searchable PDF…')
+        const saved = await ocrResult.saveSearchablePdf(job.signal)
+        showOcrStatus(saved ? 'Searchable PDF saved.' : 'Save cancelled.')
+      } else {
+        showOcrStatus(ocrResult.text ? 'Recognition complete.' : 'No text was found.')
+      }
+    } catch (err) {
+      showOcrStatus(job.signal.aborted ? 'Recognition cancelled.' : err instanceof Error ? err.message : String(err))
+    } finally {
+      ocrJob = undefined
+      refreshOcrActions()
+    }
+  }
+
   // ── Toolbar
 
   const buttons = new Map<string, HTMLButtonElement>()
@@ -524,7 +620,7 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     return b
   }
   const divider = () => el('span', 'img-divider')
-  const mod = isMac ? '⌘' : 'Ctrl+'
+  const keyLabel = (label: string, keys: string) => context.shortcut ? `${label} (${context.shortcut(keys)})` : label
 
   const tools: { id: Tool; icon: IconName; label: string }[] = [
     { id: 'pan', icon: 'hand', label: 'Move around (drag), double-click to zoom' },
@@ -559,21 +655,29 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     menuItem('Save a copy as PNG…', () => void saveCopy('png'))
     menuItem('Save a copy as JPEG…', () => void saveCopy('jpeg'))
   }
+  if (context.imageOcr) menuItem('Save as Searchable PDF', () => void runOcr(true))
   menuItem('Print…', () => void print())
 
   if (editable) {
     for (const t of tools) toolbar.appendChild(button(`tool-${t.id}`, t.icon, t.label, () => setTool(t.id)))
     toolbar.append(divider(), button('rotate-left', 'rotateLeft', 'Turn left', () => rotate(-1)), button('rotate-right', 'rotateRight', 'Turn right', () => rotate(1)))
-    toolbar.append(divider(), button('undo', 'undo', `Undo (${mod}Z)`, undo), button('redo', 'redo', `Redo (${isMac ? '⇧⌘Z' : 'Ctrl+Y'})`, redo))
+    toolbar.append(divider(), button('undo', 'undo', keyLabel('Undo', '\u2318Z'), undo), button('redo', 'redo', keyLabel('Redo', isMac ? '\u21e7\u2318Z' : '\u2318Y'), redo))
     toolbar.append(swatches, cropBar, divider())
-  } else if (format === 'heic' && context.openDocument) {
+  } else if ((format === 'heic' || format === 'webp') && context.openDocument) {
     const editButton = el('button', 'btn img-text-btn', 'Edit a JPEG copy')
     editButton.type = 'button'
-    editButton.title = 'Writan can’t save HEIC photos. This opens a JPEG copy in a new tab to mark up and save.'
+    editButton.title = 'Open a JPEG copy in a new tab to mark up and save.'
     editButton.addEventListener('click', () => void editCopy())
     toolbar.append(editButton, divider())
   }
-  toolbar.append(button('copy', 'copy', `Copy (${mod}C)`, () => void copy()), button('more', 'more', 'More', toggleMenu))
+  const recognizeButton = context.imageOcr ? el('button', 'btn img-text-btn', 'Recognize Text (OCR)') : null
+  if (recognizeButton) {
+    recognizeButton.type = 'button'
+    recognizeButton.dataset.testid = 'image-ocr-button'
+    recognizeButton.addEventListener('click', () => void runOcr())
+    toolbar.append(recognizeButton, divider())
+  }
+  toolbar.append(button('copy', 'copy', keyLabel('Copy', '\u2318C'), () => void copy()), button('more', 'more', 'More', toggleMenu))
   root.appendChild(menu)
   function toggleMenu() {
     menu.hidden = !menu.hidden
@@ -691,8 +795,10 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
       if (!on) menu.hidden = true
     },
     print,
+    recognizeText: context.imageOcr ? () => void runOcr() : undefined,
     destroy() {
       destroyed = true
+      ocrJob?.abort()
       resize.disconnect()
       window.removeEventListener('keydown', onKey)
       document.removeEventListener('pointerdown', closeMenu, true)

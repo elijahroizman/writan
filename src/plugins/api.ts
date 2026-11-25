@@ -47,10 +47,29 @@ export interface PluginEditorContext {
   updateDocument?(document: { bytes: Uint8Array; name: string }): boolean
   /** Save bytes to a file the user picks (an export). Resolves false if they cancel. */
   saveFile?(file: { bytes: Uint8Array; name: string }): Promise<boolean>
+  /** The host's platform-specific shortcut label. */
+  shortcut?(keys: string): string
+  /** Local OCR, provided by the host to the bundled Images plugin. */
+  imageOcr?: ImageOcrService
   /** A read-only view of a PDF in `element`, drawn by Writan's own PDF engine. */
   createPdfView?(element: HTMLElement): PdfView
   /** The system's TeX, for plugins whose catalog entry lists the `tex` service. */
   tex?: TexService
+}
+
+export interface ImageOcrService {
+  selectedLanguages(): string[]
+  recognize(image: { bytes: Uint8Array; mime: string }, options: {
+    signal?: AbortSignal
+    onProgress?(message: string): void
+  }): Promise<ImageOcrResult>
+}
+
+export interface ImageOcrResult {
+  text: string
+  markdown: string
+  saveDocx(): Promise<boolean>
+  saveSearchablePdf(signal?: AbortSignal): Promise<boolean>
 }
 
 export interface PdfView {
@@ -110,6 +129,7 @@ export interface PluginEditor {
   search?(query: string, step: 1 | -1 | 0): SearchResult
   zoom?(direction: 'in' | 'out' | 'reset'): void
   print?(): Promise<void>
+  recognizeText?(): void
   /**
    * For source-and-preview editors: what each view shows, as the switch's tooltips put it
    * (`{ read: 'Diagram', split: 'Source and diagram', write: 'Source' }`). With this, Writan

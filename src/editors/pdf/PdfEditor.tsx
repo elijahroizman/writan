@@ -17,6 +17,7 @@ import {
   RotateCcw,
   RotateCw,
   Scaling,
+  ScanText,
   Signature,
   SquareDashed,
   StepForward,
@@ -24,14 +25,20 @@ import {
   Trash2,
   Type,
   Undo2,
+  X,
 } from 'lucide-react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { EditorProps } from '../../App'
 import { FindBar, InspectorHeader, Workbench, formatZoom } from '../../components/Workbench'
 import type { MenuEntry } from '../../components/ui'
 import { Button, CenterState, IconButton, PopoverMenu, Section, Segmented, TextField, ToolButton } from '../../components/ui'
+import { pdfOcrStatus, prepareOcrPacks, readPdfOcrSource, saveOcrCopy } from '../../lib/convert'
+import { formatBytes as packSize, OCR_PACK_CATALOG } from '../../lib/ocr/catalog'
+import { useOcrPacks } from '../../lib/ocr/packs'
+import type { PdfOcrResult } from '../../lib/ocr/pdfOcr'
 import * as platform from '../../lib/platform'
-import { registerEditor, useWorkspace } from '../../state/workspace'
+import { keysFor, useShortcuts } from '../../state/shortcuts'
+import { registerEditor, useWorkspace, type DocTab } from '../../state/workspace'
 import { isCancelled, PdfEngine, Priority } from './engine/client'
 import type { Annot, Box, DocMeta, OutlineItem, PageInfo } from './engine/protocol'
 import { DocStore, drawBitmap } from './engine/store'
@@ -113,7 +120,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     draftRef.current = draft
   }, [draft])
   const [awake, setAwake] = useState(true)
-  const [, setHistoryVersion] = useState(0)
+  const [historyVersion, setHistoryVersion] = useState(0)
   const history = useRef(new History())
   const fieldsDirty = useRef(false)
   const passwordRef = useRef('')
@@ -121,6 +128,21 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const cleanBytes = useRef<Uint8Array | null>(null)
   const lastWritten = useRef<Uint8Array | null>(null)
   const markDirty = useWorkspace((s) => s.markDirty)
+  const [ocrOpen, setOcrOpen] = useState(false)
+  const [ocrDismissed, setOcrDismissed] = useState(false)
+  const [scannedPages, setScannedPages] = useState<number[]>([])
+  const ocrKeys = useShortcuts((s) => keysFor('ocr-document', s.custom))
+
+  useEffect(() => {
+    if (!store) return
+    const job = new AbortController()
+    void store.engine.call('documentTextStats', [], { priority: Priority.search, signal: job.signal })
+      .then((stats) => {
+        // Keep opening a PDF independent of the OCR and export engines.
+        if (!job.signal.aborted) setScannedPages(stats.filter((p) => p.nonWhitespaceCount < 10).map((p) => p.index))
+      }).catch(() => {})
+    return () => job.abort()
+  }, [store, historyVersion])
 
   const refreshDirty = useCallback(() => {
     markDirty(tab.id, history.current.dirty || fieldsDirty.current)
@@ -828,6 +850,10 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
           refreshDirty()
         },
         find: () => setFindOpen(true),
+        actions: { 'ocr-document': () => {
+          if (!storeRef.current?.pages.length) return false
+          setOcrOpen(true)
+        } },
         zoom: (dir) => {
           if (dir === 'in') viewer.current?.step(1)
           else if (dir === 'out') viewer.current?.step(-1)
@@ -1131,6 +1157,15 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
         {store && (
           <Viewer ref={viewer} store={store} pages={pages} awake={awake} onPageChange={onPageChange} onZoomChange={onZoomChange} renderPage={renderPage} positionKey={tab.id} />
         )}
+        {!!scannedPages.length && !ocrDismissed && !ocrOpen && (
+          <div className="pdf-ocr-banner" data-testid="pdf-ocr-banner">
+            <ScanText size={17} />
+            <span>{scannedPages.length === 1 ? '1 page appears to be scanned.' : `${scannedPages.length} pages appear to be scanned.`}</span>
+            <Button onClick={() => setOcrOpen(true)}>Recognize text</Button>
+            <IconButton label="Dismiss scanned pages notice" size="sm" onClick={() => setOcrDismissed(true)}><X size={14} /></IconButton>
+          </div>
+        )}
+        {ocrOpen && <PdfOcrPanel tab={tab} page={page} scannedPages={scannedPages} onClose={() => setOcrOpen(false)} />}
       </div>
       {!store && !error && !password && <CenterState spinner />}
       {error && (
@@ -1195,11 +1230,210 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
           <IconButton label="Fit page" size="sm" onClick={() => viewer.current?.setZoom('page-fit')}>
             <Scaling size={14} />
           </IconButton>
+          <span className="sep" />
+          <IconButton
+            label={platform.shortcut(ocrKeys ? `Recognize text (OCR) (${ocrKeys})` : 'Recognize text (OCR)')}
+            aria-label="Recognize text (OCR)"
+            aria-expanded={ocrOpen}
+            data-testid="pdf-ocr-button"
+            size="sm"
+            onClick={() => setOcrOpen(true)}
+          >
+            <ScanText size={15} />
+          </IconButton>
         </div>
       )}
       {menu && <PopoverMenu anchor={menu} items={pageMenu(menu.index)} onClose={() => setMenu(null)} />}
       {pad && <SignaturePad kind={pad} onClose={padClosed} />}
     </Workbench>
+  )
+}
+
+async function unsignedSearchableCopy(bytes: Uint8Array, signal: AbortSignal): Promise<Uint8Array> {
+  const { inspectPdfDocument } = await import('../../lib/ocr/pdfOcr')
+  if (!(await inspectPdfDocument(bytes, signal)).hasDigitalSignature) return bytes
+  const engine = await PdfEngine.create()
+  try {
+    await engine.call('open', [bytes.slice().buffer, ''], { signal })
+    const flattened = await engine.call('flatten', [], { signal })
+    const { pages } = await engine.call('open', [flattened, ''], { signal })
+    const copy = new Uint8Array(await engine.call('extract', [pages.map(({ key }) => key)], { signal }))
+    if ((await inspectPdfDocument(copy, signal)).hasDigitalSignature) {
+      throw new Error('Writan couldn’t remove the signature from the searchable copy.')
+    }
+    return copy
+  } finally {
+    engine.destroy()
+  }
+}
+
+function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
+  tab: DocTab
+  page: number
+  scannedPages: number[]
+  onClose(): void
+}) {
+  const [scope, setScope] = useState<'current' | 'scanned' | 'all'>(scannedPages.length ? 'scanned' : 'current')
+  const [skip, setSkip] = useState(true)
+  const [progress, setProgress] = useState('')
+  const [running, setRunning] = useState(false)
+  const [delivering, setDelivering] = useState(false)
+  const [error, setError] = useState('')
+  const [result, setResult] = useState<PdfOcrResult | null>(null)
+  const job = useRef<AbortController | null>(null)
+  const initialFocus = useRef<HTMLSelectElement>(null)
+  const selectedLangs = useOcrPacks((s) => s.selectedLangs)
+  const installed = useOcrPacks((s) => s.installed)
+  const setSelectedLangs = useOcrPacks((s) => s.setSelectedLangs)
+  const name = `${tab.title} (OCR)`
+
+  useEffect(() => {
+    initialFocus.current?.focus()
+    void useOcrPacks.getState().refreshPacks().catch((err) => setError(String(err)))
+    return () => job.current?.abort()
+  }, [])
+
+  async function recognize() {
+    if (job.current || (scope === 'scanned' && !scannedPages.length)) return
+    const work = new AbortController()
+    const { signal } = work
+    job.current = work
+    setRunning(true)
+    setResult(null)
+    setError('')
+    setProgress('Inspecting PDF…')
+    let engine: PdfEngine | undefined
+    try {
+      const { bytes: pdfBytes, signed } = await readPdfOcrSource(tab, signal)
+      if (signed) {
+        const confirmed = await platform.confirmDialog(
+          'Creating an unsigned searchable copy leaves the original signed PDF untouched. Annotations and form fields become part of the copied pages.',
+          { title: 'Create unsigned searchable copy?', okLabel: 'Create unsigned copy' },
+        )
+        if (!confirmed) {
+          setProgress('Recognition cancelled.')
+          return
+        }
+      }
+      signal.throwIfAborted()
+      const { countScannedPages, ocrPdfDocument } = await import('../../lib/ocr/pdfOcr')
+      engine = await PdfEngine.create()
+      const { pages: pagesInfo } = await engine.call('open', [pdfBytes.slice().buffer, ''], { signal })
+      const stats = await engine.call('documentTextStats', [], { signal })
+      const scanned = countScannedPages(stats)
+      const pageIndices = scope === 'current' ? [page] : scope === 'scanned' ? scanned : pagesInfo.map((_, i) => i)
+      if (!pageIndices.length) {
+        setProgress('No scanned pages found.')
+        return
+      }
+      if (!skip || pageIndices.some((index) => scanned.includes(index))) {
+        await prepareOcrPacks(selectedLangs, signal, setProgress)
+      }
+      const recognized = await ocrPdfDocument({
+        pdfBytes, engine, pagesInfo, langs: selectedLangs, skipPagesWithText: skip, allowSigned: signed, signal, pageIndices,
+        onProgress: (value) => setProgress(pdfOcrStatus(value)),
+      })
+      if (signed && recognized.recognizedPages.length) {
+        setProgress('Creating unsigned searchable copy…')
+        recognized.searchablePdfBytes = await unsignedSearchableCopy(recognized.searchablePdfBytes, signal)
+      }
+      signal.throwIfAborted()
+      setResult(recognized)
+      setProgress(`Recognized ${recognized.recognizedPages.length} · Skipped ${recognized.skippedPages.length} pages`)
+    } catch (err) {
+      setProgress(signal.aborted ? 'Recognition cancelled.' : '')
+      if (!signal.aborted) setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      engine?.destroy()
+      job.current = null
+      setRunning(false)
+    }
+  }
+
+  async function deliver(action: () => Promise<void>) {
+    setDelivering(true)
+    setError('')
+    try {
+      await action()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setDelivering(false)
+    }
+  }
+
+  const exportText = (format: 'text' | 'markdown' | 'docx') => void deliver(async () => {
+    if (!result) return
+    const { ocrResultsToPlainText, ocrResultsToMarkdown, ocrResultsToDocx } = await import('../../lib/ocr/toDocx')
+    if (format === 'docx') {
+      await saveOcrCopy(`${name}.docx`, await ocrResultsToDocx(result.pages, tab.title))
+      return
+    }
+    const content = format === 'text' ? ocrResultsToPlainText(result.pages) : ocrResultsToMarkdown(result.pages)
+    await navigator.clipboard.writeText(content)
+    setProgress('Copied to clipboard.')
+  })
+
+  return (
+    <section className="pdf-ocr-panel" aria-label="Recognize text" data-testid="pdf-ocr-panel"
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape') return
+        e.stopPropagation()
+        if (job.current) job.current.abort()
+        else onClose()
+      }}>
+      <header>
+        <h3>Recognize text</h3>
+        <IconButton label="Close recognition panel" size="sm" onClick={onClose}><X size={15} /></IconButton>
+      </header>
+      <label className="pdf-ocr-option">
+        Pages
+        <select ref={initialFocus} value={scope} disabled={running} onChange={(e) => setScope(e.target.value as typeof scope)}>
+          <option value="current">Current page ({page + 1})</option>
+          <option value="scanned" disabled={!scannedPages.length}>Scanned pages only ({scannedPages.length})</option>
+          <option value="all">All pages</option>
+        </select>
+      </label>
+      <fieldset disabled={running}>
+        <legend>OCR languages</legend>
+        <div className="pdf-ocr-languages">
+          {OCR_PACK_CATALOG.map((pack) => {
+            const chosen = selectedLangs.includes(pack.code)
+            const cached = installed.some((item) => item.code === pack.code && item.sha256Verified)
+            return (
+              <label key={pack.code}>
+                <input type="checkbox" checked={chosen} disabled={chosen && selectedLangs.length === 1}
+                  onChange={() => setSelectedLangs(chosen ? selectedLangs.filter((code) => code !== pack.code) : [...selectedLangs, pack.code])} />
+                <span>{pack.name} {!cached && <small className="muted">· {packSize(pack.size)} download</small>}</span>
+              </label>
+            )
+          })}
+        </div>
+      </fieldset>
+      <label className="pdf-ocr-option">
+        <input type="checkbox" checked={skip} disabled={running} onChange={(e) => setSkip(e.target.checked)} />
+        Skip pages with existing digital text
+      </label>
+      <div className="pdf-ocr-actions">
+        <Button variant="primary" disabled={running || delivering || (scope === 'scanned' && !scannedPages.length)} onClick={() => void recognize()}>Run OCR</Button>
+        {running && <Button data-testid="pdf-ocr-cancel" onClick={() => job.current?.abort()}>Cancel</Button>}
+      </div>
+      {progress && <p className="muted" role="status">{progress}</p>}
+      {result && (
+        <>
+          {!!result.recognizedPages.length && (
+            <div className="pdf-ocr-actions">
+              <Button variant="primary" disabled={delivering} onClick={() => useWorkspace.getState().openUnsaved(result.searchablePdfBytes, `${name}.pdf`)}>Open searchable copy</Button>
+              <Button disabled={delivering} onClick={() => void deliver(async () => { await saveOcrCopy(`${name}.pdf`, result.searchablePdfBytes) })}>Save searchable copy</Button>
+              <Button disabled={delivering} onClick={() => exportText('text')}>Copy Text</Button>
+              <Button disabled={delivering} onClick={() => exportText('markdown')}>Copy Markdown</Button>
+              <Button disabled={delivering} onClick={() => exportText('docx')}>Save as DOCX</Button>
+            </div>
+          )}
+        </>
+      )}
+      {error && <p role="alert">{error}</p>}
+    </section>
   )
 }
 

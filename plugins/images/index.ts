@@ -1,4 +1,4 @@
-// The Images plugin's entry (see src/plugins/api.ts): a small viewer for PNG, JPEG and HEIC with
+// The Images plugin's entry (see src/plugins/api.ts): a small viewer for PNG, JPEG, HEIC and WebP with
 // a few touch-up tools. It ships with the app and is always on.
 
 import type { PluginModule } from '../../src/plugins/api'

@@ -124,9 +124,13 @@ let refreshSequence = 0
 
 export async function refreshPacks(): Promise<OcrPackInventory> {
   const sequence = ++refreshSequence
-  const inventory = isTauri
-    ? await (await core()).invoke<OcrPackInventory>('ocr_list_packs')
+  const raw = isTauri
+    ? await (await core()).invoke<OcrPackInventory | null>('ocr_list_packs')
     : await browserInventory()
+  const inventory: OcrPackInventory =
+    raw && Array.isArray(raw.installed) && typeof raw.totalBytes === 'number'
+      ? { installed: raw.installed, totalBytes: raw.totalBytes }
+      : { installed: [], totalBytes: 0 }
   if (sequence === refreshSequence) useOcrPacks.setState(inventory)
   return inventory
 }

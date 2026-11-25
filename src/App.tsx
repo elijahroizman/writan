@@ -291,6 +291,9 @@ export async function runCommand(id: string) {
     case 'convert-file':
       useConvertDialog.getState().openConvert(ws.activeId === HOME_TAB_ID ? null : ws.activeId)
       break
+    case 'ocr-document':
+      if (commandAvailable(id)) editor?.actions?.[id]?.()
+      break
     case 'copy-markdown': {
       try {
         const md = await copyTabAsMarkdown()
@@ -481,6 +484,8 @@ export function commandAvailable(command: string) {
       return !!tab
     case 'convert-file':
       return !!tab && targetsForKind(tab.kind).length > 0
+    case 'ocr-document':
+      return tab?.kind === 'pdf' || tab?.kind === 'image'
     case 'copy-markdown':
       return !!tab && canExportMarkdown(tab.kind)
     case 'export-markdown':
@@ -522,6 +527,7 @@ export function editorHandles(command: string) {
   if (command === 'find') return !!editor?.find
   if (command === 'replace') return !!editor?.replace
   if (command === 'print') return !!editor?.print
+  if (command === 'ocr-document') return !!editor?.actions?.[command]
   return true
 }
 

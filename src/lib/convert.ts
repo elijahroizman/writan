@@ -6,6 +6,7 @@ import { loadEngine } from '../engine/load'
 import type { DocKind } from './kinds'
 import { KINDS } from './kinds'
 import * as platform from './platform'
+import type { PdfOcrProgress } from './ocr/pdfOcr'
 import type { DocTab } from '../state/workspace'
 import { getEditor, useWorkspace } from '../state/workspace'
 
@@ -35,14 +36,121 @@ const TARGETS_BY_KIND: Record<string, ConvertFormat[]> = {
   csv: ['xlsx', 'md', 'pdf', 'docx'],
   md: ['pdf', 'docx', 'pptx', 'txt'],
   txt: ['pdf', 'docx', 'md'],
-  pdf: ['md', 'txt'],
-  image: ['pdf'],
+  pdf: ['md', 'txt', 'docx'],
+  image: ['pdf', 'txt', 'md', 'docx'],
 }
 
 /** Target formats a tab of `kind` can be converted to in one click. */
 export function targetsForKind(kind: DocKind): ConvertTarget[] {
   const list = TARGETS_BY_KIND[kind] ?? []
-  return list.map((format) => ({ format, ...TARGET_INFO[format] }))
+  return list.map((format) => ({
+    format, ...TARGET_INFO[format],
+    ...(kind === 'image' || (kind === 'pdf' && format === 'docx')
+      ? { hint: format === 'pdf' ? 'Searchable PDF with a locally recognized text layer' : 'Recognize text with offline OCR' }
+      : {}),
+  }))
+}
+
+export type OcrStatus = (message: string) => void
+
+const packDownloads = new Map<string, { done: Promise<void>; callers: number }>()
+
+/** Download absent or damaged packs before starting the offline recognizer. */
+export async function prepareOcrPacks(langs: string[], signal?: AbortSignal, status?: OcrStatus): Promise<void> {
+  const [{ normalizeOcrLangs, useOcrPacks }, { formatBytes, getPackMeta }] = await Promise.all([
+    import('./ocr/packs'),
+    import('./ocr/catalog'),
+  ])
+  const codes = normalizeOcrLangs(langs)
+  const store = useOcrPacks.getState()
+  status?.('Checking language packs…')
+  const { installed } = await store.refreshPacks()
+  for (const code of codes) {
+    signal?.throwIfAborted()
+    if ([...installed, ...useOcrPacks.getState().installed].some((pack) => pack.code === code && pack.sha256Verified)) continue
+    const meta = getPackMeta(code)!
+    const update = () => {
+      const progress = useOcrPacks.getState().progress[code]
+      status?.(`Downloading ${meta.name} · ${formatBytes(progress?.received ?? 0)} / ${formatBytes(meta.size)}`)
+    }
+    let download = packDownloads.get(code)
+    const alreadyDownloading = !!useOcrPacks.getState().progress[code]
+    if (!download && !alreadyDownloading) {
+      download = {
+        done: store.downloadPack(code).finally(() => packDownloads.delete(code)),
+        callers: 0,
+      }
+      packDownloads.set(code, download)
+    }
+    if (download) download.callers++
+    const unsubscribe = useOcrPacks.subscribe(update)
+    update()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const stop = download ? undefined : useOcrPacks.subscribe(({ progress }) => {
+          if (!progress[code]) finish(resolve)
+        })
+        const finish = (settle: () => void) => {
+          signal?.removeEventListener('abort', abort)
+          stop?.()
+          settle()
+        }
+        const abort = () => finish(() => reject(signal?.reason))
+        signal?.addEventListener('abort', abort, { once: true })
+        if (download) void download.done.then(() => finish(resolve), (err) => finish(() => reject(err)))
+        if (signal?.aborted) abort()
+      })
+    } finally {
+      unsubscribe()
+      if (download && --download.callers === 0 && signal?.aborted && packDownloads.get(code) === download) {
+        void store.cancelDownload(code).catch(() => {})
+      }
+    }
+  }
+  await store.ensurePacks(codes, signal)
+}
+
+export function pdfOcrStatus(progress: PdfOcrProgress): string {
+  const { phase, done, total, pageIndex } = progress
+  if (phase === 'inspecting') return 'Inspecting PDF…'
+  if (phase === 'injecting') return `Building searchable PDF · ${done} / ${total} pages`
+  return `Recognizing page ${pageIndex + 1} · ${done} / ${total} complete`
+}
+
+export async function inspectOcrSource(bytes: Uint8Array, signal?: AbortSignal) {
+  const { inspectPdfDocument } = await import('./ocr/pdfOcr')
+  const inspection = await inspectPdfDocument(bytes, signal)
+  if (inspection.encrypted) throw new Error('Encrypted PDFs cannot be processed by OCR.')
+  return inspection
+}
+
+/** Inspect the original before saving edited bytes, which may invalidate a signature. */
+export async function readPdfOcrSource(tab: DocTab, signal?: AbortSignal) {
+  const original = tab.dirty && tab.bytes ? await inspectOcrSource(tab.bytes, signal) : undefined
+  const bytes = await readTabBytes(tab)
+  const inspection = await inspectOcrSource(bytes, signal)
+  return { bytes, signed: inspection.hasDigitalSignature || !!original?.hasDigitalSignature }
+}
+
+export async function recognizeImage(bytes: Uint8Array, name: string, signal?: AbortSignal, status?: OcrStatus) {
+  const { useOcrPacks } = await import('./ocr/packs')
+  const langs = useOcrPacks.getState().selectedLangs
+  await prepareOcrPacks(langs, signal, status)
+  const { ocrImageBytes } = await import('./ocr/pdfOcr')
+  status?.('Recognizing text…')
+  return await ocrImageBytes(bytes, name, langs, signal)
+}
+
+/** An OCR export picks a fresh destination, so it cannot replace its source. */
+export async function saveOcrCopy(name: string, bytes: Uint8Array, signal?: AbortSignal): Promise<boolean> {
+  signal?.throwIfAborted()
+  if (!platform.isTauri) return platform.saveBytesAs(name, bytes)
+  const path = await platform.pickSavePath(name, name.split('.').pop()!)
+  if (!path) return false
+  if (await platform.pathExists(path)) throw new Error('Choose a new file name for the OCR copy.')
+  signal?.throwIfAborted()
+  await platform.writeFile(path, bytes)
+  return true
 }
 
 /** Whether a tab can be exported or copied as clean Markdown. */
@@ -82,8 +190,45 @@ export async function tabToMarkdown(tab: DocTab): Promise<string> {
 }
 
 /** Converts an open tab to `target` format bytes. */
-export async function convertTab(tab: DocTab, target: ConvertFormat): Promise<{ bytes: Uint8Array; name: string }> {
+interface ConvertOptions {
+  signal?: AbortSignal
+  onProgress?: OcrStatus
+}
+
+export async function convertTab(tab: DocTab, target: ConvertFormat, options: ConvertOptions = {}): Promise<{ bytes: Uint8Array; name: string }> {
   const name = `${tab.title}.${TARGET_INFO[target].extension}`
+  const { signal, onProgress } = options
+  if (tab.kind === 'image') {
+    const result = await recognizeImage(await readTabBytes(tab), fileNameForTab(tab), signal, onProgress)
+    if (target === 'pdf') {
+      onProgress?.('Building searchable PDF…')
+      return { bytes: await result.buildSearchablePdf(signal), name }
+    }
+    const { ocrResultsToPlainText, ocrResultsToMarkdown, ocrResultsToDocx } = await import('./ocr/toDocx')
+    const pages = [result.page]
+    if (target === 'docx') return { bytes: await ocrResultsToDocx(pages, tab.title), name }
+    const text = target === 'md' ? ocrResultsToMarkdown(pages) : ocrResultsToPlainText(pages)
+    return { bytes: new TextEncoder().encode(text), name }
+  }
+  if (tab.kind === 'pdf' && target === 'docx') {
+    onProgress?.('Inspecting PDF…')
+    const { bytes: pdfBytes, signed } = await readPdfOcrSource(tab, signal)
+    if (signed && !await platform.confirmDialog('Creating an unsigned Word copy leaves the original signed PDF untouched.', {
+      title: 'Convert signed PDF?', okLabel: 'Create Word copy',
+    })) throw new DOMException('Conversion cancelled.', 'AbortError')
+    const { useOcrPacks } = await import('./ocr/packs')
+    const langs = useOcrPacks.getState().selectedLangs
+    await prepareOcrPacks(langs, signal, onProgress)
+    const { ocrPdfDocument } = await import('./ocr/pdfOcr')
+    const result = await ocrPdfDocument({
+      pdfBytes, langs, signal, allowSigned: signed, skipPagesWithText: false,
+      onProgress: (progress) => onProgress?.(pdfOcrStatus(progress)),
+    })
+    signal?.throwIfAborted()
+    onProgress?.('Building Word document…')
+    const { ocrResultsToDocx } = await import('./ocr/toDocx')
+    return { bytes: await ocrResultsToDocx(result.pages, tab.title), name }
+  }
   if (target === 'pdf') {
     const bytes = await tabToPdf(tab)
     return { bytes, name }
@@ -103,21 +248,25 @@ export async function convertTab(tab: DocTab, target: ConvertFormat): Promise<{ 
  * One-click convert: converts the tab (or active tab) to `target`, then either opens the result
  * as a new unsaved tab or prompts to save it directly to disk.
  */
-export async function convertAndDeliver(tabId: string | undefined, target: ConvertFormat, mode: 'open' | 'save' = 'open'): Promise<boolean> {
+export async function convertAndDeliver(tabId: string | undefined, target: ConvertFormat, mode: 'open' | 'save' = 'open', options?: ConvertOptions): Promise<boolean> {
   const ws = useWorkspace.getState()
   const tab = ws.tabs.find((t) => t.id === (tabId ?? ws.activeId))
   if (!tab) return false
   try {
-    const { bytes, name } = await convertTab(tab, target)
+    const { bytes, name } = await convertTab(tab, target, options)
+    options?.signal?.throwIfAborted()
+    const save = tab.kind === 'image' || (tab.kind === 'pdf' && target === 'docx') ? saveOcrCopy : platform.saveBytesAs
     if (mode === 'save') {
-      return await platform.saveBytesAs(name, bytes)
+      return await save(name, bytes, options?.signal)
     }
     const opened = ws.openUnsaved(bytes, name)
     if (!opened) {
-      return await platform.saveBytesAs(name, bytes)
+      return await save(name, bytes, options?.signal)
     }
     return true
   } catch (err) {
+    if (options?.signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')) return false
+    if (options) throw err
     await platform.showError(err instanceof Error ? err.message : String(err), 'Couldn’t convert file')
     return false
   }

@@ -51,26 +51,40 @@ function ConvertFileDialog() {
   const [index, setIndex] = useState(0)
   const [delivery, setDelivery] = useState<'open' | 'save'>('open')
   const [busy, setBusy] = useState<string | null>(null)
+  const [ocrRunning, setOcrRunning] = useState(false)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const conversion = useRef<AbortController | null>(null)
 
   useEffect(() => {
     listRef.current?.focus()
+    return () => conversion.current?.abort()
   }, [])
 
   const runConvert = async (format: ConvertFormat) => {
-    if (!tab || busy) return
+    if (!tab || busy || conversion.current) return
+    const usesOcr = tab.kind === 'image' || (tab.kind === 'pdf' && format === 'docx')
+    const job = new AbortController()
+    conversion.current = job
     setError(null)
+    setOcrRunning(usesOcr)
     setBusy(`Converting to ${format.toUpperCase()}…`)
     try {
-      const ok = await convertAndDeliver(tab.id, format, delivery)
+      const ok = await convertAndDeliver(tab.id, format, delivery, { signal: job.signal, onProgress: setBusy })
       if (ok) close()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
+      conversion.current = null
       setBusy(null)
+      setOcrRunning(false)
     }
+  }
+
+  const dismiss = () => {
+    if (ocrRunning) conversion.current?.abort()
+    else close()
   }
 
   const runCopyMarkdown = async () => {
@@ -91,13 +105,14 @@ function ConvertFileDialog() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        close()
+        dismiss()
       } else if (targets.length && e.key === 'ArrowDown') {
         setIndex((i) => (i + 1) % targets.length)
       } else if (targets.length && e.key === 'ArrowUp') {
         setIndex((i) => (i - 1 + targets.length) % targets.length)
       } else if (targets.length && e.key === 'Enter' && !busy) {
-        void runConvert(targets[index].format)
+        if (e.target instanceof HTMLButtonElement) return
+        void runConvert((targets[index] ?? targets[0]).format)
       } else if (!e.metaKey && !e.ctrlKey && !e.altKey && !busy) {
         const at = Number(e.key)
         if (at >= 1 && at <= Math.min(9, targets.length)) {
@@ -129,7 +144,7 @@ function ConvertFileDialog() {
   const showCopyMd = canExportMarkdown(tab.kind)
 
   return (
-    <Modal placement="top" dim="light" layer="picker" onClose={close}>
+    <Modal placement="top" dim="light" layer="picker" onClose={dismiss}>
       <div className="new-file convert-dialog" role="dialog" aria-modal="true" aria-label="Convert file">
         <div className="convert-head">
           <DocBadge kind={tab.kind} size={22} />
@@ -139,6 +154,7 @@ function ConvertFileDialog() {
           <button
             type="button"
             className="convert-switch"
+            disabled={!!busy}
             onClick={() => useConvertDialog.getState().openBundle()}
             title="Bundle open files into one PDF"
           >
@@ -204,7 +220,8 @@ function ConvertFileDialog() {
               <span>Save to disk</span>
             </button>
           </div>
-          {busy && <span className="convert-status muted">{busy}</span>}
+          {busy && <span className="convert-status muted" role="status">{busy}</span>}
+          {ocrRunning && <button type="button" className="btn" onClick={() => conversion.current?.abort()}>Cancel</button>}
         </div>
         {error && <p className="convert-error">{error}</p>}
       </div>

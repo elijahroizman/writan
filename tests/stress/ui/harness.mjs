@@ -68,6 +68,7 @@ function fakeTauri() {
     },
   }
   window.__fake = fake
+  window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} }
   const fsUrl = (path, q = '') => '/__fs' + encodeURI(path).replace(/\?/g, '%3F').replace(/#/g, '%23') + q
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: 'main' }, currentWebview: { windowLabel: 'main', label: 'main' } },
@@ -127,6 +128,8 @@ function fakeTauri() {
           return []
         case 'history_usage':
           return 0
+        case 'ocr_list_packs':
+          return { installed: [], totalBytes: 0 }
         case 'cloud_folders':
           return []
         case 'release_notes':

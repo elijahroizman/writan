@@ -1,5 +1,7 @@
 {
   "id": "images",
   "version": "1.0.0",
-  "bundled": true
+  "bundled": true,
+  "extensions": ["png", "jpg", "jpeg", "heic", "heif", "webp"],
+  "mimeTypes": ["image/png", "image/jpeg", "image/heic", "image/heif", "image/webp"]
 }
