@@ -326,12 +326,11 @@ function start(link: Link) {
   if (!engine || !link.welcomed || link.live || link.closed) return
   link.live = true
   // Applied one after another as the relay ordered them; whoever keeps track of whose changes
-  // are whose hears after each run of one person's.
+  // are whose hears after each.
   const heard = appliedListeners.get(link.tabId)
   link.queue.forEach((op, i) => {
     engine.doc.collabReceive(op.data)
-    const next = link.queue[i + 1]
-    if (heard && op.client && op.client !== link.client && next?.client !== op.client) for (const f of heard) f(op.client, op.seq, link.queue.length - 1 - i)
+    if (heard && op.client && op.client !== link.client) for (const f of heard) f(op.client, op.seq, link.queue.length - 1 - i)
   })
   link.queue = []
   link.seq = link.queuedSeq
@@ -632,8 +631,8 @@ const appliedListeners = new Map<string, Set<(client: string, seq: number, left:
 
 /**
  * Calls `f` after each change someone else made has been applied to document `id`, with whose it
- * was and the relay's number for it: the changes from before this copy joined too, once each run
- * of one person's has been applied, with how many are still to be. Returns the undo.
+ * was and the relay's number for it: the changes from before this copy joined too, with how many
+ * of those are still to be applied. Returns the undo.
  */
 export function onApplied(id: string, f: (client: string, seq: number, left: number) => void): () => void {
   const set = appliedListeners.get(id) ?? new Set()

@@ -259,7 +259,7 @@ const SHARED_TOOLS: Tool[] = [
         document: doc,
         from: { type: ['integer', 'string'], description: 'Word: the first paragraph to read, by number or id.' },
         to: { type: ['integer', 'string'], description: 'Word: the last paragraph to read, by number or id.' },
-        since: { type: 'integer', description: 'Word: only what changed after this version (each reading says which version it is), and who changed it.' },
+        since: { type: 'integer', description: 'Word: only the paragraphs whose text changed after this version (each reading says which version it is), who changed them, and who deleted any.' },
         slide: { type: 'integer', description: 'PowerPoint: one slide’s number.' },
         sheet: { type: 'string', description: 'Excel: the sheet’s name (the first one if left out).' },
         range: { type: 'string', description: 'Excel: the cells to read, like A1:F40.' },
@@ -321,7 +321,7 @@ const AFTER_TOOLS: Tool[] = [
       `Waits until someone else changes the document, up to \`seconds\` (${MAX_WAIT} at most), and says who changed what once they've stopped for a moment: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel. A message in the document's chat ends the wait too, and so does someone coming in or leaving; either comes with the answer, and one you haven't heard of yet ends it at once.`,
     inputSchema: {
       type: 'object',
-      properties: { document: doc, seconds: { type: 'number' }, full: { type: 'boolean', description: 'Word: the changed paragraphs whole, however many, rather than the start of the first few.' } },
+      properties: { document: doc, seconds: { type: 'number' }, full: { type: 'boolean', description: 'Word: the changed paragraphs whole, up to 500 of them, rather than the start of the first 12.' } },
       required: ['document'],
     },
   },

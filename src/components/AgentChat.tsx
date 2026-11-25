@@ -39,7 +39,11 @@ function ChatText({ text, tabId, named }: { text: string; tabId: string; named: 
       {parts.map((part, i) => {
         const p = i % 2 ? named.get(part) : undefined
         if (!p) return part
-        const go = () => (engineOf(tabId) as WordEngine | null)?.run({ cmd: 'goTo', path: p.path })
+        // Where it is when clicked: the document may have changed since the panel drew.
+        const go = () => {
+          const there = paragraphsById(tabId).get(part)
+          if (there) (engineOf(tabId) as WordEngine | null)?.run({ cmd: 'goTo', path: there.path })
+        }
         return (
           <button key={i} type="button" className="chat-para" title={p.text.slice(0, 200)} onClick={go}>
             {part}

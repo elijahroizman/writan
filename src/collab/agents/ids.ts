@@ -2,8 +2,10 @@
 // (AgentChat.tsx).
 //
 // A paragraph's id comes from its text, so every copy of the document gives it the same one with
-// nothing to agree on, and it stays while others add or delete paragraphs around it. A second
-// paragraph with the same text gets "-2". An empty paragraph has none. When a paragraph's text
+// nothing to agree on, and it stays while others add or delete paragraphs around it. Paragraphs
+// with the same text take the text of the paragraph before them into theirs too, so a new one
+// never takes over an old one's id; only when that's the same as well does one get "-2". An empty
+// paragraph has none. When a paragraph's text
 // changes its id does too, and each agent's copy remembers what the old one became (`History` in
 // word.ts), so an id an agent read or saw in the chat still finds its paragraph.
 
@@ -20,10 +22,16 @@ function hashOf(text: string): string {
 
 /** Each paragraph's id, from the texts of all of them in order; null for an empty one. */
 export function idsOf(texts: string[]): (string | null)[] {
+  const many = new Map<string, number>()
+  for (const t of texts) if (t.trim()) many.set(t, (many.get(t) ?? 0) + 1)
   const seen = new Map<string, number>()
+  let before = ''
   return texts.map((t) => {
     if (!t.trim()) return null
-    const base = hashOf(t)
+    // With the text of the last paragraph before it that isn't empty, when the text alone isn't
+    // enough to tell it apart.
+    const base = many.get(t)! > 1 ? hashOf(`${before}\n${t}`) : hashOf(t)
+    before = t
     const n = (seen.get(base) ?? 0) + 1
     seen.set(base, n)
     return n === 1 ? `#${base}` : `#${base}-${n}`

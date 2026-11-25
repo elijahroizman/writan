@@ -270,13 +270,16 @@ try {
   // A paragraph with the same text as the one after it: the answer gives the new one's place.
   const same = await codex.call('insert_paragraphs', { document: docA, after: 0, text: 'Intro' })
   check('the answer gives where a paragraph went, even beside one with the same text', same.text.includes('It’s paragraph 1.'), same.text)
-  await codex.call('delete_paragraphs', { document: docA, from: 1 })
+  // Beside one with the same text, which of the two is whose can't be told, so it takes confirm.
+  const sameDel = await codex.call('delete_paragraphs', { document: docA, from: 1 })
+  check('deleting one of two same paragraphs side by side needs confirm', sameDel.error && sameDel.raw.includes('can’t tell whose each is'), sameDel.raw)
+  await codex.call('delete_paragraphs', { document: docA, from: 1, confirm: true })
 
   // ── The other new tools
   const find = await codex.call('find_text', { document: docA, text: 'budget' })
   check('find_text gives paragraph numbers and counts', find.text.startsWith('2 matches') && find.text.includes('[2] (2 times)'), find.text)
   check('find_text says when nothing matches', (await codex.call('find_text', { document: docA, text: 'zebra' })).text.includes('isn’t in it'))
-  await codex.call('replace_paragraphs', { document: docA, from: 1, text: 'Introduction' })
+  await codex.call('replace_paragraphs', { document: docA, from: 1, text: 'Introduction', confirm: true })
   await codex.call('undo', { document: docA })
   const redo = await codex.call('redo', { document: docA })
   check('redo puts the change back', !redo.error && redo.text.startsWith('Redone'), redo.text)
@@ -368,6 +371,25 @@ try {
   const later = (await claude2.call('read_document', { document: docB })).raw
   check('an agent that joins later still names who wrote what and left', later.includes('{by Ada’s Grok} Grok was here.'), later)
   await claude2.call('leave_document', { document: docB })
+  // A new paragraph with the same text as one already there doesn't take over its id.
+  const mineSame = await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Same line' })
+  const sameId = idOf(mineSame.raw, 'Same line')
+  await claude.call('insert_paragraphs', { document: docB, after: Number(sameId[1]) - 1, text: 'Same line' })
+  await new Promise((r) => setTimeout(r, 300))
+  // Put in next to it, which of the two is new can't be told: the id is refused rather than guessed.
+  const ownSame = await codex.call('replace_paragraphs', { document: docA, from: sameId[2], text: 'Same line, mine' })
+  check('an id a paragraph with the same text was put in beside is refused, not guessed', ownSame.error && ownSame.raw.includes(`No paragraph ${sameId[2]} now`), ownSame.raw)
+  const unclear = (await codex.call('read_document', { document: docA })).raw
+  check('and who wrote those two is unclear, so changing them needs confirm', (unclear.match(/\{by unclear: one next to it has the same text\} Same line/g) ?? []).length === 2, unclear)
+  // Apart, each keeps its own id: one put in further up doesn't take the other's.
+  await codex.call('delete_paragraphs', { document: docA, from: Number(sameId[1]), to: Number(sameId[1]) + 1, confirm: true })
+  const apart = await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Same line' })
+  const apartId = idOf(apart.raw, 'Same line')
+  await claude.call('insert_paragraphs', { document: docB, after: 1, text: 'Same line' })
+  await new Promise((r) => setTimeout(r, 300))
+  const apartReplace = await codex.call('replace_paragraphs', { document: docA, from: apartId[2], text: 'Same line, mine' })
+  check('a paragraph with the same text put in elsewhere doesn’t take over an id', !apartReplace.error && apartReplace.raw.includes(`[${Number(apartId[1]) + 1} `) && apartReplace.raw.includes('Same line, mine'), apartReplace.raw)
+  await codex.call('delete_paragraphs', { document: docA, from: 2, confirm: true })
   // full: true gives a long changed paragraph whole.
   const long = `Long ${'word '.repeat(90)}end.`
   // (Hearing first of who came and went meanwhile, which would end the wait at once.)

@@ -352,8 +352,8 @@ function checkFormat(args: Args) {
   if (highlight && !HIGHLIGHTS.some((h) => h.toLowerCase() === highlight.toLowerCase())) throw new ToolError(`highlight is one of ${HIGHLIGHTS.join(', ')}.`)
 }
 
-/** Paragraph number `k` of a tool's arguments, given by number or id (see `paraNumber`). */
-type At = (k: string, strict?: boolean) => number | undefined
+/** Paragraph number `k` of a tool's arguments, given by number or id (see `paraNumber`), in `paras` if given. */
+type At = (k: string, strict?: boolean, paras?: Para[]) => number | undefined
 
 function formatWord(e: WordEngine, args: Args, at: At, history?: History): Answer {
   checkFormat(args)
@@ -514,6 +514,30 @@ function keptFrom(a: string[], b: string[]): number[] {
 /** Who changed paragraphs in `History`, when it isn't known. */
 type Client = string | null
 
+/** Who wrote a paragraph that can't be told apart from the one next to it. */
+const UNCLEAR = '?'
+
+/**
+ * Where a run of paragraphs `from` to `to` that was put in (or taken out of) `texts` could as well
+ * have been, among neighbours with the same text: the first and last index it could cover.
+ */
+function slide(texts: string[], from: number, to: number): [number, number] {
+  let s = from
+  let e = to
+  while (s > 0 && texts[s - 1] === texts[e]) {
+    s--
+    e--
+  }
+  const lo = s
+  s = from
+  e = to
+  while (e + 1 < texts.length && texts[e + 1] === texts[s]) {
+    s++
+    e++
+  }
+  return [lo, e]
+}
+
 /**
  * What an agent's copy knows of each paragraph's past, from the changes it has seen: those made
  * before it joined too, which the relay's welcome brings. Who last changed its text (their client,
@@ -598,6 +622,18 @@ export class History {
     this.by = [...this.by.slice(0, start), ...by, ...this.by.slice(endA + 1)]
     this.at = [...this.at.slice(0, start), ...at, ...this.at.slice(endA + 1)]
     this.texts = b
+    // Paragraphs put in or deleted next to ones with the same text could as well have been the
+    // others: which of them is whose, and which old id is which, can't be told.
+    const [lo, hi] = !oldMid.length ? slide(b, start, endB) : !newMid.length ? slide(a, start, endA) : [0, -1]
+    const span = !oldMid.length ? newMid.length : oldMid.length
+    if (hi - lo + 1 > span) {
+      const last = !oldMid.length ? hi : hi - span
+      const unsure = new Set(newIds.slice(lo, last + 1))
+      for (let i = lo; i <= last; i++) this.by[i] = UNCLEAR
+      for (const [from, to] of [...this.next]) if (unsure.has(to.id)) this.next.delete(from)
+      // The old ids of those it could have been: none of them can be followed.
+      for (let i = lo; i <= (!oldMid.length ? hi - span : hi); i++) if (oldIds[i]) this.next.delete(oldIds[i]!)
+    }
   }
 
   private alias(from: string, to: string, client?: Client) {
@@ -627,6 +663,7 @@ export class History {
 
   private who(c: Client): string {
     if (!c) return 'someone'
+    if (c === UNCLEAR) return 'unclear: one next to it has the same text'
     if (c === this.me) return 'you'
     const name = this.nameOf(c)
     if (c === this.mine) return name ? `${name}, your person` : 'your person'
@@ -690,6 +727,11 @@ export class History {
     }
     if (!which.length) return
     const list = which.length > 6 ? `${which.slice(0, 6).join(', ')}…` : which.join(', ')
+    if (which.some((n) => this.by[n - 1] === UNCLEAR)) {
+      throw new ToolError(
+        `Not ${what}: ${which.length === 1 ? `paragraph ${list} has` : `paragraphs ${list} have`} the same text as one next to it, put in or deleted by someone, and Writan can’t tell whose each is. Check it’s what you mean, then call again with confirm: true.`,
+      )
+    }
     throw new ToolError(
       `Not ${what}: ${which.length === 1 ? `paragraph ${list} is` : `paragraphs ${list} are`} ${[...who].join(' and ')}’s. Ask them in the chat first (send_message), or your person; once they agree, call again with confirm: true.`,
     )
@@ -700,7 +742,7 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
   const paras = paragraphsOf(e)
   // What an id that changed since is now, for the answer.
   const notes: string[] = []
-  const at: At = (k, strict = false) => paraNumber(paras, args, k, history, notes, strict)
+  const at: At = (k, strict = false, now = paras) => paraNumber(now, args, k, history, notes, strict)
   const answer = await wordEdit(e, paras, at, name, args, local, history)
   return notes.length ? { ...answer, text: `${notes.join('\n')}\n${answer.text}` } : answer
 }
@@ -909,13 +951,16 @@ async function wordEdit(e: WordEngine, paras: Para[], at: At, name: string, args
       return { text: 'Done.', after: () => pictureNow(e, n, which) }
     }
     case 'add_picture': {
-      const after = need(at('after'), 'after (the paragraph to put it after, by number or id; 0 for the start)')
-      if (after < 0 || after > paras.length) throw new ToolError(`after is a paragraph number from 0 to ${paras.length}.`)
+      const what = 'after (the paragraph to put it after, by number or id; 0 for the start)'
+      need(at('after'), what)
       const got = await pictureBytes(args, local)
       const type = pictureType(got.bytes)
       if (!type) throw new ToolError('That isn’t a picture Writan can put in a document. Give a PNG, JPEG, GIF, WebP or SVG.')
       const pic = await scaledPicture(got.bytes, type, 2400, 2400)
+      // Where it goes once the picture is ready: others may have changed the document meanwhile.
       const now = paragraphsOf(e)
+      const after = need(at('after', false, now), what)
+      if (after < 0 || after > now.length) throw new ToolError(`after is a paragraph number from 0 to ${now.length}.`)
       grouped(e, () => {
         if (after === 0) {
           select(e, [para(now, 1).path, 0])
