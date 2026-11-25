@@ -399,6 +399,16 @@ try {
   check('an old id isn’t followed to a new paragraph with text it once had', oldAlpha.error && oldAlpha.raw.includes(`No paragraph ${alpha[2]} now`), oldAlpha.raw)
   await codex.call('delete_paragraphs', { document: docA, from: 1 })
   await codex.call('delete_paragraphs', { document: docA, from: beta[1], confirm: true })
+  // Nor once its paragraph is deleted and the text written again.
+  const delta = idOf((await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Delta one' })).raw, 'Delta one')
+  const epsilon = idOf((await codex.call('replace_paragraphs', { document: docA, from: delta[2], text: 'Epsilon one' })).raw, 'Epsilon one')
+  await new Promise((r) => setTimeout(r, 300))
+  await claude.call('delete_paragraphs', { document: docB, from: epsilon[2], confirm: true })
+  await new Promise((r) => setTimeout(r, 300))
+  await codex.call('insert_paragraphs', { document: docA, after: 0, text: 'Epsilon one' })
+  const oldDelta = await codex.call('delete_paragraphs', { document: docA, from: delta[2] })
+  check('an old id isn’t followed to text written again after its paragraph was deleted', oldDelta.error && oldDelta.raw.includes(`No paragraph ${delta[2]} now`), oldDelta.raw)
+  await codex.call('delete_paragraphs', { document: docA, from: 1 })
   // full: true gives a long changed paragraph whole.
   const long = `Long ${'word '.repeat(90)}end.`
   // (Hearing first of who came and went meanwhile, which would end the wait at once.)

@@ -620,6 +620,10 @@ export class History {
       j0 = j + 1
     })
     gap(oldMid.length, newMid.length)
+    // An id whose paragraph went with nothing after it leads nowhere: older ids that led to it
+    // mustn't reach a paragraph that has its text later.
+    const ended = new Set(oldIds.filter((id): id is string => !!id && !live.has(id) && !this.next.has(id)))
+    if (ended.size) for (const [from, to] of [...this.next]) if (ended.has(to.id)) this.next.delete(from)
     const gone = oldMid.length - kept.filter((i) => i >= 0).length - newMid.filter((_, j) => kept[j] < 0).length
     if (gone > 0) {
       this.removed.push({ seq, client, count: gone })
