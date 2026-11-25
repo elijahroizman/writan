@@ -35,6 +35,16 @@ PDFs with a form get a **Form** section: how many fields are filled, **Next empt
 
 Placing a signature puts a picture of it on the page. It isn't a cryptographic (certificate) signature.
 
+## Vector PDF export and offline text recognition (OCR)
+
+Word documents, presentations, workbooks and Markdown notes export directly as crisp vector PDFs with selectable text, embedded fonts, vector equations and charts, and clickable web and `mailto:` links.
+
+When you open a PDF whose pages look like scanned images, a banner offers to run offline OCR right on your computer. You can choose which pages to scan (current page, scanned pages only, or all pages), skip pages that already have selectable text, and select any of 12 downloadable language packs in **Settings › General › Offline OCR** or directly in the OCR dialog. Language packs download once from a pinned release with SHA-256 verification and are stored locally for offline use; recognition itself never sends documents over the network.
+
+OCR saves a separate copy and leaves the original file untouched. If a PDF carries a cryptographic digital signature, Writan asks for confirmation first and strips the signature from the separate searchable copy while leaving the signed original unchanged.
+
+You can also open PNG, JPEG, HEIC and WebP pictures in the Images viewer, copy recognized plain text or Markdown, convert PDFs or images into editable Word (`.docx`) documents via **Convert file…**, or save an image as a searchable PDF. Use **File › Recognize Text (OCR)…** or the command palette (`⌥⌘O` on a Mac, `Ctrl+Alt+O` on Windows and Linux).
+
 ## Tabs
 
 Open as many files as you like and switch with ⌘1–⌘9 or ⇧⌘[ / ⇧⌘]. Drag tabs to reorder them. Right-click a tab to duplicate it (⇧⌘D), for example to keep a textbook's questions and answers side by side. Open tabs come back the next time you launch. A restored tab loads its document the first time you look at it.
