@@ -1,36 +1,37 @@
-// Builds the document engine (crates/office-wasm) for WebAssembly into src/engine/wasm, which
-// the Word, PowerPoint and Excel editors load. Skips the build when nothing in crates/ is newer
-// than the last one. Needs the wasm32-unknown-unknown target and wasm-bindgen (the CLI version
-// must match the crate's: see crates/office-wasm/Cargo.toml).
+// Builds the document and PDF engines for WebAssembly. The editors load the PDF module on
+// demand. The wasm-bindgen CLI version must match the pins in the two wrappers' Cargo.toml.
 
 import { execFileSync } from 'node:child_process'
 import { existsSync, readdirSync, statSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+const script = fileURLToPath(import.meta.url)
+const root = join(dirname(script), '..')
 const crates = join(root, 'crates')
-const out = join(root, 'src/engine/wasm')
-const built = join(out, 'office_wasm_bg.wasm')
+const env = { ...process.env, CARGO_TARGET_DIR: resolve(crates, process.env.CARGO_TARGET_DIR ?? 'target') }
+const shared = Math.max(...[script, join(crates, 'Cargo.toml'), join(crates, 'Cargo.lock')].map(path => statSync(path).mtimeMs))
 
-function newest(dir) {
-  let t = 0
-  for (const name of readdirSync(dir)) {
-    if (name === 'target' || name.startsWith('.')) continue
-    const p = join(dir, name)
-    const s = statSync(p)
-    t = Math.max(t, s.isDirectory() ? newest(p) : s.mtimeMs)
-  }
-  return t
+function newest(path) {
+  const info = statSync(path)
+  if (!info.isDirectory()) return info.mtimeMs
+  return Math.max(info.mtimeMs, ...readdirSync(path).filter(name => name !== 'target' && !name.startsWith('.'))
+    .map(name => newest(join(path, name))))
 }
 
-if (!process.argv.includes('--force') && existsSync(built) && statSync(built).mtimeMs >= newest(crates)) {
-  process.exit(0)
+function build(pkg, output, sources) {
+  const name = pkg.replaceAll('-', '_')
+  const out = join(root, output)
+  const built = [name + '_bg.wasm', name + '.js', name + '.d.ts'].map(file => join(out, file))
+  const changed = Math.max(shared, ...sources.map(source => newest(join(crates, source))))
+  if (!process.argv.includes('--force') && built.every(file => existsSync(file) && statSync(file).mtimeMs >= changed)) return
+
+  execFileSync('cargo', ['build', '--release', '--target', 'wasm32-unknown-unknown', '-p', pkg], { cwd: crates, stdio: 'inherit', env })
+  const wasm = join(env.CARGO_TARGET_DIR, 'wasm32-unknown-unknown', 'release', name + '.wasm')
+  // Strip debugger-only function names to reduce the amount of code the app loads.
+  execFileSync('wasm-bindgen', ['--target', 'web', '--remove-name-section', '--out-dir', out, wasm], { stdio: 'inherit' })
+  console.log(`Built ${pkg} into ${output}`)
 }
-const env = { ...process.env, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR ?? join(crates, 'target') }
-execFileSync('cargo', ['build', '--release', '--target', 'wasm32-unknown-unknown', '-p', 'office-wasm'], { cwd: crates, stdio: 'inherit', env })
-const wasm = join(env.CARGO_TARGET_DIR, 'wasm32-unknown-unknown/release/office_wasm.wasm')
-// Without the name section (function names for debuggers, about 1.1 MB of the 8 MB), the app
-// has less to load and compile on each launch.
-execFileSync('wasm-bindgen', ['--target', 'web', '--remove-name-section', '--out-dir', out, wasm], { stdio: 'inherit' })
-console.log('Built the document engine into src/engine/wasm')
+
+build('office-wasm', 'src/engine/wasm', ['office-core', 'office-engine', 'office-sheets', 'office-slides', 'office-wasm', 'office-word'])
+build('office-pdf-wasm', 'src/lib/pdf/wasm', ['office-pdf', 'office-pdf-wasm'])
