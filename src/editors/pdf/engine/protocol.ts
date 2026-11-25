@@ -97,12 +97,20 @@ export interface SearchHit {
   boxes: Box[]
 }
 
+export interface PageTextStats {
+  index: number
+  charCount: number
+  nonWhitespaceCount: number
+}
+
 /** Methods take a page's `key` (see PageInfo), except where they take a position in the document. */
 export interface Api {
   open(bytes: ArrayBuffer, password: string): OpenResult
   /** Render `rect` (display points; whole page when omitted) at `scale` device pixels per point. */
   render(key: number, scale: number, rect: Box | null): Bitmap
   text(key: number): TextRun[]
+  pageTextStats(key: number): PageTextStats
+  documentTextStats(): PageTextStats[]
   /** Tight boxes around characters [start, start + count). */
   textBoxes(key: number, start: number, count: number): Box[]
   annotations(key: number): Annot[]

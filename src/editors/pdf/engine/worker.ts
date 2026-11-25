@@ -7,7 +7,7 @@ import { PdfiumNative } from '@embedpdf/engines/pdfium'
 import type { PdfAnnotationObject, PdfDocumentObject, PdfPageObject, PdfBookmarkObject, PdfLinkTarget, PdfWidgetAnnoObject, Rect } from '@embedpdf/models'
 import { AppearanceMode, PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfActionType, PdfAnnotationFlags, PdfAnnotationSubtype, PdfPageFlattenFlag, PdfPageFlattenResult, PdfZoomMode } from '@embedpdf/models'
 import { init } from '@embedpdf/pdfium'
-import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, Method, OpenResult, OutlineItem, PageInfo, Request, Response, TextRun } from './protocol'
+import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, Method, OpenResult, OutlineItem, PageInfo, PageTextStats, Request, Response, TextRun } from './protocol'
 
 type Module = Awaited<ReturnType<typeof init>>
 
@@ -192,7 +192,7 @@ function text(key: number): TextRun[] {
     const count = mod.FPDFText_CountChars(tp)
     const rect = scratch(16)
     const runs: TextRun[] = []
-    let run: { text: string; map: number[]; x0: number; y0: number; x1: number; y1: number; lastX: number; vertical: boolean } | null = null
+    let run: { text: string; map: number[]; x0: number; y0: number; x1: number; y1: number; lastX: number; vertical: boolean; rtl: boolean } | null = null
     const flush = () => {
       if (run && run.text.trim()) {
         runs.push({
@@ -240,18 +240,33 @@ function text(key: number): TextRun[] {
         const midY = box.y + box.h / 2
         const sameLine = run.vertical
           ? Math.abs(box.x + box.w / 2 - (run.x0 + run.x1) / 2) < h * 0.5 && box.y >= run.y1 - h
-          : midY > run.y0 && midY < run.y1 && box.x >= run.lastX - h * 0.5 && box.x - run.x1 < h * 3
+          : run.rtl
+            ? !/[A-Za-z0-9]/.test(ch) && midY > run.y0 && midY < run.y1 && box.x + box.w <= run.lastX + h * 0.5 && run.x0 - (box.x + box.w) < h * 3
+            : midY > run.y0 && midY < run.y1 && box.x >= run.lastX - h * 0.5 && box.x - run.x1 < h * 3
         if (!sameLine) {
-          // A single character can't tell us the direction yet; a second one straight below makes it vertical.
+          // A single character can't tell us the direction yet; a second one straight below makes it vertical,
+          // and a short non-LTR prefix moving leftward makes it right-to-left.
           const below = run.text.length === 1 && Math.abs(box.x - run.x0) < box.w * 0.5 && box.y >= run.y1 - 1
+          const toLeft =
+            !run.vertical &&
+            !/[A-Za-z0-9]/.test(ch) &&
+            run.text.length <= 3 &&
+            midY > run.y0 &&
+            midY < run.y1 &&
+            box.x + box.w <= run.x0 + h * 0.5 &&
+            run.x0 - (box.x + box.w) < h * 3
           if (below) run.vertical = true
+          else if (toLeft) run.rtl = true
           else flush()
-        } else if (!run.vertical && box.x - run.x1 > h * 0.3 && !/\s$/.test(run.text) && !/\s/.test(ch)) {
+        } else if (run.rtl && run.x0 - (box.x + box.w) > h * 0.3 && !/\s$/.test(run.text) && !/\s/.test(ch)) {
+          run.text += ' '
+          run.map.push(i)
+        } else if (!run.vertical && !run.rtl && box.x - run.x1 > h * 0.3 && !/\s$/.test(run.text) && !/\s/.test(ch)) {
           run.text += ' '
           run.map.push(i)
         }
       }
-      if (!run) run = { text: '', map: [], x0: box.x, y0: box.y, x1: box.x + box.w, y1: box.y + box.h, lastX: box.x, vertical: false }
+      if (!run) run = { text: '', map: [], x0: box.x, y0: box.y, x1: box.x + box.w, y1: box.y + box.h, lastX: box.x, vertical: false, rtl: false }
       run.text += ch
       // One entry per UTF-16 unit, so characters outside the BMP take two.
       for (let u = 0; u < ch.length; u++) run.map.push(i)
@@ -259,7 +274,7 @@ function text(key: number): TextRun[] {
       run.y0 = Math.min(run.y0, box.y)
       run.x1 = Math.max(run.x1, box.x + box.w)
       run.y1 = Math.max(run.y1, box.y + box.h)
-      run.lastX = box.x + box.w
+      run.lastX = run.rtl ? box.x : box.x + box.w
     }
     flush()
     free(rect)
@@ -269,6 +284,35 @@ function text(key: number): TextRun[] {
   } finally {
     pc.release()
   }
+}
+
+function statsForIndex(index: number): PageTextStats {
+  const pc = ctx().acquirePage(index)
+  try {
+    const tp = pc.getTextPage()
+    const count = mod.FPDFText_CountChars(tp)
+    let nonWhitespaceCount = 0
+    for (let i = 0; i < count; i++) {
+      const code = mod.FPDFText_GetUnicode(tp, i)
+      if (code > 0x20 && code !== 0xfeff && code !== 0xfffe && code !== 0xfffd && !(code >= 0x7f && code < 0xa0)) {
+        nonWhitespaceCount++
+      }
+    }
+    return { index, charCount: count, nonWhitespaceCount }
+  } finally {
+    pc.release()
+  }
+}
+
+function pageTextStats(key: number): PageTextStats {
+  return statsForIndex(page(key).index)
+}
+
+function documentTextStats(): PageTextStats[] {
+  const count = doc?.pages.length ?? 0
+  const stats: PageTextStats[] = []
+  for (let i = 0; i < count; i++) stats.push(statsForIndex(i))
+  return stats
 }
 
 function textBoxes(key: number, start: number, count: number): Box[] {
@@ -677,6 +721,8 @@ const api: { [M in Method]: (...args: never[]) => unknown } = {
   open,
   render,
   text,
+  pageTextStats,
+  documentTextStats,
   textBoxes,
   annotations,
   createAnnotation,
