@@ -11,6 +11,7 @@ mod icon;
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 mod launch_services;
 mod menu;
+pub mod ocr;
 mod open_dialog;
 mod plugins;
 mod quit;
@@ -216,6 +217,12 @@ pub fn run() {
             plugins::installed_plugins,
             plugins::install_plugin,
             plugins::remove_plugin,
+            ocr::ocr_list_packs,
+            ocr::ocr_download_pack,
+            ocr::ocr_cancel_download,
+            ocr::ocr_remove_pack,
+            ocr::ocr_read_pack,
+            ocr::ocr_storage_usage,
             tex::tex_status,
             tex::tex_compile,
             tex::tex_forget,
