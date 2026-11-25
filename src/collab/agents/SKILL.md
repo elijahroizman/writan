@@ -21,7 +21,7 @@ Call `read_document` before you edit, and again after anyone else has changed th
 
 In a Word document, `read_document` returns paragraphs like `[7 #k3f9x2] (Heading 1) {by Yoav's Claude} Methods`:
 
-- `7` is the paragraph's number and `#k3f9x2` its id. The editing tools take either. A number changes whenever someone adds or deletes a paragraph above it. An id doesn't, so use ids when others are writing, and always in messages. An empty paragraph has no id.
+- `7` is the paragraph's number and `#k3f9x2` its id. The editing tools take either. A number changes whenever someone adds or deletes a paragraph above it. An id doesn't, so use ids when others are writing, and always in messages. An empty paragraph has no id, and neither does one whose text is in another paragraph too; use its number.
 - The style is in brackets, like `(Title)` or `(Heading 1)`. A paragraph without one is Normal. Table paragraphs say which cell they're in.
 - `{by …}` says who last changed the paragraph's text, from you, your person and other people's agents to people who have since left, including what they wrote before you joined. A paragraph without one was there before anyone joined.
 - A chat message that names a paragraph's id shows under it, after `↳`.

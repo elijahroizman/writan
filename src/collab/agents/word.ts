@@ -165,7 +165,6 @@ function lines(e: WordEngine, from: number, to: number, history?: History, notes
     // A table cell's paragraph says which cell: (in a table, row 2, column 3).
     const where = p.path.length >= 4 ? ` (in a table, row ${p.path[p.path.length - 3] + 1}, column ${p.path[p.path.length - 2] + 1})` : p.path.length > 1 ? ' (in a table)' : ''
     const by = p.text.trim() ? history?.label(i) : null
-    history?.shown(ids[i - 1])
     out.push(`${label(i, ids[i - 1])}${style ? ` (${style})` : ''}${where}${by ? ` {by ${by}}` : ''} ${shown(p.text)}`)
     for (const n of notes?.get(i) ?? []) out.push(`    ↳ ${n}`)
   }
@@ -188,7 +187,7 @@ export function readWord(e: WordEngine, args: Args, ctx: ReadContext = {}): stri
   const at = (k: string) => paraNumber(paras, args, k, history, notes)
   const since = int(args, 'since')
   const v = version !== undefined ? `, version ${version}` : ''
-  const head = `${plural(paras.length, 'paragraph')} on ${plural(e.state.page.total, 'page')}${v}. Each starts [number #id]: the tools take either. An id stays the same while others add or delete paragraphs, so use ids in messages too; a message that names one shows under its paragraph (↳). The style is in brackets, like (Title) or (Heading 1); none is Normal. {by …} says who last changed a paragraph’s text; one without was there before anyone joined. view_document shows a page as a picture.`
+  const head = `${plural(paras.length, 'paragraph')} on ${plural(e.state.page.total, 'page')}${v}. Each starts [number #id]: the tools take either (an empty paragraph, or one with the same text as another, has no id). An id stays the same while others add or delete paragraphs, so use ids in messages too; a message that names one shows under its paragraph (↳). The style is in brackets, like (Title) or (Heading 1); none is Normal. {by …} says who last changed a paragraph’s text; one without was there before anyone joined. view_document shows a page as a picture.`
   const said = ctx.chat ? notesOn(paras, ctx.chat, history) : undefined
   if (since !== undefined) {
     if (!history) throw new ToolError('This document can’t say what changed since.')
@@ -214,8 +213,7 @@ function notesOn(paras: Para[], chat: Said[], history?: History): Map<number, st
   for (const m of chat) {
     const hit = new Set<number>()
     for (const id of m.text.match(IDS_IN) ?? []) {
-      const hit2 = history ? history.find(ids, id) : null
-      const n = history ? (hit2 && !hit2.taken ? hit2.n : undefined) : ids.indexOf(id) + 1 || undefined
+      const n = history ? history.find(ids, id)?.n : ids.indexOf(id) + 1 || undefined
       if (n) hit.add(n)
     }
     for (const n of hit) {
@@ -244,12 +242,7 @@ function paraNumber(paras: Para[], args: Args, k: string, history: History | und
   const id = `#${m[1]}`
   const ids = idsOf(paras.map((p) => p.text))
   const found = history ? history.find(ids, id) : ids.indexOf(id) >= 0 ? { n: ids.indexOf(id) + 1, by: [] } : null
-  if (!found) throw new ToolError(`No paragraph ${id} now: it was deleted, or changed in a way Writan couldn’t follow. Read the document again (find_text finds a paragraph by its words).`)
-  if (found.taken) {
-    const other = found.taken.other
-    const theirs = other ? `paragraph ${other}, ${ids[other - 1]} now, had it before` : 'one next to it has the same text, and which is which can’t be told'
-    throw new ToolError(`Not done: ${id} has meant two paragraphs since you last read it. Paragraph ${found.n} has it now, and ${theirs}. Read the document again, then use the id it gives.`)
-  }
+  if (!found) throw new ToolError(`No paragraph ${id} now: it was deleted, its text is now another paragraph’s too (then it goes by its number), or it changed in a way Writan couldn’t follow. Read the document again (find_text finds a paragraph by its words).`)
   const now = ids[found.n - 1]
   if (now !== id) {
     const others = found.by.filter((c) => c !== 'you')
@@ -559,14 +552,8 @@ export class History {
   private at: number[]
   /** Paragraphs deleted, with when and by whom. */
   private removed: { seq: number; client: Client; count: number }[] = []
-  /** What an id became: the next id, and who changed the text (undefined when only the "-2" moved). */
-  private next = new Map<string, { id: string; client?: Client }>()
-  /**
-   * Ids another paragraph has taken over since this agent was last shown them (the one that had it
-   * has another now, or can't be told apart from its neighbours): which one the agent means can't
-   * be told, so they're refused until it's shown them again.
-   */
-  private taken = new Set<string>()
+  /** What an id became when its paragraph's text changed: the next id, and who changed it. */
+  private next = new Map<string, { id: string; client: Client }>()
   /** Stops following the document. */
   stop: () => void = () => {}
   constructor(
@@ -607,25 +594,19 @@ export class History {
     // new went into the last of them (two joined into one).
     const oldIds = idsOf(a)
     const newIds = idsOf(b)
-    const now = new Set(newIds)
-    const became = (i: number, j: number, changed: boolean) => {
+    const became = (i: number, j: number) => {
       const from = oldIds[i]
       const to = newIds[j]
-      if (!from || !to || from === to) return
-      this.alias(from, to, changed ? client : undefined)
-      if (now.has(from)) this.taken.add(from)
+      if (from && to && from !== to) this.alias(from, to, client)
     }
-    for (let i = 0; i < start; i++) became(i, i, false)
-    for (let k = 0; k < a.length - 1 - endA; k++) became(endA + 1 + k, endB + 1 + k, false)
     let i0 = 0
     let j0 = 0
     const gap = (i1: number, j1: number) => {
-      for (let i = i0; i < i1; i++) if (j0 < j1) became(start + i, start + Math.min(j0 + (i - i0), j1 - 1), true)
+      for (let i = i0; i < i1; i++) if (j0 < j1) became(start + i, start + Math.min(j0 + (i - i0), j1 - 1))
     }
     kept.forEach((i, j) => {
       if (i < 0) return
       gap(i, j)
-      became(start + i, start + j, false)
       i0 = i + 1
       j0 = j + 1
     })
@@ -638,28 +619,21 @@ export class History {
     this.by = [...this.by.slice(0, start), ...by, ...this.by.slice(endA + 1)]
     this.at = [...this.at.slice(0, start), ...at, ...this.at.slice(endA + 1)]
     this.texts = b
+    // An id a paragraph has now means that one: what an old paragraph with that text became is
+    // forgotten.
+    for (const id of newIds) if (id) this.next.delete(id)
     // Paragraphs put in or deleted next to ones with the same text could as well have been the
-    // others: which of them is whose, and which old id is which, can't be told.
+    // others: which of them is whose can't be told.
     const [lo, hi] = !oldMid.length ? slide(b, start, endB) : !newMid.length ? slide(a, start, endA) : [0, -1]
     const span = !oldMid.length ? newMid.length : oldMid.length
     if (hi - lo + 1 > span) {
-      const last = !oldMid.length ? hi : hi - span
-      const unsure = new Set(newIds.slice(lo, last + 1))
-      for (let i = lo; i <= last; i++) this.by[i] = UNCLEAR
-      for (const [from, to] of [...this.next]) if (unsure.has(to.id)) this.next.delete(from)
-      // The old ids of those it could have been: none of them can be followed.
-      for (let i = lo; i <= (!oldMid.length ? hi - span : hi); i++) {
-        const id = oldIds[i]
-        if (!id) continue
-        this.next.delete(id)
-        if (now.has(id)) this.taken.add(id)
-      }
+      for (let i = lo; i <= (!oldMid.length ? hi : hi - span); i++) this.by[i] = UNCLEAR
     }
   }
 
-  private alias(from: string, to: string, client?: Client) {
+  private alias(from: string, to: string, client: Client) {
     this.next.delete(from)
-    this.next.set(from, client === undefined ? { id: to } : { id: to, client })
+    this.next.set(from, { id: to, client })
     // The oldest go first: an id from long ago is unlikely to come up again.
     if (this.next.size > 50_000) this.next.delete(this.next.keys().next().value!)
   }
@@ -668,12 +642,7 @@ export class History {
    * The paragraph an id is now, given every paragraph's id (`ids`): its number, and who changed its
    * text since the id was its ("you" for this agent). Null if none is.
    */
-  find(ids: (string | null)[], id: string): { n: number; by: string[]; taken?: { other: number | null } } | null {
-    if (this.taken.has(id) && ids.includes(id)) {
-      const step = this.next.get(id)
-      const other = step ? this.find(ids, step.id) : null
-      return { n: ids.indexOf(id) + 1, by: [], taken: { other: other?.n ?? null } }
-    }
+  find(ids: (string | null)[], id: string): { n: number; by: string[] } | null {
     const by = new Set<string>()
     const seen = new Set<string>()
     for (let at: string | undefined = id; at && !seen.has(at); ) {
@@ -681,7 +650,7 @@ export class History {
       if (n >= 0) return { n: n + 1, by: [...by] }
       seen.add(at)
       const step = this.next.get(at)
-      if (step && step.client !== undefined) by.add(step.client === this.me ? 'you' : this.who(step.client))
+      if (step) by.add(step.client === this.me ? 'you' : this.who(step.client))
       at = step?.id
     }
     return null
@@ -694,11 +663,6 @@ export class History {
     const name = this.nameOf(c)
     if (c === this.mine) return name ? `${name}, your person` : 'your person'
     return name ?? 'someone who has left'
-  }
-
-  /** The agent has been shown paragraph id `id` as it is now. */
-  shown(id: string | null | undefined) {
-    if (id) this.taken.delete(id)
   }
 
   /** Who last changed paragraph `n`'s text, as read_document says it; null for nobody since it was shared. */
@@ -1051,7 +1015,7 @@ export async function viewPage(e: WordEngine, args: Args): Promise<Answer> {
 // ── What changed, for wait_for_changes
 
 /** find_text in a Word document: each paragraph with a match, by number. */
-export function findInWord(e: WordEngine, find: string, matchCase: boolean, history?: History): string {
+export function findInWord(e: WordEngine, find: string, matchCase: boolean): string {
   let total = 0
   const paras = paragraphsOf(e)
   const ids = idsOf(paras.map((p) => p.text))
@@ -1059,7 +1023,6 @@ export function findInWord(e: WordEngine, find: string, matchCase: boolean, hist
     const hit = found(shown(p.text), find, matchCase)
     if (!hit) return []
     total += hit.count
-    history?.shown(ids[i])
     return [`${label(i + 1, ids[i])}${hit.count > 1 ? ` (${hit.count} times)` : ''} ${hit.around}`]
   })
   return foundAnswer(find, places, total)

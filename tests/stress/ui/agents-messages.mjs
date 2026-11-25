@@ -371,39 +371,23 @@ try {
   const later = (await claude2.call('read_document', { document: docB })).raw
   check('an agent that joins later still names who wrote what and left', later.includes('{by Ada’s Grok} Grok was here.'), later)
   await claude2.call('leave_document', { document: docB })
-  // A new paragraph with the same text as one already there doesn't take over its id.
+  // A paragraph whose text another has too has no id: which one an id meant couldn't be told.
   const mineSame = await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Same line' })
   const sameId = idOf(mineSame.raw, 'Same line')
-  await claude.call('insert_paragraphs', { document: docB, after: Number(sameId[1]) - 1, text: 'Same line' })
-  await new Promise((r) => setTimeout(r, 300))
-  // Put in next to it, which of the two is new can't be told: the id is refused rather than guessed.
-  const ownSame = await codex.call('replace_paragraphs', { document: docA, from: sameId[2], text: 'Same line, mine' })
-  check('an id a paragraph with the same text was put in beside is refused, not guessed', ownSame.error && ownSame.raw.includes(`No paragraph ${sameId[2]} now`), ownSame.raw)
-  const unclear = (await codex.call('read_document', { document: docA })).raw
-  check('and who wrote those two is unclear, so changing them needs confirm', (unclear.match(/\{by unclear: one next to it has the same text\} Same line/g) ?? []).length === 2, unclear)
-  // Apart, each keeps its own id: one put in further up doesn't take the other's.
-  await codex.call('delete_paragraphs', { document: docA, from: Number(sameId[1]), to: Number(sameId[1]) + 1, confirm: true })
-  const apart = await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Same line' })
-  const apartId = idOf(apart.raw, 'Same line')
   await claude.call('insert_paragraphs', { document: docB, after: 1, text: 'Same line' })
   await new Promise((r) => setTimeout(r, 300))
-  const apartReplace = await codex.call('replace_paragraphs', { document: docA, from: apartId[2], text: 'Same line, mine' })
-  check('a paragraph with the same text put in elsewhere doesn’t take over an id', !apartReplace.error && apartReplace.raw.includes(`[${Number(apartId[1]) + 1} `) && apartReplace.raw.includes('Same line, mine'), apartReplace.raw)
+  const twinRead = (await codex.call('read_document', { document: docA })).raw
+  check('paragraphs with the same text have no id', /\[2\] \{by Bo’s Claude\} Same line/.test(twinRead) && /\[\d+\] \{by you\} Same line/.test(twinRead), twinRead)
+  const ownSame = await codex.call('replace_paragraphs', { document: docA, from: sameId[2], text: 'Same line, mine' })
+  check('and an id from before is refused, not guessed', ownSame.error && ownSame.raw.includes(`No paragraph ${sameId[2]} now`), ownSame.raw)
+  // Side by side, who wrote which can't be told, so changing them needs confirm.
   await codex.call('delete_paragraphs', { document: docA, from: 2, confirm: true })
-  // Same text after the same text: a new one put in above takes the old one's id ("-2"), so the
-  // id is refused until the agent has read it again.
-  const twice = await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Part\nSame line B\nPart\nSame line B' })
-  const second = [...twice.raw.matchAll(/\[(\d+) (#[a-z0-9-]+)\][^\n]*Same line B/g)][1]
-  await claude.call('insert_paragraphs', { document: docB, after: Number(second[1]) - 4, text: 'Part\nSame line B' })
+  const nextTo = Number(/\[(\d+)\] \{by you\} Same line/.exec((await codex.call('read_document', { document: docA })).raw)?.[1] ?? sameId[1])
+  await claude.call('insert_paragraphs', { document: docB, after: nextTo, text: 'Same line' })
   await new Promise((r) => setTimeout(r, 300))
-  const takenOver = await codex.call('replace_paragraphs', { document: docA, from: second[2], text: 'Same line B, mine' })
-  check('an id another paragraph has taken over is refused until read again', takenOver.error && takenOver.raw.includes(`${second[2]} has meant two paragraphs`), takenOver.raw)
-  const reread = (await codex.call('read_document', { document: docA })).raw
-  const nowSecond = [...reread.matchAll(/\[(\d+) (#[a-z0-9-]+)\][^\n]*Same line B/g)].find((m) => m[2] === second[2])
-  const afterRead = await codex.call('replace_paragraphs', { document: docA, from: second[2], text: 'Same line B, theirs', confirm: true })
-  check('once read again, the id means the paragraph that has it now', !afterRead.error && afterRead.raw.includes(`[${nowSecond?.[1]} `) && afterRead.raw.includes('Same line B, theirs'), afterRead.raw)
-  const firstPart = Number(second[1]) - 3
-  await codex.call('delete_paragraphs', { document: docA, from: firstPart, to: firstPart + 5, confirm: true })
+  const unclear = (await codex.call('read_document', { document: docA })).raw
+  check('who wrote two same paragraphs side by side is unclear', (unclear.match(/\{by unclear: one next to it has the same text\} Same line/g) ?? []).length === 2, unclear)
+  await codex.call('delete_paragraphs', { document: docA, from: nextTo, to: nextTo + 1, confirm: true })
   // full: true gives a long changed paragraph whole.
   const long = `Long ${'word '.repeat(90)}end.`
   // (Hearing first of who came and went meanwhile, which would end the wait at once.)

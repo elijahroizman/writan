@@ -443,7 +443,7 @@ async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: st
       const find = need(str(args, 'text'), 'the text to find')
       if (!find) throw new ToolError('Give the text to find.')
       const matchCase = bool(args, 'match_case') === true
-      return { text: copy.kind === 'docx' ? findInWord(engine as WordEngine, find, matchCase, copy.history) : copy.kind === 'pptx' ? findInSlides(engine as SlidesEngine, find, matchCase) : findInSheets(engine as SheetsEngine, find, matchCase) }
+      return { text: copy.kind === 'docx' ? findInWord(engine as WordEngine, find, matchCase) : copy.kind === 'pptx' ? findInSlides(engine as SlidesEngine, find, matchCase) : findInSheets(engine as SheetsEngine, find, matchCase) }
     }
     case 'undo':
     case 'redo': {
