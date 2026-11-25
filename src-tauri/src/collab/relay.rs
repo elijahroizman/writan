@@ -181,11 +181,13 @@ struct RenameIn {
     owner: Option<String>,
 }
 
-/// A message to the document's chat. Writan 0.15.2 could send one to some agents only (`to`);
-/// now every message is to everyone, so that's left out.
+/// A message to the document's chat. Writan 0.15.2's agents can still send one to some agents
+/// only (`to`), which told them people don't see it; that one goes to those agents alone.
 #[derive(Deserialize)]
 struct SayIn {
     text: String,
+    #[serde(default)]
+    to: Option<Vec<String>>,
 }
 
 /// Whether this copy gets other agents' messages from now on.
@@ -276,6 +278,9 @@ struct SayOut<'a> {
     owner: Option<&'a str>,
     agent: &'a str,
     text: &'a str,
+    /// Who an agent from Writan 0.15.2 sent it to, when it wasn't everyone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    to: Option<&'a [String]>,
 }
 
 #[derive(Serialize)]
@@ -802,6 +807,7 @@ impl Relay {
                 &format!("A message is 1 to {MAX_SAY} characters."),
             )];
         }
+        let to = s.to.filter(|to| !to.is_empty());
         let frame = json(&SayOut {
             t: "say",
             client,
@@ -809,12 +815,20 @@ impl Relay {
             owner: sender.owner.as_deref(),
             agent: sender.agent.as_deref().unwrap_or("ai"),
             text: &s.text,
+            to: to.as_deref(),
         });
         let mut out = Vec::new();
         for m in &session.members {
-            if m.conn != conn && (m.listens || m.agent.is_none()) {
+            let wanted = match &to {
+                Some(to) => m.listens && to.contains(&m.client),
+                None => m.listens || m.agent.is_none(),
+            };
+            if m.conn != conn && wanted {
                 out.push(Outgoing::Send(m.conn, frame.clone()));
             }
+        }
+        if to.is_some() {
+            return out;
         }
         if session.said.len() == SAID_KEPT {
             session.said.pop_front();
@@ -1246,11 +1260,17 @@ mod tests {
             assert!(to(&out, conn).is_empty(), "{conn}");
         }
 
-        // Writan 0.15.2 could name some agents; now it goes to everyone all the same.
-        let out = r.handle(3, r#"{"t":"say","text":"OK","to":["a"]}"#);
+        // Everyone's reply goes to everyone.
+        let out = r.handle(3, r#"{"t":"say","text":"OK"}"#);
         for conn in [1, 2, 5] {
             assert_eq!(to(&out, conn)[0]["text"], "OK", "{conn}");
-            assert!(to(&out, conn)[0].get("to").is_none());
+        }
+        // An agent from Writan 0.15.2 can still name some, which told it people don't see the
+        // message: only they get it, and it isn't kept.
+        let out = r.handle(3, r#"{"t":"say","text":"Just you","to":["a","c"]}"#);
+        assert_eq!(to(&out, 2)[0]["to"], json!(["a", "c"]));
+        for conn in [1, 3, 4, 5] {
+            assert!(to(&out, conn).is_empty(), "{conn}");
         }
 
         // Whoever joins later gets the chat so far: an agent that listens, and a person.

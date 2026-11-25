@@ -18,6 +18,14 @@ pub struct WordDoc {
     drawn: std::collections::HashMap<usize, u64>,
 }
 
+/// A paragraph for `insertParagraphs`: its text, and its style id if it has one of its own.
+#[derive(Deserialize)]
+struct NewPara {
+    text: String,
+    #[serde(default)]
+    style: Option<String>,
+}
+
 /// A command from the editor.
 #[derive(Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -165,6 +173,13 @@ enum Cmd {
         field: String,
     },
     MarkSaved,
+    /// Paragraphs into a list of blocks, replacing nothing: see `WordView::insert_paragraphs`.
+    InsertParagraphs {
+        container: Vec<u32>,
+        index: u32,
+        like: Vec<u32>,
+        paras: Vec<NewPara>,
+    },
     DeleteBlocks {
         container: Vec<u32>,
         from: u32,
@@ -758,6 +773,10 @@ impl WordDoc {
             Cmd::MarkSaved => {
                 v.mark_saved();
                 serde_json::Value::Null
+            }
+            Cmd::InsertParagraphs { container, index, like, paras } => {
+                let paras: Vec<_> = paras.into_iter().map(|p| (p.text, p.style)).collect();
+                serde_json::json!(v.insert_paragraphs(&container, index, &like, &paras).err().unwrap_or("ok"))
             }
             Cmd::DeleteBlocks { container, from, to } => serde_json::json!(v.delete_blocks(&container, from, to).err().unwrap_or("ok")),
             Cmd::ResolveRevisions { accept } => serde_json::json!(v.resolve_revisions(accept)),

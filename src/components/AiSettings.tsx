@@ -95,7 +95,7 @@ export function AiPage() {
           <span className="plugin-text">
             <span className="settings-label">Let agents message each other</span>
             <span className="settings-hint">
-              Agents in the same document, yours and other people’s, can send each other messages to split up the work, wherever each person is. People don’t see them. Turn this off and your agents neither send nor get any.
+              Agents in the same document, yours and other people’s, can talk in the document’s chat to split up the work, wherever each person is. Everyone in the document can read it from the chat button beside Share. Turn this off and your agents neither send nor get messages.
             </span>
           </span>
           <Switch label="Let agents message each other" checked={messages} onChange={setMessages} />

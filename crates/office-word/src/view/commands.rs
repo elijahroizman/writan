@@ -384,6 +384,69 @@ impl WordView {
         Ok(())
     }
 
+    /// Puts new paragraphs in at `index` of the body's block list `container`, each with its text
+    /// and style id, replacing nothing, so two people adding paragraphs at the same place both
+    /// keep theirs. Each has the paragraph properties of the paragraph at `like`, and is in its
+    /// list, as Enter after it would make it; one with a style of its own isn't in the list.
+    pub fn insert_paragraphs(
+        &mut self,
+        container: &[u32],
+        index: u32,
+        like: &[u32],
+        paras: &[(String, Option<String>)],
+    ) -> Result<(), &'static str> {
+        if self.story != StoryId::Body || paras.is_empty() {
+            return Err("missing");
+        }
+        let mut styled = false;
+        for id in paras.iter().filter_map(|(_, s)| s.as_deref()) {
+            if crate::ensure_style(&mut self.doc, id) {
+                self.shared_extra(serde_json::json!({ "style": id }));
+                styled = true;
+            }
+        }
+        if styled {
+            self.extras = super::read_extras(&self.doc);
+            self.specs.clear();
+            self.dirty = super::Dirty::Full;
+        }
+        let root = self.blocks_mut(StoryId::Body);
+        let template = pos::para(root, &Path(like.to_vec())).ok_or("missing")?;
+        let base = template.props.clone();
+        let num_pr = template.origin.get().and_then(|o| o.path(ns::W, &["pPr", "numPr"])).cloned();
+        let list = pos::blocks_at_mut(root, container).ok_or("missing")?;
+        if index as usize > list.len() {
+            return Err("missing");
+        }
+        let inserted: Vec<Block> = paras
+            .iter()
+            .map(|(t, style)| {
+                let mut p = Paragraph { props: base.clone(), ..Default::default() };
+                match (style, &num_pr) {
+                    (Some(s), _) => {
+                        p.props.style = Some(s.clone());
+                        p.props.level = None;
+                    }
+                    (None, Some(n)) => {
+                        p.origin = Origin::new(Element::new(ns::W, "p").with_child(Element::new(ns::W, "pPr").with_child(n.clone())))
+                    }
+                    (None, None) => {}
+                }
+                text::insert_text(&mut p, 0, t, None);
+                Block::Paragraph(p)
+            })
+            .collect();
+        let n = inserted.len() as u32;
+        list.splice(index as usize..index as usize, inserted.iter().cloned());
+        let splice = Splice { container: container.to_vec(), index, removed: Vec::new(), inserted };
+        let mut at = container.to_vec();
+        at.push(index + n - 1);
+        let len = paras.last().map(|(t, _)| t.len() as u32).unwrap_or(0);
+        let sel = self.clamp(Selection::caret(Pos::new(Path(at), len)));
+        self.record(vec![splice], Some(sel), None);
+        Ok(())
+    }
+
     fn apply_edit(&mut self, e: Edit, kind: Option<&'static str>) {
         self.record(e.splices, e.selection, kind);
     }

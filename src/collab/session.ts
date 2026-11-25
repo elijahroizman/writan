@@ -938,6 +938,10 @@ export function leaveAsAgent(id: string) {
 
 /** Stops sharing (the host) or leaves (a guest). The tab stays open. */
 export function stop(tabId: string) {
+  useChat.setState((s) => {
+    const { [tabId]: _gone, ...rest } = s
+    return rest
+  }, true)
   const link = links.get(tabId)
   if (!link) {
     useCollab.setState((s) => {

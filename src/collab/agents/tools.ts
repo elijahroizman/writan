@@ -341,34 +341,44 @@ export function listTools(): Tool[] {
 
 /** Runs a tool for an agent. `local` says whether the agent is on this computer. */
 export async function runTool(session: AgentSession, name: string, args: Args, local = false): Promise<Answer> {
+  // Waiting counts from here, so joining first (which can wait for the host to let the agent in)
+  // doesn't make the answer too late for the agent's client.
+  const began = Date.now()
   if (name === 'list_documents') return { text: listDocuments(session) }
   if (THEME_TOOLS.some((t) => t.name === name)) return runThemeTool(name, args, local)
   if (name === 'open_document') return { text: await openDocument(args, local, documents) }
   if (MESSAGE_TOOL_NAMES.has(name) && !messagesOn()) throw new ToolError(OFF)
   const tab = need(str(args, 'document'), 'the document')
-  if (name === 'leave_document') return { text: session.leave(tab) ? 'Left.' : 'You weren’t in it.' }
+  // Messages it hasn't seen come with these too: on leaving, before they go with its copy.
+  const joined = session.joinedCopy(tab)
+  if (name === 'leave_document') {
+    const unseen = joined ? newMessages(joined.id) : ''
+    return { text: `${session.leave(tab) ? 'Left.' : 'You weren’t in it.'}${unseen}` }
+  }
   if (name === 'save_document') {
     const d = documents().find((x) => x.document === tab)
     if (!d) throw new ToolError(`No document “${tab}”. list_documents shows the ones you can work on.`)
     // What this agent changed reaches the tab first: the relay has it, and the tab applied it.
-    const c = session.joinedCopy(tab)
+    const c = joined
     if (c) {
       const note = await delivered(session, c, await c.engine)
       if (note) throw new ToolError(`Not saved: your last change hasn’t reached the document yet.${note}`)
       if (!(await caughtUp(tab, appliedSeq(c.id)))) throw new ToolError('Not saved: the document hasn’t caught up with your last change yet. Try again in a moment.')
     }
-    return { text: await saveDocument(tab, d.role, args, local) }
+    return { text: `${await saveDocument(tab, d.role, args, local)}${c ? newMessages(c.id) : ''}` }
   }
   const { copy, engine } = await session.copy(tab)
-  const text = await runOn(session, copy, engine, name, args, local)
+  const text = await runOn(session, copy, engine, name, args, local, began)
   // Every answer brings the chat's new messages: an agent hears of them on its next call,
   // whichever tool it is.
   return { ...text, text: `${text.text}${newMessages(copy.id)}` }
 }
 
 /** Runs a tool on the agent's copy of a document. */
-async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: string, args: Args, local: boolean): Promise<Answer> {
+async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: string, args: Args, local: boolean, began: number): Promise<Answer> {
   let answer: Answer
+  /** The seconds asked for, at most what's left of MAX_WAIT since the call began. */
+  const waitFor = (fallback: number, least: number) => Math.min(MAX_WAIT - (Date.now() - began) / 1000, Math.max(least, Number(args.seconds) || fallback))
   switch (name) {
     case 'read_document':
       return { text: copy.kind === 'docx' ? readWord(engine as WordEngine, args, copy.authors) : copy.kind === 'pptx' ? readSlides(engine as SlidesEngine, args) : readSheets(engine as SheetsEngine, args) }
@@ -377,11 +387,11 @@ async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: st
     case 'where_is_everyone':
       return { text: whereIsEveryone(copy, engine) }
     case 'wait_for_changes':
-      return { text: await waitForChanges(copy, engine, Math.min(MAX_WAIT, Math.max(1, Number(args.seconds) || 30))) }
+      return { text: await waitForChanges(copy, engine, Math.max(0, Math.round(waitFor(30, 1))), began) }
     case 'send_message':
       return { text: sendMessage(copy.id, args) }
     case 'read_messages':
-      return { text: await readMessages(copy.id, Math.min(MAX_WAIT, Math.max(0, Number(args.seconds) || 0))) }
+      return { text: await readMessages(copy.id, Math.max(0, Math.round(waitFor(0, 0)))) }
     case 'find_text': {
       const find = need(str(args, 'text'), 'the text to find')
       if (!find) throw new ToolError('Give the text to find.')
@@ -474,8 +484,7 @@ const SETTLE_BY = (MAX_WAIT + 5) * 1000
  * Waits for someone else's change, then a moment more while they're still at it (typing comes a
  * key at a time), and says who changed what. A message in the chat ends the wait at once.
  */
-async function waitForChanges(copy: Copy, engine: Engine, seconds: number): Promise<string> {
-  const began = Date.now()
+async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began: number): Promise<string> {
   const before = snapshot(copy, engine)
   const who = new Set<string>()
   const said = messagesOn() ? nextMessage(copy.id) : null
@@ -505,22 +514,22 @@ async function waitForChanges(copy: Copy, engine: Engine, seconds: number): Prom
   // Until they've stopped for a moment: a person pauses between words, an agent's change comes
   // whole. A message ends it too.
   const pause = () => ([...who].some((c) => !peers().find((p) => p.client === c)?.agent) ? TYPING_PAUSE : AGENT_PAUSE)
-  const settled = await new Promise<boolean>((resolve) => {
-    let quiet = window.setTimeout(() => done(true), pause())
-    const cap = window.setTimeout(() => done(false), Math.max(0, SETTLE_BY - (Date.now() - began)))
+  const settled = await new Promise<'quiet' | 'busy' | 'message'>((resolve) => {
+    let quiet = window.setTimeout(() => done('quiet'), pause())
+    const cap = window.setTimeout(() => done('busy'), Math.max(0, SETTLE_BY - (Date.now() - began)))
     const stop = onOthersChange(copy.id, (client) => {
       who.add(client)
       window.clearTimeout(quiet)
-      quiet = window.setTimeout(() => done(true), pause())
+      quiet = window.setTimeout(() => done('quiet'), pause())
     })
     const msg = messagesOn() ? nextMessage(copy.id) : null
-    void msg?.message.then(() => done(true))
-    function done(quietly: boolean) {
+    void msg?.message.then(() => done('message'))
+    function done(how: 'quiet' | 'busy' | 'message') {
       window.clearTimeout(quiet)
       window.clearTimeout(cap)
       stop()
       msg?.stop()
-      resolve(quietly)
+      resolve(how)
     }
   })
   // Their last change is applied once the relay's message has been handled.
@@ -538,7 +547,11 @@ async function waitForChanges(copy: Copy, engine: Engine, seconds: number): Prom
       return p ? `${peers().find((x) => x.client === c)?.name ?? 'Someone'} is at ${describe(copy.kind, engine, p)}.` : null
     })
     .filter(Boolean)
-  const still = settled ? '' : ' They’re still at it, so this may be half done: wait again before acting on it.'
+  const still = {
+    quiet: '',
+    busy: ' They’re still at it, so this may be half done: wait again before acting on it.',
+    message: ' A message came before they’d stopped, so this may be half done: wait again before acting on it.',
+  }[settled]
   return [`${names.join(' and ')} changed it.${still}`, what, ...at].filter(Boolean).join('\n')
 }
 

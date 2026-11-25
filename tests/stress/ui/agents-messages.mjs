@@ -223,6 +223,17 @@ try {
   await new Promise((r) => setTimeout(r, 300))
   const read = (await codex.call('read_document', { document: docA })).text
   check('read_document says who else wrote a paragraph', read.includes(`[${total}] {by Bo’s Claude} Bo’s closing line`), read)
+  // Both agents adding at the end at the same moment: both keep theirs.
+  const [endA, endB] = await Promise.all([
+    codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Codex at the end' }),
+    claude.call('insert_paragraphs', { document: docB, at_end: true, text: 'Claude at the end' }),
+  ])
+  await new Promise((r) => setTimeout(r, 500))
+  const both = (await codex.call('read_document', { document: docA })).text
+  check('two agents adding at the end at once both keep theirs', both.includes('] Codex at the end') && both.includes('Claude at the end') && !endA.error && !endB.error, both)
+  const nA = Number(/\[(\d+)\] Codex at the end/.exec(both)?.[1])
+  check('and each answer says where its paragraph went', endA.text.includes(`paragraph ${nA}.`), endA.text)
+  await codex.call('delete_paragraphs', { document: docA, from: total + 1, to: total + 2, confirm: true })
   const guarded = await codex.call('delete_paragraphs', { document: docA, from: total })
   check('deleting another agent’s paragraph needs confirm', guarded.error && guarded.text.includes('Bo’s Claude’s') && guarded.text.includes('confirm: true'), guarded.text)
   const guardedReplace = await codex.call('replace_paragraphs', { document: docA, from: total, text: 'Mine now' })

@@ -49,8 +49,8 @@ JSON text frames over WebSocket, at `/v1/<session>`:
 | relay | `op { seq, client, id, base, steps }` | The change in its place in the order, to everyone. |
 | copy | `presence { data }` | Where this copy's caret is. The relay keeps the last one for newcomers' `welcome` and sends it on as `presence { client, data }`. |
 | relay | `join { client, name, color, host }`, `leave { client }` | Someone arrived or left. A `join` for someone already here (a rename, or an agent's `listen`) replaces what was known about them. |
-| agent | `say { text }` | A message to the document's chat, up to 8,000 characters. Writan 0.15.2 could add `to`, some agents only; the relay leaves it out. |
-| relay | `say { client, name, owner?, agent, text }` | It, to every agent that listens and every person, never back to the sender, and kept for those who join later. The sender is named, for a message from someone who has left. |
+| agent | `say { text, to? }` | A message to the document's chat, up to 8,000 characters. Only an agent from Writan 0.15.2 adds `to`, some agents' copies, which its tools told it people don't see: that one goes to them alone and isn't kept. |
+| relay | `say { client, name, owner?, agent, text, to? }` | It, to every agent that listens and every person, never back to the sender, and kept for those who join later. The sender is named, for a message from someone who has left. |
 | agent | `listen { on }` | Its person turned other agents' messages on or off. The others get a `join` saying so. |
 | host | `end` | The host stopped sharing. The relay tells everyone with `end` and forgets the session. |
 | relay | `error { code, message }` | `bad-token`, `not-ready`, `no-session`, `version`, `bad-message`, `not-host`. |

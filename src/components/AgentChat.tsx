@@ -19,6 +19,12 @@ export function ChatButton() {
   const on = useCollab((s) => s[activeId]?.status === 'live')
   const [open, setOpen] = useState<string | null>(null)
   const button = useRef<HTMLButtonElement>(null)
+  const shown = open === activeId && on && !!chat?.said.length
+  // A panel that went away some other way (another tab, sharing stopped) stays closed, so it
+  // never opens by itself when a message comes later.
+  useEffect(() => {
+    if (open && !shown) setOpen(null)
+  }, [open, shown])
   // Only once there's something to read, and only while the document is shared.
   if (!chat?.said.length || !on) return null
   const unseen = chat.said.length - chat.seen
@@ -55,7 +61,7 @@ function ChatPanel({ tabId, anchor, onClose }: { tabId: string; anchor: React.Re
     seenChat(tabId)
     const el = list.current
     if (el) el.scrollTop = el.scrollHeight
-  }, [tabId, said.length])
+  }, [tabId, said[said.length - 1]])
 
   useLayoutEffect(() => {
     const place = () => {

@@ -356,7 +356,7 @@ function selectPicture(e: WordEngine, n: number, which: number) {
 
 const EMU = 9525
 
-/** Where insert_paragraphs, insert_table and add_picture go: after paragraph `after`, or the last. */
+/** Where insert_paragraphs and insert_table go: after paragraph `after`, or the last. */
 function afterOf(args: Args, paras: Para[]): number {
   const after = bool(args, 'at_end') === true || str(args, 'after')?.trim().toLowerCase() === 'end' ? paras.length : need(int(args, 'after'), 'after (a paragraph number, 0 for the start), or at_end')
   if (after < 0 || after > paras.length) throw new ToolError(`after is a paragraph number from 0 to ${paras.length}.`)
@@ -370,7 +370,7 @@ function newParagraphs(e: WordEngine, args: Args): { text: string; style: string
   let out: { text: string; style?: string }[]
   if (Array.isArray(list) && list.length) {
     out = list.flatMap((p) => {
-      const item = typeof p === 'string' ? { text: p } : (p as Args)
+      const item = typeof p === 'string' ? { text: p } : p && typeof p === 'object' ? (p as Args) : {}
       const text = str(item, 'text')
       if (text === undefined) throw new ToolError('Each of paragraphs is like {"text": "…", "style": "Heading 1"}, with text.')
       const style = str(item, 'style') ?? fallback
@@ -399,6 +399,29 @@ function styleEach(e: WordEngine, first: number, styles: (string | null)[]) {
     select(e, [p.path, 0], [p.path, p.text.length])
     e.run({ cmd: 'style', id })
   })
+}
+
+/**
+ * For each of `b`, the index in `a` of the same paragraph if it was kept, else -1: the longest
+ * common subsequence. Too long to compare (a big replace_text), nothing counts as kept.
+ */
+function keptFrom(a: string[], b: string[]): number[] {
+  const out = b.map(() => -1)
+  if (!a.length || !b.length || a.length * b.length > 4_000_000) return out
+  const n = a.length
+  const m = b.length
+  // len[i][j]: the longest common run of a[i..] and b[j..].
+  const len = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1))
+  for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) len[i][j] = a[i] === b[j] ? len[i + 1][j + 1] + 1 : Math.max(len[i + 1][j], len[i][j + 1])
+  for (let i = 0, j = 0; i < n && j < m; ) {
+    if (a[i] === b[j]) {
+      out[j] = i
+      i++
+      j++
+    } else if (len[i + 1][j] >= len[i][j + 1]) i++
+    else j++
+  }
+  return out
 }
 
 /**
@@ -433,7 +456,13 @@ export class Authors {
       endA--
       endB--
     }
-    this.by = [...this.by.slice(0, start), ...b.slice(start, endB + 1).map(() => client), ...this.by.slice(endA + 1)]
+    // In between, a paragraph that's still there as it was keeps its writer (the longest run of
+    // them in order); the rest are new or changed, and `client`'s.
+    const oldMid = a.slice(start, endA + 1)
+    const newMid = b.slice(start, endB + 1)
+    const kept = keptFrom(oldMid, newMid)
+    const mid = newMid.map((_, j) => (kept[j] >= 0 ? this.by[start + kept[j]] : client))
+    this.by = [...this.by.slice(0, start), ...mid, ...this.by.slice(endA + 1)]
     this.texts = b
   }
 
@@ -475,25 +504,36 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
     case 'insert_paragraphs': {
       const after = afterOf(args, paras)
       const lines = newParagraphs(e, args)
-      const text = lines.map((l) => l.text).join('\n')
       const count = lines.length
-      // Without a style of their own, they're what Enter after the paragraph before gives:
-      // Normal after a title. At the start there's none before, so it's what follows the first.
-      const next = after === 0 ? (paras[0]?.next ?? null) : null
-      grouped(e, () => {
-        if (after === 0) {
-          const first = para(paras, 1)
-          select(e, [first.path, 0])
-          e.run({ cmd: 'paste', text: `${text}\n`, json: null })
-        } else {
-          const p = para(paras, after)
-          select(e, [p.path, p.text.length])
-          e.run({ cmd: 'enter' })
-          e.run({ cmd: 'paste', text, json: null })
-        }
-        styleEach(e, after + 1, lines.map((l) => l.style ?? next))
+      // They go in as paragraphs of their own, next to the one before without changing it, so
+      // someone else adding paragraphs at the same place at the same moment keeps theirs too.
+      // Without a style of their own, they're what Enter after the paragraph before gives: Normal
+      // after a title. At the start there's none before, so it's what follows the first.
+      const like = para(paras, Math.max(1, after))
+      const where = after === 0 ? like.path : [...like.path.slice(0, -1), like.path[like.path.length - 1] + 1]
+      const result = e.run<string>({
+        cmd: 'insertParagraphs',
+        container: where.slice(0, -1),
+        index: where[where.length - 1],
+        like: like.path,
+        paras: lines.map((l) => ({ text: l.text, style: l.style ?? like.next ?? null })),
       })
-      return { text: `Put in ${plural(count, 'paragraph')} as ${after + 1}${count > 1 ? `–${after + count}` : ''}.`, after: afterParas(e, after + 1, after + count, authors) }
+      if (result !== 'ok') throw new ToolError('That paragraph isn’t there any more. Read the document again.')
+      // Someone else's may have gone in at the same place first: say where these are once the
+      // relay has ordered them.
+      const placed = () => {
+        const texts = paragraphsOf(e).map((p) => p.text)
+        const at = (from: number) => texts.findIndex((_, i) => i >= from && lines.every((l, k) => texts[i + k] === l.text))
+        const i = at(after) >= 0 ? at(after) : at(0)
+        return i >= 0 ? i + 1 : after + 1
+      }
+      return {
+        text: `Put in ${plural(count, 'paragraph')}.`,
+        after: () => {
+          const n = placed()
+          return `\n${count > 1 ? `They’re paragraphs ${n}–${n + count - 1}` : `It’s paragraph ${n}`}.${afterParas(e, n, n + count - 1, authors)()}`
+        },
+      }
     }
     case 'replace_paragraphs': {
       const fromN = need(int(args, 'from'), 'from')
@@ -501,6 +541,11 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       const toN = int(args, 'to') ?? fromN
       const to = para(paras, toN)
       if (toN < fromN) throw new ToolError('to comes before from.')
+      // Within one list of paragraphs, as for delete_paragraphs: a range into a table would
+      // take the table with it.
+      if (paras.slice(fromN - 1, toN).some((p) => !sameList(p.path, from.path))) {
+        throw new ToolError('Those paragraphs aren’t all in one place (a table is in between, or some are in a table cell). Replace them in parts.')
+      }
       const lines = newParagraphs(e, args)
       authors?.check(fromN, toN, args, 'replaced')
       // The first keeps its paragraph's style; the rest are what Enter after it gives, as typing
