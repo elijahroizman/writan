@@ -18,6 +18,14 @@ pub struct WordDoc {
     drawn: std::collections::HashMap<usize, u64>,
 }
 
+/// A paragraph for `insertParagraphs`: its text, and its style id if it has one of its own.
+#[derive(Deserialize)]
+struct NewPara {
+    text: String,
+    #[serde(default)]
+    style: Option<String>,
+}
+
 /// A command from the editor.
 #[derive(Deserialize)]
 #[serde(tag = "cmd", rename_all = "camelCase", rename_all_fields = "camelCase")]
@@ -165,6 +173,13 @@ enum Cmd {
         field: String,
     },
     MarkSaved,
+    /// Paragraphs into a list of blocks, replacing nothing: see `WordView::insert_paragraphs`.
+    InsertParagraphs {
+        container: Vec<u32>,
+        index: u32,
+        like: Vec<u32>,
+        paras: Vec<NewPara>,
+    },
     DeleteBlocks {
         container: Vec<u32>,
         from: u32,
@@ -318,7 +333,8 @@ impl WordDoc {
         self.view.in_header_footer(page, y).map(|k| if k == StoryKind::Header { "header".into() } else { "footer".into() })
     }
 
-    /// The body's paragraphs in reading order (table cells included): `[{ path, text }]`, with
+    /// The body's paragraphs in reading order (table cells included): `[{ path, text, paraId,
+    /// style, next }]` (style and next as `para_style` gives them), with
     /// U+FFFC for each picture or other object.
     pub fn paragraphs(&self) -> String {
         let blocks = self.view.body();
@@ -328,7 +344,9 @@ impl WordDoc {
             if let Some(p) = office_engine::pos::para(blocks, &path) {
                 // Word's w14:paraId, which comments key their anchors by.
                 let para_id = p.origin.get().and_then(|o| o.attrs.iter().find(|a| a.local == "paraId").map(|a| a.value.clone()));
-                out.push(serde_json::json!({ "path": path.0, "text": office_engine::text::flat(p).text, "paraId": para_id }));
+                // Its style's name (none for Normal), and what Enter after it gives, for agents.
+                let (style, next) = self.view.para_style(p);
+                out.push(serde_json::json!({ "path": path.0, "text": office_engine::text::flat(p).text, "paraId": para_id, "style": style, "next": next }));
             }
             at = office_engine::pos::next_para(blocks, &path);
         }
@@ -755,6 +773,10 @@ impl WordDoc {
             Cmd::MarkSaved => {
                 v.mark_saved();
                 serde_json::Value::Null
+            }
+            Cmd::InsertParagraphs { container, index, like, paras } => {
+                let paras: Vec<_> = paras.into_iter().map(|p| (p.text, p.style)).collect();
+                serde_json::json!(v.insert_paragraphs(&container, index, &like, &paras).err().unwrap_or("ok"))
             }
             Cmd::DeleteBlocks { container, from, to } => serde_json::json!(v.delete_blocks(&container, from, to).err().unwrap_or("ok")),
             Cmd::ResolveRevisions { accept } => serde_json::json!(v.resolve_revisions(accept)),

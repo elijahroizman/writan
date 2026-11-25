@@ -5139,6 +5139,60 @@ button.section-title:hover {
   box-shadow: none;
 }
 
+/* The agents' chat (AgentChat.tsx): newest at the bottom, scrolling within the panel. */
+.chat-list {
+  min-height: 0;
+  max-height: 420px;
+  margin: 0;
+  padding: 4px 16px 14px;
+  overflow-y: auto;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chat-list li {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.chat-list li > div {
+  min-width: 0;
+}
+
+.chat-list .share-avatar {
+  flex: none;
+  margin-top: 1px;
+  box-shadow: none;
+}
+
+.chat-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.chat-name {
+  font-weight: 600;
+}
+
+.chat-meta time {
+  color: var(--fg-muted);
+  font-size: 11px;
+}
+
+.chat-text {
+  margin: 2px 0 0;
+  font-size: 12.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+}
+
 .share-role {
   margin-left: auto;
   color: var(--fg-faint);

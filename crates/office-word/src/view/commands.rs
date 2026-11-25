@@ -384,6 +384,72 @@ impl WordView {
         Ok(())
     }
 
+    /// Puts new paragraphs in at `index` of the body's block list `container`, each with its text
+    /// and style id, replacing nothing, so two people adding paragraphs at the same place both
+    /// keep theirs. Each has the paragraph properties of the paragraph at `like`, and is in its
+    /// list, as Enter after it would make it; one with a style of its own isn't in the list.
+    /// `index` past the list's end puts them at its end.
+    pub fn insert_paragraphs(
+        &mut self,
+        container: &[u32],
+        index: u32,
+        like: &[u32],
+        paras: &[(String, Option<String>)],
+    ) -> Result<(), &'static str> {
+        if self.story != StoryId::Body || paras.is_empty() {
+            return Err("missing");
+        }
+        let mut styled = false;
+        for id in paras.iter().filter_map(|(_, s)| s.as_deref()) {
+            if crate::ensure_style(&mut self.doc, id) {
+                self.shared_extra(serde_json::json!({ "style": id }));
+                styled = true;
+            }
+        }
+        if styled {
+            self.extras = super::read_extras(&self.doc);
+            self.specs.clear();
+            self.dirty = super::Dirty::Full;
+        }
+        let template = pos::para(self.blocks(StoryId::Body), &Path(like.to_vec())).ok_or("missing")?;
+        let base = template.props.clone();
+        let num_pr = template.origin.get().and_then(|o| o.path(ns::W, &["pPr", "numPr"])).cloned();
+        let inserted: Vec<Block> = paras
+            .iter()
+            .map(|(t, style)| {
+                let mut p = Paragraph { props: base.clone(), ..Default::default() };
+                match (style, &num_pr) {
+                    (Some(s), _) => {
+                        p.props.style = Some(s.clone());
+                        p.props.level = None;
+                    }
+                    (None, Some(n)) => {
+                        p.origin = Origin::new(Element::new(ns::W, "p").with_child(Element::new(ns::W, "pPr").with_child(n.clone())))
+                    }
+                    (None, None) => {}
+                }
+                // Right-to-left text in a paragraph with no direction of its own makes it a
+                // right-to-left paragraph, as typing it would.
+                if p.props.rtl.is_none() && !self.is_rtl(&p.props) && para::first_strong_rtl(t) == Some(true) {
+                    p.props.rtl = Some(true);
+                }
+                text::insert_text(&mut p, 0, t, None);
+                Block::Paragraph(p)
+            })
+            .collect();
+        let list = pos::blocks_at_mut(self.blocks_mut(StoryId::Body), container).ok_or("missing")?;
+        let index = index.min(list.len() as u32);
+        let n = inserted.len() as u32;
+        list.splice(index as usize..index as usize, inserted.iter().cloned());
+        let splice = Splice { container: container.to_vec(), index, removed: Vec::new(), inserted };
+        let mut at = container.to_vec();
+        at.push(index + n - 1);
+        let len = paras.last().map(|(t, _)| t.len() as u32).unwrap_or(0);
+        let sel = self.clamp(Selection::caret(Pos::new(Path(at), len)));
+        self.record(vec![splice], Some(sel), None);
+        Ok(())
+    }
+
     fn apply_edit(&mut self, e: Edit, kind: Option<&'static str>) {
         self.record(e.splices, e.selection, kind);
     }

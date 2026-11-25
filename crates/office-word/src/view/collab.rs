@@ -602,6 +602,45 @@ mod tests {
     }
 
     #[test]
+    fn two_copies_adding_paragraphs_at_the_end_at_once_keep_both() {
+        for first in [0, 1] {
+            let mut room = Room::new(&["Title", "Body"], 2);
+            let mine = [("Ada's".to_string(), None)];
+            let theirs = [("Bo's".to_string(), Some("Heading1".to_string())), ("More".to_string(), None)];
+            assert_eq!(room.views[0].insert_paragraphs(&[], 2, &[1], &mine), Ok(()));
+            // Past the end means at the end.
+            assert_eq!(room.views[1].insert_paragraphs(&[], u32::MAX, &[1], &theirs), Ok(()));
+            room.send(first);
+            room.send(1 - first);
+            room.sync();
+            let all = room.agree();
+            assert_eq!(all.len(), 5, "{all:?}");
+            assert_eq!(&all[..2], ["Title", "Body"]);
+            for t in ["Ada's", "Bo's", "More"] {
+                assert!(all.iter().any(|x| x == t), "{all:?}");
+            }
+            // Each keeps its own style, and the one without takes the paragraph before's.
+            let style = |t: &str| {
+                room.views[0].body().iter().find_map(|b| match b {
+                    Block::Paragraph(p) if text::flat(p).text == t => Some(p.props.style.clone()),
+                    _ => None,
+                })
+            };
+            assert_eq!(style("Bo's"), Some(Some("Heading1".into())));
+            assert_eq!(style("More"), style("Body"));
+        }
+    }
+
+    #[test]
+    fn a_paragraph_put_in_with_right_to_left_text_reads_right_to_left() {
+        let mut room = Room::new(&["Hello"], 1);
+        let paras = [("שלום".to_string(), None), ("Hi".to_string(), None)];
+        assert_eq!(room.views[0].insert_paragraphs(&[], 1, &[0], &paras), Ok(()));
+        let rtl: Vec<_> = room.views[0].body().iter().map(|b| matches!(b, Block::Paragraph(p) if p.props.rtl == Some(true))).collect();
+        assert_eq!(rtl, [false, true, false]);
+    }
+
+    #[test]
     fn typing_reaches_every_copy() {
         let mut room = Room::new(&["One", "Two"], 2);
         caret(&mut room.views[0], 0, 3);

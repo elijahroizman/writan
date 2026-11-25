@@ -10,15 +10,15 @@ import type { SlidesEngine } from '../../engine/slides/engine'
 import type { WordEngine } from '../../engine/word/engine'
 import { stripExtension } from '../../lib/kinds'
 import { useWorkspace } from '../../state/workspace'
-import { appliedSeq, attach, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, unread, useCollab, usePresence, type Opened, type Peer } from '../session'
+import { appliedSeq, attach, clientOf, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, unread, useCollab, usePresence, type Opened, type Peer } from '../session'
 import { type Answer, type Args, bool, doc, findTool, need, plural, str, type Tool, ToolError } from './common'
 import { FILE_TOOLS, openDocument, saveDocument } from './files'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
-import { MESSAGE_TOOL_NAMES, MESSAGE_TOOLS, messagesOn, nextMessage, OFF, readMessages, sendMessage, unreadNote } from './messages'
+import { MAX_WAIT, MESSAGE_TOOL_NAMES, MESSAGE_TOOLS, messagesOn, newMessages, nextMessage, OFF, readMessages, sendMessage } from './messages'
 import { describeSheetsPlace, findInSheets, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
 import { findInSlides, readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
 import { runThemeTool, THEME_TOOLS } from './theme'
-import { findInWord, readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
+import { Authors, findInWord, readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
 
 export { ToolError } from './common'
 
@@ -32,6 +32,9 @@ interface Copy {
   tab: string
   kind: 'docx' | 'pptx' | 'xlsx'
   engine: Promise<Engine>
+  /** In a Word document, who wrote each paragraph since the agent joined, and how to stop keeping track. */
+  authors?: Authors
+  stopAuthors?: () => void
 }
 
 /** Every connected agent, so their copies leave a document that stops being shared here. */
@@ -89,6 +92,7 @@ export class AgentSession {
     // The relay's welcome is applied when the copy goes live, just after the engine attaches.
     await live(c.id)
     if (this.ended || this.copies.get(tab) !== pending) throw new ToolError('You left the document.')
+    if (c.kind === 'docx' && !c.authors) track(c, engine as WordEngine)
     return { copy: c, engine }
   }
 
@@ -138,8 +142,18 @@ export class AgentSession {
   }
 }
 
+/** Keeps track of who writes each paragraph of a Word document, from now on. */
+function track(c: Copy, e: WordEngine) {
+  const nameOf = (client: string) => useCollab.getState()[c.id]?.peers.find((p) => p.client === client)?.name ?? null
+  const authors = new Authors(e, c.id, clientOf(c.tab), nameOf)
+  c.authors = authors
+  // Told before the change is applied; it is by the time the handler is done.
+  c.stopAuthors = onOthersChange(c.id, (client) => queueMicrotask(() => authors.saw(client)))
+}
+
 /** A copy leaves its document, and its engine goes. */
 function close(c: Copy) {
+  c.stopAuthors?.()
   leaveAsAgent(c.id)
   void c.engine.then((e) => e.dispose(), () => {})
 }
@@ -280,7 +294,7 @@ const AFTER_TOOLS: Tool[] = [
   {
     name: 'wait_for_changes',
     description:
-      'Waits until someone else changes the document, up to `seconds` (60 at most), and says who changed what: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel. A message from another agent ends the wait too.',
+      `Waits until someone else changes the document, up to \`seconds\` (${MAX_WAIT} at most), and says who changed what once they've stopped for a moment: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel. A message in the document's chat ends the wait too, and comes with the answer; one you haven't seen yet ends it at once.`,
     inputSchema: { type: 'object', properties: { document: doc, seconds: { type: 'number' } }, required: ['document'] },
   },
   {
@@ -327,45 +341,69 @@ export function listTools(): Tool[] {
 
 /** Runs a tool for an agent. `local` says whether the agent is on this computer. */
 export async function runTool(session: AgentSession, name: string, args: Args, local = false): Promise<Answer> {
+  // Waiting counts from here, so joining first (which can wait for the host to let the agent in)
+  // doesn't make the answer too late for the agent's client.
+  const began = Date.now()
   if (name === 'list_documents') return { text: listDocuments(session) }
   if (THEME_TOOLS.some((t) => t.name === name)) return runThemeTool(name, args, local)
   if (name === 'open_document') return { text: await openDocument(args, local, documents) }
   if (MESSAGE_TOOL_NAMES.has(name) && !messagesOn()) throw new ToolError(OFF)
   const tab = need(str(args, 'document'), 'the document')
-  if (name === 'leave_document') return { text: session.leave(tab) ? 'Left.' : 'You weren’t in it.' }
+  // Messages it hasn't seen come with these too: on leaving, before they go with its copy.
+  const joined = session.joinedCopy(tab)
+  if (name === 'leave_document') {
+    const unseen = joined ? newMessages(joined.id) : ''
+    return { text: `${session.leave(tab) ? 'Left.' : 'You weren’t in it.'}${unseen}` }
+  }
   if (name === 'save_document') {
     const d = documents().find((x) => x.document === tab)
     if (!d) throw new ToolError(`No document “${tab}”. list_documents shows the ones you can work on.`)
     // What this agent changed reaches the tab first: the relay has it, and the tab applied it.
-    const c = session.joinedCopy(tab)
-    if (c) {
-      const note = await delivered(session, c, await c.engine)
-      if (note) throw new ToolError(`Not saved: your last change hasn’t reached the document yet.${note}`)
-      if (!(await caughtUp(tab, appliedSeq(c.id)))) throw new ToolError('Not saved: the document hasn’t caught up with your last change yet. Try again in a moment.')
+    const c = joined
+    try {
+      if (c) {
+        const note = await delivered(session, c, await c.engine)
+        if (note) throw new ToolError(`Not saved: your last change hasn’t reached the document yet.${note}`)
+        if (!(await caughtUp(tab, appliedSeq(c.id)))) throw new ToolError('Not saved: the document hasn’t caught up with your last change yet. Try again in a moment.')
+      }
+      return { text: `${await saveDocument(tab, d.role, args, local)}${c ? newMessages(c.id) : ''}` }
+    } catch (err) {
+      if (c && err instanceof ToolError) throw new ToolError(`${err.message}${newMessages(c.id)}`)
+      throw err
     }
-    return { text: await saveDocument(tab, d.role, args, local) }
   }
   const { copy, engine } = await session.copy(tab)
-  const text = await runOn(session, copy, engine, name, args, local)
-  return { ...text, text: `${text.text}${unreadNote(copy.id)}` }
+  let text: Answer
+  try {
+    text = await runOn(session, copy, engine, name, args, local, began)
+  } catch (err) {
+    // A refusal brings the chat's new messages too: the answer it waits for may be among them.
+    if (err instanceof ToolError) throw new ToolError(`${err.message}${newMessages(copy.id)}`)
+    throw err
+  }
+  // Every answer brings the chat's new messages: an agent hears of them on its next call,
+  // whichever tool it is.
+  return { ...text, text: `${text.text}${newMessages(copy.id)}` }
 }
 
 /** Runs a tool on the agent's copy of a document. */
-async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: string, args: Args, local: boolean): Promise<Answer> {
+async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: string, args: Args, local: boolean, began: number): Promise<Answer> {
   let answer: Answer
+  /** The seconds asked for, at most what's left of MAX_WAIT since the call began. */
+  const waitFor = (fallback: number, least: number) => Math.min(MAX_WAIT - (Date.now() - began) / 1000, Math.max(least, Number(args.seconds) || fallback))
   switch (name) {
     case 'read_document':
-      return { text: copy.kind === 'docx' ? readWord(engine as WordEngine, args) : copy.kind === 'pptx' ? readSlides(engine as SlidesEngine, args) : readSheets(engine as SheetsEngine, args) }
+      return { text: copy.kind === 'docx' ? readWord(engine as WordEngine, args, copy.authors) : copy.kind === 'pptx' ? readSlides(engine as SlidesEngine, args) : readSheets(engine as SheetsEngine, args) }
     case 'view_document':
       return copy.kind === 'pptx' ? viewSlide(engine as SlidesEngine, args) : copy.kind === 'xlsx' ? await viewSheet(engine as SheetsEngine, args) : viewPage(engine as WordEngine, args)
     case 'where_is_everyone':
       return { text: whereIsEveryone(copy, engine) }
     case 'wait_for_changes':
-      return { text: await waitForChanges(copy, engine, Math.min(60, Math.max(1, Number(args.seconds) || 30))) }
+      return { text: await waitForChanges(copy, engine, Math.max(0, Math.round(waitFor(30, 1))), began) }
     case 'send_message':
       return { text: sendMessage(copy.id, args) }
     case 'read_messages':
-      return { text: await readMessages(copy.id, Math.min(60, Math.max(0, Number(args.seconds) || 0))) }
+      return { text: await readMessages(copy.id, Math.max(0, Math.round(waitFor(0, 0)))) }
     case 'find_text': {
       const find = need(str(args, 'text'), 'the text to find')
       if (!find) throw new ToolError('Give the text to find.')
@@ -388,11 +426,13 @@ async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: st
     default:
       answer =
         copy.kind === 'docx'
-          ? await wordTool(engine as WordEngine, name, args, local)
+          ? await wordTool(engine as WordEngine, name, args, local, copy.authors)
           : copy.kind === 'pptx'
             ? await slidesTool(engine as SlidesEngine, name, args, local)
             : sheetsTool(engine as SheetsEngine, name, args)
   }
+  // What changed is this agent's.
+  copy.authors?.saw(copy.id)
   const note = await delivered(session, copy, engine)
   // Once everyone has it, the answer says what the document holds now.
   const now = answer.after && session.has(copy) ? await answer.after() : ''
@@ -445,55 +485,68 @@ function snapshot(copy: Copy, engine: Engine): Snapshot {
   return { kind: 'xlsx' }
 }
 
+/** How long people wait between keys while still typing a word or a sentence, at most. */
+const TYPING_PAUSE = 2000
+/** Agents' changes come whole: a second without one means they're done. */
+const AGENT_PAUSE = 1000
+/** The answer has to be in before the agent's client gives up (see MAX_WAIT). */
+const SETTLE_BY = (MAX_WAIT + 5) * 1000 - 100
+
 /**
  * Waits for someone else's change, then a moment more while they're still at it (typing comes a
- * key at a time), and says who changed what.
+ * key at a time), and says who changed what. A message in the chat ends the wait at once.
  */
-async function waitForChanges(copy: Copy, engine: Engine, seconds: number): Promise<string> {
+async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began: number): Promise<string> {
   const before = snapshot(copy, engine)
   const who = new Set<string>()
   const said = messagesOn() ? nextMessage(copy.id) : null
-  const first = await new Promise<boolean | string>((resolve) => {
+  const first = await new Promise<'change' | 'message' | null>((resolve) => {
     const timer = window.setTimeout(() => {
       stop()
       said?.stop()
-      resolve(false)
+      resolve(null)
     }, seconds * 1000)
     const stop = onOthersChange(copy.id, (client) => {
       who.add(client)
       window.clearTimeout(timer)
       stop()
       said?.stop()
-      resolve(true)
+      resolve('change')
     })
-    void said?.message.then((m) => {
+    void said?.message.then(() => {
       window.clearTimeout(timer)
       stop()
-      resolve(m.name)
+      resolve('message')
     })
   })
-  if (typeof first === 'string') return `${first} sent you a message; read_messages shows it. Nobody changed the document meanwhile.`
+  // The messages themselves come at the end of the answer.
+  if (first === 'message') return 'A message came in the document’s chat. Nobody changed the document meanwhile.'
   if (!first) return `Nobody changed it in ${seconds} seconds.`
-  // Until they've stopped for a second, for five seconds at most.
-  await new Promise<void>((resolve) => {
-    let quiet = window.setTimeout(done, 1000)
-    const cap = window.setTimeout(done, 5000)
+  const peers = () => useCollab.getState()[copy.id]?.peers ?? []
+  // Until they've stopped for a moment: a person pauses between words, an agent's change comes
+  // whole. A message ends it too.
+  const pause = () => ([...who].some((c) => !peers().find((p) => p.client === c)?.agent) ? TYPING_PAUSE : AGENT_PAUSE)
+  const settled = await new Promise<'quiet' | 'busy' | 'message'>((resolve) => {
+    let quiet = window.setTimeout(() => done('quiet'), pause())
+    const cap = window.setTimeout(() => done('busy'), Math.max(0, SETTLE_BY - (Date.now() - began)))
     const stop = onOthersChange(copy.id, (client) => {
       who.add(client)
       window.clearTimeout(quiet)
-      quiet = window.setTimeout(done, 1000)
+      quiet = window.setTimeout(() => done('quiet'), pause())
     })
-    function done() {
+    const msg = messagesOn() ? nextMessage(copy.id) : null
+    void msg?.message.then(() => done('message'))
+    function done(how: 'quiet' | 'busy' | 'message') {
       window.clearTimeout(quiet)
       window.clearTimeout(cap)
       stop()
-      resolve()
+      msg?.stop()
+      resolve(how)
     }
   })
   // Their last change is applied once the relay's message has been handled.
   await new Promise((r) => setTimeout(r, 50))
-  const peers = useCollab.getState()[copy.id]?.peers ?? []
-  const names = [...who].map((c) => peers.find((p) => p.client === c)?.name ?? 'Someone')
+  const names = [...who].map((c) => peers().find((p) => p.client === c)?.name ?? 'Someone')
   const after = snapshot(copy, engine)
   let what = ''
   if (before.kind === 'docx' && after.kind === 'docx') what = wordChanges(before.paras, after.paras)
@@ -503,10 +556,15 @@ async function waitForChanges(copy: Copy, engine: Engine, seconds: number): Prom
   const at = [...who]
     .map((c) => {
       const p = places[c]?.at as Record<string, unknown> | undefined
-      return p ? `${peers.find((x) => x.client === c)?.name ?? 'Someone'} is at ${describe(copy.kind, engine, p)}.` : null
+      return p ? `${peers().find((x) => x.client === c)?.name ?? 'Someone'} is at ${describe(copy.kind, engine, p)}.` : null
     })
     .filter(Boolean)
-  return [`${names.join(' and ')} changed it.`, what, ...at].filter(Boolean).join('\n')
+  const still = {
+    quiet: '',
+    busy: ' They’re still at it, so this may be half done: wait again before acting on it.',
+    message: ' A message came before they’d stopped, so this may be half done: wait again before acting on it.',
+  }[settled]
+  return [`${names.join(' and ')} changed it.${still}`, what, ...at].filter(Boolean).join('\n')
 }
 
 function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, matchCase: boolean): string {
