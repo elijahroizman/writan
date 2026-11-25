@@ -34,6 +34,7 @@ async function packageFile(main, parts) {
   add('[Content_Types].xml', `<Types xmlns="${office}/package/2006/content-types">
     <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
     <Default Extension="png" ContentType="image/png"/><Default Extension="jpg" ContentType="image/jpeg"/>
+    <Default Extension="svg" ContentType="image/svg+xml"/>
     ${parts.filter(([, , type]) => type).map(([name, , type]) =>
       `<Override PartName="/${name}" ContentType="application/vnd.openxmlformats-officedocument.${type}+xml"/>`).join('')}
   </Types>`)
@@ -515,6 +516,36 @@ try {
         assert.match(content, /\/ActualText\s*<FEFFD842DFB7>/i, 'Expected UTF-16BE /ActualText for supplementary CJK U+20BB7')
         assert.match(content, /\bm\s+[\d.\s]+ l\s+S\b/, 'Expected vector underline stroke on underlined CJK run')
         assert.ok(tile.ink > 100, `Expected visible dark CJK ink pixels at 4x: ${JSON.stringify(tile)}`)
+      },
+    },
+    {
+      name: 'Word SVG with hyphenated namespace element triggers raster fallback', file: 'svg-ext.docx',
+      source: word(
+        paragraph('Hyphenated SVG namespace sentinel') +
+        `<w:p><w:r><w:drawing><wp:inline>
+          <wp:extent cx="914400" cy="685800"/><wp:docPr id="9" name="ExtSvg"/>
+          <a:graphic><a:graphicData uri="${drawingNs}/picture"><pic:pic>
+            <pic:nvPicPr><pic:cNvPr id="9" name="ExtSvg"/><pic:cNvPicPr/></pic:nvPicPr>
+            <pic:blipFill><a:blip r:embed="svgext"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+            <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="685800"/></a:xfrm>
+            <a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>
+          </pic:pic></a:graphicData></a:graphic>
+        </wp:inline></w:drawing></w:r></w:p>`,
+        '',
+        [
+          ['word/_rels/document.xml.rels', relationships([['svgext', 'image', 'media/ext.svg']])],
+          ['word/media/ext.svg', Buffer.from(
+            `<svg xmlns="http://www.w3.org/2000/svg" xmlns:svg-ext="http://www.w3.org/2000/svg" width="32" height="24" viewBox="0 0 32 24">` +
+            `<svg-ext:image href="data:image/png;base64,${png.toString('base64')}" width="32" height="24"/></svg>`,
+          )],
+        ],
+      ),
+      sizes: [letter], expected: [['Hyphenated SVG namespace sentinel']], imageCount: 1,
+      check({ images }) {
+        const raster = images.find(({ dict }) => /\/FlateDecode\b/.test(dict))
+        assert.ok(raster, 'Expected <svg-ext:image> to trigger raster PNG fallback instead of being dropped')
+        assert.match(raster.dict, /\/Width\s+128\b/)
+        assert.match(raster.dict, /\/Height\s+96\b/)
       },
     },
     {

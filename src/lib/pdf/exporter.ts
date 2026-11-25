@@ -252,7 +252,9 @@ async function rasterizeSvgToPng(bytes: Uint8Array, scale = 4): Promise<Uint8Arr
 
 function svgNeedsRasterFallback(bytes: Uint8Array): boolean {
   const text = utf8Decoder.decode(bytes)
-  return /url\(\s*['"]?\s*#|<(?:\w+:)?(?:linearGradient|radialGradient|filter|mask|pattern|image|foreignObject|clipPath)\b/i.test(text)
+  return /url\(\s*['"]?\s*#|<(?:[^:<>\s/]+:)?(?:linearGradient|radialGradient|filter|mask|pattern|image|foreignObject|clipPath)(?=[\s/>])/i.test(
+    text,
+  )
 }
 
 function jpegExifOrientation(bytes: Uint8Array): number {

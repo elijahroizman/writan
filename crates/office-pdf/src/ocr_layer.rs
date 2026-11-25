@@ -237,6 +237,16 @@ fn is_sig_dict(dict: &Dictionary, doc: &Document) -> bool {
     has_name(b"Type") || has_name(b"FT") || dict.has(b"ByteRange")
 }
 
+fn push_ref_chain(doc: &Document, mut id: ObjectId, ids: &mut HashSet<ObjectId>, pending: &mut Vec<ObjectId>) {
+    while ids.insert(id) {
+        pending.push(id);
+        match doc.objects.get(&id) {
+            Some(Object::Reference(next)) => id = *next,
+            _ => break,
+        }
+    }
+}
+
 fn collect_sig_ids(doc: &Document) -> HashSet<ObjectId> {
     let mut ids = HashSet::new();
     let mut pending = Vec::new();
@@ -256,16 +266,12 @@ fn collect_sig_ids(doc: &Document) -> HashSet<ObjectId> {
             continue;
         };
         if let Ok(sig_val) = dict.get(b"V").and_then(Object::as_reference) {
-            if ids.insert(sig_val) {
-                pending.push(sig_val);
-            }
+            push_ref_chain(doc, sig_val, &mut ids, &mut pending);
         }
         if let Ok(kids) = dict.get_deref(b"Kids", doc).and_then(Object::as_array) {
             for kid in kids {
                 if let Ok(kid_id) = kid.as_reference() {
-                    if ids.insert(kid_id) {
-                        pending.push(kid_id);
-                    }
+                    push_ref_chain(doc, kid_id, &mut ids, &mut pending);
                 }
             }
         }
@@ -348,7 +354,7 @@ fn reach_from(doc: &Document, seeds: Vec<ObjectId>) -> HashSet<ObjectId> {
     let mut seen: HashSet<ObjectId> = seeds.iter().copied().collect();
     let mut stack = seeds;
     while let Some(id) = stack.pop() {
-        if let Ok(obj) = doc.get_object(id) {
+        if let Some(obj) = doc.objects.get(&id) {
             collect_indirect_refs(obj, &mut seen, &mut stack);
         }
     }

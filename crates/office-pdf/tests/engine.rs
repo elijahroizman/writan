@@ -578,6 +578,78 @@ fn signed_form_widget_kids_are_stripped_while_regular_fields_survive() {
 }
 
 #[test]
+fn signed_indirect_ap_chain_and_shared_ap_are_handled_safely() {
+    let mut pdf = Document::with_version("1.7");
+    let pages = pdf.new_object_id();
+    let page = pdf.new_object_id();
+    let sig_val_leaf = pdf.add_object(dictionary! {"Type" => "Sig", "ByteRange" => vec![0.into(), 100.into(), 150.into(), 50.into()]});
+    let sig_val_hop = pdf.add_object(Object::Reference(sig_val_leaf));
+    let sig_ap_stream = pdf.add_object(Stream::new(
+        dictionary! {"Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 50.into(), 20.into()]},
+        b"q 1 0 0 rg 0 0 50 20 re f Q".to_vec(),
+    ));
+    let sig_ap_stream_hop = pdf.add_object(Object::Reference(sig_ap_stream));
+    let shared_ap_stream = pdf.add_object(Stream::new(
+        dictionary! {"Type" => "XObject", "Subtype" => "Form", "BBox" => vec![0.into(), 0.into(), 80.into(), 20.into()]},
+        b"q 0 1 0 rg 0 0 80 20 re f Q".to_vec(),
+    ));
+    let shared_ap_hop = pdf.add_object(Object::Reference(shared_ap_stream));
+    let sig_ap_dict = pdf.add_object(dictionary! {"N" => sig_ap_stream_hop, "R" => shared_ap_stream});
+    let sig_ap_dict_hop = pdf.add_object(Object::Reference(sig_ap_dict));
+    let sig_field = pdf.new_object_id();
+    let sig_widget = pdf.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "Parent" => sig_field,
+        "Rect" => vec![10.into(), 10.into(), 60.into(), 30.into()],
+        "AP" => sig_ap_dict_hop
+    });
+    let sig_widget_hop = pdf.add_object(Object::Reference(sig_widget));
+    pdf.set_object(
+        sig_field,
+        dictionary! {"FT" => "Sig", "T" => Object::string_literal("Signer"), "V" => sig_val_hop, "Kids" => vec![Object::Reference(sig_widget_hop)]},
+    );
+    let tx_ap_dict = pdf.add_object(dictionary! {"N" => shared_ap_hop});
+    let tx_widget = pdf.add_object(dictionary! {
+        "Type" => "Annot", "Subtype" => "Widget", "FT" => "Tx", "T" => Object::string_literal("Notes"),
+        "Rect" => vec![10.into(), 40.into(), 120.into(), 60.into()],
+        "V" => Object::string_literal("ok"),
+        "AP" => tx_ap_dict
+    });
+    let form = pdf.add_object(dictionary! {"SigFlags" => 3, "Fields" => vec![Object::Reference(sig_field), Object::Reference(tx_widget)]});
+    let content = pdf.add_object(Stream::new(Dictionary::new(), b"q Q".to_vec()));
+    pdf.set_object(
+        page,
+        dictionary! {"Type" => "Page", "Parent" => pages, "MediaBox" => vec![0.into(), 0.into(), 200.into(), 100.into()],
+        "Annots" => vec![Object::Reference(sig_widget_hop), Object::Reference(tx_widget)], "Contents" => content},
+    );
+    pdf.set_object(pages, dictionary! {"Type" => "Pages", "Kids" => vec![Object::Reference(page)], "Count" => 1});
+    let root = pdf.add_object(dictionary! {"Type" => "Catalog", "Pages" => pages, "AcroForm" => form});
+    pdf.trailer.set("Root", root);
+    let mut src = Vec::new();
+    pdf.save_to(&mut src).unwrap();
+
+    let layers: Vec<OcrPageLayer> = vec![serde_json::from_value(json!({
+        "pageIndex": 0, "pageWidthPt": 200, "pageHeightPt": 100,
+        "words": [{"text": "Clean", "xPt": 10, "yPt": 20, "wPt": 30, "hPt": 10}]
+    }))
+    .unwrap()];
+    let out = inject_ocr_text_layer(&src, &layers, &fonts(), true).unwrap();
+    let inspected = inspect_pdf(&out).unwrap();
+    assert!(!inspected.has_digital_signature);
+    assert!(inspected.has_forms);
+    assert_eq!(inspected.annotation_count, 1);
+    let cleaned = loaded(&out);
+    for removed in
+        [sig_val_leaf, sig_val_hop, sig_ap_stream, sig_ap_stream_hop, sig_ap_dict, sig_ap_dict_hop, sig_field, sig_widget, sig_widget_hop]
+    {
+        assert!(!cleaned.objects.contains_key(&removed), "signature chain object {removed:?} should be stripped");
+    }
+    assert!(cleaned.objects.contains_key(&tx_ap_dict), "regular widget AP dict must survive");
+    assert!(cleaned.objects.contains_key(&shared_ap_hop), "regular widget indirect AP hop must survive");
+    assert!(cleaned.objects.contains_key(&shared_ap_stream), "shared appearance stream must survive via regular widget");
+    assert!(cleaned.get_object(shared_ap_hop).unwrap().as_stream().is_ok());
+}
+
+#[test]
 fn malformed_exif_offset_does_not_panic() {
     let bad_exif: &[u8] = &[0xff, 0xe1, 0x00, 0x10, b'E', b'x', b'i', b'f', 0x00, 0x00, b'M', b'M', 0x00, 0x2a, 0xff, 0xff, 0xff, 0xff];
     let mut bad_jpeg = Vec::with_capacity(JPEG.len() + bad_exif.len());
