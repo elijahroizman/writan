@@ -547,6 +547,89 @@ async function verifySearchablePdf(page, scan) {
   console.log('PASS  Hybrid OCR skips digital page zero and recognizes scanned page one')
 }
 
+async function verifySelectedPagesUi(page, scan, real) {
+  const parserCheck = await page.evaluate(() => {
+    const { parsePageSelection, formatPageSelection } = window.ocrApi.pdfOcr
+    return {
+      validList: parsePageSelection('2, 5', 5),
+      validRange: parsePageSelection('1-3, 5', 5),
+      validDedup: parsePageSelection('5, 2, 2, 2–4', 5),
+      formatted: formatPageSelection([0, 1, 2, 4]),
+      formattedPair: formatPageSelection([4, 1]),
+      empty: parsePageSelection('   ', 5),
+      zero: parsePageSelection('0', 5),
+      over: parsePageSelection('6', 5),
+      reversed: parsePageSelection('4-2', 5),
+      alpha: parsePageSelection('1-a', 5),
+      huge: parsePageSelection('1-999999999', 5),
+    }
+  })
+  assert.deepEqual(parserCheck.validList, { indices: [1, 4], error: null })
+  assert.deepEqual(parserCheck.validRange, { indices: [0, 1, 2, 4], error: null })
+  assert.deepEqual(parserCheck.validDedup, { indices: [1, 2, 3, 4], error: null })
+  assert.equal(parserCheck.formatted, '1-3, 5')
+  assert.equal(parserCheck.formattedPair, '2, 5')
+  for (const invalid of [parserCheck.empty, parserCheck.zero, parserCheck.over, parserCheck.reversed, parserCheck.alpha, parserCheck.huge]) {
+    assert(invalid.error && invalid.indices.length === 0, JSON.stringify(invalid))
+  }
+
+  const fivePagePdf = scanPdf([scan, scan, scan, scan, scan])
+  const tabId = await page.evaluate((encoded) => {
+    return window.__workspace.useWorkspace.getState().openUnsaved(Uint8Array.fromBase64(encoded), 'five-scans.pdf')
+  }, base64(fivePagePdf))
+  assert.ok(tabId)
+  try {
+    await page.locator('[data-testid="pdf-ocr-button"]').click()
+    const panel = page.locator('[data-testid="pdf-ocr-panel"]')
+    await panel.waitFor()
+    await panel.locator('select').selectOption('selected')
+    const input = panel.locator('[data-testid="pdf-ocr-page-range"]')
+    await input.waitFor()
+    const runBtn = panel.getByRole('button', { name: 'Run OCR', exact: true })
+
+    await input.fill('0, 9')
+    assert.equal(await runBtn.isDisabled(), true, 'Invalid page range must disable Run OCR')
+    assert.match(await panel.locator('[role="alert"]').textContent(), /out of range/i)
+
+    await input.fill('2, 5')
+    assert.equal(await runBtn.isDisabled(), false, 'Valid page range "2, 5" should enable Run OCR')
+    assert.match(await panel.locator('.pdf-ocr-range .muted').textContent(), /2 pages selected \(of 5\)/i)
+
+    if (real) {
+      await runBtn.click()
+      await page.waitForFunction(() => {
+        const el = document.querySelector('[data-testid="pdf-ocr-panel"] [role="status"]')
+        return !!el && /Recognized 2/.test(el.textContent ?? '')
+      })
+      await panel.getByRole('button', { name: 'Open searchable copy', exact: true }).click()
+      await page.waitForFunction(() => {
+        const s = window.__workspace.useWorkspace.getState()
+        const active = s.tabs.find((t) => t.id === s.activeId)
+        return active?.kind === 'pdf' && active.title.includes('(OCR)') && !!active.bytes?.length
+      })
+      const copyBase64 = await page.evaluate(() => {
+        const s = window.__workspace.useWorkspace.getState()
+        return s.tabs.find((t) => t.id === s.activeId).bytes.toBase64()
+      })
+      const extracted = await page.evaluate(readPdf, { base64: copyBase64, query: 'quick brown fox' })
+      assert.equal(extracted.length, 5, 'Searchable copy should preserve all 5 pages')
+      for (const recognizedIndex of [1, 4]) {
+        assert(normalize(extracted[recognizedIndex].text).includes(english[0]), `Page ${recognizedIndex + 1} missing OCR text`)
+        assert(extracted[recognizedIndex].hits.length > 0, `Page ${recognizedIndex + 1} missing search hits`)
+      }
+      for (const untouchedIndex of [0, 2, 3]) {
+        assert.equal(extracted[untouchedIndex].text.trim(), '', `Untouched page ${untouchedIndex + 1} should remain textless`)
+      }
+    }
+    console.log('PASS  PDF editor Selected pages… UI validates page ranges and OCRs selected subset (2, 5) into one searchable copy')
+  } finally {
+    await page.evaluate(async () => {
+      const { tabs, closeTab } = window.__workspace.useWorkspace.getState()
+      for (const tab of [...tabs].reverse()) await closeTab(tab.id)
+    })
+  }
+}
+
 async function verifyImageAndRtl(page, real) {
   const image = await page.evaluate(async () => {
     const { pdfOcr } = window.ocrApi
@@ -743,6 +826,7 @@ async function main() {
     })
     const scan = await getScan(page, 'english')
     await verifySearchablePdf(page, scan)
+    await verifySelectedPagesUi(page, scan, real)
     await verifyPdfProtection(page, scan)
     await verifyReconstruction(page)
     await verifyImageAndRtl(page, real)

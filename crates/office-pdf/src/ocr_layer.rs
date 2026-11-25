@@ -260,20 +260,42 @@ fn collect_sig_ids(doc: &Document) -> HashSet<ObjectId> {
             pending.push(id);
         }
     }
-    while let Some(id) = pending.pop() {
-        let Some(dict) = doc.get_dictionary(id).ok().or_else(|| doc.get_object(id).ok().and_then(|o| o.as_stream().ok().map(|s| &s.dict)))
-        else {
-            continue;
-        };
-        if let Ok(sig_val) = dict.get(b"V").and_then(Object::as_reference) {
-            push_ref_chain(doc, sig_val, &mut ids, &mut pending);
-        }
-        if let Ok(kids) = dict.get_deref(b"Kids", doc).and_then(Object::as_array) {
-            for kid in kids {
-                if let Ok(kid_id) = kid.as_reference() {
-                    push_ref_chain(doc, kid_id, &mut ids, &mut pending);
+    loop {
+        let before = ids.len();
+        while let Some(id) = pending.pop() {
+            let Some(dict) =
+                doc.get_dictionary(id).ok().or_else(|| doc.get_object(id).ok().and_then(|o| o.as_stream().ok().map(|s| &s.dict)))
+            else {
+                continue;
+            };
+            if let Ok(sig_val) = dict.get(b"V").and_then(Object::as_reference) {
+                push_ref_chain(doc, sig_val, &mut ids, &mut pending);
+            }
+            if let Ok(kids) = dict.get_deref(b"Kids", doc).and_then(Object::as_array) {
+                for kid in kids {
+                    if let Ok(kid_id) = kid.as_reference() {
+                        push_ref_chain(doc, kid_id, &mut ids, &mut pending);
+                    }
                 }
             }
+        }
+        // Close over indirect aliases (e.g. separate /Annots chains pointing to a stripped widget)
+        // and any child widget whose /Parent resolves into the signature set.
+        for (&id, object) in &doc.objects {
+            if ids.contains(&id) {
+                continue;
+            }
+            let alias = matches!(object, Object::Reference(target) if ids.contains(target));
+            let child = matches!(
+                object,
+                Object::Dictionary(d) if d.get(b"Parent").and_then(Object::as_reference).is_ok_and(|p| ids.contains(&p))
+            );
+            if (alias || child) && ids.insert(id) {
+                pending.push(id);
+            }
+        }
+        if ids.len() == before && pending.is_empty() {
+            break;
         }
     }
     ids

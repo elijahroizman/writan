@@ -35,6 +35,7 @@ import { Button, CenterState, IconButton, PopoverMenu, Section, Segmented, TextF
 import { pdfOcrStatus, prepareOcrPacks, readPdfOcrSource, saveOcrCopy } from '../../lib/convert'
 import { formatBytes as packSize, OCR_PACK_CATALOG } from '../../lib/ocr/catalog'
 import { useOcrPacks } from '../../lib/ocr/packs'
+import { formatPageSelection, parsePageSelection } from '../../lib/ocr/pageRange'
 import type { PdfOcrResult } from '../../lib/ocr/pdfOcr'
 import * as platform from '../../lib/platform'
 import { keysFor, useShortcuts } from '../../state/shortcuts'
@@ -1165,7 +1166,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
             <IconButton label="Dismiss scanned pages notice" size="sm" onClick={() => setOcrDismissed(true)}><X size={14} /></IconButton>
           </div>
         )}
-        {ocrOpen && <PdfOcrPanel tab={tab} page={page} scannedPages={scannedPages} onClose={() => setOcrOpen(false)} />}
+        {ocrOpen && <PdfOcrPanel tab={tab} page={page} numPages={numPages} scannedPages={scannedPages} onClose={() => setOcrOpen(false)} />}
       </div>
       {!store && !error && !password && <CenterState spinner />}
       {error && (
@@ -1249,13 +1250,15 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   )
 }
 
-function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
+function PdfOcrPanel({ tab, page, numPages, scannedPages, onClose }: {
   tab: DocTab
   page: number
+  numPages: number
   scannedPages: number[]
   onClose(): void
 }) {
-  const [scope, setScope] = useState<'current' | 'scanned' | 'all'>(scannedPages.length ? 'scanned' : 'current')
+  const [scope, setScope] = useState<'current' | 'scanned' | 'selected' | 'all'>(scannedPages.length ? 'scanned' : 'current')
+  const [pageRange, setPageRange] = useState(() => (scannedPages.length ? formatPageSelection(scannedPages) : String(page + 1)))
   const [skip, setSkip] = useState(true)
   const [progress, setProgress] = useState('')
   const [running, setRunning] = useState(false)
@@ -1268,6 +1271,7 @@ function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
   const installed = useOcrPacks((s) => s.installed)
   const setSelectedLangs = useOcrPacks((s) => s.setSelectedLangs)
   const name = `${tab.title} (OCR)`
+  const parsedRange = useMemo(() => parsePageSelection(pageRange, numPages), [pageRange, numPages])
 
   useEffect(() => {
     initialFocus.current?.focus()
@@ -1276,7 +1280,7 @@ function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
   }, [])
 
   async function recognize() {
-    if (job.current || (scope === 'scanned' && !scannedPages.length)) return
+    if (job.current || (scope === 'scanned' && !scannedPages.length) || (scope === 'selected' && !!parsedRange.error)) return
     const work = new AbortController()
     const { signal } = work
     job.current = work
@@ -1303,7 +1307,22 @@ function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
       const { pages: pagesInfo } = await engine.call('open', [pdfBytes.slice().buffer, ''], { signal })
       const stats = await engine.call('documentTextStats', [], { signal })
       const scanned = countScannedPages(stats)
-      const pageIndices = scope === 'current' ? [page] : scope === 'scanned' ? scanned : pagesInfo.map((_, i) => i)
+      let pageIndices: number[]
+      if (scope === 'current') {
+        pageIndices = [page]
+      } else if (scope === 'scanned') {
+        pageIndices = scanned
+      } else if (scope === 'selected') {
+        const validated = parsePageSelection(pageRange, pagesInfo.length)
+        if (validated.error) {
+          setProgress('')
+          setError(validated.error)
+          return
+        }
+        pageIndices = validated.indices
+      } else {
+        pageIndices = pagesInfo.map((_, i) => i)
+      }
       if (!pageIndices.length) {
         setProgress('No scanned pages found.')
         return
@@ -1369,9 +1388,31 @@ function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
         <select ref={initialFocus} value={scope} disabled={running} onChange={(e) => setScope(e.target.value as typeof scope)}>
           <option value="current">Current page ({page + 1})</option>
           <option value="scanned" disabled={!scannedPages.length}>Scanned pages only ({scannedPages.length})</option>
+          <option value="selected">Selected pages…</option>
           <option value="all">All pages</option>
         </select>
       </label>
+      {scope === 'selected' && (
+        <div className="pdf-ocr-range">
+          <label className="pdf-ocr-option">
+            Page numbers
+            <input
+              type="text"
+              data-testid="pdf-ocr-page-range"
+              placeholder="e.g. 2, 5 or 1-3"
+              value={pageRange}
+              disabled={running}
+              aria-invalid={!!parsedRange.error}
+              onChange={(e) => setPageRange(e.target.value)}
+            />
+          </label>
+          {parsedRange.error ? (
+            <p className="pdf-ocr-range-error" role="alert">{parsedRange.error}</p>
+          ) : (
+            <p className="muted">{parsedRange.indices.length === 1 ? '1 page selected' : `${parsedRange.indices.length} pages selected`} (of {numPages})</p>
+          )}
+        </div>
+      )}
       <fieldset disabled={running}>
         <legend>OCR languages</legend>
         <div className="pdf-ocr-languages">
@@ -1393,7 +1434,13 @@ function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
         Skip pages with existing digital text
       </label>
       <div className="pdf-ocr-actions">
-        <Button variant="primary" disabled={running || delivering || (scope === 'scanned' && !scannedPages.length)} onClick={() => void recognize()}>Run OCR</Button>
+        <Button
+          variant="primary"
+          disabled={running || delivering || (scope === 'scanned' && !scannedPages.length) || (scope === 'selected' && (!!parsedRange.error || !parsedRange.indices.length))}
+          onClick={() => void recognize()}
+        >
+          Run OCR
+        </Button>
         {running && <Button data-testid="pdf-ocr-cancel" onClick={() => job.current?.abort()}>Cancel</Button>}
       </div>
       {progress && <p className="muted" role="status">{progress}</p>}

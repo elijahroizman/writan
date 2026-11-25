@@ -602,10 +602,12 @@ fn signed_indirect_ap_chain_and_shared_ap_are_handled_safely() {
         "Rect" => vec![10.into(), 10.into(), 60.into(), 30.into()],
         "AP" => sig_ap_dict_hop
     });
-    let sig_widget_hop = pdf.add_object(Object::Reference(sig_widget));
+    let sig_widget_kid_hop = pdf.add_object(Object::Reference(sig_widget));
+    let sig_widget_annot_hop_inner = pdf.add_object(Object::Reference(sig_widget));
+    let sig_widget_annot_hop_outer = pdf.add_object(Object::Reference(sig_widget_annot_hop_inner));
     pdf.set_object(
         sig_field,
-        dictionary! {"FT" => "Sig", "T" => Object::string_literal("Signer"), "V" => sig_val_hop, "Kids" => vec![Object::Reference(sig_widget_hop)]},
+        dictionary! {"FT" => "Sig", "T" => Object::string_literal("Signer"), "V" => sig_val_hop, "Kids" => vec![Object::Reference(sig_widget_kid_hop)]},
     );
     let tx_ap_dict = pdf.add_object(dictionary! {"N" => shared_ap_hop});
     let tx_widget = pdf.add_object(dictionary! {
@@ -619,7 +621,7 @@ fn signed_indirect_ap_chain_and_shared_ap_are_handled_safely() {
     pdf.set_object(
         page,
         dictionary! {"Type" => "Page", "Parent" => pages, "MediaBox" => vec![0.into(), 0.into(), 200.into(), 100.into()],
-        "Annots" => vec![Object::Reference(sig_widget_hop), Object::Reference(tx_widget)], "Contents" => content},
+        "Annots" => vec![Object::Reference(sig_widget_annot_hop_outer), Object::Reference(tx_widget)], "Contents" => content},
     );
     pdf.set_object(pages, dictionary! {"Type" => "Pages", "Kids" => vec![Object::Reference(page)], "Count" => 1});
     let root = pdf.add_object(dictionary! {"Type" => "Catalog", "Pages" => pages, "AcroForm" => form});
@@ -638,11 +640,23 @@ fn signed_indirect_ap_chain_and_shared_ap_are_handled_safely() {
     assert!(inspected.has_forms);
     assert_eq!(inspected.annotation_count, 1);
     let cleaned = loaded(&out);
-    for removed in
-        [sig_val_leaf, sig_val_hop, sig_ap_stream, sig_ap_stream_hop, sig_ap_dict, sig_ap_dict_hop, sig_field, sig_widget, sig_widget_hop]
-    {
+    for removed in [
+        sig_val_leaf,
+        sig_val_hop,
+        sig_ap_stream,
+        sig_ap_stream_hop,
+        sig_ap_dict,
+        sig_ap_dict_hop,
+        sig_field,
+        sig_widget,
+        sig_widget_kid_hop,
+        sig_widget_annot_hop_inner,
+        sig_widget_annot_hop_outer,
+    ] {
         assert!(!cleaned.objects.contains_key(&removed), "signature chain object {removed:?} should be stripped");
     }
+    let page_annots = cleaned.get_dictionary(cleaned.get_pages()[&1]).unwrap().get_deref(b"Annots", &cleaned).unwrap().as_array().unwrap();
+    assert_eq!(page_annots, &[Object::Reference(tx_widget)]);
     assert!(cleaned.objects.contains_key(&tx_ap_dict), "regular widget AP dict must survive");
     assert!(cleaned.objects.contains_key(&shared_ap_hop), "regular widget indirect AP hop must survive");
     assert!(cleaned.objects.contains_key(&shared_ap_stream), "shared appearance stream must survive via regular widget");

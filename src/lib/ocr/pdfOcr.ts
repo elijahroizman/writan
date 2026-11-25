@@ -4,6 +4,7 @@ import { pdfEngineClient, type PdfInspection } from '../pdf/client'
 import { decodeImageToRgba, exportImageToPdf, type OcrLayerInput } from '../pdf/exporter'
 import { loadFontsForOcrLayers } from '../pdf/fonts'
 import { OcrClient } from './client'
+export { formatPageSelection, parsePageSelection } from './pageRange'
 import type { OcrPageResult } from './types'
 
 export const SCANNED_CHAR_THRESHOLD = 10
