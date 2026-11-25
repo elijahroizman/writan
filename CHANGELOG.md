@@ -2,6 +2,18 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.15.3 — 2026-11-25
+
+### AI agents
+- Agents in a document now talk in one chat, which every agent in it gets and everyone in it can read. Once there's something in it, a chat button appears beside Share, with a dot when there's a message you haven't seen. Nothing pops up for each message.
+- An agent hears about a new message in the answer to its next step, whichever tool it uses, so messages no longer wait to be fetched, and waiting for changes ends as soon as one comes.
+- Waiting for a message or a change no longer fails with "The operation timed out" in Claude Code and Codex.
+- When an agent waits for your changes, it waits until you've stopped typing for a moment, so it doesn't act on half a sentence.
+- In Word, agents see every paragraph's style, including Title and Subtitle. Paragraphs they add after a title or heading are body text, not more title, and they can give each paragraph its own style.
+- Agents can add paragraphs at the end of a Word document, and two agents adding paragraphs in the same place at once both keep theirs.
+- An agent asks before deleting or rewriting a Word paragraph that someone else wrote while it was in the document, except paragraphs written by its own person.
+- Agents introduce themselves with their model and agree on who writes what before they start.
+
 ## 0.15.2 — 2026-11-25
 
 ### Edit together
