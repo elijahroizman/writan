@@ -11,26 +11,59 @@ import { pictureBytes, pictureType, scaledPicture } from './pictures'
 export const WORD_TOOLS: Tool[] = [
   {
     name: 'insert_paragraphs',
-    description: 'Word: puts new paragraphs in after paragraph `after` (0 puts them at the start). Each line of `text` is a paragraph. `style` sets their style, like "Heading 2" or "Normal". Answers with their numbers.',
+    description:
+      'Word: puts new paragraphs in after paragraph `after` (0 puts them at the start), or after the last one with `at_end`, which stays right even if others add paragraphs meanwhile. Each line of `text` is a paragraph; or give `paragraphs`, each with its own style. `style` sets the style of those without one, like "Heading 2" or "Normal"; otherwise they take the style Word gives a new paragraph after the one before (body text after a heading or title). Answers with their numbers.',
     inputSchema: {
       type: 'object',
-      properties: { document: doc, after: { type: 'integer' }, text: { type: 'string' }, style: { type: 'string' } },
-      required: ['document', 'after', 'text'],
+      properties: {
+        document: doc,
+        after: { type: 'integer', description: 'A paragraph number, or 0 for the start.' },
+        at_end: { type: 'boolean', description: 'After the last paragraph, in place of after.' },
+        text: { type: 'string' },
+        paragraphs: {
+          type: 'array',
+          items: { type: 'object', properties: { text: { type: 'string' }, style: { type: 'string' } }, required: ['text'] },
+          description: 'In place of text: each paragraph with its own style, like [{"text": "Results", "style": "Heading 1"}, {"text": "…"}].',
+        },
+        style: { type: 'string' },
+      },
+      required: ['document'],
     },
   },
   {
     name: 'replace_paragraphs',
-    description: 'Word: replaces paragraphs `from` to `to` (just `from` if `to` is left out) with `text`, one paragraph per line. Answers with the new paragraphs.',
+    description:
+      'Word: replaces paragraphs `from` to `to` (just `from` if `to` is left out) with `text`, one paragraph per line, or with `paragraphs`, each with its own style. The first keeps the style of paragraph `from`; the rest take the style Word gives a new paragraph after it (body text after a heading or title), unless they name one. Someone else’s paragraphs need `confirm`. Answers with the new paragraphs.',
     inputSchema: {
       type: 'object',
-      properties: { document: doc, from: { type: 'integer' }, to: { type: 'integer' }, text: { type: 'string' } },
-      required: ['document', 'from', 'text'],
+      properties: {
+        document: doc,
+        from: { type: 'integer' },
+        to: { type: 'integer' },
+        text: { type: 'string' },
+        paragraphs: {
+          type: 'array',
+          items: { type: 'object', properties: { text: { type: 'string' }, style: { type: 'string' } }, required: ['text'] },
+          description: 'In place of text: each paragraph with its own style, like [{"text": "Results", "style": "Heading 1"}, {"text": "…"}].',
+        },
+        confirm: { type: 'boolean', description: 'Replace paragraphs someone else wrote, once they or your person agreed.' },
+      },
+      required: ['document', 'from'],
     },
   },
   {
     name: 'delete_paragraphs',
-    description: 'Word: deletes paragraphs `from` to `to` (just `from` if `to` is left out).',
-    inputSchema: { type: 'object', properties: { document: doc, from: { type: 'integer' }, to: { type: 'integer' } }, required: ['document', 'from'] },
+    description: 'Word: deletes paragraphs `from` to `to` (just `from` if `to` is left out). Someone else’s paragraphs need `confirm`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        from: { type: 'integer' },
+        to: { type: 'integer' },
+        confirm: { type: 'boolean', description: 'Delete paragraphs someone else wrote, once they or your person agreed.' },
+      },
+      required: ['document', 'from'],
+    },
   },
   {
     name: 'set_style',
@@ -43,17 +76,18 @@ export const WORD_TOOLS: Tool[] = [
   },
   {
     name: 'insert_table',
-    description: 'Word: puts a table in after paragraph `after`, `rows` by `columns`, filled from `cells` (a list of rows, each a list of cells’ text) if given. Its cells’ paragraphs then read as “(in a table)”, and the paragraph tools work on them.',
+    description: 'Word: puts a table in after paragraph `after` (or after the last with `at_end`), `rows` by `columns`, filled from `cells` (a list of rows, each a list of cells’ text) if given. Its cells’ paragraphs then read as “(in a table)”, and the paragraph tools work on them.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
         after: { type: 'integer' },
+        at_end: { type: 'boolean' },
         rows: { type: 'integer' },
         columns: { type: 'integer' },
         cells: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
       },
-      required: ['document', 'after'],
+      required: ['document'],
     },
   },
   {
@@ -94,6 +128,10 @@ export const WORD_TOOLS: Tool[] = [
 interface Para {
   path: number[]
   text: string
+  /** Its style's name; none for Normal. */
+  style?: string | null
+  /** The style id Enter gives the paragraph after it, when that's another. */
+  next?: string | null
 }
 
 const paragraphsOf = (e: WordEngine) => JSON.parse(e.doc.paragraphs()) as Para[]
@@ -105,26 +143,30 @@ const nextTo = (a: number[], b: number[]) => sameList(a, b) && b[b.length - 1] =
 
 const shown = (t: string) => t.replace(/￼/g, '[picture]')
 
-function lines(e: WordEngine, from: number, to: number): string[] {
+function lines(e: WordEngine, from: number, to: number, authors?: Authors): string[] {
   const paras = paragraphsOf(e)
   const headings = JSON.parse(e.doc.outline()) as { text: string; depth: number; path: number[] }[]
   const out: string[] = []
   for (let i = Math.max(1, from); i <= Math.min(paras.length, to); i++) {
     const p = paras[i - 1]
-    const h = headings.find((x) => samePath(x.path, p.path))
+    // Its style, or for one that's a heading by its own outline level, which heading. The
+    // outline counts levels from 0.
+    const h = p.style ? null : headings.find((x) => samePath(x.path, p.path))
+    const style = p.style ?? (h ? `Heading ${h.depth + 1}` : null)
     // A table cell's paragraph says which cell: (in a table, row 2, column 3).
     const where = p.path.length >= 4 ? ` (in a table, row ${p.path[p.path.length - 3] + 1}, column ${p.path[p.path.length - 2] + 1})` : p.path.length > 1 ? ' (in a table)' : ''
-    // The outline counts levels from 0.
-    out.push(`[${i}]${h ? ` (Heading ${h.depth + 1})` : ''}${where} ${shown(p.text)}`)
+    const by = authors?.name(i)
+    out.push(`[${i}]${style ? ` (${style})` : ''}${where}${by ? ` {by ${by}}` : ''} ${shown(p.text)}`)
   }
   return out
 }
 
-export function readWord(e: WordEngine, args: Args): string {
+export function readWord(e: WordEngine, args: Args, authors?: Authors): string {
   const paras = paragraphsOf(e)
   const from = Math.max(1, int(args, 'from') ?? 1)
   const to = Math.min(paras.length, int(args, 'to') ?? paras.length)
-  return [`${plural(paras.length, 'paragraph')} on ${plural(e.state.page.total, 'page')}. Numbers are what the editing tools take. view_document shows a page as a picture.`, ...lines(e, from, to)].join('\n')
+  const head = `${plural(paras.length, 'paragraph')} on ${plural(e.state.page.total, 'page')}. Numbers are what the editing tools take. Each paragraph’s style is in brackets, like (Title) or (Heading 1); one without is Normal. {by …} marks what someone else wrote since you joined. view_document shows a page as a picture.`
+  return [head, ...lines(e, from, to, authors)].join('\n')
 }
 
 function para(paras: Para[], n: number | undefined, what = 'paragraph'): Para {
@@ -146,8 +188,8 @@ function styleId(e: WordEngine, name: string): string {
 }
 
 /** The answer after an edit: paragraphs `from` to `to` as they are now. */
-const afterParas = (e: WordEngine, from: number, to: number) => () => {
-  const now = lines(e, from, to)
+const afterParas = (e: WordEngine, from: number, to: number, authors?: Authors) => () => {
+  const now = lines(e, from, to, authors)
   return now.length ? `\nNow:\n${now.join('\n')}` : ''
 }
 
@@ -314,16 +356,130 @@ function selectPicture(e: WordEngine, n: number, which: number) {
 
 const EMU = 9525
 
-export async function wordTool(e: WordEngine, name: string, args: Args, local: boolean): Promise<Answer> {
+/** Where insert_paragraphs, insert_table and add_picture go: after paragraph `after`, or the last. */
+function afterOf(args: Args, paras: Para[]): number {
+  const after = bool(args, 'at_end') === true || str(args, 'after')?.trim().toLowerCase() === 'end' ? paras.length : need(int(args, 'after'), 'after (a paragraph number, 0 for the start), or at_end')
+  if (after < 0 || after > paras.length) throw new ToolError(`after is a paragraph number from 0 to ${paras.length}.`)
+  return after
+}
+
+/** The paragraphs to write, from `paragraphs` or the lines of `text`, each with its style id if it names one (or `style` does). */
+function newParagraphs(e: WordEngine, args: Args): { text: string; style: string | null }[] {
+  const fallback = str(args, 'style')
+  const list = args.paragraphs
+  let out: { text: string; style?: string }[]
+  if (Array.isArray(list) && list.length) {
+    out = list.flatMap((p) => {
+      const item = typeof p === 'string' ? { text: p } : (p as Args)
+      const text = str(item, 'text')
+      if (text === undefined) throw new ToolError('Each of paragraphs is like {"text": "…", "style": "Heading 1"}, with text.')
+      const style = str(item, 'style') ?? fallback
+      return text.replace(/\r\n?/g, '\n').split('\n').map((t) => ({ text: t, style }))
+    })
+  } else {
+    out = need(str(args, 'text'), 'the text, or paragraphs')
+      .replace(/\r\n?/g, '\n')
+      .split('\n')
+      .map((t) => ({ text: t, style: fallback }))
+  }
+  const ids = new Map<string, string>()
+  return out.map((p) => {
+    if (!p.style) return { text: p.text, style: null }
+    if (!ids.has(p.style)) ids.set(p.style, styleId(e, p.style))
+    return { text: p.text, style: ids.get(p.style)! }
+  })
+}
+
+/** Sets the style of the paragraphs from number `first` on, each to its own: `styles[k]` for paragraph `first + k`, or leaves it where that's null. */
+function styleEach(e: WordEngine, first: number, styles: (string | null)[]) {
+  const now = paragraphsOf(e)
+  styles.forEach((id, k) => {
+    const p = now[first - 1 + k]
+    if (!id || !p) return
+    select(e, [p.path, 0], [p.path, p.text.length])
+    e.run({ cmd: 'style', id })
+  })
+}
+
+/**
+ * Who wrote each paragraph, as far as an agent's copy has seen since it joined: the client of
+ * whoever last changed its text, or null for what was there already. The text alone tells, by the
+ * paragraphs that differ after each change, so it's a good guess, not a record.
+ */
+export class Authors {
+  private texts: string[]
+  private by: (string | null)[]
+  constructor(
+    private readonly e: WordEngine,
+    /** This agent's copy, and its person's tab: what they wrote isn't someone else's. */
+    private readonly me: string,
+    private readonly mine: string | null,
+    /** The name people here know a client by. */
+    private readonly nameOf: (client: string) => string | null,
+  ) {
+    this.texts = snapshotWord(e)
+    this.by = this.texts.map(() => null)
+  }
+
+  /** The document changed: what differs from before is `client`'s. */
+  saw(client: string) {
+    const a = this.texts
+    const b = snapshotWord(this.e)
+    let start = 0
+    while (start < a.length && start < b.length && a[start] === b[start]) start++
+    let endA = a.length - 1
+    let endB = b.length - 1
+    while (endA >= start && endB >= start && a[endA] === b[endB]) {
+      endA--
+      endB--
+    }
+    this.by = [...this.by.slice(0, start), ...b.slice(start, endB + 1).map(() => client), ...this.by.slice(endA + 1)]
+    this.texts = b
+  }
+
+  /** Who wrote paragraph `n`, when it's someone else. */
+  private other(n: number): string | null {
+    const c = this.by[n - 1]
+    return c && c !== this.me && c !== this.mine ? c : null
+  }
+
+  /** The name of who wrote paragraph `n`, when it's someone else. */
+  name(n: number): string | null {
+    const c = this.other(n)
+    return c ? (this.nameOf(c) ?? 'someone who has left') : null
+  }
+
+  /** Refuses to change paragraphs `from` to `to` without `confirm` when someone else wrote any of them. */
+  check(from: number, to: number, args: Args, what: string) {
+    if (bool(args, 'confirm') === true) return
+    const who = new Set<string>()
+    const which: number[] = []
+    for (let n = from; n <= to; n++) {
+      const name = this.name(n)
+      if (name) {
+        who.add(name)
+        which.push(n)
+      }
+    }
+    if (!which.length) return
+    const list = which.length > 6 ? `${which.slice(0, 6).join(', ')}…` : which.join(', ')
+    throw new ToolError(
+      `Not ${what}: ${which.length === 1 ? `paragraph ${list} is` : `paragraphs ${list} are`} ${[...who].join(' and ')}’s. Ask them in the chat first (send_message), or your person; once they agree, call again with confirm: true.`,
+    )
+  }
+}
+
+export async function wordTool(e: WordEngine, name: string, args: Args, local: boolean, authors?: Authors): Promise<Answer> {
   const paras = paragraphsOf(e)
   switch (name) {
     case 'insert_paragraphs': {
-      const after = need(int(args, 'after'), 'after')
-      const text = need(str(args, 'text'), 'the text').replace(/\r\n?/g, '\n')
-      const count = text.split('\n').length
-      const style = str(args, 'style')
-      const id = style ? styleId(e, style) : null
-      if (after < 0 || after > paras.length) throw new ToolError(`after is a paragraph number from 0 to ${paras.length}.`)
+      const after = afterOf(args, paras)
+      const lines = newParagraphs(e, args)
+      const text = lines.map((l) => l.text).join('\n')
+      const count = lines.length
+      // Without a style of their own, they're what Enter after the paragraph before gives:
+      // Normal after a title. At the start there's none before, so it's what follows the first.
+      const next = after === 0 ? (paras[0]?.next ?? null) : null
       grouped(e, () => {
         if (after === 0) {
           const first = para(paras, 1)
@@ -335,27 +491,26 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
           e.run({ cmd: 'enter' })
           e.run({ cmd: 'paste', text, json: null })
         }
-        if (id) {
-          const now = paragraphsOf(e)
-          const first = now[after]
-          const last = now[after + count - 1]
-          if (first && last) {
-            select(e, [first.path, 0], [last.path, last.text.length])
-            e.run({ cmd: 'style', id })
-          }
-        }
+        styleEach(e, after + 1, lines.map((l) => l.style ?? next))
       })
-      return { text: `Put in ${plural(count, 'paragraph')} as ${after + 1}${count > 1 ? `–${after + count}` : ''}.`, after: afterParas(e, after + 1, after + count) }
+      return { text: `Put in ${plural(count, 'paragraph')} as ${after + 1}${count > 1 ? `–${after + count}` : ''}.`, after: afterParas(e, after + 1, after + count, authors) }
     }
     case 'replace_paragraphs': {
       const fromN = need(int(args, 'from'), 'from')
       const from = para(paras, fromN)
       const toN = int(args, 'to') ?? fromN
       const to = para(paras, toN)
-      const text = need(str(args, 'text'), 'the text').replace(/\r\n?/g, '\n')
-      select(e, [from.path, 0], [to.path, to.text.length])
-      e.run({ cmd: 'paste', text, json: null })
-      return { text: 'Replaced.', after: afterParas(e, fromN, fromN + text.split('\n').length - 1) }
+      if (toN < fromN) throw new ToolError('to comes before from.')
+      const lines = newParagraphs(e, args)
+      authors?.check(fromN, toN, args, 'replaced')
+      // The first keeps its paragraph's style; the rest are what Enter after it gives, as typing
+      // them would make them: body text after a title, not more title.
+      grouped(e, () => {
+        select(e, [from.path, 0], [to.path, to.text.length])
+        e.run({ cmd: 'paste', text: lines.map((l) => l.text).join('\n'), json: null })
+        styleEach(e, fromN, lines.map((l, k) => l.style ?? (k > 0 ? (from.next ?? null) : null)))
+      })
+      return { text: 'Replaced.', after: afterParas(e, fromN, fromN + lines.length - 1, authors) }
     }
     case 'delete_paragraphs': {
       const fromN = need(int(args, 'from'), 'from')
@@ -370,6 +525,7 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       // Nothing but paragraphs in between: a content control or other block the list skips
       // would go too.
       for (let i = fromN; i < toN; i++) if (!nextTo(paras[i - 1].path, paras[i].path)) throw new ToolError('Something that isn’t a paragraph is among them. Delete the paragraphs around it separately.')
+      authors?.check(fromN, toN, args, 'deleted')
       // The paragraphs go whole, as one change; the ones around them stay exactly as they were.
       const container = from.path.slice(0, -1)
       const result = e.run<string>({ cmd: 'deleteBlocks', container, from: from.path[from.path.length - 1], to: to.path[to.path.length - 1] })
@@ -381,7 +537,7 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
         select(e, [from.path, 0], [to.path, to.text.length])
         e.run({ cmd: 'delete', word: false })
       }
-      return { text: `Deleted ${plural(toN - fromN + 1, 'paragraph')}.`, after: afterParas(e, fromN - 1, fromN) }
+      return { text: `Deleted ${plural(toN - fromN + 1, 'paragraph')}.`, after: afterParas(e, fromN - 1, fromN, authors) }
     }
     case 'set_style': {
       const fromN = need(int(args, 'from'), 'from')
@@ -396,12 +552,11 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
     case 'format_text':
       return formatWord(e, args)
     case 'insert_table': {
-      const after = need(int(args, 'after'), 'after')
+      const after = afterOf(args, paras)
       const cells = Array.isArray(args.cells) ? (args.cells as unknown[]).map((r) => (Array.isArray(r) ? r : [r])) : null
       const rows = int(args, 'rows') ?? cells?.length ?? 2
       const cols = int(args, 'columns') ?? Math.max(1, ...(cells ?? [[0, 0]]).map((r) => r.length))
       if (rows < 1 || rows > 200 || cols < 1 || cols > 60) throw new ToolError('A table has 1 to 200 rows and 1 to 60 columns.')
-      if (after < 0 || after > paras.length) throw new ToolError(`after is a paragraph number from 0 to ${paras.length}.`)
       let first = 0
       grouped(e, () => {
         if (after === 0) select(e, [para(paras, 1).path, 0])

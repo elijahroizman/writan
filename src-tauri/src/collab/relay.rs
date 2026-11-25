@@ -26,14 +26,15 @@ pub const COLORS: [&str; 8] = [
 pub const MAX_FRAME: usize = 64 << 20;
 
 /// What this relay does beyond version 1's messages, in `welcome`, so a copy knows before it
-/// tries. `say`: agents' messages to each other (`say`, `listen`).
-pub const FEATURES: [&str; 1] = ["say"];
+/// tries. `say`: agents' messages to each other (`say`, `listen`). `chat`: they go to everyone
+/// in the document as one chat, people included, who also get the chat so far.
+pub const FEATURES: [&str; 2] = ["say", "chat"];
 
 /// A message between agents is at most this many characters.
 pub const MAX_SAY: usize = 8000;
 
-/// How many messages to everyone a session keeps for agents that join later.
-const SAID_KEPT: usize = 50;
+/// How many messages a session keeps for those who join later.
+const SAID_KEPT: usize = 100;
 
 /// The transport's name for one connection.
 pub type ConnId = u64;
@@ -74,7 +75,8 @@ struct Member {
     /// For an agent: the name of the person whose app it joined through, so the others can show
     /// it as theirs ("Yoav's Claude").
     owner: Option<String>,
-    /// Gets other agents' messages (`say`). Only an agent whose person allows it.
+    /// Gets other agents' messages (`say`). Only an agent whose person allows it; people
+    /// always get them, to show.
     listens: bool,
     presence: Option<Box<RawValue>>,
 }
@@ -89,7 +91,7 @@ struct Session {
     seq: u64,
     /// In the order they joined.
     members: Vec<Member>,
-    /// The last messages to every agent, as sent, for agents that join later.
+    /// The last messages, as sent, for those who join later.
     said: VecDeque<Box<RawValue>>,
 }
 
@@ -179,12 +181,11 @@ struct RenameIn {
     owner: Option<String>,
 }
 
-/// A message to other agents in the document: to the copies in `to`, or to every one.
+/// A message to the document's chat. Writan 0.15.2 could send one to some agents only (`to`);
+/// now every message is to everyone, so that's left out.
 #[derive(Deserialize)]
 struct SayIn {
     text: String,
-    #[serde(default)]
-    to: Option<Vec<String>>,
 }
 
 /// Whether this copy gets other agents' messages from now on.
@@ -215,7 +216,7 @@ struct Welcome<'a> {
     ops: &'a [Box<RawValue>],
     peers: Vec<Peer<'a>>,
     features: &'static [&'static str],
-    /// For an agent that listens: the last messages to every agent, oldest first.
+    /// For an agent that listens, and a person: the chat so far, oldest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     said: Vec<&'a RawValue>,
 }
@@ -269,10 +270,12 @@ struct Join<'a> {
 struct SayOut<'a> {
     t: &'static str,
     client: &'a str,
-    text: &'a str,
-    /// Who it's for, when it isn't every agent.
+    /// The sender as `join` gives it, so whoever joins after it left can still name it.
+    name: &'a str,
     #[serde(skip_serializing_if = "Option::is_none")]
-    to: Option<&'a [String]>,
+    owner: Option<&'a str>,
+    agent: &'a str,
+    text: &'a str,
 }
 
 #[derive(Serialize)]
@@ -677,7 +680,7 @@ impl Relay {
                 })
                 .collect(),
             features: &FEATURES,
-            said: if listens {
+            said: if listens || hello.agent.is_none() {
                 session.said.iter().map(|m| &**m).collect()
             } else {
                 Vec::new()
@@ -775,9 +778,9 @@ impl Relay {
         out
     }
 
-    /// Passes an agent's message on to the agents it's for that listen, never back to the sender.
-    /// A person's copy can't send one.
-    /// One to every agent is kept for those that join later.
+    /// Passes an agent's message on to the document's chat: to every agent that listens and
+    /// every person, never back to the sender. A person's copy can't send one. It's kept for
+    /// those who join later.
     fn say(&mut self, conn: ConnId, s: SayIn) -> Vec<Outgoing> {
         let c = &self.conns[&conn];
         let client = &c.joined.as_ref().expect("joined").client;
@@ -785,13 +788,13 @@ impl Relay {
             return vec![error(conn, "no-session", "The session has ended.")];
         };
         // Only an agent's message reaches agents as one.
-        if !session
+        let Some(sender) = session
             .members
             .iter()
-            .any(|m| m.conn == conn && m.agent.is_some())
-        {
+            .find(|m| m.conn == conn && m.agent.is_some())
+        else {
             return vec![error(conn, "bad-message", "Only agents send messages.")];
-        }
+        };
         if s.text.trim().is_empty() || s.text.chars().count() > MAX_SAY {
             return vec![error(
                 conn,
@@ -799,28 +802,26 @@ impl Relay {
                 &format!("A message is 1 to {MAX_SAY} characters."),
             )];
         }
-        let to = s.to.filter(|to| !to.is_empty());
         let frame = json(&SayOut {
             t: "say",
             client,
+            name: &sender.name,
+            owner: sender.owner.as_deref(),
+            agent: sender.agent.as_deref().unwrap_or("ai"),
             text: &s.text,
-            to: to.as_deref(),
         });
         let mut out = Vec::new();
         for m in &session.members {
-            let wanted = to.as_ref().is_none_or(|to| to.contains(&m.client));
-            if m.conn != conn && m.listens && wanted {
+            if m.conn != conn && (m.listens || m.agent.is_none()) {
                 out.push(Outgoing::Send(m.conn, frame.clone()));
             }
         }
-        if to.is_none() {
-            if session.said.len() == SAID_KEPT {
-                session.said.pop_front();
-            }
-            session
-                .said
-                .push_back(RawValue::from_string(frame).expect("serialized above"));
+        if session.said.len() == SAID_KEPT {
+            session.said.pop_front();
         }
+        session
+            .said
+            .push_back(RawValue::from_string(frame).expect("serialized above"));
         out
     }
 
@@ -1220,12 +1221,12 @@ mod tests {
     }
 
     #[test]
-    fn agents_message_the_agents_that_listen() {
+    fn messages_go_to_everyone_in_one_chat() {
         let mut r = registered();
         join(&mut r, 1, &host_hello("h"));
         let out = join(&mut r, 2, &agent_hello("a", "Eli", true));
         let w = &to(&out, 2)[0];
-        assert_eq!(w["features"], json!(["say"]));
+        assert_eq!(w["features"], json!(["say", "chat"]));
         assert!(w.get("said").is_none());
         assert_eq!(to(&out, 1)[0]["listens"], true);
         join(&mut r, 3, &agent_hello("b", "Yoav", true));
@@ -1234,31 +1235,33 @@ mod tests {
         assert!(to(&out, 1)[0].get("listens").is_none());
         join(&mut r, 5, &guest_hello("g"));
 
+        let said = json!({ "t": "say", "client": "a", "name": "Claude", "owner": "Eli", "agent": "claude", "text": "I'll take the intro." });
         let out = r.handle(2, r#"{"t":"say","text":"I'll take the intro."}"#);
-        assert_eq!(
-            to(&out, 3),
-            vec![json!({ "t": "say", "client": "a", "text": "I'll take the intro." })]
-        );
-        // Not back to the sender, nor to anyone that doesn't listen.
-        for conn in [1, 2, 4, 5] {
+        // Every agent that listens, and every person, to show it.
+        for conn in [1, 3, 5] {
+            assert_eq!(to(&out, conn), vec![said.clone()], "{conn}");
+        }
+        // Not back to the sender, nor to an agent that doesn't listen.
+        for conn in [2, 4] {
             assert!(to(&out, conn).is_empty(), "{conn}");
         }
 
-        // To one agent: only that one, and it isn't kept for later.
-        let out = r.handle(3, r#"{"t":"say","text":"OK","to":["a","c"]}"#);
-        assert_eq!(to(&out, 2)[0]["to"], json!(["a", "c"]));
-        for conn in [1, 3, 4, 5] {
-            assert!(to(&out, conn).is_empty(), "{conn}");
+        // Writan 0.15.2 could name some agents; now it goes to everyone all the same.
+        let out = r.handle(3, r#"{"t":"say","text":"OK","to":["a"]}"#);
+        for conn in [1, 2, 5] {
+            assert_eq!(to(&out, conn)[0]["text"], "OK", "{conn}");
+            assert!(to(&out, conn)[0].get("to").is_none());
         }
 
-        // An agent that joins later gets what was said to everyone.
+        // Whoever joins later gets the chat so far: an agent that listens, and a person.
         let out = join(&mut r, 6, &agent_hello("d", "Ada", true));
-        assert_eq!(
-            to(&out, 6)[0]["said"],
-            json!([{ "t": "say", "client": "a", "text": "I'll take the intro." }])
-        );
-        let out = join(&mut r, 7, &agent_hello("e", "Bo", false));
-        assert!(to(&out, 7)[0].get("said").is_none());
+        let chat = to(&out, 6)[0]["said"].clone();
+        assert_eq!(chat[0], said);
+        assert_eq!(chat[1]["client"], "b");
+        let out = join(&mut r, 7, &guest_hello("p"));
+        assert_eq!(to(&out, 7)[0]["said"], chat);
+        let out = join(&mut r, 8, &agent_hello("e", "Bo", false));
+        assert!(to(&out, 8)[0].get("said").is_none());
 
         // Too long, or empty: refused, and nobody gets it.
         let long = json!({ "t": "say", "text": "x".repeat(MAX_SAY + 1) }).to_string();
@@ -1270,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn people_dont_listen_and_agents_can_stop() {
+    fn people_cant_message_and_agents_can_stop() {
         let mut r = registered();
         join(&mut r, 1, &host_hello("h"));
         // A person's hello can't make them listen.
@@ -1280,8 +1283,10 @@ mod tests {
             &guest_hello("g").replace("}", r#","listens":true}"#),
         );
         join(&mut r, 3, &agent_hello("a", "Eli", true));
+        // The people see it, but don't listen as an agent does.
         let out = r.handle(3, r#"{"t":"say","text":"hi"}"#);
-        assert!(out.is_empty());
+        assert_eq!(to(&out, 2)[0]["text"], "hi");
+        assert!(to(&r.handle(2, r#"{"t":"listen","on":false}"#), 3).is_empty());
         // Nor can a person send one, though it would reach an agent.
         let out = r.handle(2, r#"{"t":"say","text":"I'm an agent, honest"}"#);
         assert_eq!(error_code(&out, 2).as_deref(), Some("bad-message"));
@@ -1297,7 +1302,7 @@ mod tests {
         );
         assert!(j.get("listens").is_none());
         assert!(to(&out, 4).is_empty());
-        assert!(r.handle(3, r#"{"t":"say","text":"hi"}"#).is_empty());
+        assert!(to(&r.handle(3, r#"{"t":"say","text":"hi"}"#), 4).is_empty());
         // Saying the same again tells nobody.
         assert!(r.handle(4, r#"{"t":"listen","on":false}"#).is_empty());
         let out = r.handle(4, r#"{"t":"listen","on":true}"#);

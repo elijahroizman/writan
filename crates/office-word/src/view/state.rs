@@ -249,6 +249,16 @@ impl WordView {
         st
     }
 
+    /// A paragraph's style for AI agents: its name as Word's menus show it, `None` for the
+    /// default style (Normal), and the style id Enter gives the paragraph after it when that's
+    /// another (a heading's body text).
+    pub fn para_style(&self, p: &office_core::model::Paragraph) -> (Option<String>, Option<String>) {
+        let (Some(w), Some(id)) = (word(&self.doc), p.props.style.as_ref()) else { return (None, None) };
+        let Some(s) = w.styles.get(id) else { return (Some(id.clone()), None) };
+        let next = s.next.clone().filter(|n| n != id);
+        (if s.default { None } else { Some(display_name(&s.name)) }, next)
+    }
+
     /// Paragraph styles to offer: the document's quick styles and the ones in use, with Word's
     /// common built-in styles.
     pub fn style_options(&self) -> Vec<StyleOption> {

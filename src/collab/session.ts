@@ -52,14 +52,14 @@ export interface Peer {
   listens?: boolean
 }
 
-/** A message from another agent in a document, as an agent's copy got it. */
+/** A message in a document's chat, from an agent, as a copy here got it. */
 export interface Said {
   /** The sender's copy. */
   client: string
   /** The sender as people here see it (“Yoav’s Claude”), when it arrived. */
   name: string
-  /** To this agent alone (and maybe others named), not to every agent. */
-  direct: boolean
+  /** Which agent sent it (`claude`, `codex`…, or `ai`). */
+  agent: string
   text: string
   /** When it arrived here (Unix ms). */
   at: number
@@ -105,6 +105,20 @@ export interface Share {
 
 /** Shared tabs, by tab id. */
 export const useCollab = create<Record<string, Share>>(() => ({}))
+
+/** A shared tab's chat: what the agents in the document said to each other, oldest first, and
+ * how many of those the person has seen. People don't get a note for each: they look when they
+ * want to (AgentChat.tsx). A relay before Writan 0.15.3 sends people none. */
+export const useChat = create<Record<string, { said: Said[]; seen: number }>>(() => ({}))
+
+/** A tab's chat keeps at most this many messages. */
+const CHAT_KEPT = 200
+
+/** The person has seen a tab's chat up to now. */
+export function seenChat(tabId: string) {
+  const c = useChat.getState()[tabId]
+  if (c && c.seen !== c.said.length) useChat.setState({ [tabId]: { ...c, seen: c.said.length } })
+}
 
 /** Someone arriving in or leaving a shared tab, for the note in the corner (Arrivals.tsx). */
 export interface Arrival {
@@ -417,7 +431,11 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       }
       raw.forEach((p, i) => p.presence != null && place(link.tabId, peers[i], p.presence))
       link.features = Array.isArray(msg.features) ? (msg.features as unknown[]).filter((f): f is string => typeof f === 'string') : []
-      if (link.listens && Array.isArray(msg.said)) for (const m of msg.said as Record<string, unknown>[]) heard(link, m, true)
+      // The chat so far: an agent's copy reads it as messages from before it joined; a person's
+      // tab starts its chat again from it.
+      if (!link.agent) useChat.setState({ [link.tabId]: { said: [], seen: 0 } })
+      if (Array.isArray(msg.said)) for (const m of msg.said as Record<string, unknown>[]) heard(link, m, true)
+      seenChat(link.tabId)
       link.queue.push(...(msg.ops as unknown[]).map((op) => JSON.stringify(op)))
       link.queuedSeq = Number(msg.seq) || 0
       link.welcomed = true
@@ -466,7 +484,7 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       return
     }
     case 'say':
-      if (link.listens) heard(link, msg, false)
+      heard(link, msg, false)
       return
     case 'end': {
       const host = hostOf(link.tabId)
@@ -485,11 +503,29 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
 /** An agent's copy keeps at most this many unread messages; the oldest go first. */
 const INBOX = 200
 
-/** A message for an agent's copy, from the relay's `say` or its welcome's `said`. */
+/** A chat message, from the relay's `say` or its welcome's `said`: for an agent's copy that
+ * listens, to read; for a person's tab, to show. */
 function heard(link: Link, msg: Record<string, unknown>, earlier: boolean) {
   if (typeof msg.text !== 'string' || typeof msg.client !== 'string' || msg.client === link.client) return
+  if (link.agent && !link.listens) return
   const from = useCollab.getState()[link.tabId]?.peers.find((p) => p.client === msg.client)
-  const said: Said = { client: msg.client, name: from?.name ?? 'An agent that has left', direct: Array.isArray(msg.to), text: msg.text, at: Date.now(), ...(earlier ? { earlier } : {}) }
+  // A relay before 0.15.3 doesn't say who sent it; then it's whoever is here with that client.
+  const sender = typeof msg.name === 'string' ? peerOf({ ...msg, agent: typeof msg.agent === 'string' ? msg.agent : 'ai' }) : null
+  const said: Said = {
+    client: msg.client,
+    name: from?.name ?? sender?.name ?? 'An agent that has left',
+    agent: from?.agent ?? sender?.agent ?? 'ai',
+    text: msg.text,
+    at: Date.now(),
+    ...(earlier ? { earlier } : {}),
+  }
+  if (!link.agent) {
+    const chat = useChat.getState()[link.tabId] ?? { said: [], seen: 0 }
+    const all = [...chat.said, said]
+    const drop = Math.max(0, all.length - CHAT_KEPT)
+    useChat.setState({ [link.tabId]: { said: all.slice(drop), seen: Math.max(0, chat.seen - drop) } })
+    return
+  }
   link.inbox.push(said)
   if (link.inbox.length > INBOX) link.inbox.splice(0, link.inbox.length - INBOX)
   for (const f of saidListeners.get(link.tabId) ?? []) f(said)
@@ -520,11 +556,16 @@ export function unread(id: string, take = false): Said[] {
 
 /**
  * Whether an agent's copy can send messages: it's live and the relay passes them on. A relay in
- * Writan before 0.16 doesn't.
+ * Writan before 0.15.2 doesn't.
  */
 export function canSay(id: string): boolean {
   const link = links.get(id)
   return !!link && link.live && !link.closed && link.features.includes('say')
+}
+
+/** The relay's client id of a shared tab or agent's copy, while it's shared. */
+export function clientOf(id: string): string | null {
+  return links.get(id)?.client ?? null
 }
 
 /** The relay's number of the last change a shared tab or agent's copy has applied; -1 if it isn't shared. */
@@ -532,12 +573,17 @@ export function appliedSeq(id: string): number {
   return links.get(id)?.seq ?? -1
 }
 
-/** Sends a message from an agent's copy to the agents in `to` (their copies), or to every agent. */
-export function say(id: string, text: string, to?: string[]): boolean {
+/** Sends a message from an agent's copy to the document's chat. */
+export function say(id: string, text: string): boolean {
   const link = links.get(id)
   if (!link || !canSay(id) || !link.transport) return false
-  link.transport.send(JSON.stringify({ t: 'say', text, ...(to?.length ? { to } : {}) }))
+  link.transport.send(JSON.stringify({ t: 'say', text }))
   return true
+}
+
+/** Whether the relay puts agents' messages in one chat that people see too (Writan 0.15.3 on). */
+export function chatShown(id: string): boolean {
+  return !!links.get(id)?.features.includes('chat')
 }
 
 /** This app's agents get other agents' messages from now on, or stop: the others are told. */

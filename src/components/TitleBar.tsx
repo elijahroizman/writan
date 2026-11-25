@@ -11,6 +11,7 @@ import { pickSplit } from '../App'
 import { keeperOf, useCollab } from '../collab/session'
 import { canExportMarkdown, canIncludeInPdfBundle, copyTabAsMarkdown, targetsForKind } from '../lib/convert'
 import { useConvertDialog } from './ConvertDialog'
+import { ChatButton } from './AgentChat'
 import { canShare, ShareButton, showSharePanel } from './Share'
 import { UpdateButton } from './UpdateButton'
 import { showVersionHistory } from './VersionHistory'
@@ -185,6 +186,7 @@ export function TitleBar() {
         <Plus size={16} />
       </IconButton>
       <div className="titlebar-spacer" data-tauri-drag-region />
+      <ChatButton />
       <ShareButton />
       <AutosaveChip />
       <UpdateButton />

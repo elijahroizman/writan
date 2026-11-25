@@ -318,7 +318,8 @@ impl WordDoc {
         self.view.in_header_footer(page, y).map(|k| if k == StoryKind::Header { "header".into() } else { "footer".into() })
     }
 
-    /// The body's paragraphs in reading order (table cells included): `[{ path, text }]`, with
+    /// The body's paragraphs in reading order (table cells included): `[{ path, text, paraId,
+    /// style, next }]` (style and next as `para_style` gives them), with
     /// U+FFFC for each picture or other object.
     pub fn paragraphs(&self) -> String {
         let blocks = self.view.body();
@@ -328,7 +329,9 @@ impl WordDoc {
             if let Some(p) = office_engine::pos::para(blocks, &path) {
                 // Word's w14:paraId, which comments key their anchors by.
                 let para_id = p.origin.get().and_then(|o| o.attrs.iter().find(|a| a.local == "paraId").map(|a| a.value.clone()));
-                out.push(serde_json::json!({ "path": path.0, "text": office_engine::text::flat(p).text, "paraId": para_id }));
+                // Its style's name (none for Normal), and what Enter after it gives, for agents.
+                let (style, next) = self.view.para_style(p);
+                out.push(serde_json::json!({ "path": path.0, "text": office_engine::text::flat(p).text, "paraId": para_id, "style": style, "next": next }));
             }
             at = office_engine::pos::next_para(blocks, &path);
         }
