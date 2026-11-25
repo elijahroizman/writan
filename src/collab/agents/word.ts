@@ -599,6 +599,15 @@ export class History {
       const to = newIds[j]
       if (from && to && from !== to) this.alias(from, to, client)
     }
+    // An id that stops being one paragraph's (its text is in another too now), or that a new
+    // paragraph has again after its own changed away, can't be followed to from older ids: they'd
+    // land on a paragraph they never meant.
+    const live = new Set(newIds)
+    const texts = new Set(b)
+    const lost = new Set<string>()
+    oldIds.forEach((id, i) => id && !live.has(id) && texts.has(a[i]) && lost.add(id))
+    for (const id of live) if (id && this.next.delete(id)) lost.add(id)
+    if (lost.size) for (const [from, to] of [...this.next]) if (lost.has(to.id)) this.next.delete(from)
     let i0 = 0
     let j0 = 0
     const gap = (i1: number, j1: number) => {

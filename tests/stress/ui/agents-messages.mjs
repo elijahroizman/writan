@@ -388,6 +388,17 @@ try {
   const unclear = (await codex.call('read_document', { document: docA })).raw
   check('who wrote two same paragraphs side by side is unclear', (unclear.match(/\{by unclear: one next to it has the same text\} Same line/g) ?? []).length === 2, unclear)
   await codex.call('delete_paragraphs', { document: docA, from: nextTo, to: nextTo + 1, confirm: true })
+  // An old id follows its paragraph's changes, but never to a new paragraph that has text it once had.
+  const alpha = idOf((await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Alpha one' })).raw, 'Alpha one')
+  const beta = idOf((await codex.call('replace_paragraphs', { document: docA, from: alpha[2], text: 'Beta one' })).raw, 'Beta one')
+  await new Promise((r) => setTimeout(r, 300))
+  await claude.call('replace_paragraphs', { document: docB, from: beta[2], text: 'Gamma one', confirm: true })
+  await new Promise((r) => setTimeout(r, 300))
+  await codex.call('insert_paragraphs', { document: docA, after: 0, text: 'Beta one' })
+  const oldAlpha = await codex.call('delete_paragraphs', { document: docA, from: alpha[2] })
+  check('an old id isn’t followed to a new paragraph with text it once had', oldAlpha.error && oldAlpha.raw.includes(`No paragraph ${alpha[2]} now`), oldAlpha.raw)
+  await codex.call('delete_paragraphs', { document: docA, from: 1 })
+  await codex.call('delete_paragraphs', { document: docA, from: beta[1], confirm: true })
   // full: true gives a long changed paragraph whole.
   const long = `Long ${'word '.repeat(90)}end.`
   // (Hearing first of who came and went meanwhile, which would end the wait at once.)

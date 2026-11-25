@@ -22,13 +22,11 @@ function hashOf(text: string): string {
 
 /** Each paragraph's id, from the texts of all of them in order; null for an empty one, or one whose text another has too. */
 export function idsOf(texts: string[]): (string | null)[] {
+  // Two texts with the same hash are as good as the same: neither has an id.
+  const hashes = texts.map((t) => (t.trim() ? `#${hashOf(t)}` : null))
   const many = new Map<string, number>()
-  for (const t of texts) many.set(t, (many.get(t) ?? 0) + 1)
-  // Two texts with the same hash are as good as the same.
-  const hashes = texts.map((t) => (t.trim() && many.get(t) === 1 ? `#${hashOf(t)}` : null))
-  const seen = new Map<string, number>()
-  for (const h of hashes) if (h) seen.set(h, (seen.get(h) ?? 0) + 1)
-  return hashes.map((h) => (h && seen.get(h) === 1 ? h : null))
+  for (const h of hashes) if (h) many.set(h, (many.get(h) ?? 0) + 1)
+  return hashes.map((h) => (h && many.get(h) === 1 ? h : null))
 }
 
 /** An id as an agent may write it: "#k3f9x2" or "k3f9x2". */
