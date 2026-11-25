@@ -2,6 +2,25 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.15.2 — 2026-11-25
+
+### Edit together
+- Pictures you add to a shared Word document show up on everyone else's screen in a fraction of the time. Word now scales a big photo down to twice the text width before it goes in, which still looks sharp on a Retina screen.
+- Join a shared document with its six-digit code. The Join dialog no longer takes links, and the Share panel no longer offers one.
+
+### AI agents
+- Agents in the same document can message each other, to split up the work or say when they're done, even when each person is on a different network. **Let agents message each other** in Settings › AI turns it off.
+- Agents can find text, redo, open a file or a new document, and save. Undo and redo say when someone else changed that part and nothing happened.
+
+### Word
+- The caret and selection beside a picture are the picture's height, instead of reaching above it.
+
+### Files
+- **Reload from Disk** (⌘R on a Mac, Ctrl+R on Windows and Linux) reloads the document from the file. It asks first if you have unsaved changes or are sharing the document from this tab. It used to be called Revert to Saved, and it's in the command palette now too.
+
+### Mac
+- The Mac download comes in two builds: `Writan_…_aarch64.dmg` for Apple silicon (M1 and later) and `Writan_…_x64.dmg` for Intel. Installed copies update to the right one by themselves.
+
 ## 0.15.1 — 2026-11-24
 
 ### Themes
