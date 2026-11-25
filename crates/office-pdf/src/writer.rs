@@ -355,8 +355,11 @@ impl<'a> Engine<'a> {
                         }
                         shaped.write(&mut drawing.content, &self.font_names, [draw_x, baseline], [sx, 1.]);
                         drawing.content.end_text();
-                        if !*invisible {
+                        if color.alpha() > 0. {
                             if let Some(decoration) = &style.decoration {
+                                if *invisible {
+                                    self.path_style(drawing, Some(color), Some(color), spec.size / 16., None);
+                                }
                                 draw_decoration(&mut drawing.content, [*x, baseline, width, spec.size], decoration);
                             }
                         }

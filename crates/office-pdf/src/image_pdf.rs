@@ -87,22 +87,34 @@ fn jpeg_exif_orientation(mut bytes: &[u8]) -> u8 {
                     _ => return 1,
                 };
                 let r16 = |off: usize| -> Option<u16> {
-                    let b = tiff.get(off..off + 2)?;
+                    let end = off.checked_add(2)?;
+                    let b = tiff.get(off..end)?;
                     Some(if le { u16::from_le_bytes([b[0], b[1]]) } else { u16::from_be_bytes([b[0], b[1]]) })
                 };
                 let r32 = |off: usize| -> Option<u32> {
-                    let b = tiff.get(off..off + 4)?;
+                    let end = off.checked_add(4)?;
+                    let b = tiff.get(off..end)?;
                     Some(if le { u32::from_le_bytes([b[0], b[1], b[2], b[3]]) } else { u32::from_be_bytes([b[0], b[1], b[2], b[3]]) })
                 };
                 if r16(2) == Some(42) {
-                    if let Some(ifd) = r32(4).map(|v| v as usize) {
+                    if let Some(ifd) = r32(4).and_then(|v| usize::try_from(v).ok()) {
                         if let Some(count) = r16(ifd).map(|c| c.min(128) as usize) {
-                            for i in 0..count {
-                                let entry = ifd + 2 + i * 12;
-                                if r16(entry) == Some(0x0112) && r16(entry + 2) == Some(3) && r32(entry + 4) == Some(1) {
-                                    if let Some(val) = r16(entry + 8) {
-                                        if (1..=8).contains(&val) {
-                                            return val as u8;
+                            let entries_start = ifd.checked_add(2);
+                            if let Some(base) = entries_start {
+                                for i in 0..count {
+                                    let Some(entry) = i.checked_mul(12).and_then(|delta| base.checked_add(delta)) else {
+                                        break;
+                                    };
+                                    let (Some(tag), Some(ty), Some(cnt)) =
+                                        (r16(entry), entry.checked_add(2).and_then(&r16), entry.checked_add(4).and_then(&r32))
+                                    else {
+                                        break;
+                                    };
+                                    if tag == 0x0112 && ty == 3 && cnt == 1 {
+                                        if let Some(val) = entry.checked_add(8).and_then(&r16) {
+                                            if (1..=8).contains(&val) {
+                                                return val as u8;
+                                            }
                                         }
                                     }
                                 }

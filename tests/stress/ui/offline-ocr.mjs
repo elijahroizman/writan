@@ -615,6 +615,13 @@ async function verifyTransformsAndCancellation(page, scan) {
     const hitBox = matchBoxes[0]
     const scaleX = (scanInfo.width * 72 / 96) / result.widthPx
     const scaleY = (scanInfo.height * 72 / 96) / result.heightPx
+    if (name === 'rotated') {
+      assert(hitBox.h > hitBox.w, `rotated highlight must be vertical: ${JSON.stringify(hitBox)}`)
+      assert(hitBox.h >= targetWord.bbox.h * scaleY * 0.45, `rotated highlight extent too short: ${JSON.stringify(hitBox)} vs bbox h=${targetWord.bbox.h * scaleY}`)
+    } else {
+      assert(hitBox.w > hitBox.h, `skewed highlight must remain wider than tall: ${JSON.stringify(hitBox)}`)
+      assert(hitBox.w >= targetWord.bbox.w * scaleX * 0.45, `skewed highlight extent too short: ${JSON.stringify(hitBox)} vs bbox w=${targetWord.bbox.w * scaleX}`)
+    }
     const wordCenterX = (targetWord.bbox.x + targetWord.bbox.w / 2) * scaleX
     const wordCenterY = (targetWord.bbox.y + targetWord.bbox.h / 2) * scaleY
     const hitCenterX = hitBox.x + hitBox.w / 2

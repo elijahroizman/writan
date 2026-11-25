@@ -571,9 +571,23 @@ fn signed_form_widget_kids_are_stripped_while_regular_fields_survive() {
     assert_eq!(inspected.annotation_count, 1);
     let cleaned = loaded(&out);
     assert!(!cleaned.objects.contains_key(&sig_widget));
+    assert!(!cleaned.objects.contains_key(&sig_ap));
     let remaining_form = cleaned.catalog().unwrap().get_deref(b"AcroForm", &cleaned).unwrap().as_dict().unwrap();
     assert!(!remaining_form.has(b"SigFlags"));
     assert_eq!(remaining_form.get_deref(b"Fields", &cleaned).unwrap().as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn malformed_exif_offset_does_not_panic() {
+    let bad_exif: &[u8] = &[0xff, 0xe1, 0x00, 0x10, b'E', b'x', b'i', b'f', 0x00, 0x00, b'M', b'M', 0x00, 0x2a, 0xff, 0xff, 0xff, 0xff];
+    let mut bad_jpeg = Vec::with_capacity(JPEG.len() + bad_exif.len());
+    bad_jpeg.extend_from_slice(&JPEG[..2]);
+    bad_jpeg.extend_from_slice(bad_exif);
+    bad_jpeg.extend_from_slice(&JPEG[2..]);
+    let pages =
+        vec![ImagePdfPageInput { media_key: "bad".into(), mime: "image/jpeg".into(), width_pt: 20., height_pt: 10., ocr_layer: None }];
+    let bytes = images_to_pdf(&pages, &HashMap::from([("bad".into(), bad_jpeg)]), &fonts()).unwrap();
+    assert!(!bytes.is_empty());
 }
 
 fn maybe_save(filename: &str, bytes: &[u8]) {

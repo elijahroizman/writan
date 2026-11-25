@@ -252,7 +252,7 @@ async function rasterizeSvgToPng(bytes: Uint8Array, scale = 4): Promise<Uint8Arr
 
 function svgNeedsRasterFallback(bytes: Uint8Array): boolean {
   const text = utf8Decoder.decode(bytes)
-  return /url\(\s*#|<(?:linearGradient|radialGradient|filter|mask|pattern|image|foreignObject|clipPath)\b/i.test(text)
+  return /url\(\s*['"]?\s*#|<(?:\w+:)?(?:linearGradient|radialGradient|filter|mask|pattern|image|foreignObject|clipPath)\b/i.test(text)
 }
 
 function jpegExifOrientation(bytes: Uint8Array): number {
@@ -454,7 +454,7 @@ async function resolveMediaPack(
   return { pack: packBlobs(entries), hasSvg }
 }
 
-const CJK_RE = /[\u3000-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF]/
+const CJK_RE = /[\u3000-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\u{20000}-\u{323AF}]/u
 
 async function renderCjkTextToPng(
   text: string,
@@ -464,33 +464,41 @@ async function renderCjkTextToPng(
   ascent: number,
   descent: number,
   rtl: boolean,
-): Promise<{ bytes: Uint8Array; boxW: number }> {
+): Promise<{ bytes: Uint8Array; boxW: number; offsetX: number; offsetY: number; width: number; height: number }> {
   const scale = 4
   const probe = document.createElement('canvas').getContext('2d')!
   probe.font = font
-  const measuredW = probe.measureText(text).width
+  probe.textBaseline = 'alphabetic'
+  const metrics = probe.measureText(text)
+  const measuredW = metrics.width
   const boxW = Math.max(1, widthPx > 0 ? widthPx : measuredW)
-  const hPx = Math.max(1, ascent + descent)
-  const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.ceil(boxW * scale))
-  canvas.height = Math.max(1, Math.ceil(hPx * scale))
-  const ctx = canvas.getContext('2d')!
-  ctx.scale(scale, scale)
-  ctx.font = font
-  ctx.fillStyle = color || '#000000'
-  ctx.textBaseline = 'alphabetic'
   let sx = 1
   let drawX = 0
   if (widthPx > 0 && measuredW > 0) {
     if (measuredW > widthPx * 1.005) sx = Math.max(0.5, widthPx / measuredW)
     else if (rtl && widthPx - measuredW > 0.5) drawX = widthPx - measuredW
   }
+  const padLeft = Math.max(0, Math.ceil((metrics.actualBoundingBoxLeft ?? 0) * sx + 1))
+  const padRight = Math.max(0, Math.ceil(Math.max(drawX + (metrics.actualBoundingBoxRight ?? measuredW) * sx, boxW) - boxW + 1))
+  const topPx = Math.max(ascent, Math.ceil((metrics.actualBoundingBoxAscent ?? ascent) + 1))
+  const botPx = Math.max(descent, Math.ceil((metrics.actualBoundingBoxDescent ?? descent) + 1))
+  const width = boxW + padLeft + padRight
+  const height = topPx + botPx
+  const canvas = document.createElement('canvas')
+  canvas.width = Math.max(1, Math.ceil(width * scale))
+  canvas.height = Math.max(1, Math.ceil(height * scale))
+  const ctx = canvas.getContext('2d')!
+  ctx.scale(scale, scale)
+  ctx.translate(padLeft + drawX, topPx)
   if (sx !== 1) ctx.scale(sx, 1)
-  ctx.fillText(text, drawX / sx, ascent)
+  ctx.font = font
+  ctx.fillStyle = color || '#000000'
+  ctx.textBaseline = 'alphabetic'
+  ctx.fillText(text, 0, 0)
   const blob = await new Promise<Blob>((resolve, reject) =>
     canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode CJK text fallback PNG.'))), 'image/png'),
   )
-  return { bytes: new Uint8Array(await blob.arrayBuffer()), boxW }
+  return { bytes: new Uint8Array(await blob.arrayBuffer()), boxW, offsetX: -padLeft, offsetY: -topPx, width, height }
 }
 
 async function prepareCjkOverlays(
@@ -520,15 +528,22 @@ async function prepareCjkOverlays(
     const ascent = resolved?.ascent ?? fontSize * 0.85
     const descent = resolved?.descent ?? fontSize * 0.25
     const baseline = item.y - (resolved?.style.shift ?? 0)
-    const { bytes, boxW } = await renderCjkTextToPng(item.text, font, color, item.w, ascent, descent, !!item.rtl)
+    const overlay = await renderCjkTextToPng(item.text, font, color, item.w, ascent, descent, !!item.rtl)
     const key = `__wpdf_cjk_${extraMedia.size}`
-    extraMedia.set(key, bytes)
+    extraMedia.set(key, overlay.bytes)
     ctx.mediaKeys.add(key)
     const yTop = baseline - ascent
     if (resolved?.style.background) {
-      out.push({ t: 'rect', x: item.x, y: yTop, w: boxW, h: ascent + descent, fill: resolved.style.background })
+      out.push({ t: 'rect', x: item.x, y: yTop, w: overlay.boxW, h: ascent + descent, fill: resolved.style.background })
     }
-    out.push({ t: 'image', media: key, x: item.x, y: yTop, w: boxW, h: ascent + descent })
+    out.push({
+      t: 'image',
+      media: key,
+      x: item.x + overlay.offsetX,
+      y: baseline + overlay.offsetY,
+      w: overlay.width,
+      h: overlay.height,
+    })
     out.push({ ...item, invisible: true })
   }
   return out
@@ -547,8 +562,15 @@ function itemIntersectsYRange(item: PdfPaintItem, yMin: number, yMax: number): b
       const pad = item.rot ? Math.hypot(item.w, item.h) * 0.5 : 0
       return item.y + item.h + pad >= yMin && item.y - pad <= yMax
     }
-    case 'path':
-      return true
+    case 'path': {
+      const nums = item.d.match(/-?\d+(?:\.\d+)?/g)
+      if (!nums?.length) return item.y + 64 >= yMin && item.y - 64 <= yMax
+      const hasRel = /[mlhvcsqt]/.test(item.d)
+      const radius = hasRel
+        ? nums.reduce((acc, n) => acc + Math.abs(Number(n)), 24)
+        : Math.max(24, ...nums.map((n) => Math.abs(Number(n))))
+      return item.y + radius >= yMin && item.y - radius <= yMax
+    }
   }
 }
 

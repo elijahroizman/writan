@@ -318,8 +318,46 @@ fn prune_sig_dict(dict: &mut Dictionary, doc: &Document, sig_ids: &HashSet<Objec
     }
 }
 
+fn collect_indirect_refs(object: &Object, seen: &mut HashSet<ObjectId>, stack: &mut Vec<ObjectId>) {
+    match object {
+        Object::Reference(id) => {
+            if seen.insert(*id) {
+                stack.push(*id);
+            }
+        }
+        Object::Array(items) => {
+            for item in items {
+                collect_indirect_refs(item, seen, stack);
+            }
+        }
+        Object::Dictionary(dict) => {
+            for (_, val) in dict.iter() {
+                collect_indirect_refs(val, seen, stack);
+            }
+        }
+        Object::Stream(stream) => {
+            for (_, val) in stream.dict.iter() {
+                collect_indirect_refs(val, seen, stack);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn reach_from(doc: &Document, seeds: Vec<ObjectId>) -> HashSet<ObjectId> {
+    let mut seen: HashSet<ObjectId> = seeds.iter().copied().collect();
+    let mut stack = seeds;
+    while let Some(id) = stack.pop() {
+        if let Ok(obj) = doc.get_object(id) {
+            collect_indirect_refs(obj, &mut seen, &mut stack);
+        }
+    }
+    seen
+}
+
 fn strip_signatures(doc: &mut Document) -> Result<(), String> {
     let sig_ids = collect_sig_ids(doc);
+    let sig_attached = reach_from(doc, sig_ids.iter().copied().collect());
     let snapshot = doc.clone();
     for &id in &sig_ids {
         doc.objects.remove(&id);
@@ -346,6 +384,17 @@ fn strip_signatures(doc: &mut Document) -> Result<(), String> {
             if acroform_empty {
                 catalog.remove(b"AcroForm");
             }
+        }
+    }
+    let mut trailer_seen = HashSet::new();
+    let mut trailer_seeds = Vec::new();
+    for (_, val) in doc.trailer.iter() {
+        collect_indirect_refs(val, &mut trailer_seen, &mut trailer_seeds);
+    }
+    let reachable = reach_from(doc, trailer_seeds);
+    for id in sig_attached {
+        if !reachable.contains(&id) {
+            doc.objects.remove(&id);
         }
     }
     if signatures(doc).0 {

@@ -224,17 +224,34 @@ function extract(core: TessCore, iterator: TessIterator, image: PreparedImage, r
     // For those scripts the direction of the baseline reveals the quarter-turn.
     const horizontalScript = /[\p{Script=Latin}\p{Script=Cyrillic}\p{Script=Hebrew}\p{Script=Arabic}]/u.test(text)
     orientationCounts[(horizontalScript && sidewaysOrientation) || blockOrientation]++
-    const wordBlRaw = baselineRaw(wordLevel, bounds) ?? baselineRaw(lineLevel, bounds) ?? (bounds.y0 + (bounds.y1 - bounds.y0) * 0.8)
-    const blStart = image.mapPoint(bounds.x0, wordBlRaw)
-    const blEnd = image.mapPoint(bounds.x1, wordBlRaw)
-    const boxTop = image.mapPoint(bounds.x0, bounds.y0)
-    const boxBot = image.mapPoint(bounds.x0, bounds.y1)
+    const wordBl = iterator.getBaseline(wordLevel)
+    let blStart: { x: number; y: number }
+    let blEnd: { x: number; y: number }
+    let heightStart: { x: number; y: number }
+    let heightEnd: { x: number; y: number }
+    if (wordBl.has_baseline && Math.hypot(wordBl.x1 - wordBl.x0, wordBl.y1 - wordBl.y0) >= 1) {
+      blStart = image.mapPoint(wordBl.x0, wordBl.y0)
+      blEnd = image.mapPoint(wordBl.x1, wordBl.y1)
+      if (Math.abs(wordBl.y1 - wordBl.y0) > Math.abs(wordBl.x1 - wordBl.x0)) {
+        heightStart = image.mapPoint(bounds.x0, bounds.y0)
+        heightEnd = image.mapPoint(bounds.x1, bounds.y0)
+      } else {
+        heightStart = image.mapPoint(bounds.x0, bounds.y0)
+        heightEnd = image.mapPoint(bounds.x0, bounds.y1)
+      }
+    } else {
+      const wordBlRaw = baselineRaw(lineLevel, bounds) ?? (bounds.y0 + (bounds.y1 - bounds.y0) * 0.8)
+      blStart = image.mapPoint(bounds.x0, wordBlRaw)
+      blEnd = image.mapPoint(bounds.x1, wordBlRaw)
+      heightStart = image.mapPoint(bounds.x0, bounds.y0)
+      heightEnd = image.mapPoint(bounds.x0, bounds.y1)
+    }
     line.words.push({
       text,
       bbox: box(bounds),
       baseline: (blStart.y + blEnd.y) / 2,
       baselineLine: { x0: blStart.x, y0: blStart.y, x1: blEnd.x, y1: blEnd.y },
-      orientedHeightPx: Math.max(1, Math.hypot(boxBot.x - boxTop.x, boxBot.y - boxTop.y)),
+      orientedHeightPx: Math.max(1, Math.hypot(heightEnd.x - heightStart.x, heightEnd.y - heightStart.y)),
       confidence: confidence(iterator.Confidence(wordLevel)),
       rtl: hasRtl(text),
       fontSizePx: Math.max(1, (fontSize || bounds.y1 - bounds.y0) / image.scale),

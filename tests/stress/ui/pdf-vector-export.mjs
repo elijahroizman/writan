@@ -505,13 +505,15 @@ try {
     },
     {
       name: 'Word CJK hybrid text renders crisp glyphs cleanly', file: 'cjk.docx',
-      source: word(paragraph('東京 売上 レポート') + paragraph('안녕하세요')),
-      sizes: [letter], expected: [['東京 売上 レポート', '안녕하세요']], contiguous: [['東京 売上 レポート', '안녕하세요']],
+      source: word(`<w:p><w:r><w:rPr><w:u w:val="single"/></w:rPr><w:t>東京 売上 𠮷</w:t></w:r></w:p>` + paragraph('안녕하세요')),
+      sizes: [letter], expected: [['東京 売上', '안녕하세요']], contiguous: [['東京 売上', '안녕하세요']],
       imageCount: 2, smaskCount: 2, zoom: true,
       check({ content, images, tile }) {
         assert.equal(images.length, 4, 'Expected two CJK fallback PNG overlays with two alpha SMasks')
         assert.ok(images.every(({ dict }) => /\/FlateDecode\b/.test(dict)), 'Expected lossless PNG overlays for CJK runs')
         assert.match(content, /\b3 Tr\b/, 'Expected invisible searchable text layer alongside CJK PNG overlays')
+        assert.match(content, /\/ActualText\s*<FEFFD842DFB7>/i, 'Expected UTF-16BE /ActualText for supplementary CJK U+20BB7')
+        assert.match(content, /\bm\s+[\d.\s]+ l\s+S\b/, 'Expected vector underline stroke on underlined CJK run')
         assert.ok(tile.ink > 100, `Expected visible dark CJK ink pixels at 4x: ${JSON.stringify(tile)}`)
       },
     },
