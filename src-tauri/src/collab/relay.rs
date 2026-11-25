@@ -36,6 +36,9 @@ pub const MAX_SAY: usize = 8000;
 /// How many messages a session keeps for those who join later.
 const SAID_KEPT: usize = 100;
 
+/// How many of those who left a session it keeps the names of.
+const GONE_KEPT: usize = 200;
+
 /// The transport's name for one connection.
 pub type ConnId = u64;
 
@@ -93,6 +96,16 @@ struct Session {
     members: Vec<Member>,
     /// The last messages, as sent, for those who join later.
     said: VecDeque<Box<RawValue>>,
+    /// Who was here and left, oldest first: a change in the log names only its client, so
+    /// whoever joins later can still tell whose it was.
+    gone: VecDeque<GoneMember>,
+}
+
+struct GoneMember {
+    client: String,
+    name: String,
+    agent: Option<String>,
+    owner: Option<String>,
 }
 
 impl Session {
@@ -105,6 +118,7 @@ impl Session {
             seq: 0,
             members: Vec::new(),
             said: VecDeque::new(),
+            gone: VecDeque::new(),
         }
     }
 }
@@ -221,6 +235,19 @@ struct Welcome<'a> {
     /// For an agent that listens, and a person: the chat so far, oldest first.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     said: Vec<&'a RawValue>,
+    /// Who was here and left, so the log's changes can be put to names.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    gone: Vec<GonePeer<'a>>,
+}
+
+#[derive(Serialize)]
+struct GonePeer<'a> {
+    client: &'a str,
+    name: &'a str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    agent: Option<&'a str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    owner: Option<&'a str>,
 }
 
 #[derive(Serialize)]
@@ -519,7 +546,19 @@ impl Relay {
         let (Some(joined), Some(session)) = (c.joined, self.sessions.get_mut(&c.session)) else {
             return out;
         };
-        session.members.retain(|m| m.conn != conn);
+        if let Some(i) = session.members.iter().position(|m| m.conn == conn) {
+            let m = session.members.remove(i);
+            session.gone.retain(|g| g.client != m.client);
+            if session.gone.len() == GONE_KEPT {
+                session.gone.pop_front();
+            }
+            session.gone.push_back(GoneMember {
+                client: m.client,
+                name: m.name,
+                agent: m.agent,
+                owner: m.owner,
+            });
+        }
         // On the LAN the host's copy is the file: without it, edits would go nowhere.
         if joined.host && self.policy == Policy::Registered {
             return self.end_session(&c.session);
@@ -647,6 +686,9 @@ impl Relay {
             broadcast(session, None, &leave(&old.client), &mut out);
         }
 
+        // Back again: not gone any more.
+        session.gone.retain(|g| g.client != hello.client);
+
         let owner = owner_of(hello.agent.as_deref(), hello.owner.as_deref());
         let listens = hello.listens && hello.agent.is_some();
         // An agent keeps its own color (Claude's clay…) even if someone has it: its logo and
@@ -690,6 +732,16 @@ impl Relay {
             } else {
                 Vec::new()
             },
+            gone: session
+                .gone
+                .iter()
+                .map(|g| GonePeer {
+                    client: &g.client,
+                    name: &g.name,
+                    agent: g.agent.as_deref(),
+                    owner: g.owner.as_deref(),
+                })
+                .collect(),
         });
         out.push(Outgoing::Send(conn, welcome));
         let join = json(&Join {
@@ -1118,6 +1170,25 @@ mod tests {
         // A connection that never joined leaves silently.
         r.connect(9, S);
         assert!(r.disconnect(9).is_empty());
+    }
+
+    #[test]
+    fn whoever_joins_later_gets_the_names_of_those_who_left() {
+        let mut r = registered();
+        join(&mut r, 1, &host_hello("h"));
+        join(&mut r, 2, &agent_hello("a", "Ada", true));
+        r.handle(2, r#"{"t":"op","id":"o1","base":0,"steps":[]}"#);
+        r.disconnect(2);
+        let out = join(&mut r, 3, &guest_hello("g"));
+        let w = &to(&out, 3)[0];
+        assert_eq!(w["ops"][0]["client"], "a");
+        assert_eq!(
+            w["gone"],
+            json!([{ "client": "a", "name": "Claude", "agent": "claude", "owner": "Ada" }])
+        );
+        // Back again, it isn't gone any more.
+        let out = join(&mut r, 4, &agent_hello("a", "Ada", true));
+        assert!(to(&out, 4)[0].get("gone").is_none());
     }
 
     #[test]

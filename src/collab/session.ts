@@ -65,6 +65,8 @@ export interface Said {
   at: number
   /** Said before this agent joined. */
   earlier?: boolean
+  /** Said by this agent's copy itself. */
+  mine?: boolean
 }
 
 /** Where someone else is in a document: what their engine's `presence` gave. */
@@ -212,7 +214,7 @@ function fromBase64(text: string) {
 
 function newLink(name: string): Link {
   const client = newClient()
-  return { tabId: '', role: 'guest', client, name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false, presence: null, presenceTimer: null, invite: null, features: [], inbox: [], seq: 0, queuedSeq: 0 }
+  return { tabId: '', role: 'guest', client, name, transport: null, engine: null, queue: [], welcomed: false, live: false, closed: false, presence: null, presenceTimer: null, invite: null, features: [], inbox: [], chat: [], comings: [], gone: new Map(), seq: 0, queuedSeq: 0 }
 }
 
 /** One shared tab's connection. */
@@ -224,8 +226,8 @@ interface Link {
   transport: Transport | null
   session?: string
   engine: CollabEngine | null
-  /** Changes that arrived before the engine was ready, in order. */
-  queue: string[]
+  /** Changes that arrived before the engine was ready, in order, with whose each is and its number. */
+  queue: { data: string; client: string | null; seq: number }[]
   welcomed: boolean
   live: boolean
   closed: boolean
@@ -249,6 +251,12 @@ interface Link {
   /** For an agent's copy: whether it gets other agents' messages, and the ones it hasn't read. */
   listens?: boolean
   inbox: Said[]
+  /** For an agent's copy: the chat it has seen and said, oldest first, for the notes on paragraphs. */
+  chat: Said[]
+  /** For an agent's copy: who came or went since it last heard. */
+  comings: Coming[]
+  /** Who was here and left, by client, so their changes can be put to names. */
+  gone: Map<string, Peer>
   /** For a host sharing what only its agents were in: getting its code, once. */
   publishing?: Promise<void>
   /** Until the welcome: gives up joining, for `finish`. */
@@ -317,7 +325,14 @@ function start(link: Link) {
   const engine = link.engine
   if (!engine || !link.welcomed || link.live || link.closed) return
   link.live = true
-  for (const op of link.queue) engine.doc.collabReceive(op)
+  // Applied one after another as the relay ordered them; whoever keeps track of whose changes
+  // are whose hears after each run of one person's.
+  const heard = appliedListeners.get(link.tabId)
+  link.queue.forEach((op, i) => {
+    engine.doc.collabReceive(op.data)
+    const next = link.queue[i + 1]
+    if (heard && op.client && op.client !== link.client && next?.client !== op.client) for (const f of heard) f(op.client, op.seq, link.queue.length - 1 - i)
+  })
   link.queue = []
   link.seq = link.queuedSeq
   engine.refresh()
@@ -436,7 +451,11 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       if (!link.agent) useChat.setState({ [link.tabId]: { said: [], seen: 0 } })
       if (Array.isArray(msg.said)) for (const m of msg.said as Record<string, unknown>[]) heard(link, m, true)
       seenChat(link.tabId)
-      link.queue.push(...(msg.ops as unknown[]).map((op) => JSON.stringify(op)))
+      // Who left before this copy came, for the changes they made (Writan after 0.15.3).
+      if (Array.isArray(msg.gone)) for (const g of msg.gone as Record<string, unknown>[]) if (typeof g.client === 'string' && typeof g.name === 'string') link.gone.set(g.client, peerOf({ ...g, color: '' }))
+      link.queue.push(
+        ...(msg.ops as Record<string, unknown>[]).map((op) => ({ data: JSON.stringify(op), client: typeof op.client === 'string' ? op.client : null, seq: Number(op.seq) || 0 })),
+      )
       link.queuedSeq = Number(msg.seq) || 0
       link.welcomed = true
       start(link)
@@ -445,12 +464,13 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
     case 'op':
       if (msg.client !== link.client) for (const f of changeListeners.get(link.tabId) ?? []) f(msg.client as string)
       if (!link.live || !link.engine) {
-        link.queue.push(data)
+        link.queue.push({ data, client: typeof msg.client === 'string' ? msg.client : null, seq: Number(msg.seq) || 0 })
         link.queuedSeq = Number(msg.seq) || link.queuedSeq
         return
       }
       if (link.engine.doc.collabReceive(data)) link.engine.refresh()
       link.seq = Number(msg.seq) || link.seq
+      if (msg.client !== link.client) for (const f of appliedListeners.get(link.tabId) ?? []) f(msg.client as string, link.seq, 0)
       // The next change made here goes once the last one is back.
       flush(link)
       return
@@ -461,7 +481,11 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       const known = peers.some((p) => p.client === peer.client)
       update(link.tabId, { peers: known ? peers.map((p) => (p.client === peer.client ? peer : p)) : [...peers, peer] })
       if (known) setPlaces(link.tabId, (now) => (now[peer.client] ? { ...now, [peer.client]: { ...now[peer.client], peer } } : now))
-      else arrive(link.tabId, peer, true)
+      else {
+        arrive(link.tabId, peer, true)
+        link.gone.delete(peer.client)
+        came(link, peer, true)
+      }
       // Someone new hasn't seen where this copy is.
       link.presence = null
       if (link.live && link.presenceTimer === null) link.presenceTimer = window.setTimeout(() => sendPresence(link), 0)
@@ -471,7 +495,11 @@ function onMessage(link: Link, data: string, opened?: (snapshot: { bytes: Uint8A
       const peers = useCollab.getState()[link.tabId]?.peers ?? []
       const gone = peers.find((p) => p.client === msg.client)
       update(link.tabId, { peers: peers.filter((p) => p.client !== msg.client) })
-      if (gone) arrive(link.tabId, gone, false)
+      if (gone) {
+        arrive(link.tabId, gone, false)
+        link.gone.set(gone.client, gone)
+        came(link, gone, false)
+      }
       setPlaces(link.tabId, (now) => {
         const { [msg.client as string]: _gone, ...rest } = now
         return rest
@@ -528,6 +556,8 @@ function heard(link: Link, msg: Record<string, unknown>, earlier: boolean) {
   }
   link.inbox.push(said)
   if (link.inbox.length > INBOX) link.inbox.splice(0, link.inbox.length - INBOX)
+  link.chat.push(said)
+  if (link.chat.length > INBOX) link.chat.splice(0, link.chat.length - INBOX)
   for (const f of saidListeners.get(link.tabId) ?? []) f(said)
 }
 
@@ -542,6 +572,76 @@ export function onSaid(id: string, f: (m: Said) => void): () => void {
   return () => {
     set.delete(f)
     if (!set.size) saidListeners.delete(id)
+  }
+}
+
+/** Someone came into or left a document an agent's copy is in. */
+export interface Coming {
+  peer: Peer
+  joined: boolean
+  /** When (Unix ms). */
+  at: number
+}
+
+/** Heard when someone comes or goes, by an agent copy's id. */
+const comingListeners = new Map<string, Set<(c: Coming) => void>>()
+
+/** For an agent's copy: someone came or went, to tell its agent with its next answer. */
+function came(link: Link, peer: Peer, joined: boolean) {
+  if (!link.agent || !link.live) return
+  const c = { peer, joined, at: Date.now() }
+  link.comings.push(c)
+  if (link.comings.length > 50) link.comings.splice(0, link.comings.length - 50)
+  for (const f of comingListeners.get(link.tabId) ?? []) f(c)
+}
+
+/** Calls `f` each time someone comes into or leaves the document of agent's copy `id`. Returns the undo. */
+export function onComing(id: string, f: (c: Coming) => void): () => void {
+  const set = comingListeners.get(id) ?? new Set()
+  set.add(f)
+  comingListeners.set(id, set)
+  return () => {
+    set.delete(f)
+    if (!set.size) comingListeners.delete(id)
+  }
+}
+
+/** Who came or went since an agent's copy `id` last heard; `take` marks them heard. */
+export function comings(id: string, take = false): Coming[] {
+  const link = links.get(id)
+  if (!link) return []
+  const out = link.comings
+  if (take) link.comings = []
+  return out
+}
+
+/** The chat an agent's copy has seen and said, oldest first. */
+export function chatOf(id: string): Said[] {
+  return links.get(id)?.chat ?? []
+}
+
+/** The name of whoever has client id `client` in shared document `id`, here or gone; null if nobody knows. */
+export function nameOf(id: string, client: string): string | null {
+  const link = links.get(id)
+  const share = useCollab.getState()[id]
+  return share?.peers.find((p) => p.client === client)?.name ?? link?.gone.get(client)?.name ?? null
+}
+
+/** Heard after someone else's change is applied, by a shared document's id. */
+const appliedListeners = new Map<string, Set<(client: string, seq: number, left: number) => void>>()
+
+/**
+ * Calls `f` after each change someone else made has been applied to document `id`, with whose it
+ * was and the relay's number for it: the changes from before this copy joined too, once each run
+ * of one person's has been applied, with how many are still to be. Returns the undo.
+ */
+export function onApplied(id: string, f: (client: string, seq: number, left: number) => void): () => void {
+  const set = appliedListeners.get(id) ?? new Set()
+  set.add(f)
+  appliedListeners.set(id, set)
+  return () => {
+    set.delete(f)
+    if (!set.size) appliedListeners.delete(id)
   }
 }
 
@@ -563,6 +663,11 @@ export function canSay(id: string): boolean {
   return !!link && link.live && !link.closed && link.features.includes('say')
 }
 
+/** The engine of a shared tab or agent's copy, once it's open. */
+export function engineOf(id: string): CollabEngine | null {
+  return links.get(id)?.engine ?? null
+}
+
 /** The relay's client id of a shared tab or agent's copy, while it's shared. */
 export function clientOf(id: string): string | null {
   return links.get(id)?.client ?? null
@@ -578,6 +683,8 @@ export function say(id: string, text: string): boolean {
   const link = links.get(id)
   if (!link || !canSay(id) || !link.transport) return false
   link.transport.send(JSON.stringify({ t: 'say', text }))
+  link.chat.push({ client: link.client, name: link.name, agent: link.agent ?? 'ai', text, at: Date.now(), mine: true })
+  if (link.chat.length > INBOX) link.chat.splice(0, link.chat.length - INBOX)
   return true
 }
 

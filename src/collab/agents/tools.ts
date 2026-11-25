@@ -10,15 +10,15 @@ import type { SlidesEngine } from '../../engine/slides/engine'
 import type { WordEngine } from '../../engine/word/engine'
 import { stripExtension } from '../../lib/kinds'
 import { useWorkspace } from '../../state/workspace'
-import { appliedSeq, attach, clientOf, followAsAgent, inviteOf, keeperOf, leaveAsAgent, onOthersChange, openToAgents, SHAREABLE, unread, useCollab, usePresence, type Opened, type Peer } from '../session'
+import { appliedSeq, attach, chatOf, clientOf, comings, followAsAgent, inviteOf, keeperOf, leaveAsAgent, nameOf, onApplied, onComing, onOthersChange, openToAgents, SHAREABLE, unread, useCollab, usePresence, type Opened, type Peer } from '../session'
 import { type Answer, type Args, bool, doc, findTool, need, plural, str, type Tool, ToolError } from './common'
 import { FILE_TOOLS, openDocument, saveDocument } from './files'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
-import { MAX_WAIT, MESSAGE_TOOL_NAMES, MESSAGE_TOOLS, messagesOn, newMessages, nextMessage, OFF, readMessages, sendMessage } from './messages'
+import { ago, MAX_WAIT, MESSAGE_TOOL_NAMES, MESSAGE_TOOLS, messagesOn, newMessages, nextMessage, OFF, readMessages, sendMessage } from './messages'
 import { describeSheetsPlace, findInSheets, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
 import { findInSlides, readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
 import { runThemeTool, THEME_TOOLS } from './theme'
-import { Authors, findInWord, readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
+import { findInWord, History, readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
 
 export { ToolError } from './common'
 
@@ -32,10 +32,15 @@ interface Copy {
   tab: string
   kind: 'docx' | 'pptx' | 'xlsx'
   engine: Promise<Engine>
-  /** In a Word document, who wrote each paragraph since the agent joined, and how to stop keeping track. */
-  authors?: Authors
-  stopAuthors?: () => void
+  /** In a Word document, each paragraph's past: who wrote it, when, and what its id was. */
+  history?: History
 }
+
+/** Each Word copy's history, by its engine, from before the relay's changes are applied. */
+const histories = new WeakMap<WordEngine, History>()
+
+/** How long a copy spends working out who wrote what before it joined; the rest counts as there before. */
+const REPLAY_BUDGET = 2000
 
 /** Every connected agent, so their copies leave a document that stops being shared here. */
 const sessions = new Set<AgentSession>()
@@ -92,7 +97,7 @@ export class AgentSession {
     // The relay's welcome is applied when the copy goes live, just after the engine attaches.
     await live(c.id)
     if (this.ended || this.copies.get(tab) !== pending) throw new ToolError('You left the document.')
-    if (c.kind === 'docx' && !c.authors) track(c, engine as WordEngine)
+    if (c.kind === 'docx') c.history ??= histories.get(engine as WordEngine)
     return { copy: c, engine }
   }
 
@@ -127,6 +132,9 @@ export class AgentSession {
     })
     const id = await followAsAgent(tab, { name: who.name, color: who.id ? AGENTS[who.id].color : '#6E56CF', agent: who.id ?? 'ai', listens: messagesOn() }, (copyId, opened) => {
       void openEngine(opened).then((e) => {
+        // A Word document's history starts from the bytes everyone opened, before the changes
+        // since, which attaching applies, so it knows who wrote what before the agent came.
+        if (opened.kind === 'docx') histories.set(e as WordEngine, follow(copyId, tab, e as WordEngine))
         attach(copyId, e)
         resolveEngine(e)
       }, rejectEngine)
@@ -142,18 +150,33 @@ export class AgentSession {
   }
 }
 
-/** Keeps track of who writes each paragraph of a Word document, from now on. */
-function track(c: Copy, e: WordEngine) {
-  const nameOf = (client: string) => useCollab.getState()[c.id]?.peers.find((p) => p.client === client)?.name ?? null
-  const authors = new Authors(e, c.id, clientOf(c.tab), nameOf)
-  c.authors = authors
-  // Told before the change is applied; it is by the time the handler is done.
-  c.stopAuthors = onOthersChange(c.id, (client) => queueMicrotask(() => authors.saw(client)))
+/** Keeps track of each paragraph's past in an agent's copy `id` of a Word document, following tab `tab`. */
+function follow(id: string, tab: string, e: WordEngine): History {
+  const history = new History(e, id, clientOf(tab), (client) => nameOf(id, client))
+  // The changes from before the agent joined come at once. On a long session's document, past
+  // the budget the rest count as one change by someone unknown.
+  let until = 0
+  let skipped = false
+  history.stop = onApplied(id, (client, seq, left) => {
+    if (left > 0) {
+      until ||= Date.now() + REPLAY_BUDGET
+      if (Date.now() > until) {
+        skipped = true
+        return
+      }
+    }
+    history.saw(skipped ? null : client, seq)
+    if (!left) {
+      until = 0
+      skipped = false
+    }
+  })
+  return history
 }
 
 /** A copy leaves its document, and its engine goes. */
 function close(c: Copy) {
-  c.stopAuthors?.()
+  c.history?.stop()
   leaveAsAgent(c.id)
   void c.engine.then((e) => e.dispose(), () => {})
 }
@@ -229,13 +252,14 @@ const SHARED_TOOLS: Tool[] = [
   {
     name: 'read_document',
     description:
-      'Reads a document, joining it first if you haven’t (people then see you in it). Word: numbered paragraphs, headings and table cells marked; use from/to for part of a long one. PowerPoint: each slide’s layout, shapes back to front (by id) with where each is, its size, look and text, and notes; use slide for one. Excel: a sheet’s cells as A1 references with values and formulas; use sheet and range (like A1:F40) for part.',
+      'Reads a document, joining it first if you haven’t (people then see you in it). Word: paragraphs by number and id, with styles, table cells, who wrote each, and the chat’s messages that name one; use from/to for part of a long one, and since to catch up on what changed after an earlier reading. PowerPoint: each slide’s layout, shapes back to front (by id) with where each is, its size, look and text, and notes; use slide for one. Excel: a sheet’s cells as A1 references with values and formulas; use sheet and range (like A1:F40) for part.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
-        from: { type: 'integer', description: 'Word: the first paragraph number to read.' },
-        to: { type: 'integer', description: 'Word: the last paragraph number to read.' },
+        from: { type: ['integer', 'string'], description: 'Word: the first paragraph to read, by number or id.' },
+        to: { type: ['integer', 'string'], description: 'Word: the last paragraph to read, by number or id.' },
+        since: { type: 'integer', description: 'Word: only what changed after this version (each reading says which version it is), and who changed it.' },
         slide: { type: 'integer', description: 'PowerPoint: one slide’s number.' },
         sheet: { type: 'string', description: 'Excel: the sheet’s name (the first one if left out).' },
         range: { type: 'string', description: 'Excel: the cells to read, like A1:F40.' },
@@ -294,8 +318,12 @@ const AFTER_TOOLS: Tool[] = [
   {
     name: 'wait_for_changes',
     description:
-      `Waits until someone else changes the document, up to \`seconds\` (${MAX_WAIT} at most), and says who changed what once they've stopped for a moment: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel. A message in the document's chat ends the wait too, and comes with the answer; one you haven't seen yet ends it at once.`,
-    inputSchema: { type: 'object', properties: { document: doc, seconds: { type: 'number' } }, required: ['document'] },
+      `Waits until someone else changes the document, up to \`seconds\` (${MAX_WAIT} at most), and says who changed what once they've stopped for a moment: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel. A message in the document's chat ends the wait too, and so does someone coming in or leaving; either comes with the answer, and one you haven't heard of yet ends it at once.`,
+    inputSchema: {
+      type: 'object',
+      properties: { document: doc, seconds: { type: 'number' }, full: { type: 'boolean', description: 'Word: the changed paragraphs whole, however many, rather than the start of the first few.' } },
+      required: ['document'],
+    },
   },
   {
     name: 'leave_document',
@@ -327,7 +355,7 @@ function merged(tools: Tool[]): Tool[] {
 const WORD_PICTURE: Tool = {
   name: 'add_picture',
   description: 'Word: puts the picture in as a paragraph of its own after paragraph `after` (0 for the start), as wide as width says if given (in pixels).',
-  inputSchema: { type: 'object', properties: { document: doc, after: { type: 'integer', description: 'Word: the paragraph to put it after.' } }, required: ['document'] },
+  inputSchema: { type: 'object', properties: { document: doc, after: { type: ['integer', 'string'], description: 'Word: the paragraph to put it after, by number or id.' } }, required: ['document'] },
 }
 
 export const TOOLS: Tool[] = [...merged([...SHARED_TOOLS, ...WORD_TOOLS, ...SLIDES_TOOLS, WORD_PICTURE, ...SHEETS_TOOLS, ...AFTER_TOOLS]), ...MESSAGE_TOOLS, ...FILE_TOOLS, ...THEME_TOOLS]
@@ -352,7 +380,7 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
   // Messages it hasn't seen come with these too: on leaving, before they go with its copy.
   const joined = session.joinedCopy(tab)
   if (name === 'leave_document') {
-    const unseen = joined ? newMessages(joined.id) : ''
+    const unseen = joined ? `${newComings(joined.id)}${newMessages(joined.id)}` : ''
     return { text: `${session.leave(tab) ? 'Left.' : 'You weren’t in it.'}${unseen}` }
   }
   if (name === 'save_document') {
@@ -366,9 +394,9 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
         if (note) throw new ToolError(`Not saved: your last change hasn’t reached the document yet.${note}`)
         if (!(await caughtUp(tab, appliedSeq(c.id)))) throw new ToolError('Not saved: the document hasn’t caught up with your last change yet. Try again in a moment.')
       }
-      return { text: `${await saveDocument(tab, d.role, args, local)}${c ? newMessages(c.id) : ''}` }
+      return { text: `${await saveDocument(tab, d.role, args, local)}${c ? `${newComings(c.id)}${newMessages(c.id)}` : ''}` }
     } catch (err) {
-      if (c && err instanceof ToolError) throw new ToolError(`${err.message}${newMessages(c.id)}`)
+      if (c && err instanceof ToolError) throw new ToolError(`${err.message}${newComings(c.id)}${newMessages(c.id)}`)
       throw err
     }
   }
@@ -378,12 +406,12 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
     text = await runOn(session, copy, engine, name, args, local, began)
   } catch (err) {
     // A refusal brings the chat's new messages too: the answer it waits for may be among them.
-    if (err instanceof ToolError) throw new ToolError(`${err.message}${newMessages(copy.id)}`)
+    if (err instanceof ToolError) throw new ToolError(`${err.message}${newComings(copy.id)}${newMessages(copy.id)}`)
     throw err
   }
-  // Every answer brings the chat's new messages: an agent hears of them on its next call,
-  // whichever tool it is.
-  return { ...text, text: `${text.text}${newMessages(copy.id)}` }
+  // Every answer brings who came or went and the chat's new messages: an agent hears of them on
+  // its next call, whichever tool it is.
+  return { ...text, text: `${text.text}${newComings(copy.id)}${newMessages(copy.id)}` }
 }
 
 /** Runs a tool on the agent's copy of a document. */
@@ -393,17 +421,24 @@ async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: st
   const waitFor = (fallback: number, least: number) => Math.min(MAX_WAIT - (Date.now() - began) / 1000, Math.max(least, Number(args.seconds) || fallback))
   switch (name) {
     case 'read_document':
-      return { text: copy.kind === 'docx' ? readWord(engine as WordEngine, args, copy.authors) : copy.kind === 'pptx' ? readSlides(engine as SlidesEngine, args) : readSheets(engine as SheetsEngine, args) }
+      return {
+        text:
+          copy.kind === 'docx'
+            ? readWord(engine as WordEngine, args, { history: copy.history, chat: messagesOn() ? chatOf(copy.id) : undefined, version: appliedSeq(copy.id) })
+            : copy.kind === 'pptx'
+              ? readSlides(engine as SlidesEngine, args)
+              : readSheets(engine as SheetsEngine, args),
+      }
     case 'view_document':
       return copy.kind === 'pptx' ? viewSlide(engine as SlidesEngine, args) : copy.kind === 'xlsx' ? await viewSheet(engine as SheetsEngine, args) : viewPage(engine as WordEngine, args)
     case 'where_is_everyone':
       return { text: whereIsEveryone(copy, engine) }
     case 'wait_for_changes':
-      return { text: await waitForChanges(copy, engine, Math.max(0, Math.round(waitFor(30, 1))), began) }
+      return { text: await waitForChanges(copy, engine, Math.max(0, Math.round(waitFor(30, 1))), began, bool(args, 'full') === true) }
     case 'send_message':
       return { text: sendMessage(copy.id, args) }
     case 'read_messages':
-      return { text: await readMessages(copy.id, Math.max(0, Math.round(waitFor(0, 0)))) }
+      return { text: await readMessages(copy.id, Math.max(0, Math.round(waitFor(0, 0))), () => nextComing(copy.id)) }
     case 'find_text': {
       const find = need(str(args, 'text'), 'the text to find')
       if (!find) throw new ToolError('Give the text to find.')
@@ -426,13 +461,13 @@ async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: st
     default:
       answer =
         copy.kind === 'docx'
-          ? await wordTool(engine as WordEngine, name, args, local, copy.authors)
+          ? await wordTool(engine as WordEngine, name, args, local, copy.history)
           : copy.kind === 'pptx'
             ? await slidesTool(engine as SlidesEngine, name, args, local)
             : sheetsTool(engine as SheetsEngine, name, args)
   }
-  // What changed is this agent's.
-  copy.authors?.saw(copy.id)
+  // What changed is this agent's, in the change after the last it has.
+  copy.history?.saw(copy.id, appliedSeq(copy.id) + 1)
   const note = await delivered(session, copy, engine)
   // Once everyone has it, the answer says what the document holds now.
   const now = answer.after && session.has(copy) ? await answer.after() : ''
@@ -496,31 +531,30 @@ const SETTLE_BY = (MAX_WAIT + 5) * 1000 - 100
  * Waits for someone else's change, then a moment more while they're still at it (typing comes a
  * key at a time), and says who changed what. A message in the chat ends the wait at once.
  */
-async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began: number): Promise<string> {
+async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began: number, full: boolean): Promise<string> {
   const before = snapshot(copy, engine)
   const who = new Set<string>()
   const said = messagesOn() ? nextMessage(copy.id) : null
-  const first = await new Promise<'change' | 'message' | null>((resolve) => {
-    const timer = window.setTimeout(() => {
-      stop()
-      said?.stop()
-      resolve(null)
-    }, seconds * 1000)
+  const arrival = nextComing(copy.id)
+  const first = await new Promise<'change' | 'message' | 'coming' | null>((resolve) => {
+    const timer = window.setTimeout(() => done(null), seconds * 1000)
     const stop = onOthersChange(copy.id, (client) => {
       who.add(client)
+      done('change')
+    })
+    void said?.message.then(() => done('message'))
+    void arrival.coming.then(() => done('coming'))
+    function done(how: 'change' | 'message' | 'coming' | null) {
       window.clearTimeout(timer)
       stop()
       said?.stop()
-      resolve('change')
-    })
-    void said?.message.then(() => {
-      window.clearTimeout(timer)
-      stop()
-      resolve('message')
-    })
+      arrival.stop()
+      resolve(how)
+    }
   })
-  // The messages themselves come at the end of the answer.
+  // The messages and who came or went come at the end of the answer.
   if (first === 'message') return 'A message came in the document’s chat. Nobody changed the document meanwhile.'
+  if (first === 'coming') return 'Someone came into the document or left it. Nobody changed the document meanwhile.'
   if (!first) return `Nobody changed it in ${seconds} seconds.`
   const peers = () => useCollab.getState()[copy.id]?.peers ?? []
   // Until they've stopped for a moment: a person pauses between words, an agent's change comes
@@ -549,7 +583,7 @@ async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began
   const names = [...who].map((c) => peers().find((p) => p.client === c)?.name ?? 'Someone')
   const after = snapshot(copy, engine)
   let what = ''
-  if (before.kind === 'docx' && after.kind === 'docx') what = wordChanges(before.paras, after.paras)
+  if (before.kind === 'docx' && after.kind === 'docx') what = `${wordChanges(before.paras, after.paras, full)}\nThis is version ${appliedSeq(copy.id)}.`
   else if (before.kind === 'pptx' && after.kind === 'pptx') what = slidesChanges(before.slides, after.slides) || 'Nothing on the slides looks different (the change was to something read_document doesn’t show).'
   // Where each of them is now, which in a workbook is where they changed it.
   const places = usePresence.getState()[copy.id] ?? {}
@@ -565,6 +599,26 @@ async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began
     message: ' A message came before they’d stopped, so this may be half done: wait again before acting on it.',
   }[settled]
   return [`${names.join(' and ')} changed it.${still}`, what, ...at].filter(Boolean).join('\n')
+}
+
+/** For the end of any answer about a document: who came in or left since the agent last heard. */
+function newComings(id: string): string {
+  const got = comings(id, true)
+  if (!got.length) return ''
+  return `\n\n${got.map((c) => `${c.peer.name}${c.peer.agent ? ' (AI)' : ''} ${c.joined ? 'came into the document' : 'left the document'} ${ago(c.at)}.`).join('\n')}`
+}
+
+/** Resolves once someone has come into or left copy `id`'s document since its agent last heard (at once if they have); `stop` gives up. */
+function nextComing(id: string): { coming: Promise<void>; stop: () => void } {
+  let stop = () => {}
+  const coming = new Promise<void>((resolve) => {
+    if (comings(id).length) return resolve()
+    stop = onComing(id, () => {
+      stop()
+      resolve()
+    })
+  })
+  return { coming, stop }
 }
 
 function replaceText(e: WordEngine | SlidesEngine, find: string, by: string, matchCase: boolean): string {
