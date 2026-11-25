@@ -538,11 +538,12 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       const placed = () => {
         const texts = paragraphsOf(e).map((p) => p.text)
         const fits = (i: number) => lines.every((l, k) => texts[i + k] === l.text)
-        // Where they went, unless someone else's went there first.
-        if (fits(after)) return after + 1
+        // Nobody else added or removed paragraphs meanwhile: where they went.
+        if (texts.length === paras.length + count && fits(after)) return after + 1
+        // Someone did: the ones this agent wrote, as far as it can tell, nearest to where they went.
         const starts = texts.flatMap((_, i) => (fits(i) ? [i] : []))
-        // Two with the same text: the one this agent wrote, as far as it can tell.
-        const i = starts.find((i) => i >= after && authors?.wrote(i + 1)) ?? starts.find((i) => i >= after) ?? starts[0]
+        const mine = starts.filter((i) => authors?.wrote(i + 1))
+        const i = mine.find((i) => i >= after) ?? mine[0] ?? starts.find((i) => i >= after) ?? starts[0]
         return i === undefined ? after + 1 : i + 1
       }
       return {

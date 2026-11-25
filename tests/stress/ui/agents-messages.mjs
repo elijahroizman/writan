@@ -260,6 +260,11 @@ try {
   const introN = Number(/\[(\d+)\] Intro\n/.exec(now)?.[1])
   if (introN > 1) await codex.call('delete_paragraphs', { document: docA, from: 1, to: introN - 1, confirm: true })
 
+  // A paragraph with the same text as the one after it: the answer gives the new one's place.
+  const same = await codex.call('insert_paragraphs', { document: docA, after: 0, text: 'Intro' })
+  check('the answer gives where a paragraph went, even beside one with the same text', same.text.includes('It’s paragraph 1.'), same.text)
+  await codex.call('delete_paragraphs', { document: docA, from: 1 })
+
   // ── The other new tools
   const find = await codex.call('find_text', { document: docA, text: 'budget' })
   check('find_text gives paragraph numbers and counts', find.text.startsWith('2 matches') && find.text.includes('[2] (2 times)'), find.text)
