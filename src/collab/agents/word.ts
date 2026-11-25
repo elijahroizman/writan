@@ -466,10 +466,15 @@ export class Authors {
     this.texts = b
   }
 
-  /** Who wrote paragraph `n`, when it's someone else. */
+  /** Who wrote paragraph `n`, when it's someone else. An empty one has nothing to keep. */
   private other(n: number): string | null {
     const c = this.by[n - 1]
-    return c && c !== this.me && c !== this.mine ? c : null
+    return c && c !== this.me && c !== this.mine && this.texts[n - 1]?.trim() ? c : null
+  }
+
+  /** Whether this agent wrote paragraph `n`. */
+  wrote(n: number): boolean {
+    return this.by[n - 1] === this.me
   }
 
   /** The name of who wrote paragraph `n`, when it's someone else. */
@@ -509,8 +514,15 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       // someone else adding paragraphs at the same place at the same moment keeps theirs too.
       // Without a style of their own, they're what Enter after the paragraph before gives: Normal
       // after a title. At the start there's none before, so it's what follows the first.
-      const like = para(paras, Math.max(1, after))
-      const where = after === 0 ? like.path : [...like.path.slice(0, -1), like.path[like.path.length - 1] + 1]
+      // At the end, after everything in the body, even a table it ends with, like the last
+      // paragraph that isn't in one.
+      const atEnd = after === paras.length && after > 0 && (bool(args, 'at_end') === true || str(args, 'after')?.trim().toLowerCase() === 'end')
+      const like = atEnd ? ([...paras].reverse().find((p) => p.path.length === 1) ?? para(paras, after)) : para(paras, Math.max(1, after))
+      const where = atEnd
+        ? [Math.max(...paras.map((p) => p.path[0])) + 1]
+        : after === 0
+          ? like.path
+          : [...like.path.slice(0, -1), like.path[like.path.length - 1] + 1]
       const result = e.run<string>({
         cmd: 'insertParagraphs',
         container: where.slice(0, -1),
@@ -523,9 +535,10 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       // relay has ordered them.
       const placed = () => {
         const texts = paragraphsOf(e).map((p) => p.text)
-        const at = (from: number) => texts.findIndex((_, i) => i >= from && lines.every((l, k) => texts[i + k] === l.text))
-        const i = at(after) >= 0 ? at(after) : at(0)
-        return i >= 0 ? i + 1 : after + 1
+        const starts = texts.flatMap((_, i) => (lines.every((l, k) => texts[i + k] === l.text) ? [i] : []))
+        // Two with the same text: the one this agent wrote, as far as it can tell.
+        const i = starts.find((i) => i >= after && authors?.wrote(i + 1)) ?? starts.find((i) => i >= after) ?? starts[0]
+        return i === undefined ? after + 1 : i + 1
       }
       return {
         text: `Put in ${plural(count, 'paragraph')}.`,
@@ -546,6 +559,7 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       if (paras.slice(fromN - 1, toN).some((p) => !sameList(p.path, from.path))) {
         throw new ToolError('Those paragraphs aren’t all in one place (a table is in between, or some are in a table cell). Replace them in parts.')
       }
+      for (let i = fromN; i < toN; i++) if (!nextTo(paras[i - 1].path, paras[i].path)) throw new ToolError('Something that isn’t a paragraph is among them. Replace the paragraphs around it separately.')
       const lines = newParagraphs(e, args)
       authors?.check(fromN, toN, args, 'replaced')
       // The first keeps its paragraph's style; the rest are what Enter after it gives, as typing

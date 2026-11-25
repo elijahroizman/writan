@@ -631,6 +631,15 @@ mod tests {
     }
 
     #[test]
+    fn a_paragraph_put_in_with_right_to_left_text_reads_right_to_left() {
+        let mut room = Room::new(&["Hello"], 1);
+        let paras = [("שלום".to_string(), None), ("Hi".to_string(), None)];
+        assert_eq!(room.views[0].insert_paragraphs(&[], 1, &[0], &paras), Ok(()));
+        let rtl: Vec<_> = room.views[0].body().iter().map(|b| matches!(b, Block::Paragraph(p) if p.props.rtl == Some(true))).collect();
+        assert_eq!(rtl, [false, true, false]);
+    }
+
+    #[test]
     fn typing_reaches_every_copy() {
         let mut room = Room::new(&["One", "Two"], 2);
         caret(&mut room.views[0], 0, 3);

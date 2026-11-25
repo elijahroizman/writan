@@ -368,7 +368,14 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
     return { text: `${await saveDocument(tab, d.role, args, local)}${c ? newMessages(c.id) : ''}` }
   }
   const { copy, engine } = await session.copy(tab)
-  const text = await runOn(session, copy, engine, name, args, local, began)
+  let text: Answer
+  try {
+    text = await runOn(session, copy, engine, name, args, local, began)
+  } catch (err) {
+    // A refusal brings the chat's new messages too: the answer it waits for may be among them.
+    if (err instanceof ToolError) throw new ToolError(`${err.message}${newMessages(copy.id)}`)
+    throw err
+  }
   // Every answer brings the chat's new messages: an agent hears of them on its next call,
   // whichever tool it is.
   return { ...text, text: `${text.text}${newMessages(copy.id)}` }
@@ -478,7 +485,7 @@ const TYPING_PAUSE = 2000
 /** Agents' changes come whole: a second without one means they're done. */
 const AGENT_PAUSE = 1000
 /** The answer has to be in before the agent's client gives up (see MAX_WAIT). */
-const SETTLE_BY = (MAX_WAIT + 5) * 1000
+const SETTLE_BY = (MAX_WAIT + 5) * 1000 - 100
 
 /**
  * Waits for someone else's change, then a moment more while they're still at it (typing comes a

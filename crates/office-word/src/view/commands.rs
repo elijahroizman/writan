@@ -410,14 +410,9 @@ impl WordView {
             self.specs.clear();
             self.dirty = super::Dirty::Full;
         }
-        let root = self.blocks_mut(StoryId::Body);
-        let template = pos::para(root, &Path(like.to_vec())).ok_or("missing")?;
+        let template = pos::para(self.blocks(StoryId::Body), &Path(like.to_vec())).ok_or("missing")?;
         let base = template.props.clone();
         let num_pr = template.origin.get().and_then(|o| o.path(ns::W, &["pPr", "numPr"])).cloned();
-        let list = pos::blocks_at_mut(root, container).ok_or("missing")?;
-        if index as usize > list.len() {
-            return Err("missing");
-        }
         let inserted: Vec<Block> = paras
             .iter()
             .map(|(t, style)| {
@@ -432,10 +427,19 @@ impl WordView {
                     }
                     (None, None) => {}
                 }
+                // Right-to-left text in a paragraph with no direction of its own makes it a
+                // right-to-left paragraph, as typing it would.
+                if p.props.rtl.is_none() && !self.is_rtl(&p.props) && para::first_strong_rtl(t) == Some(true) {
+                    p.props.rtl = Some(true);
+                }
                 text::insert_text(&mut p, 0, t, None);
                 Block::Paragraph(p)
             })
             .collect();
+        let list = pos::blocks_at_mut(self.blocks_mut(StoryId::Body), container).ok_or("missing")?;
+        if index as usize > list.len() {
+            return Err("missing");
+        }
         let n = inserted.len() as u32;
         list.splice(index as usize..index as usize, inserted.iter().cloned());
         let splice = Splice { container: container.to_vec(), index, removed: Vec::new(), inserted };
