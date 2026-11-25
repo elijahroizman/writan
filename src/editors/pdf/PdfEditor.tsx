@@ -1249,24 +1249,6 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   )
 }
 
-async function unsignedSearchableCopy(bytes: Uint8Array, signal: AbortSignal): Promise<Uint8Array> {
-  const { inspectPdfDocument } = await import('../../lib/ocr/pdfOcr')
-  if (!(await inspectPdfDocument(bytes, signal)).hasDigitalSignature) return bytes
-  const engine = await PdfEngine.create()
-  try {
-    await engine.call('open', [bytes.slice().buffer, ''], { signal })
-    const flattened = await engine.call('flatten', [], { signal })
-    const { pages } = await engine.call('open', [flattened, ''], { signal })
-    const copy = new Uint8Array(await engine.call('extract', [pages.map(({ key }) => key)], { signal }))
-    if ((await inspectPdfDocument(copy, signal)).hasDigitalSignature) {
-      throw new Error('Writan couldn’t remove the signature from the searchable copy.')
-    }
-    return copy
-  } finally {
-    engine.destroy()
-  }
-}
-
 function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
   tab: DocTab
   page: number
@@ -1307,7 +1289,7 @@ function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
       const { bytes: pdfBytes, signed } = await readPdfOcrSource(tab, signal)
       if (signed) {
         const confirmed = await platform.confirmDialog(
-          'Creating an unsigned searchable copy leaves the original signed PDF untouched. Annotations and form fields become part of the copied pages.',
+          'Creating an unsigned searchable copy removes the digital signature from the copy while leaving the original signed PDF untouched.',
           { title: 'Create unsigned searchable copy?', okLabel: 'Create unsigned copy' },
         )
         if (!confirmed) {
@@ -1333,10 +1315,6 @@ function PdfOcrPanel({ tab, page, scannedPages, onClose }: {
         pdfBytes, engine, pagesInfo, langs: selectedLangs, skipPagesWithText: skip, allowSigned: signed, signal, pageIndices,
         onProgress: (value) => setProgress(pdfOcrStatus(value)),
       })
-      if (signed && recognized.recognizedPages.length) {
-        setProgress('Creating unsigned searchable copy…')
-        recognized.searchablePdfBytes = await unsignedSearchableCopy(recognized.searchablePdfBytes, signal)
-      }
       signal.throwIfAborted()
       setResult(recognized)
       setProgress(`Recognized ${recognized.recognizedPages.length} · Skipped ${recognized.skippedPages.length} pages`)

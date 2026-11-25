@@ -232,6 +232,110 @@ struct Update {
     contents: Vec<Object>,
 }
 
+fn is_sig_dict(dict: &Dictionary, doc: &Document) -> bool {
+    let has_name = |key| dict.get_deref(key, doc).and_then(Object::as_name).ok() == Some(b"Sig");
+    has_name(b"Type") || has_name(b"FT") || dict.has(b"ByteRange")
+}
+
+fn collect_sig_ids(doc: &Document) -> HashSet<ObjectId> {
+    let mut ids = HashSet::new();
+    for (&id, object) in &doc.objects {
+        let dict = match object {
+            Object::Dictionary(dict) => dict,
+            Object::Stream(stream) => &stream.dict,
+            _ => continue,
+        };
+        if is_sig_dict(dict, doc) {
+            ids.insert(id);
+            if let Ok(sig_val) = dict.get(b"V").and_then(Object::as_reference) {
+                ids.insert(sig_val);
+            }
+        }
+    }
+    ids
+}
+
+fn prune_sig_object(object: &mut Object, doc: &Document, sig_ids: &HashSet<ObjectId>, keep: &mut bool) {
+    match object {
+        Object::Reference(id) if sig_ids.contains(id) => *keep = false,
+        Object::Array(items) => {
+            items.retain_mut(|item| {
+                let mut child_keep = true;
+                prune_sig_object(item, doc, sig_ids, &mut child_keep);
+                child_keep
+            });
+        }
+        Object::Dictionary(dict) => {
+            if is_sig_dict(dict, doc) {
+                *keep = false;
+                return;
+            }
+            prune_sig_dict(dict, doc, sig_ids);
+        }
+        Object::Stream(stream) => {
+            if is_sig_dict(&stream.dict, doc) {
+                *keep = false;
+                return;
+            }
+            prune_sig_dict(&mut stream.dict, doc, sig_ids);
+        }
+        _ => {}
+    }
+}
+
+fn prune_sig_dict(dict: &mut Dictionary, doc: &Document, sig_ids: &HashSet<ObjectId>) {
+    let keys: Vec<Vec<u8>> = dict.iter().map(|(k, _)| k.clone()).collect();
+    for key in keys {
+        if key == b"SigFlags" {
+            dict.remove(&key);
+            continue;
+        }
+        if let Ok(val) = dict.get_mut(&key) {
+            let mut keep = true;
+            prune_sig_object(val, doc, sig_ids, &mut keep);
+            if !keep {
+                dict.remove(&key);
+            }
+        }
+    }
+}
+
+fn strip_signatures(doc: &mut Document) -> Result<(), String> {
+    let sig_ids = collect_sig_ids(doc);
+    let snapshot = doc.clone();
+    for &id in &sig_ids {
+        doc.objects.remove(&id);
+    }
+    let object_ids: Vec<ObjectId> = doc.objects.keys().copied().collect();
+    for id in object_ids {
+        if let Some(obj) = doc.objects.get_mut(&id) {
+            let mut keep = true;
+            prune_sig_object(obj, &snapshot, &sig_ids, &mut keep);
+            if !keep {
+                doc.objects.remove(&id);
+            }
+        }
+    }
+    if let Ok(catalog_id) = doc.trailer.get(b"Root").and_then(Object::as_reference) {
+        let acroform_empty = doc
+            .get_dictionary(catalog_id)
+            .ok()
+            .and_then(|cat| cat.get_deref(b"AcroForm", doc).ok())
+            .and_then(|obj| obj.as_dict().ok())
+            .is_some_and(|form| form.get_deref(b"Fields", doc).and_then(Object::as_array).is_ok_and(|fields| fields.is_empty()));
+        if let Ok(catalog) = doc.get_object_mut(catalog_id).and_then(Object::as_dict_mut) {
+            catalog.remove(b"Perms");
+            if acroform_empty {
+                catalog.remove(b"AcroForm");
+            }
+        }
+    }
+    if signatures(doc).0 {
+        return Err("Could not remove digital signature from copy".into());
+    }
+    Ok(())
+}
+
 pub fn inject_ocr_text_layer(
     pdf_bytes: &[u8],
     layers: &[OcrPageLayer],
@@ -239,7 +343,8 @@ pub fn inject_ocr_text_layer(
     allow_signed: bool,
 ) -> Result<Vec<u8>, String> {
     let doc = load_pdf(pdf_bytes)?;
-    if !allow_signed && signatures(&doc).0 {
+    let was_signed = signatures(&doc).0;
+    if !allow_signed && was_signed {
         return Err("OCR cannot modify a digitally signed PDF".into());
     }
     let pages = page_ids(&doc)?;
@@ -281,12 +386,38 @@ pub fn inject_ocr_text_layer(
         let raw = [b"\nQ\n", content.finish().as_slice()].concat();
         updates.push(Update { page_id, resources, fonts, stream: flate(&raw)?, contents: original_contents(&doc, page_id)? });
     }
-    if fonts.used().next().is_none() {
+    let has_text = fonts.used().next().is_some();
+    if !has_text && !was_signed {
         return Ok(pdf_bytes.to_vec());
     }
     let font_objects = fonts.used().map(|(_, aliases)| 3 + 2 * aliases as u64).sum::<u64>();
     if u64::from(doc.max_id) + font_objects + updates.len() as u64 + 6 >= u64::from(u32::MAX) {
         return Err("PDF object numbering is exhausted".into());
+    }
+    if was_signed {
+        let mut unsigned = doc;
+        if has_text {
+            let refs = append_fonts(&mut unsigned, &fonts)?;
+            let prefix = unsigned.add_object(Stream::new(Dictionary::new(), b"q\n".to_vec()));
+            for mut update in updates {
+                for (&index, &id) in &refs {
+                    update.fonts.set(index.resource_name(&names).as_bytes(), Object::Reference(id));
+                }
+                update.resources.set("Font", update.fonts);
+                let mut dict = Dictionary::new();
+                dict.set("Filter", Object::Name(b"FlateDecode".to_vec()));
+                let suffix = unsigned.add_object(Stream::new(dict, update.stream));
+                update.contents.insert(0, Object::Reference(prefix));
+                update.contents.push(Object::Reference(suffix));
+                let page = unsigned.get_object_mut(update.page_id).and_then(Object::as_dict_mut).map_err(|e| e.to_string())?;
+                page.set("Resources", update.resources);
+                page.set("Contents", Object::Array(update.contents));
+            }
+        }
+        strip_signatures(&mut unsigned)?;
+        let mut output = Vec::new();
+        unsigned.save_to(&mut output).map_err(|e| format!("Could not save OCR layer: {e}"))?;
+        return Ok(output);
     }
     let mut updated = IncrementalDocument::create_from(pdf_bytes.to_vec(), doc);
     let refs = append_fonts(&mut updated.new_document, &fonts)?;

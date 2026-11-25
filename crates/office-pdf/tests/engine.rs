@@ -351,7 +351,7 @@ fn inspection_detects_forms_outlines_annotations_signatures_and_encryption() {
     assert_eq!(inspection.annotation_count, 5);
     assert!(inject_ocr_text_layer(&pdf, &[], &fonts(), false).unwrap_err().contains("signed"));
     let allowed = inject_ocr_text_layer(&pdf, &[], &fonts(), true).unwrap();
-    assert!(allowed.starts_with(&pdf));
+    assert!(!inspect_pdf(&allowed).unwrap().has_digital_signature);
     assert!(inspect_pdf(b"%PDF-1.7\ntruncated").is_err());
     let mut encrypted = loaded(&original_pdf(false, false));
     let state = lopdf::EncryptionState::try_from(lopdf::EncryptionVersion::V1 {
@@ -425,6 +425,24 @@ fn ocr_updates_all_rotations_and_preserves_original_pdf() {
             maybe_save("ocr.pdf", &bytes);
         }
     }
+}
+
+#[test]
+fn signed_ocr_copy_strips_signature_and_keeps_annotations_and_outlines() {
+    let pdf = original_pdf(true, false);
+    let layers: Vec<OcrPageLayer> = vec![serde_json::from_value(json!({
+        "pageIndex": 0, "pageWidthPt": 200, "pageHeightPt": 100,
+        "words": [{"text": "Verified", "xPt": 10, "yPt": 11, "wPt": 45, "hPt": 10, "baselineYPt": 19}]
+    }))
+    .unwrap()];
+    assert!(inject_ocr_text_layer(&pdf, &layers, &fonts(), false).unwrap_err().contains("signed"));
+    let allowed = inject_ocr_text_layer(&pdf, &layers, &fonts(), true).unwrap();
+    let inspected = inspect_pdf(&allowed).unwrap();
+    assert!(!inspected.has_digital_signature);
+    assert!(inspected.signature_fields.is_empty());
+    assert!(inspected.has_outlines);
+    assert_eq!(inspected.annotation_count, 5);
+    assert!(loaded(&allowed).extract_text(&[1]).unwrap().contains("Verified"));
 }
 
 fn maybe_save(filename: &str, bytes: &[u8]) {
