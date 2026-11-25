@@ -272,7 +272,7 @@ try {
   check('the answer gives where a paragraph went, even beside one with the same text', same.text.includes('It’s paragraph 1.'), same.text)
   // Beside one with the same text, which of the two is whose can't be told, so it takes confirm.
   const sameDel = await codex.call('delete_paragraphs', { document: docA, from: 1 })
-  check('deleting one of two same paragraphs side by side needs confirm', sameDel.error && sameDel.raw.includes('can’t tell whose each is'), sameDel.raw)
+  check('deleting one of two same paragraphs side by side needs confirm', sameDel.error && sameDel.raw.includes('can’t tell whose'), sameDel.raw)
   await codex.call('delete_paragraphs', { document: docA, from: 1, confirm: true })
 
   // ── The other new tools
@@ -390,6 +390,20 @@ try {
   const apartReplace = await codex.call('replace_paragraphs', { document: docA, from: apartId[2], text: 'Same line, mine' })
   check('a paragraph with the same text put in elsewhere doesn’t take over an id', !apartReplace.error && apartReplace.raw.includes(`[${Number(apartId[1]) + 1} `) && apartReplace.raw.includes('Same line, mine'), apartReplace.raw)
   await codex.call('delete_paragraphs', { document: docA, from: 2, confirm: true })
+  // Same text after the same text: a new one put in above takes the old one's id ("-2"), so the
+  // id is refused until the agent has read it again.
+  const twice = await codex.call('insert_paragraphs', { document: docA, at_end: true, text: 'Part\nSame line B\nPart\nSame line B' })
+  const second = [...twice.raw.matchAll(/\[(\d+) (#[a-z0-9-]+)\][^\n]*Same line B/g)][1]
+  await claude.call('insert_paragraphs', { document: docB, after: Number(second[1]) - 4, text: 'Part\nSame line B' })
+  await new Promise((r) => setTimeout(r, 300))
+  const takenOver = await codex.call('replace_paragraphs', { document: docA, from: second[2], text: 'Same line B, mine' })
+  check('an id another paragraph has taken over is refused until read again', takenOver.error && takenOver.raw.includes(`${second[2]} has meant two paragraphs`), takenOver.raw)
+  const reread = (await codex.call('read_document', { document: docA })).raw
+  const nowSecond = [...reread.matchAll(/\[(\d+) (#[a-z0-9-]+)\][^\n]*Same line B/g)].find((m) => m[2] === second[2])
+  const afterRead = await codex.call('replace_paragraphs', { document: docA, from: second[2], text: 'Same line B, theirs', confirm: true })
+  check('once read again, the id means the paragraph that has it now', !afterRead.error && afterRead.raw.includes(`[${nowSecond?.[1]} `) && afterRead.raw.includes('Same line B, theirs'), afterRead.raw)
+  const firstPart = Number(second[1]) - 3
+  await codex.call('delete_paragraphs', { document: docA, from: firstPart, to: firstPart + 5, confirm: true })
   // full: true gives a long changed paragraph whole.
   const long = `Long ${'word '.repeat(90)}end.`
   // (Hearing first of who came and went meanwhile, which would end the wait at once.)

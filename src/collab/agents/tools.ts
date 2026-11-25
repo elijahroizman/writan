@@ -443,7 +443,7 @@ async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: st
       const find = need(str(args, 'text'), 'the text to find')
       if (!find) throw new ToolError('Give the text to find.')
       const matchCase = bool(args, 'match_case') === true
-      return { text: copy.kind === 'docx' ? findInWord(engine as WordEngine, find, matchCase) : copy.kind === 'pptx' ? findInSlides(engine as SlidesEngine, find, matchCase) : findInSheets(engine as SheetsEngine, find, matchCase) }
+      return { text: copy.kind === 'docx' ? findInWord(engine as WordEngine, find, matchCase, copy.history) : copy.kind === 'pptx' ? findInSlides(engine as SlidesEngine, find, matchCase) : findInSheets(engine as SheetsEngine, find, matchCase) }
     }
     case 'undo':
     case 'redo': {
@@ -560,7 +560,7 @@ async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began
   // Until they've stopped for a moment: a person pauses between words, an agent's change comes
   // whole. A message ends it too.
   const pause = () => ([...who].some((c) => !peers().find((p) => p.client === c)?.agent) ? TYPING_PAUSE : AGENT_PAUSE)
-  const settled = await new Promise<'quiet' | 'busy' | 'message'>((resolve) => {
+  const settled = await new Promise<'quiet' | 'busy' | 'message' | 'coming'>((resolve) => {
     let quiet = window.setTimeout(() => done('quiet'), pause())
     const cap = window.setTimeout(() => done('busy'), Math.max(0, SETTLE_BY - (Date.now() - began)))
     const stop = onOthersChange(copy.id, (client) => {
@@ -570,11 +570,14 @@ async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began
     })
     const msg = messagesOn() ? nextMessage(copy.id) : null
     void msg?.message.then(() => done('message'))
-    function done(how: 'quiet' | 'busy' | 'message') {
+    const arrival = nextComing(copy.id)
+    void arrival.coming.then(() => done('coming'))
+    function done(how: 'quiet' | 'busy' | 'message' | 'coming') {
       window.clearTimeout(quiet)
       window.clearTimeout(cap)
       stop()
       msg?.stop()
+      arrival.stop()
       resolve(how)
     }
   })
@@ -597,6 +600,7 @@ async function waitForChanges(copy: Copy, engine: Engine, seconds: number, began
     quiet: '',
     busy: ' They’re still at it, so this may be half done: wait again before acting on it.',
     message: ' A message came before they’d stopped, so this may be half done: wait again before acting on it.',
+    coming: ' Someone came in or left before they’d stopped, so this may be half done: wait again before acting on it.',
   }[settled]
   return [`${names.join(' and ')} changed it.${still}`, what, ...at].filter(Boolean).join('\n')
 }

@@ -165,6 +165,7 @@ function lines(e: WordEngine, from: number, to: number, history?: History, notes
     // A table cell's paragraph says which cell: (in a table, row 2, column 3).
     const where = p.path.length >= 4 ? ` (in a table, row ${p.path[p.path.length - 3] + 1}, column ${p.path[p.path.length - 2] + 1})` : p.path.length > 1 ? ' (in a table)' : ''
     const by = p.text.trim() ? history?.label(i) : null
+    history?.shown(ids[i - 1])
     out.push(`${label(i, ids[i - 1])}${style ? ` (${style})` : ''}${where}${by ? ` {by ${by}}` : ''} ${shown(p.text)}`)
     for (const n of notes?.get(i) ?? []) out.push(`    ↳ ${n}`)
   }
@@ -213,7 +214,8 @@ function notesOn(paras: Para[], chat: Said[], history?: History): Map<number, st
   for (const m of chat) {
     const hit = new Set<number>()
     for (const id of m.text.match(IDS_IN) ?? []) {
-      const n = history ? history.find(ids, id)?.n : ids.indexOf(id) + 1 || undefined
+      const hit2 = history ? history.find(ids, id) : null
+      const n = history ? (hit2 && !hit2.taken ? hit2.n : undefined) : ids.indexOf(id) + 1 || undefined
       if (n) hit.add(n)
     }
     for (const n of hit) {
@@ -243,6 +245,11 @@ function paraNumber(paras: Para[], args: Args, k: string, history: History | und
   const ids = idsOf(paras.map((p) => p.text))
   const found = history ? history.find(ids, id) : ids.indexOf(id) >= 0 ? { n: ids.indexOf(id) + 1, by: [] } : null
   if (!found) throw new ToolError(`No paragraph ${id} now: it was deleted, or changed in a way Writan couldn’t follow. Read the document again (find_text finds a paragraph by its words).`)
+  if (found.taken) {
+    const other = found.taken.other
+    const theirs = other ? `paragraph ${other}, ${ids[other - 1]} now, had it before` : 'one next to it has the same text, and which is which can’t be told'
+    throw new ToolError(`Not done: ${id} has meant two paragraphs since you last read it. Paragraph ${found.n} has it now, and ${theirs}. Read the document again, then use the id it gives.`)
+  }
   const now = ids[found.n - 1]
   if (now !== id) {
     const others = found.by.filter((c) => c !== 'you')
@@ -554,6 +561,12 @@ export class History {
   private removed: { seq: number; client: Client; count: number }[] = []
   /** What an id became: the next id, and who changed the text (undefined when only the "-2" moved). */
   private next = new Map<string, { id: string; client?: Client }>()
+  /**
+   * Ids another paragraph has taken over since this agent was last shown them (the one that had it
+   * has another now, or can't be told apart from its neighbours): which one the agent means can't
+   * be told, so they're refused until it's shown them again.
+   */
+  private taken = new Set<string>()
   /** Stops following the document. */
   stop: () => void = () => {}
   constructor(
@@ -594,10 +607,13 @@ export class History {
     // new went into the last of them (two joined into one).
     const oldIds = idsOf(a)
     const newIds = idsOf(b)
+    const now = new Set(newIds)
     const became = (i: number, j: number, changed: boolean) => {
       const from = oldIds[i]
       const to = newIds[j]
-      if (from && to && from !== to) this.alias(from, to, changed ? client : undefined)
+      if (!from || !to || from === to) return
+      this.alias(from, to, changed ? client : undefined)
+      if (now.has(from)) this.taken.add(from)
     }
     for (let i = 0; i < start; i++) became(i, i, false)
     for (let k = 0; k < a.length - 1 - endA; k++) became(endA + 1 + k, endB + 1 + k, false)
@@ -632,7 +648,12 @@ export class History {
       for (let i = lo; i <= last; i++) this.by[i] = UNCLEAR
       for (const [from, to] of [...this.next]) if (unsure.has(to.id)) this.next.delete(from)
       // The old ids of those it could have been: none of them can be followed.
-      for (let i = lo; i <= (!oldMid.length ? hi - span : hi); i++) if (oldIds[i]) this.next.delete(oldIds[i]!)
+      for (let i = lo; i <= (!oldMid.length ? hi - span : hi); i++) {
+        const id = oldIds[i]
+        if (!id) continue
+        this.next.delete(id)
+        if (now.has(id)) this.taken.add(id)
+      }
     }
   }
 
@@ -647,7 +668,12 @@ export class History {
    * The paragraph an id is now, given every paragraph's id (`ids`): its number, and who changed its
    * text since the id was its ("you" for this agent). Null if none is.
    */
-  find(ids: (string | null)[], id: string): { n: number; by: string[] } | null {
+  find(ids: (string | null)[], id: string): { n: number; by: string[]; taken?: { other: number | null } } | null {
+    if (this.taken.has(id) && ids.includes(id)) {
+      const step = this.next.get(id)
+      const other = step ? this.find(ids, step.id) : null
+      return { n: ids.indexOf(id) + 1, by: [], taken: { other: other?.n ?? null } }
+    }
     const by = new Set<string>()
     const seen = new Set<string>()
     for (let at: string | undefined = id; at && !seen.has(at); ) {
@@ -668,6 +694,11 @@ export class History {
     const name = this.nameOf(c)
     if (c === this.mine) return name ? `${name}, your person` : 'your person'
     return name ?? 'someone who has left'
+  }
+
+  /** The agent has been shown paragraph id `id` as it is now. */
+  shown(id: string | null | undefined) {
+    if (id) this.taken.delete(id)
   }
 
   /** Who last changed paragraph `n`'s text, as read_document says it; null for nobody since it was shared. */
@@ -727,11 +758,15 @@ export class History {
     }
     if (!which.length) return
     const list = which.length > 6 ? `${which.slice(0, 6).join(', ')}…` : which.join(', ')
-    if (which.some((n) => this.by[n - 1] === UNCLEAR)) {
-      throw new ToolError(
-        `Not ${what}: ${which.length === 1 ? `paragraph ${list} has` : `paragraphs ${list} have`} the same text as one next to it, put in or deleted by someone, and Writan can’t tell whose each is. Check it’s what you mean, then call again with confirm: true.`,
-      )
-    }
+    const unclear = which.filter((n) => this.by[n - 1] === UNCLEAR)
+    const known = which.filter((n) => this.by[n - 1] !== UNCLEAR)
+    const sameText = unclear.length ? ` ${unclear.length === 1 ? `Paragraph ${unclear[0]} has` : `Paragraphs ${unclear.slice(0, 6).join(', ')} have`} the same text as one next to it, so Writan can’t tell whose ${unclear.length === 1 ? 'it is' : 'each is'}.` : ''
+    if (!known.length) throw new ToolError(`Not ${what}:${sameText} Check it’s what you mean, then call again with confirm: true.`)
+    who.delete(this.who(UNCLEAR))
+    const knownList = known.length > 6 ? `${known.slice(0, 6).join(', ')}…` : known.join(', ')
+    if (unclear.length) throw new ToolError(
+      `Not ${what}: ${known.length === 1 ? `paragraph ${knownList} is` : `paragraphs ${knownList} are`} ${[...who].join(' and ')}’s.${sameText} Ask them in the chat first (send_message), or your person; once they agree, call again with confirm: true.`,
+    )
     throw new ToolError(
       `Not ${what}: ${which.length === 1 ? `paragraph ${list} is` : `paragraphs ${list} are`} ${[...who].join(' and ')}’s. Ask them in the chat first (send_message), or your person; once they agree, call again with confirm: true.`,
     )
@@ -744,7 +779,7 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
   const notes: string[] = []
   const at: At = (k, strict = false, now = paras) => paraNumber(now, args, k, history, notes, strict)
   const answer = await wordEdit(e, paras, at, name, args, local, history)
-  return notes.length ? { ...answer, text: `${notes.join('\n')}\n${answer.text}` } : answer
+  return notes.length ? { ...answer, text: `${[...new Set(notes)].join('\n')}\n${answer.text}` } : answer
 }
 
 async function wordEdit(e: WordEngine, paras: Para[], at: At, name: string, args: Args, local: boolean, history?: History): Promise<Answer> {
@@ -1016,7 +1051,7 @@ export async function viewPage(e: WordEngine, args: Args): Promise<Answer> {
 // ── What changed, for wait_for_changes
 
 /** find_text in a Word document: each paragraph with a match, by number. */
-export function findInWord(e: WordEngine, find: string, matchCase: boolean): string {
+export function findInWord(e: WordEngine, find: string, matchCase: boolean, history?: History): string {
   let total = 0
   const paras = paragraphsOf(e)
   const ids = idsOf(paras.map((p) => p.text))
@@ -1024,6 +1059,7 @@ export function findInWord(e: WordEngine, find: string, matchCase: boolean): str
     const hit = found(shown(p.text), find, matchCase)
     if (!hit) return []
     total += hit.count
+    history?.shown(ids[i])
     return [`${label(i + 1, ids[i])}${hit.count > 1 ? ` (${hit.count} times)` : ''} ${hit.around}`]
   })
   return foundAnswer(find, places, total)
@@ -1050,7 +1086,7 @@ export function wordChanges(a: string[], b: string[], full = false): string {
     const most = full ? 500 : 12
     const shownLines = b.slice(start, endB + 1).map((t, k) => `${label(start + k + 1, ids[start + k])} ${full ? shown(t) : clip(shown(t), 300)}`)
     out.push(`${added === 1 ? `Paragraph ${start + 1} is` : `Paragraphs ${start + 1}–${endB + 1} are`} now:`, ...shownLines.slice(0, most))
-    if (shownLines.length > most) out.push(`(and ${shownLines.length - most} more${full ? '' : '; full: true gives them all, whole'})`)
+    if (shownLines.length > most) out.push(`(and ${shownLines.length - most} more${full ? '' : '; full: true gives up to 500, whole'})`)
   }
   if (removed > added) out.push(`${plural(removed - added, 'paragraph')} fewer than before.`)
   return out.join('\n')
