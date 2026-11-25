@@ -151,6 +151,7 @@ function bundledFonts() {
     ['Carlito', 'OFL-Carlito.txt', 'https://github.com/googlefonts/carlito'],
     ['Caladea', 'OFL-Caladea.txt', 'https://github.com/huertatipografica/Caladea'],
     ['Liberation Sans, Serif and Mono', 'LICENSE-Liberation.txt', 'https://github.com/liberationfonts/liberation-fonts'],
+    ['Noto Sans, Noto Sans Arabic and Noto Sans Math', 'pdf/OFL-Noto.txt', 'https://github.com/notofonts/notofonts.github.io'],
   ].map(([name, file, homepage]) => ({ group: 'App', name, version: 'bundled', license: 'OFL-1.1', homepage, files: [{ file, text: textId(readFileSync(join(fonts, file), 'utf8').trim()) }] }))
 }
 
