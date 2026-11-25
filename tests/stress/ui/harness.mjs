@@ -11,7 +11,9 @@ export const BASE = process.env.WRITAN_URL ?? 'http://localhost:1420/'
 export const ENGINE = process.env.ENGINE ?? 'chromium'
 
 // `scrollbars` shows classic scrollbars, which take room as on a Mac with a mouse or on Windows.
-export async function launch({ scale = 1, viewport = { width: 1400, height: 900 }, tauri = true, init, scrollbars = false } = {}) {
+// `scale` is 2, as on a Retina Mac, so screenshots are sharp: at 1x a line of the document is 11
+// pixels tall and looks faint and blurred on the screen of whoever reads it. SCALE=1 overrides it.
+export async function launch({ scale = Number(process.env.SCALE) || 2, viewport = { width: 1400, height: 900 }, tauri = true, init, scrollbars = false } = {}) {
   const browser = await (ENGINE === 'webkit' ? webkit : chromium).launch(ENGINE === 'webkit' ? {} : { args: ['--no-sandbox', '--enable-precise-memory-info'], ignoreDefaultArgs: scrollbars ? ['--hide-scrollbars'] : [] })
   mkdirSync('/tmp/writan-stress', { recursive: true })
   const context = await browser.newContext({ viewport, deviceScaleFactor: scale })
@@ -139,6 +141,16 @@ function fakeTauri() {
 
 export async function open(page, paths) {
   await page.evaluate((p) => window.__workspace.useWorkspace.getState().openPaths(p), Array.isArray(paths) ? paths : [paths])
+}
+
+/**
+ * Saves a screenshot of `target` (a selector or a locator) to `path`, or of the whole window
+ * without one. Crop to the part the picture is about: the whole window at 2x is 2800 pixels wide,
+ * and chat apps and models shrink a picture that big, which blurs it again.
+ */
+export async function shot(page, path, target) {
+  const el = typeof target === 'string' ? page.locator(target).first() : target
+  await (el ?? page).screenshot({ path, animations: 'disabled' })
 }
 
 export const tabs = (page) =>
