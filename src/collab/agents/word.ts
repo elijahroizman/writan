@@ -535,21 +535,23 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       if (result !== 'ok') throw new ToolError('That paragraph isn’t there any more. Read the document again.')
       // Someone else's may have gone in at the same place first: say where these are once the
       // relay has ordered them.
-      const placed = () => {
+      const placed = (): number | null => {
         const texts = paragraphsOf(e).map((p) => p.text)
         const fits = (i: number) => lines.every((l, k) => texts[i + k] === l.text)
         // Nobody else added or removed paragraphs meanwhile: where they went.
         if (texts.length === paras.length + count && fits(after)) return after + 1
-        // Someone did: the ones this agent wrote, as far as it can tell, nearest to where they went.
+        // Someone did: the place with that text, if there's only one (that this agent wrote, when
+        // there's more than one); else it can't tell which.
         const starts = texts.flatMap((_, i) => (fits(i) ? [i] : []))
         const mine = starts.filter((i) => authors?.wrote(i + 1))
-        const i = mine.find((i) => i >= after) ?? mine[0] ?? starts.find((i) => i >= after) ?? starts[0]
-        return i === undefined ? after + 1 : i + 1
+        const only = starts.length === 1 ? starts : mine
+        return only.length === 1 ? only[0] + 1 : null
       }
       return {
         text: `Put in ${plural(count, 'paragraph')}.`,
         after: () => {
           const n = placed()
+          if (n === null) return '\nSomeone else changed the document at the same time, and paragraphs with the same text are elsewhere too: read it again to see where these went.'
           return `\n${count > 1 ? `They’re paragraphs ${n}–${n + count - 1}` : `It’s paragraph ${n}`}.${afterParas(e, n, n + count - 1, authors)()}`
         },
       }
