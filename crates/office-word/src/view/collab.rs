@@ -608,7 +608,8 @@ mod tests {
             let mine = [("Ada's".to_string(), None)];
             let theirs = [("Bo's".to_string(), Some("Heading1".to_string())), ("More".to_string(), None)];
             assert_eq!(room.views[0].insert_paragraphs(&[], 2, &[1], &mine), Ok(()));
-            assert_eq!(room.views[1].insert_paragraphs(&[], 2, &[1], &theirs), Ok(()));
+            // Past the end means at the end.
+            assert_eq!(room.views[1].insert_paragraphs(&[], u32::MAX, &[1], &theirs), Ok(()));
             room.send(first);
             room.send(1 - first);
             room.sync();

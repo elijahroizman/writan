@@ -518,8 +518,10 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       // paragraph that isn't in one.
       const atEnd = after === paras.length && after > 0 && (bool(args, 'at_end') === true || str(args, 'after')?.trim().toLowerCase() === 'end')
       const like = atEnd ? ([...paras].reverse().find((p) => p.path.length === 1) ?? para(paras, after)) : para(paras, Math.max(1, after))
+      // The engine takes an index past the body's end as its end (there may be blocks after the
+      // last paragraph that the list of paragraphs doesn't show).
       const where = atEnd
-        ? [Math.max(...paras.map((p) => p.path[0])) + 1]
+        ? [0xffffffff]
         : after === 0
           ? like.path
           : [...like.path.slice(0, -1), like.path[like.path.length - 1] + 1]
@@ -535,7 +537,10 @@ export async function wordTool(e: WordEngine, name: string, args: Args, local: b
       // relay has ordered them.
       const placed = () => {
         const texts = paragraphsOf(e).map((p) => p.text)
-        const starts = texts.flatMap((_, i) => (lines.every((l, k) => texts[i + k] === l.text) ? [i] : []))
+        const fits = (i: number) => lines.every((l, k) => texts[i + k] === l.text)
+        // Where they went, unless someone else's went there first.
+        if (fits(after)) return after + 1
+        const starts = texts.flatMap((_, i) => (fits(i) ? [i] : []))
         // Two with the same text: the one this agent wrote, as far as it can tell.
         const i = starts.find((i) => i >= after && authors?.wrote(i + 1)) ?? starts.find((i) => i >= after) ?? starts[0]
         return i === undefined ? after + 1 : i + 1

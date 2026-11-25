@@ -360,12 +360,17 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
     if (!d) throw new ToolError(`No document “${tab}”. list_documents shows the ones you can work on.`)
     // What this agent changed reaches the tab first: the relay has it, and the tab applied it.
     const c = joined
-    if (c) {
-      const note = await delivered(session, c, await c.engine)
-      if (note) throw new ToolError(`Not saved: your last change hasn’t reached the document yet.${note}`)
-      if (!(await caughtUp(tab, appliedSeq(c.id)))) throw new ToolError('Not saved: the document hasn’t caught up with your last change yet. Try again in a moment.')
+    try {
+      if (c) {
+        const note = await delivered(session, c, await c.engine)
+        if (note) throw new ToolError(`Not saved: your last change hasn’t reached the document yet.${note}`)
+        if (!(await caughtUp(tab, appliedSeq(c.id)))) throw new ToolError('Not saved: the document hasn’t caught up with your last change yet. Try again in a moment.')
+      }
+      return { text: `${await saveDocument(tab, d.role, args, local)}${c ? newMessages(c.id) : ''}` }
+    } catch (err) {
+      if (c && err instanceof ToolError) throw new ToolError(`${err.message}${newMessages(c.id)}`)
+      throw err
     }
-    return { text: `${await saveDocument(tab, d.role, args, local)}${c ? newMessages(c.id) : ''}` }
   }
   const { copy, engine } = await session.copy(tab)
   let text: Answer

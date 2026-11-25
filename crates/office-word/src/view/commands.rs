@@ -388,6 +388,7 @@ impl WordView {
     /// and style id, replacing nothing, so two people adding paragraphs at the same place both
     /// keep theirs. Each has the paragraph properties of the paragraph at `like`, and is in its
     /// list, as Enter after it would make it; one with a style of its own isn't in the list.
+    /// `index` past the list's end puts them at its end.
     pub fn insert_paragraphs(
         &mut self,
         container: &[u32],
@@ -437,9 +438,7 @@ impl WordView {
             })
             .collect();
         let list = pos::blocks_at_mut(self.blocks_mut(StoryId::Body), container).ok_or("missing")?;
-        if index as usize > list.len() {
-            return Err("missing");
-        }
+        let index = index.min(list.len() as u32);
         let n = inserted.len() as u32;
         list.splice(index as usize..index as usize, inserted.iter().cloned());
         let splice = Splice { container: container.to_vec(), index, removed: Vec::new(), inserted };
