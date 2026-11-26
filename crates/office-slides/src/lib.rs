@@ -104,7 +104,7 @@ impl Layer for Decks {
             write_notes(pkg, part, paragraphs)?;
         }
         let main = pkg.main_part()?;
-        if pkg.related(&main, kind::SLIDE_MASTER)?.iter().any(|(_, part)| part.starts_with(DESIGN_DIR)) {
+        if pkg.related(&main, kind::SLIDE_MASTER)?.iter().any(|(_, part)| part.to_ascii_lowercase().starts_with(DESIGN_DIR)) {
             prune_orphaned_design_parts(pkg)?;
         }
         Ok(())
@@ -117,7 +117,7 @@ fn prune_orphaned_design_parts(pkg: &mut Package) -> Result<()> {
     while let Some(part) = remaining.pop() {
         for rel in &pkg.rels(&part)?.0 {
             if let Some(target) = pkg.target(&part, rel).filter(|target| pkg.has(target)) {
-                if seen.insert(target.clone()) {
+                if seen.insert(target.to_ascii_lowercase()) {
                     remaining.push(target);
                 }
             }
@@ -126,7 +126,8 @@ fn prune_orphaned_design_parts(pkg: &mut Package) -> Result<()> {
     let orphaned: Vec<String> = pkg
         .part_names()
         .filter(|part| {
-            !seen.contains(*part) && matches!(pkg.content_type(part), Some(types::PPTX_MASTER | types::PPTX_LAYOUT | types::THEME))
+            !seen.contains(&part.to_ascii_lowercase())
+                && matches!(pkg.content_type(part), Some(types::PPTX_MASTER | types::PPTX_LAYOUT | types::THEME))
         })
         .map(str::to_string)
         .collect();
