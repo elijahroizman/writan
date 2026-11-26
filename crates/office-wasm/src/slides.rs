@@ -698,9 +698,9 @@ mod tests {
     #[test]
     fn legacy_ppt_converts_to_a_readable_pptx() {
         let ppt = minimal_ppt("Legacy slide");
-        let pptx = legacy_ppt_to_pptx(&ppt).unwrap();
+        let pptx = office_ppt_wasm::convert_legacy_ppt(&ppt).unwrap();
         assert!(pptx.starts_with(b"PK"));
-        let mut view = open_view(&ppt).unwrap();
+        let mut view = open_view(&pptx).unwrap();
         assert_eq!(view.slide_infos().len(), 1);
         let saved = view.save().unwrap();
         assert!(saved.starts_with(b"PK"));

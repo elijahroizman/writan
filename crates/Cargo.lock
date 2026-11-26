@@ -588,6 +588,7 @@ version = "0.1.0"
 dependencies = [
  "office-core",
  "office-engine",
+ "office-ppt-wasm",
  "office-sheets",
  "office-slides",
  "office-word",
