@@ -1,6 +1,6 @@
 // Themes from the themes folder (the ones agents publish): the folder button beside the name shows
 // the theme's file in Finder or File Explorer, and Delete removes the file and stops using it.
-import { launch, start, check, done, shot, TMP } from './harness.mjs'
+import { launch, start, check, done } from './harness.mjs'
 
 const DIR = '/home/probe/.config/writan/themes'
 const init = (dir) => {
@@ -34,7 +34,6 @@ try {
   const card = page.locator('.theme-card', { has: page.locator('.theme-name', { hasText: 'Dusk' }) })
   await card.waitFor()
   check('the folder theme is listed and in use', (await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())) === '#ff7744')
-  await shot(page, `${TMP}/themes-folder-card.png`, '.theme-grid')
 
   // The folder button beside the name shows the theme's file.
   const reveal = card.getByRole('button', { name: /From the themes folder/ })

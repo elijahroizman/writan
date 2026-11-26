@@ -202,12 +202,16 @@ pub fn theme_publish<R: Runtime>(
     Ok(path.to_string_lossy().into_owned())
 }
 
-/// Deletes `<id>.json` and its background images.
+/// Deletes `<id>.json` and its background images. The JSON goes last, so if an image can't be
+/// deleted the theme is still listed and can be deleted again.
 pub fn remove(folder: &Path, id: &str) -> Result<(), String> {
     if !valid_id(id) {
         return Err(format!("“{id}” can't name a theme."));
     }
-    for ext in std::iter::once("json").chain(BACKGROUND_EXTENSIONS) {
+    for ext in BACKGROUND_EXTENSIONS
+        .into_iter()
+        .chain(std::iter::once("json"))
+    {
         let path = folder.join(format!("{id}.{ext}"));
         // Only files; a folder or link with the name is left alone.
         if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
