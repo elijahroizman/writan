@@ -69,6 +69,14 @@ const TOOLS: { id: ToolId; label: string; icon: React.ReactNode; hint: string }[
 const SIGNATURE_WIDTH = { signature: 150, initials: 54 }
 const MARK_SIZE = 14
 
+/** A search in progress: what it has found on the pages it has been through. */
+interface FindRun {
+  query: string
+  hits: Map<number, Box[][]>
+  searched: Set<number>
+  done: boolean
+}
+
 interface FindState {
   query: string
   /** Matches per page key; each match is one or more boxes. */
@@ -737,7 +745,25 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
 
   const findJob = useRef<AbortController | null>(null)
   /** The search in progress: its query and the hits it has collected so far. */
-  const findRun = useRef<{ query: string; hits: Map<number, Box[][]>; searched: Set<number> } | null>(null)
+  const findRun = useRef<FindRun | null>(null)
+  /** What's shown: matches in order and the current one (kept up to date below). */
+  const findAt = useRef<{ matchList: [number, number][]; findIndex: number }>({ matchList: [], findIndex: -1 })
+  /**
+   * Show the matches `run` has collected. Matches can arrive for pages before the current one (the
+   * search wraps around; scanned pages are read later), so its position is counted again and it
+   * stays the same match. A page's own matches come first, then any recognized on it.
+   */
+  const showFound = (run: FindRun) => {
+    const s = storeRef.current
+    if (findRun.current !== run || !s) return
+    const { matchList: list, findIndex: at } = findAt.current
+    const current = list[at]
+    setFind({ query: run.query, hits: new Map(run.hits), done: run.done })
+    if (!current) return
+    let n = current[1]
+    for (let i = 0; i < current[0]; i++) n += run.hits.get(s.pages[i]?.key)?.length ?? 0
+    setFindIndex(n)
+  }
   const runFind = useCallback(
     (query: string) => {
       findJob.current?.abort()
@@ -750,8 +776,8 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
       const job = new AbortController()
       findJob.current = job
       const hits = new Map<number, Box[][]>()
-      const searched = new Set<number>()
-      findRun.current = { query, hits, searched }
+      const run: FindRun = { query, hits, searched: new Set(), done: false }
+      findRun.current = run
       setFind({ query, hits, done: false })
       setFindIndex(-1)
       const order = s.pages.map((_, i) => (i + page) % s.pages.length)
@@ -760,21 +786,25 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
         for (const i of order) {
           const p = s.pages[i]
           if (!p) break
+          let own: Box[][] = []
           try {
-            const own = await s.engine.call('search', [p.key, query, false], { priority: Priority.search, signal: job.signal })
-            const recognized = s.ocrText(p)
-            const found = recognized ? [...own, ...searchPageText(recognized, query)] : own
-            if (found.length) hits.set(p.key, found)
-            searched.add(p.key)
-          } catch (err) {
-            if (isCancelled(err) && job.signal.aborted) return
+            own = await s.engine.call('search', [p.key, query, false], { priority: Priority.search, signal: job.signal })
+          } catch {
+            // A page that couldn't be searched still has any text recognized on it.
+            if (job.signal.aborted) return
           }
+          const recognized = s.ocrText(p)
+          const found = recognized ? [...own, ...searchPageText(recognized, query)] : own
+          if (found.length) hits.set(p.key, found)
+          run.searched.add(p.key)
           if (performance.now() - lastFlush > 120) {
             lastFlush = performance.now()
-            setFind({ query, hits: new Map(hits), done: false })
+            showFound(run)
           }
         }
-        if (!job.signal.aborted) setFind({ query, hits: new Map(hits), done: true })
+        if (job.signal.aborted) return
+        run.done = true
+        showFound(run)
       })()
     },
     [page],
@@ -813,27 +843,19 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     revealMatch(n)
   }
 
-  // A scanned page whose text was just recognized adds its matches to the search that's open.
-  const findAt = useRef({ matchList, findIndex })
   findAt.current = { matchList, findIndex }
+
+  // A scanned page whose text was just recognized adds its matches to the search that's open.
   const recognizedPage = useCallback((p: PageInfo) => {
     const run = findRun.current
-    const s = storeRef.current
-    const recognized = s?.ocrText(p)
-    // A page the search hasn't finished takes its recognized text then, after its own matches.
-    if (!run || !s || !recognized || !run.searched.has(p.key)) return
+    const recognized = storeRef.current?.ocrText(p)
+    // A page the search hasn't been through yet takes its recognized text then.
+    if (!run || !recognized || !run.searched.has(p.key)) return
     const extra = searchPageText(recognized, run.query)
     if (!extra.length) return
     run.hits.set(p.key, [...(run.hits.get(p.key) ?? []), ...extra])
-    setFind((have) => (have && have.query === run.query ? { ...have, hits: new Map(run.hits) } : have))
-    // Every match collected so far is now shown, so count those before the current one again:
-    // it stays the same match (a page's added matches come after its own).
-    const { matchList: list, findIndex: at } = findAt.current
-    const current = list[at]
-    if (!current) return
-    let n = current[1]
-    for (let i = 0; i < current[0]; i++) n += run.hits.get(s.pages[i]?.key)?.length ?? 0
-    setFindIndex(n)
+    showFound(run)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // Page edits move or reshape pages, so search again.
