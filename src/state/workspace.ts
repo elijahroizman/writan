@@ -22,8 +22,10 @@ export interface DocTab {
   title: string
   /** Where the file lives on disk; null until an untitled document is saved. */
   path: string | null
-  /** Bytes to load into the editor; null means “start a blank document”. */
+  /** Bytes to load into the editor; null means “start a blank document” unless `deferred` is set. */
   bytes: Uint8Array | null
+  /** A restored file whose bytes have not been read yet; they load the first time the tab is shown. */
+  deferred?: boolean
   /** Bumped to make the editor reload `bytes` (revert, external reload). */
   loadId: number
   dirty: boolean
@@ -32,8 +34,6 @@ export interface DocTab {
    * the editor is back to what it loaded (undo).
    */
   recovered?: boolean
-  /** True for inactive restored session tabs whose bytes wait on disk until the tab is shown. */
-  deferred?: boolean
 }
 
 export interface RecentFile {
@@ -88,30 +88,39 @@ export function wakeTab(tabId: string) {
 
 const pendingDeferredLoads = new Map<string, Promise<void>>()
 
-/** Load a deferred inactive session tab's bytes from disk once, deduplicated per tab id. */
+/**
+ * Reads a restored tab's file the first time anyone shows it. Inactive restored tabs therefore
+ * cost no disk read, memory or digest at launch. Deduplicated per tab. A file that went missing
+ * is dropped when reached, as a missing file is left out while restoring.
+ */
 export function ensureTabLoaded(tabId: string): Promise<void> {
   const inflight = pendingDeferredLoads.get(tabId)
   if (inflight) return inflight
   const initial = useWorkspace.getState().tabs.find((t) => t.id === tabId)
   if (!initial?.deferred || !initial.path || initial.dirty || initial.recovered) return Promise.resolve()
-  const path = initial.path
+  const { path, title } = initial
   const job = (async () => {
     try {
       const bytes = await platform.readFile(path)
+      const now = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+      // Recovery may have supplied newer unsaved bytes while this read was in flight.
+      if (!now?.deferred || now.path !== path || now.dirty || now.recovered) return
       await remember(tabId, bytes, false)
       useWorkspace.setState((state) => ({
-        tabs: state.tabs.map((t) =>
-          t.id === tabId && t.deferred && !t.dirty && !t.recovered
-            ? { ...t, bytes, deferred: false, loadId: t.loadId + 1 }
-            : t,
-        ),
+        tabs: state.tabs.map((t) => (t.id === tabId && t.deferred && !t.dirty && !t.recovered ? { ...t, bytes, deferred: false } : t)),
       }))
     } catch (err) {
-      void platform.showError(String(err))
+      // This read can lose a race with crash recovery, which already replaced the shell with the
+      // newer unsaved document: a stale disk failure must not delete that tab.
+      if (!useWorkspace.getState().tabs.find((t) => t.id === tabId)?.deferred) return
       if (!(await platform.pathExists(path))) useWorkspace.getState().removeRecent(path)
-      useWorkspace.setState((state) => ({
-        tabs: state.tabs.map((t) => (t.id === tabId && t.deferred ? { ...t, deferred: false } : t)),
+      disk.delete(tabId)
+      useWorkspace.setState((s) => ({
+        tabs: s.tabs.filter((t) => t.id !== tabId),
+        activeId: s.activeId === tabId ? HOME_TAB_ID : s.activeId,
+        split: s.split?.includes(tabId) ? null : s.split,
       }))
+      await platform.showError(`“${title}” couldn't be opened.\n\n${String(err)}`)
     }
   })().finally(() => pendingDeferredLoads.delete(tabId))
   pendingDeferredLoads.set(tabId, job)
@@ -866,7 +875,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         // A copy read fresh starts from what's on disk now; one with unsaved edits, from what the original last read.
         if (!fromEditor && bytes) await remember(id, bytes, false)
         else if (disk.has(tab.id)) disk.set(id, disk.get(tab.id)!)
-        addTab({ ...tab, id, title: tab.path ? `${base} (${copies + 1})` : `${base} copy`, bytes, loadId: 0, dirty: tab.dirty })
+        addTab({ ...tab, id, title: tab.path ? `${base} (${copies + 1})` : `${base} copy`, bytes, deferred: false, loadId: 0, dirty: tab.dirty })
       } catch (err) {
         await platform.showError(String(err))
       }

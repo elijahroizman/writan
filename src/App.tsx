@@ -95,16 +95,26 @@ const editorFor = (kind: DocKind): ComponentType<EditorProps> => loadedEditors[k
 const OFFICE_KINDS: ReadonlySet<string> = new Set(['docx', 'pptx', 'xlsx', 'csv'])
 
 /**
- * Loads the office editors and their engine in the background, once the app is idle. Called
- * after the startup opens, so it doesn't compete with them (WebKit has no requestIdleCallback,
- * so there it's a fixed delay).
+ * Warms the office editors and engine the session is likely to need, once the app is idle.
+ * Recent and open office files are the predictor; a Markdown-only session does not compile the
+ * 8 MB engine in the background. Called after the startup opens so it doesn't compete with them.
  */
 function preloadOfficeEditors() {
   const idle = (f: () => void) => (typeof window.requestIdleCallback === 'function' ? window.requestIdleCallback(f, { timeout: 3000 }) : globalThis.setTimeout(f, 1500))
   const yieldStep = () => new Promise<void>((r) => globalThis.setTimeout(r, 0))
   idle(() => {
+    const { tabs, recents } = useWorkspace.getState()
+    const likely = new Set<string>()
+    for (const tab of tabs) if (OFFICE_KINDS.has(tab.kind)) likely.add(tab.kind === 'csv' ? 'xlsx' : tab.kind)
+    // Someone whose session and recent files are all Markdown or plain text should not compile an
+    // 8 MB Office engine or decode its fonts in the background. Recent files are the predictor.
+    for (const recent of recents.slice(0, 12)) {
+      const kind = kindFromPath(recent.path)
+      if (kind && OFFICE_KINDS.has(kind)) likely.add(kind === 'csv' ? 'xlsx' : kind)
+    }
+    if (!likely.size) return
     void (async () => {
-      await Promise.all(['docx', 'pptx', 'xlsx'].map((kind) => loadEditor(kind).catch(() => {})))
+      await Promise.all(['docx', 'pptx', 'xlsx'].filter((kind) => likely.has(kind)).map((kind) => loadEditor(kind).catch(() => {})))
       await yieldStep()
       // An office document on screen has loaded and compiled the engine. Warming it up again would
       // only hold up that document's first edits.

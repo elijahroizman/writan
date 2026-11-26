@@ -50,11 +50,12 @@ import { LinkExcelModal } from '../../links/LinkExcelModal'
 import { LinkedExcelSection } from '../../links/LinkedExcelSection'
 import type { ExcelLink, ExcelLinksController, LinkedDocumentTarget } from '../../links/excelLinks'
 import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
+const LatexMathModal = lazy(() => import('../../math/LatexMathModal').then((m) => ({ default: m.LatexMathModal })))
+
 import { MathInspectorSection } from '../../math/MathInspectorSection'
 import type { LatexMathSpec } from '../../math/latexTag'
 import { encodeLatexTag, normalizeHexColor, parseLatexTag } from '../../math/latexTag'
-
-const LatexMathModal = lazy(() => import('../../math/LatexMathModal').then((m) => ({ default: m.LatexMathModal })))
+import { itemsContainLatex, loadLatexMath } from '../../math/lazyLatex'
 import { itemsHtml } from '../../engine/paint'
 import {
   DocxEditor,
@@ -1171,6 +1172,8 @@ function useLinks(stageRef: React.RefObject<HTMLDivElement | null>) {
 /** Draw every page into the print root at its true size, then open the print panel. */
 async function printPages(editor: WordEngine | null) {
   if (!editor) return
+  // Printing needs every page, even when the document is still completing its progressive open.
+  editor.finishProgressive()
   const root = document.getElementById('print-root')!
   root.innerHTML = ''
   const sizes = editor.sizes
@@ -1180,7 +1183,9 @@ async function printPages(editor: WordEngine | null) {
   style.textContent = `@page { size: ${sizes[0][0]}px ${sizes[0][1]}px; margin: 0; }`
   root.appendChild(style)
   for (let i = 0; i < sizes.length; i++) {
-    const p = editor.paint(i, true)!
+    const p = editor.paintStandalone(i)
+    // Printing cannot redraw after MathJax arrives: wait before the equation's object URL is made.
+    if (itemsContainLatex(p.items)) await loadLatexMath()
     const wrap = document.createElement('div')
     wrap.className = 'print-page docx-print-page'
     const page = document.createElement('div')

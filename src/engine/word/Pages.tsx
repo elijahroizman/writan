@@ -130,15 +130,20 @@ export function Pages({ engine, zoom, scroller }: Props) {
     }
     if (first < 0) return
     const sig = `${engine.revision}:${engine.latexVersion}`
+    let paintedNow = false
     for (let i = first; i <= last; i++) {
       const el = pageContentEls.current.get(i)
       const was = painted.current.get(i)
       if (!el || was === sig) continue
       // A page already on screen is only sent again when its drawing changed.
       const p = engine.paint(i, was === undefined || !el.firstChild || was.split(':')[1] !== String(engine.latexVersion))
-      if (p) el.innerHTML = itemsHtml(p.items, engine.styles, engine.media.url)
+      if (p) {
+        el.innerHTML = itemsHtml(p.items, engine.styles, engine.media.url)
+        paintedNow = true
+      }
       painted.current.set(i, sig)
     }
+    if (paintedNow) engine.progressivePainted()
     for (const [i] of painted.current) {
       if (i < first - KEEP || i > last + KEEP) {
         const el = pageContentEls.current.get(i)
@@ -176,7 +181,8 @@ export function Pages({ engine, zoom, scroller }: Props) {
     // Pages that no longer exist drop out of the bookkeeping.
     for (const [i] of painted.current) if (i >= sizes.length) painted.current.delete(i)
     draw()
-  }, [engine.revision, engine.latexVersion, sizes, tops, zoom])
+    // overlayWin: frames that just came into the window mount empty and are drawn here.
+  }, [engine.revision, engine.latexVersion, sizes, tops, zoom, overlayWin])
 
   useLayoutEffect(() => {
     placeInput()
@@ -565,9 +571,12 @@ export function Pages({ engine, zoom, scroller }: Props) {
   return (
     <div className="docx-content-mount" ref={mountRef} style={{ height, minWidth: width }} onMouseDown={onMouseDown} onMouseOver={onMouseOver} onContextMenu={onContextMenu}>
       <div className="docx-pages">
-        {sizes.map(([w, h], i) => (
-          <PageFrame key={i} index={i} width={w} height={h} top={tops[i]} zoom={zoom} els={pageContentEls.current} />
-        ))}
+        {/* Only the pages near the screen have frames: a 500-page document doesn't keep 500
+            page boxes in the DOM. The window follows scrolling (see draw). */}
+        {sizes.slice(winStart, winEnd + 1).map(([w, h], k) => {
+          const i = winStart + k
+          return <PageFrame key={i} index={i} width={w} height={h} top={tops[i]} zoom={zoom} els={pageContentEls.current} />
+        })}
       </div>
       <div className="docx-overlay">
         {focusDim &&

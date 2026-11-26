@@ -9,10 +9,9 @@ import type { DocTab } from '../state/workspace'
 import { getEditor, useWorkspace } from '../state/workspace'
 import type { ConvertFormat, ConvertTarget } from './convertMeta'
 import { canExportMarkdown, canIncludeInPdfBundle, TARGET_INFO, targetsForKind, usesOcr } from './convertMeta'
+import { convertDocumentOffThread, markdownOffThread } from './convertClient'
 
 export { canExportMarkdown, canIncludeInPdfBundle, targetsForKind, usesOcr, type ConvertFormat, type ConvertTarget }
-
-const loadEngine = () => import('../engine/load').then((m) => m.loadEngine())
 
 export type OcrStatus = (message: string) => void
 
@@ -111,7 +110,6 @@ function fileNameForTab(tab: DocTab): string {
 
 /** Reads the live bytes of an open tab (including unsaved edits if its editor is mounted). */
 export async function readTabBytes(tab: DocTab): Promise<Uint8Array> {
-  if (!tab.dirty && tab.bytes) return tab.bytes
   const editor = getEditor(tab.id)
   if (editor) {
     editor.prepareSave?.()
@@ -126,8 +124,7 @@ export async function readTabBytes(tab: DocTab): Promise<Uint8Array> {
 export async function tabToMarkdown(tab: DocTab): Promise<string> {
   const bytes = await readTabBytes(tab)
   if (tab.kind === 'pdf') return await pdfToMarkdown(bytes, getEditor(tab.id)?.getPassword?.() ?? '')
-  const engine = await loadEngine()
-  return engine.toMarkdown(bytes, fileNameForTab(tab))
+  return markdownOffThread(bytes, fileNameForTab(tab))
 }
 
 /** Converts an open tab to `target` format bytes. */
@@ -173,8 +170,7 @@ export async function convertTab(tab: DocTab, target: ConvertFormat, options: Co
     const text = target === 'md' ? md : md.replace(/^## Page \d+\n\n/gm, '')
     return { bytes: new TextEncoder().encode(text), name }
   }
-  const engine = await loadEngine()
-  const out = engine.convertDocument(srcBytes, fileNameForTab(tab), target)
+  const out = await convertDocumentOffThread(srcBytes, fileNameForTab(tab), target, signal)
   return { bytes: new Uint8Array(out), name }
 }
 
@@ -234,8 +230,7 @@ export async function tabToPdf(tab: DocTab, title?: string): Promise<Uint8Array>
       return await sheetBytesToPdf(bytes, fileNameForTab(tab))
     case 'md':
     case 'txt': {
-      const engine = await loadEngine()
-      const docxBytes = new Uint8Array(engine.convertDocument(bytes, fileNameForTab(tab), 'docx'))
+      const docxBytes = await convertDocumentOffThread(bytes, fileNameForTab(tab), 'docx')
       return await docxBytesToPdf(docxBytes, docTitle)
     }
     case 'image':

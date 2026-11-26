@@ -1,4 +1,5 @@
 import { LATEX_MATH_PREFIX } from '../../math/latexTag'
+import { loadLatexMath } from '../../math/lazyLatex'
 import type { PaintItem, PaintStyle, StyleSheet } from '../../engine/paint'
 import type { ChartView, PictureView } from '../../engine/sheets/engine'
 import { packBlobs } from './blobs'
@@ -445,6 +446,7 @@ async function resolveMediaPack(
 ): Promise<{ pack: Uint8Array; hasSvg: boolean }> {
   const entries: Array<[string, Uint8Array]> = []
   let hasSvg = false
+  const latex = [...keys].some((id) => id.startsWith(LATEX_MATH_PREFIX)) ? await loadLatexMath() : null
   for (const id of keys) {
     const extra = extraEntries.get(id)
     if (extra) {
@@ -452,8 +454,7 @@ async function resolveMediaPack(
       continue
     }
     if (id.startsWith(LATEX_MATH_PREFIX)) {
-      const { renderLatexTagToSvgBytes } = await import('../../math/latexMath')
-      const rendered = renderLatexTagToSvgBytes(id)
+      const rendered = latex?.renderLatexTagToSvgBytes(id)
       if (rendered) {
         hasSvg = true
         entries.push([id, rendered.bytes])
@@ -678,6 +679,8 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
   const { WordEngine } = await import('../../engine/word/engine')
   const engine = await WordEngine.open(bytes.length ? bytes : null)
   try {
+    // Exporting needs every page, not just the prefix a large document opened with.
+    engine.finishProgressive()
     const sizes = engine.sizes
     if (!sizes.length) throw new Error('This document has no pages to export.')
     const ctx: CollectContext = { usedStyleIds: new Set(), texts: [], mediaKeys: new Set(), hasSvg: false }
@@ -686,8 +689,7 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
     const pages: PdfPageInput[] = []
     for (let i = 0; i < sizes.length; i++) {
       signal?.throwIfAborted?.()
-      const p = engine.paint(i, true)
-      if (!p) continue
+      const p = engine.paintStandalone(i)
       walkItems(p.items, ctx)
       const items = await prepareTextOverlays(p.items, engine.styles, ctx, extraMedia, overlayCache)
       pages.push({

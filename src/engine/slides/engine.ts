@@ -8,7 +8,7 @@ import { itemsHtml, MediaCache, StyleSheet } from '../paint'
 import { BASE_FONTS } from '../preload'
 import { preloadFonts } from '../host'
 import { LATEX_MATH_PREFIX } from '../../math/latexTag'
-import { renderLatexTagLazy } from '../../math/lazyLatex'
+import { renderLazyLatexTag } from '../../math/lazyLatex'
 import type { SlidesDoc } from '../wasm/office_wasm'
 
 export interface Transition {
@@ -136,13 +136,17 @@ let sheets = 0
 const themeBytesCache = new Map<string, Uint8Array>()
 const themeLoads = new Map<string, Promise<Uint8Array>>()
 const MAX_DRAWN_SLIDES = 64
+// The built-in themes are files beside the engine, not inside it: the WASM stays 170 KB smaller
+// and a theme downloads only when someone picks it. One copy, in the crate its tests read.
+const THEME_URLS = import.meta.glob<string>('../../../crates/office-slides/assets/themes/*.pptx', { query: '?url', import: 'default', eager: true })
 
 function fetchThemeBytes(name: string): Promise<Uint8Array> {
   const cached = themeBytesCache.get(name)
   if (cached) return Promise.resolve(cached)
   let pending = themeLoads.get(name)
   if (!pending) {
-    pending = fetch(`${import.meta.env.BASE_URL}themes/${encodeURIComponent(name)}.pptx`)
+    const url = THEME_URLS[`../../../crates/office-slides/assets/themes/${name}.pptx`]
+    pending = (url ? fetch(url) : Promise.reject(new Error(`Unknown theme ${name}`)))
       .then((res) => {
         if (!res.ok) throw new Error(`Could not load theme ${name}`)
         return res.arrayBuffer()
@@ -196,7 +200,7 @@ export class SlidesEngine {
     this.styles = new StyleSheet(`p${++sheets}s`)
     this.media = new MediaCache((id) => {
       if (id.startsWith(LATEX_MATH_PREFIX)) {
-        return renderLatexTagLazy(id, () => {
+        return renderLazyLatexTag(id, () => {
           if (this.disposed) return
           this.drawn.clear()
           this.tick++

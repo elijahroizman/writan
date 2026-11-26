@@ -32,7 +32,7 @@ import { launch, start, tabs, check, done } from './harness.mjs'
   })
 
   const readout = page.locator('.view[data-active=true] .canvas-bar span.readout').first()
-  await page.waitForFunction(() => document.querySelectorAll('.docx-viewport .docx-page').length === 11)
+  await page.waitForFunction(() => window.__docxEditor?.state.page.total === 11)
   // Scroll explicitly to top to start on page 1.
   await page.evaluate(() => {
     const vp = document.querySelector('.docx-viewport')
@@ -44,8 +44,7 @@ import { launch, start, tabs, check, done } from './harness.mjs'
   // Scroll to page 6 (index 5) and verify readout updates while caret stays on page 1.
   await page.evaluate(() => {
     const vp = document.querySelector('.docx-viewport')
-    const p6 = document.querySelector('.docx-viewport .docx-page[data-page-index="5"]')
-    vp.scrollTop = p6.offsetTop
+    vp.scrollTop = (vp.scrollHeight * 5.5) / 11
   })
   await page.waitForFunction(() => document.querySelector('.view[data-active=true] .canvas-bar span.readout')?.textContent?.trim() === '6 / 11')
   const caretPageMid = await page.evaluate(() => window.__docxEditor.state.page.current)
@@ -55,8 +54,7 @@ import { launch, start, tabs, check, done } from './harness.mjs'
   // Scroll to page 11 (index 10) and verify readout updates to 11 / 11.
   await page.evaluate(() => {
     const vp = document.querySelector('.docx-viewport')
-    const p11 = document.querySelector('.docx-viewport .docx-page[data-page-index="10"]')
-    vp.scrollTop = p11.offsetTop
+    vp.scrollTop = vp.scrollHeight
   })
   await page.waitForFunction(() => document.querySelector('.view[data-active=true] .canvas-bar span.readout')?.textContent?.trim() === '11 / 11')
   check('scrolling to page 11 updates indicator to 11 / 11', (await readout.textContent())?.trim() === '11 / 11', await readout.textContent())
