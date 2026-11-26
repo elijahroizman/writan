@@ -21,6 +21,8 @@ export interface PdfOcrOptions {
   pageIndices?: number[]
   langs: string[]
   skipPagesWithText?: boolean
+  /** False to only recognize the pages; `searchablePdfBytes` is then the original PDF. */
+  searchable?: boolean
   allowSigned?: boolean
   password?: string
   engine?: PdfEngine
@@ -201,6 +203,7 @@ export async function ocrPdfDocument(opts: PdfOcrOptions): Promise<PdfOcrResult>
       layers.push(pageToOcrLayer(recognized, info.width, info.height))
     }
 
+    if (opts.searchable === false) return { searchablePdfBytes: pdfBytes, pages, skippedPages, recognizedPages: toProcess, inspection }
     onProgress?.({ done: toProcess.length, total: toProcess.length, pageIndex: toProcess[toProcess.length - 1], phase: 'injecting' })
     const fontPack = await loadFontsForOcrLayers(layers)
     const searchablePdfBytes = await pdfEngineClient.injectOcrTextLayer(pdfBytes, JSON.stringify(layers), fontPack, {

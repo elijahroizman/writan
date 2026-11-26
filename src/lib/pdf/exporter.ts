@@ -250,11 +250,21 @@ async function rasterizeSvgToPng(bytes: Uint8Array, scale = 4): Promise<Uint8Arr
   }
 }
 
+/** The elements crates/office-pdf/src/svg_path.rs draws; anything else goes through the browser. */
+const VECTOR_SVG_ELEMENTS = new Set(['svg', 'g', 'symbol', 'a', 'use', 'defs', 'title', 'desc', 'metadata', 'path', 'rect', 'line', 'circle', 'ellipse', 'text'])
+
 function svgNeedsRasterFallback(bytes: Uint8Array): boolean {
   const text = utf8Decoder.decode(bytes)
-  return /url\(\s*['"]?\s*#|<(?:[^:<>\s/]+:)?(?:linearGradient|radialGradient|filter|mask|pattern|image|foreignObject|clipPath)(?=[\s/>])/i.test(
-    text,
-  )
+  if (/<!DOCTYPE|url\(\s*['"]?\s*#|\sclass\s*=/i.test(text) || RASTER_TEXT_RE.test(svgText(text))) return true
+  for (const [, name] of text.matchAll(/<(?:[^:<>\s/!?]+:)?([A-Za-z][\w.-]*)/g)) {
+    if (!VECTOR_SVG_ELEMENTS.has(name)) return true
+  }
+  return false
+}
+
+/** The text an SVG shows, roughly: enough to choose fonts and spot characters they lack. */
+function svgText(svg: string): string {
+  return svg.replace(/<[^>]*>/g, ' ')
 }
 
 function jpegExifOrientation(bytes: Uint8Array): number {
@@ -456,9 +466,15 @@ async function resolveMediaPack(
   return { pack: packBlobs(entries), hasSvg }
 }
 
-const CJK_RE = /[\u3000-\u30FF\u3400-\u4DBF\u4E00-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\u{20000}-\u{323AF}]/u
+/**
+ * Characters outside what the bundled PDF fonts (Liberation, Carlito, Caladea, Noto Sans, Noto Sans
+ * Arabic, Noto Sans Math) cover: CJK, Indic, Thai, emoji and the rest. Text with any of them is drawn
+ * by the browser with the system's fonts, as the canvas export did, over invisible searchable text.
+ */
+const RASTER_TEXT_RE =
+  /[^\u0000-\u052F\u0591-\u06FF\u0750-\u077F\u0870-\u08FF\u1AB0-\u1ACE\u1C80-\u1C88\u1D00-\u23E1\u2460-\u2475\u24EA-\u266F\u2776-\u277F\u27C0-\u27FF\u2900-\u2B4C\u2C60-\u2C7F\u2DE0-\u2E5D\uA640-\uA69F\uA700-\uA7FF\uFB00-\uFE2F\uFE70-\uFEFF\uFFFC\uFFFD\u{1D400}-\u{1D7FF}\u{1EE00}-\u{1EEF1}]/u
 
-async function renderCjkTextToPng(
+async function renderTextToPng(
   text: string,
   font: string,
   color: string,
@@ -498,12 +514,12 @@ async function renderCjkTextToPng(
   ctx.textBaseline = 'alphabetic'
   ctx.fillText(text, 0, 0)
   const blob = await new Promise<Blob>((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode CJK text fallback PNG.'))), 'image/png'),
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode text fallback PNG.'))), 'image/png'),
   )
   return { bytes: new Uint8Array(await blob.arrayBuffer()), boxW, offsetX: -padLeft, offsetY: -topPx, width, height }
 }
 
-async function prepareCjkOverlays(
+async function prepareTextOverlays(
   items: PaintItem[],
   styleSheet: StyleSheet,
   ctx: CollectContext,
@@ -512,10 +528,10 @@ async function prepareCjkOverlays(
   const out: PdfPaintItem[] = []
   for (const item of items) {
     if (item.t === 'group') {
-      out.push({ ...item, items: await prepareCjkOverlays(item.items, styleSheet, ctx, extraMedia) })
+      out.push({ ...item, items: await prepareTextOverlays(item.items, styleSheet, ctx, extraMedia) })
       continue
     }
-    if (item.t !== 'text' || !CJK_RE.test(item.text)) {
+    if (item.t !== 'text' || !RASTER_TEXT_RE.test(item.text)) {
       out.push(item)
       continue
     }
@@ -530,8 +546,8 @@ async function prepareCjkOverlays(
     const ascent = resolved?.ascent ?? fontSize * 0.85
     const descent = resolved?.descent ?? fontSize * 0.25
     const baseline = item.y - (resolved?.style.shift ?? 0)
-    const overlay = await renderCjkTextToPng(item.text, font, color, item.w, ascent, descent, !!item.rtl)
-    const key = `__wpdf_cjk_${extraMedia.size}`
+    const overlay = await renderTextToPng(item.text, font, color, item.w, ascent, descent, !!item.rtl)
+    const key = `__wpdf_text_${extraMedia.size}`
     extraMedia.set(key, overlay.bytes)
     ctx.mediaKeys.add(key)
     const yTop = baseline - ascent
@@ -551,19 +567,13 @@ async function prepareCjkOverlays(
   return out
 }
 
-function itemIntersectsYRange(item: PdfPaintItem, yMin: number, yMax: number): boolean {
+function itemIntersectsYRange(item: Exclude<PdfPaintItem, { t: 'text' | 'group' }>, yMin: number, yMax: number): boolean {
   switch (item.t) {
     case 'rect':
     case 'image':
       return item.y + item.h >= yMin && item.y <= yMax
     case 'line':
       return Math.max(item.y1, item.y2) + item.w >= yMin && Math.min(item.y1, item.y2) - item.w <= yMax
-    case 'text':
-      return item.y + 40 >= yMin && item.y - 80 <= yMax
-    case 'group': {
-      const pad = item.rot ? Math.hypot(item.w, item.h) * 0.5 : 0
-      return item.y + item.h + pad >= yMin && item.y - pad <= yMax
-    }
     case 'path': {
       const nums = item.d.match(/-?\d+(?:\.\d+)?/g)
       if (!nums?.length) return item.y + 64 >= yMin && item.y - 64 <= yMax
@@ -576,8 +586,20 @@ function itemIntersectsYRange(item: PdfPaintItem, yMin: number, yMax: number): b
   }
 }
 
-function filterItemsForYRange(items: readonly PdfPaintItem[], yMin: number, yMax: number): PdfPaintItem[] {
-  return items.filter((item) => itemIntersectsYRange(item, yMin, yMax))
+/**
+ * What one page of a sheet draws. Shapes near the slice are kept and clipped to it. Text outside the
+ * clip is hidden but still found by search and copy, so text goes only on the page that holds its
+ * baseline, and a group (each cell is one) only on the pages it overlaps.
+ */
+function filterItemsForSlice(items: readonly PdfPaintItem[], yStart: number, yEnd: number, first: boolean, last: boolean): PdfPaintItem[] {
+  return items.filter((item) => {
+    if (item.t === 'text') return (first || item.y >= yStart) && (last || item.y < yEnd)
+    if (item.t === 'group') {
+      const pad = item.rot ? Math.hypot(item.w, item.h) * 0.5 : 0
+      return (first || item.y + item.h + pad > yStart) && (last || item.y - pad < yEnd)
+    }
+    return itemIntersectsYRange(item, yStart - 24, yEnd + 24)
+  })
 }
 
 export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?: AbortSignal): Promise<Uint8Array> {
@@ -594,7 +616,7 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
       const p = engine.paint(i, true)
       if (!p) continue
       walkItems(p.items, ctx)
-      const items = await prepareCjkOverlays(p.items, engine.styles, ctx, extraMedia)
+      const items = await prepareTextOverlays(p.items, engine.styles, ctx, extraMedia)
       pages.push({
         widthPt: p.width * PX_TO_PT,
         heightPt: p.height * PX_TO_PT,
@@ -646,7 +668,7 @@ export async function exportSlidesToPdf(bytes: Uint8Array, title?: string, signa
       signal?.throwIfAborted?.()
       const rawItems = engine.paintItems(i)
       walkItems(rawItems, ctx)
-      const items = await prepareCjkOverlays(rawItems, engine.styles, ctx, extraMedia)
+      const items = await prepareTextOverlays(rawItems, engine.styles, ctx, extraMedia)
       pages.push({
         widthPt: wPt,
         heightPt: hPt,
@@ -752,7 +774,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
         ...pictures.map((p): PaintItem => ({ t: 'image', media: p.media, x: p.x, y: p.y, w: p.w, h: p.h, crop: p.crop })),
       ]
       walkItems(rawPaintItems, ctx)
-      const preparedItems = await prepareCjkOverlays(rawPaintItems, engine.styles, ctx, extraMedia)
+      const preparedItems = await prepareTextOverlays(rawPaintItems, engine.styles, ctx, extraMedia)
 
       let usedW = Math.max(1, g.x(cols))
       let usedH = Math.max(1, g.y(rows))
@@ -782,8 +804,21 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
           const end = markup.lastIndexOf('</svg>')
           if (start >= 0 && end > start) {
             const svg = markup.slice(start, end + 6).replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"')
+            const labels = svgText(svg)
+            if (RASTER_TEXT_RE.test(labels)) {
+              // Labels the bundled fonts can't draw: let the browser draw the chart as a picture.
+              try {
+                const key = `__wpdf_chart_${extraMedia.size}`
+                extraMedia.set(key, await rasterizeSvgToPng(utf8Encoder.encode(svg)))
+                ctx.mediaKeys.add(key)
+                preparedItems.push({ t: 'image', media: key, x: c.x, y: c.y, w: c.w, h: c.h })
+                continue
+              } catch {
+                // Draw it as vectors below.
+              }
+            }
             renderedCharts.push({ chart: c, svg })
-            if (c.title) ctx.texts.push(c.title)
+            ctx.texts.push(labels)
           }
         }
       }
@@ -791,7 +826,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
       const scale = Math.min(PX_TO_PT, contentW / usedW)
       const maxSlicePx = Math.max(1, contentH / scale)
       const slices = buildRowSlices((r) => g.y(r), rows, usedH, maxSlicePx)
-      for (const [yStart, yEnd] of slices) {
+      for (const [index, [yStart, yEnd]] of slices.entries()) {
         const sliceH = Math.max(1, yEnd - yStart)
         const svgs: SvgOverlayInput[] = []
         for (const rc of renderedCharts) {
@@ -808,7 +843,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
           offsetXPt: margin,
           offsetYPt: margin - yStart * scale,
           clipRectPx: [0, yStart, usedW, sliceH],
-          items: filterItemsForYRange(preparedItems, yStart - 24, yEnd + 24),
+          items: filterItemsForSlice(preparedItems, yStart, yEnd, index === 0, index === slices.length - 1),
           svgs,
         })
       }

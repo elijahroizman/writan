@@ -221,7 +221,7 @@ export async function convertTab(tab: DocTab, target: ConvertFormat, options: Co
     await prepareOcrPacks(langs, signal, onProgress)
     const { ocrPdfDocument } = await import('./ocr/pdfOcr')
     const result = await ocrPdfDocument({
-      pdfBytes, langs, signal, allowSigned: signed, skipPagesWithText: false,
+      pdfBytes, langs, signal, allowSigned: signed, skipPagesWithText: false, searchable: false,
       onProgress: (progress) => onProgress?.(pdfOcrStatus(progress)),
     })
     signal?.throwIfAborted()

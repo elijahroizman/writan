@@ -178,7 +178,7 @@ function slides() {
   ])
 }
 
-function workbook() {
+function workbook(chartTitle = 'Workbook volume chart') {
   const textCell = (address, text, style = 0) =>
     `<c r="${address}" s="${style}" t="inlineStr"><is><t>${text}</t></is></c>`
   const edges = ['left', 'right', 'top', 'bottom'].map((edge) =>
@@ -207,8 +207,42 @@ function workbook() {
         <xdr:ext cx="4572000" cy="2667000"/>${frame('xdr', 'chart', 0, 0, 0, 0)}<xdr:clientData/>
       </xdr:oneCellAnchor></xdr:wsDr>`, 'drawing'],
     ['xl/drawings/_rels/drawing1.xml.rels', relationships([['chart', 'chart', '../charts/chart1.xml']])],
-    ['xl/charts/chart1.xml', chart('Workbook volume chart'), 'drawingml.chart'],
+    ['xl/charts/chart1.xml', chart(chartTitle), 'drawingml.chart'],
   ])
+}
+
+/** A sheet of 80 short rows, which prints on three landscape pages. */
+function tallWorkbook() {
+  const rows = Array.from({ length: 80 }, (_, i) =>
+    `<row r="${i + 1}"><c r="A${i + 1}" t="inlineStr"><is><t>${tallLabel(i + 1)}</t></is></c></row>`).join('')
+  return packageFile('xl/workbook.xml', [
+    ['xl/workbook.xml', `<workbook xmlns="${sheetNs}" xmlns:r="${relNs}"><sheets>
+      <sheet name="Tall" sheetId="1" r:id="sheet"/></sheets></workbook>`, 'spreadsheetml.sheet.main'],
+    ['xl/_rels/workbook.xml.rels', relationships([['sheet', 'worksheet', 'worksheets/sheet1.xml']])],
+    ['xl/worksheets/sheet1.xml', `<worksheet xmlns="${sheetNs}"><sheetFormatPr defaultRowHeight="15" customHeight="1"/>
+      <sheetData>${rows}</sheetData></worksheet>`, 'spreadsheetml.worksheet'],
+  ])
+}
+const tallLabel = (n) => `Line ${String(n).padStart(3, '0')}`
+
+function wordSvg(svg) {
+  return word(
+    paragraph('Unsupported SVG sentinel') +
+    `<w:p><w:r><w:drawing><wp:inline>
+      <wp:extent cx="914400" cy="685800"/><wp:docPr id="9" name="Svg"/>
+      <a:graphic><a:graphicData uri="${drawingNs}/picture"><pic:pic>
+        <pic:nvPicPr><pic:cNvPr id="9" name="Svg"/><pic:cNvPicPr/></pic:nvPicPr>
+        <pic:blipFill><a:blip r:embed="svg"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>
+        <pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="914400" cy="685800"/></a:xfrm>
+        <a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>
+      </pic:pic></a:graphicData></a:graphic>
+    </wp:inline></w:drawing></w:r></w:p>`,
+    '',
+    [
+      ['word/_rels/document.xml.rels', relationships([['svg', 'image', 'media/picture.svg']])],
+      ['word/media/picture.svg', Buffer.from(svg)],
+    ],
+  )
 }
 
 // These files use ordinary indirect objects and direct stream lengths. Advance by byte
@@ -249,7 +283,7 @@ function streamText(object) {
   return object.stream.toString('latin1')
 }
 
-function inspectBinary(bytes, sizes, imageCount, smaskCount = 0) {
+function inspectBinary(bytes, sizes, imageCount, smaskCount = 0, imageBound = 180) {
   const objects = pdfObjects(bytes)
   const entries = [...objects.values()]
   const pages = entries.filter(({ dict }) => /\/Type\s*\/Page\b/.test(dict))
@@ -280,7 +314,7 @@ function inspectBinary(bytes, sizes, imageCount, smaskCount = 0) {
     const transform = content.slice(Math.max(0, draw.index - 150), draw.index)
       .match(/(-?[\d.]+) 0 0 (-?[\d.]+) -?[\d.]+ -?[\d.]+ cm\s*$/)
     assert.ok(transform, 'Missing image placement transform')
-    assert.ok(Math.abs(Number(transform[1])) <= 180 && Math.abs(Number(transform[2])) <= 180, 'Image exceeds fixture bounds')
+    assert.ok(Math.abs(Number(transform[1])) <= imageBound && Math.abs(Number(transform[2])) <= imageBound, `Image exceeds fixture bounds: ${transform[1]} x ${transform[2]}`)
   }
   return { entries, images, content }
 }
@@ -310,7 +344,7 @@ async function openFixture(page, file, base64) {
   assert.ok(id, `Could not open fixture ${file}`)
 }
 
-async function inspectExport(page, { sizes, expected, contiguous = [], imageCount = 0, smaskCount = 0, absent = [], annotations = false, zoom = false }) {
+async function inspectExport(page, { sizes, expected, contiguous = [], imageCount = 0, smaskCount = 0, imageBound, absent = [], annotations = false, zoom = false }) {
   const view = page.locator('.view[data-active=true] .pdf-pages [data-page-number="1"]')
   await view.waitFor()
   const result = await page.evaluate(async ({ expected, absent, annotations, zoom }) => {
@@ -370,7 +404,7 @@ async function inspectExport(page, { sizes, expected, contiguous = [], imageCoun
     }
   }, { expected, absent, annotations, zoom })
   const bytes = Buffer.from(result.bytes)
-  const binary = inspectBinary(bytes, sizes, imageCount, smaskCount)
+  const binary = inspectBinary(bytes, sizes, imageCount, smaskCount, imageBound)
   assert.deepEqual(result.details.map(({ info }) => [info.width, info.height]), sizes, 'PDFium page dimensions and count')
   for (const [i, { runs, hits }] of result.details.entries()) {
     const missing = {
@@ -546,6 +580,44 @@ try {
         assert.ok(raster, 'Expected <svg-ext:image> to trigger raster PNG fallback instead of being dropped')
         assert.match(raster.dict, /\/Width\s+128\b/)
         assert.match(raster.dict, /\/Height\s+96\b/)
+      },
+    },
+    {
+      name: 'Excel rows split across pages are searchable on one page each', file: 'tall.xlsx', source: tallWorkbook(),
+      sizes: [landscape, landscape, landscape], expected: [[tallLabel(1)], [], [tallLabel(80)]],
+      check({ details }) {
+        const pages = details.map(({ runs }) => runs.map(({ text }) => text).join('\n'))
+        for (let n = 1; n <= 80; n++) {
+          const found = pages.flatMap((text, page) => text.includes(tallLabel(n)) ? [page + 1] : [])
+          assert.equal(found.length, 1, `${tallLabel(n)} is on pages ${JSON.stringify(found)}`)
+        }
+      },
+    },
+    {
+      name: 'Excel chart with CJK labels is drawn by the browser', file: 'cjk-chart.xlsx', source: workbook('売上 chart'),
+      sizes: [landscape], expected: [[sheetLabel]], imageCount: 1, imageBound: 500,
+      check({ content, images }) {
+        assert.ok(images.every(({ dict }) => /\/FlateDecode\b/.test(dict)), 'Expected a lossless PNG chart')
+        assert.doesNotMatch(content, /0 0 0\.8 rg\s+[\s\S]*?\bc\s[\s\S]*?\bf\b/, 'Chart bars should not also be vectors')
+      },
+    },
+    {
+      name: 'Word text the bundled fonts lack is drawn by the browser', file: 'scripts.docx',
+      source: word(paragraph('Thai สวัสดี') + paragraph('Hindi नमस्ते')),
+      sizes: [letter], expected: [['สวัสดี', 'नमस्ते']], imageCount: 2, smaskCount: 2,
+      check({ content, images }) {
+        assert.ok(images.every(({ dict }) => /\/FlateDecode\b/.test(dict)), 'Expected lossless PNG overlays')
+        assert.match(content, /\b3 Tr\b/, 'Expected invisible searchable text under the overlays')
+      },
+    },
+    {
+      name: 'Word SVG with a DOCTYPE and a polygon is rasterized', file: 'svg-doctype.docx',
+      source: wordSvg('<?xml version="1.0"?><!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">' +
+        '<svg xmlns="http://www.w3.org/2000/svg" width="32" height="24"><polygon points="0,0 32,0 16,24" fill="#0000cc"/></svg>'),
+      sizes: [letter], expected: [['Unsupported SVG sentinel']], imageCount: 1, smaskCount: 1,
+      check({ images }) {
+        const raster = images.find(({ dict }) => /\/Width\s+128\b/.test(dict))
+        assert.ok(raster, 'Expected the polygon SVG as a 4x PNG')
       },
     },
     {

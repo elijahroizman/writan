@@ -201,7 +201,11 @@ impl<'a> Engine<'a> {
         if w <= 0. || h <= 0. {
             return Ok(());
         }
-        let elements = svg_path::translate(svg, w, h)?;
+        // Like the canvas export before it, skip a picture or chart this parser can't read
+        // instead of failing the whole document. The exporter rasterizes what it can foresee.
+        let Ok(elements) = svg_path::translate(svg, w, h) else {
+            return Ok(());
+        };
         page.content.save_state();
         clip_rect(&mut page.content, rect);
         for element in elements {

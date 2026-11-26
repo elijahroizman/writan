@@ -106,12 +106,12 @@ fn jpeg_exif_orientation(mut bytes: &[u8]) -> u8 {
                                         break;
                                     };
                                     let (Some(tag), Some(ty), Some(cnt)) =
-                                        (r16(entry), entry.checked_add(2).and_then(&r16), entry.checked_add(4).and_then(&r32))
+                                        (r16(entry), entry.checked_add(2).and_then(r16), entry.checked_add(4).and_then(r32))
                                     else {
                                         break;
                                     };
                                     if tag == 0x0112 && ty == 3 && cnt == 1 {
-                                        if let Some(val) = entry.checked_add(8).and_then(&r16) {
+                                        if let Some(val) = entry.checked_add(8).and_then(r16) {
                                             if (1..=8).contains(&val) {
                                                 return val as u8;
                                             }

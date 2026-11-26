@@ -229,6 +229,8 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
   let work: HTMLCanvasElement | null = null
   const edits: Edit[] = []
   const undone: Edit[] = []
+  /** Counts edits, undos and redos. Most edits draw on the same canvas, so `work` alone can't tell. */
+  let revision = 0
   let tool: Tool = 'pan'
   const colors: Record<Marker, string> = { highlight: COLORS[0].value, pen: COLORS[1].value, line: COLORS[1].value, arrow: COLORS[1].value, box: COLORS[1].value }
   /** Null: fit the window. */
@@ -356,6 +358,12 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
   }
 
   function changed() {
+    revision++
+    if (ocrResult) {
+      ocrResult = undefined
+      refreshOcrActions()
+      showOcrStatus('The picture changed. Recognize the text again.')
+    }
     context.onChange()
     refreshToolbar()
   }
@@ -526,7 +534,6 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
   const ocrActions = el('div', 'img-ocr-actions')
   let ocrJob: AbortController | undefined
   let ocrResult: ImageOcrResult | undefined
-  let ocrWork: HTMLCanvasElement | undefined
   const ocrAction = (label: string, action: () => void) => {
     const btn = el('button', 'btn', label)
     btn.type = 'button'
@@ -574,21 +581,22 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     ocrPanel.hidden = false
     ocrLanguages.textContent = service.selectedLanguages().join(', ')
     showOcrStatus('Preparing picture…')
-    if (!reuse || ocrWork !== work) ocrResult = undefined
+    if (!reuse) ocrResult = undefined
     refreshOcrActions()
     try {
       await ready
       job.signal.throwIfAborted()
       if (!work) throw new Error('Open a picture to recognize text.')
       if (!ocrResult) {
-        const snapshot = work
+        const started = revision
         const useOriginal = format && format !== 'heic' && !edits.length
-        const bytes = useOriginal ? original : await encode(snapshot, 'png')
-        ocrResult = await service.recognize(
+        const bytes = useOriginal ? original : await encode(work, 'png')
+        const result = await service.recognize(
           { bytes, mime: useOriginal ? MIME[format] : MIME.png },
           { signal: job.signal, onProgress: showOcrStatus },
         )
-        ocrWork = snapshot
+        if (revision !== started) throw new Error('The picture changed. Recognize the text again.')
+        ocrResult = result
       }
       ocrText.value = ocrResult.text
       if (searchable) {

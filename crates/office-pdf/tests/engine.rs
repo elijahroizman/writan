@@ -171,9 +171,15 @@ fn table_gradients_and_svg_vectors() {
     assert!(extracted.contains("Revenue & Costs"), "{extracted:?}");
     assert!(extracted.contains("Axis"), "{extracted:?}");
     maybe_save("vectors.pdf", &bytes);
-    let mut malformed = page(json!([]));
-    malformed["svgs"] = json!([{"xPx":0,"yPx":0,"wPx":5,"hPx":5,"svg":"<svg><g></svg>"}]);
-    assert!(render_document_to_pdf(&doc(vec![malformed], json!([])), &HashMap::new(), &fonts()).is_err());
+    // An SVG the parser can't read is left out; the rest of the document still exports.
+    let mut malformed = page(json!([text(10., 20., 0, "Kept")]));
+    malformed["svgs"] = json!([
+        {"xPx":0,"yPx":0,"wPx":5,"hPx":5,"svg":"<svg><g></svg>"},
+        {"xPx":0,"yPx":0,"wPx":5,"hPx":5,"svg":r#"<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd"><svg><path d="M0 0 L5 5"/></svg>"#}
+    ]);
+    let styles = json!([{"font":"16px Arial","color":"#000","smallCaps":false}]);
+    let bytes = render_document_to_pdf(&doc(vec![malformed], styles), &HashMap::new(), &fonts()).unwrap();
+    assert!(loaded(&bytes).extract_text(&[1]).unwrap().contains("Kept"));
 }
 
 fn as_hex(s: &str) -> String {
@@ -366,6 +372,22 @@ fn inspection_detects_forms_outlines_annotations_signatures_and_encryption() {
     encrypted.save_to(&mut bytes).unwrap();
     let err = inspect_pdf(&bytes).unwrap_err();
     assert!(err.contains("Encrypted"), "{err}");
+}
+
+#[test]
+fn blank_signature_field_is_not_a_signature() {
+    let mut pdf = loaded(&original_pdf(false, false));
+    let field = pdf.add_object(dictionary! {"FT" => "Sig", "T" => Object::string_literal("SignHere")});
+    let root = pdf.trailer.get(b"Root").unwrap().as_reference().unwrap();
+    let form = pdf.get_dictionary(root).unwrap().get(b"AcroForm").unwrap().as_reference().unwrap();
+    pdf.get_object_mut(form).unwrap().as_dict_mut().unwrap().set("Fields", vec![Object::Reference(field)]);
+    let mut bytes = Vec::new();
+    pdf.save_to(&mut bytes).unwrap();
+    let inspection = inspect_pdf(&bytes).unwrap();
+    assert!(!inspection.has_digital_signature);
+    assert!(inspection.signature_fields.is_empty());
+    let copy = inject_ocr_text_layer(&bytes, &[], &fonts(), false).unwrap();
+    assert!(loaded(&copy).objects.values().any(|o| o.as_dict().is_ok_and(|d| d.get(b"FT").ok() == Some(&Object::Name(b"Sig".to_vec())))));
 }
 
 #[test]
