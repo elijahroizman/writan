@@ -381,11 +381,15 @@ mod tests {
                 view.add_slide(1, Some(&layout));
                 view.insert_text_box();
                 view.insert_text("Sample");
-                let slide = &view.slides()[view.sel.active];
-                let frame = slide.frames.last().unwrap();
-                let inherited = &crate::resolve(&view.doc, slide, frame).paragraphs[0].1[0].color;
-                let ink = crate::color(&view.doc, slide, inherited.as_ref().unwrap_or(&Color::scheme("tx1"))).rgb;
-                assert_eq!(ink == Rgb(255, 255, 255), light_ink, "{theme}: {layout}");
+                let active = view.sel.active;
+                let reopened = SlidesView::open(&view.save().unwrap()).unwrap();
+                for (state, view) in [("before save", &view), ("after reopen", &reopened)] {
+                    let slide = &view.slides()[active];
+                    let frame = slide.frames.last().unwrap();
+                    let inherited = &crate::resolve(&view.doc, slide, frame).paragraphs[0].1[0].color;
+                    let ink = crate::color(&view.doc, slide, inherited.as_ref().unwrap_or(&Color::scheme("tx1"))).rgb;
+                    assert_eq!(ink == Rgb(255, 255, 255), light_ink, "{theme}: {layout} {state}");
+                }
             }
         }
     }
