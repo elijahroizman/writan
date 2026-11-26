@@ -300,7 +300,11 @@ fn write_document(input: Input, media: &[u8]) -> office_core::Result<Vec<u8>> {
                 if read >= b.w * b.h * if page_sized { 0.02 } else { 0.08 } {
                     continue;
                 }
-                pieces.retain(|p| !(p.ocr && within(p)));
+                // A page-sized picture with a few words on it may still be a sparse scan: its
+                // words stay, as well as the picture.
+                if !page_sized {
+                    pieces.retain(|p| !(p.ocr && within(p)));
+                }
             }
             // A page-sized background behind a page of text.
             let covered: usize = pieces.iter().filter(|p| within(p)).map(Piece::chars).sum();
@@ -314,6 +318,7 @@ fn write_document(input: Input, media: &[u8]) -> office_core::Result<Vec<u8>> {
     }
 
     let body_size = body_size(&pages);
+    let words = vocabulary(&pages);
     let geometry = Geometry::of(&pages, &pictures_in);
     let mut items: Vec<Item> = Vec::new();
     for page in &pages {
@@ -348,7 +353,7 @@ fn write_document(input: Input, media: &[u8]) -> office_core::Result<Vec<u8>> {
     for item in &items {
         match &item.kind {
             ItemKind::Para(lines) => {
-                let (paragraph, marker) = build_paragraph(lines, item, body_size, &headings, &geometry);
+                let (paragraph, marker) = build_paragraph(lines, item, body_size, &headings, &words, &geometry);
                 if let Some(marker) = marker {
                     lists.push((blocks.len(), marker));
                 }
@@ -358,7 +363,7 @@ fn write_document(input: Input, media: &[u8]) -> office_core::Result<Vec<u8>> {
                 if item.page_break {
                     blocks.push(Block::Paragraph(break_paragraph()));
                 }
-                blocks.push(Block::Table(build_table(table, &geometry)));
+                blocks.push(Block::Table(build_table(table, &words, &geometry)));
             }
             ItemKind::Picture(index) => {
                 let picture = &pictures_in[*index];
@@ -1230,7 +1235,14 @@ fn heading_size(lines: &[Piece], body: f64) -> Option<f64> {
 }
 
 /// `headings` are the heading sizes in the document, largest first: the largest is Heading 1.
-fn build_paragraph(lines: &[Piece], item: &Item, body: f64, headings: &[f64], geometry: &Geometry) -> (Paragraph, Option<ListMarker>) {
+fn build_paragraph(
+    lines: &[Piece],
+    item: &Item,
+    body: f64,
+    headings: &[f64],
+    words: &Vocabulary,
+    geometry: &Geometry,
+) -> (Paragraph, Option<ListMarker>) {
     let first = &lines[0];
     let rtl = lines.iter().filter(|l| l.rtl).count() * 2 > lines.len();
     let size = median(lines.iter().map(|l| l.size)).unwrap_or(body);
@@ -1240,7 +1252,7 @@ fn build_paragraph(lines: &[Piece], item: &Item, body: f64, headings: &[f64], ge
     let mut content: Vec<Inline> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
         if i > 0 {
-            join_lines(&mut content, line);
+            join_lines(&mut content, line, words);
         }
         push_spans(&mut content, line, heading);
     }
@@ -1377,7 +1389,27 @@ fn build_paragraph(lines: &[Piece], item: &Item, body: f64, headings: &[f64], ge
 
 /// Joins a paragraph's next line onto what came before: a space, or nothing where a word was
 /// hyphenated across the break or the script doesn't use spaces.
-fn join_lines(content: &mut [Inline], next: &Piece) {
+/// Every word in the document, lowercased: evidence for joining a word hyphenated across lines.
+type Vocabulary = std::collections::HashSet<String>;
+
+fn word_key(word: &str) -> String {
+    word.trim_matches(|c: char| !c.is_alphanumeric()).to_lowercase()
+}
+
+fn vocabulary(pages: &[Page]) -> Vocabulary {
+    pages
+        .iter()
+        .flat_map(|p| &p.pieces)
+        .flat_map(|p| &p.spans)
+        .flat_map(|s| s.text.split_whitespace())
+        .map(word_key)
+        .filter(|w| !w.is_empty())
+        .collect()
+}
+
+/// Joins a paragraph's next line onto what came before: a space, or nothing where a word was
+/// hyphenated across the break or the script doesn't use spaces.
+fn join_lines(content: &mut [Inline], next: &Piece, words: &Vocabulary) {
     let next_text = next.text();
     let next_first = next_text.trim_start().chars().next();
     let Some(Inline::Text(run)) = content.iter_mut().rev().find(|i| matches!(i, Inline::Text(_))) else { return };
@@ -1385,26 +1417,27 @@ fn join_lines(content: &mut [Inline], next: &Piece) {
     run.text.truncate(trimmed);
     let before = run.text.chars().rev().nth(1);
     let last = run.text.chars().next_back();
-    // A word broken at the end of the line goes back together; one that already has a hyphen
-    // (`state-of-the-` `art`) was hyphenated anyway, so it keeps it.
-    let word = run.text.rsplit(char::is_whitespace).next().unwrap_or("");
-    let compound = word.trim_end_matches('-').contains('-');
-    if last == Some('-') && !compound && before.is_some_and(char::is_alphabetic) && next_first.is_some_and(char::is_lowercase) {
-        run.text.pop();
+    if last == Some('-') && before.is_some_and(char::is_alphabetic) && next_first.is_some_and(char::is_lowercase) {
+        // A hyphen at the end of a line either breaks a word (`recon-` `struction`) or belongs to
+        // it (`well-` `known`). It goes only when the document has the word without it.
+        let word = run.text.rsplit(char::is_whitespace).next().unwrap_or("");
+        let joined = word_key(&format!("{}{}", word.trim_end_matches('-'), next_text.split_whitespace().next().unwrap_or("")));
+        if words.contains(&joined) {
+            run.text.pop();
+        }
     } else if last.is_some_and(is_cjk) && next_first.is_some_and(is_cjk) {
     } else if last == Some('\u{AD}') {
         run.text.pop();
-    } else if last == Some('-') && compound {
     } else {
         run.text.push(' ');
     }
 }
 
-fn cell_paragraph(pieces: &[Piece], align: Option<Align>) -> Paragraph {
+fn cell_paragraph(pieces: &[Piece], align: Option<Align>, words: &Vocabulary) -> Paragraph {
     let mut content = Vec::new();
     for (i, piece) in pieces.iter().enumerate() {
         if i > 0 {
-            join_lines(&mut content, piece);
+            join_lines(&mut content, piece, words);
         }
         push_spans(&mut content, piece, false);
     }
@@ -1423,7 +1456,7 @@ fn cell_paragraph(pieces: &[Piece], align: Option<Align>) -> Paragraph {
 /// Word's default cell margin, each side.
 const CELL_MARGIN: f64 = 5.4;
 
-fn build_table(table: &TableBuild, geometry: &Geometry) -> Table {
+fn build_table(table: &TableBuild, words: &Vocabulary, geometry: &Geometry) -> Table {
     let n = table.columns.len();
     let mut edges = vec![table.columns[0].0 - CELL_MARGIN];
     for i in 1..n {
@@ -1460,7 +1493,7 @@ fn build_table(table: &TableBuild, geometry: &Geometry) -> Table {
             cells: row
                 .iter()
                 .enumerate()
-                .map(|(c, pieces)| Cell { blocks: vec![Block::Paragraph(cell_paragraph(pieces, aligns[c]))], ..Default::default() })
+                .map(|(c, pieces)| Cell { blocks: vec![Block::Paragraph(cell_paragraph(pieces, aligns[c], words))], ..Default::default() })
                 .collect(),
             ..Default::default()
         })
@@ -1831,13 +1864,25 @@ mod tests {
     }
 
     #[test]
+    fn a_sparse_full_page_scan_keeps_its_word() {
+        let png = b"\x89PNG\r\n\x1a\nfake";
+        let mut word = text(72.0, 100.0, 60.0, "Approved");
+        word["ocr"] = json!(true);
+        let picture = json!({ "x": 0, "y": 0, "w": 612, "h": 792, "offset": 0, "length": png.len(), "contentType": "image/png" });
+        let doc = convert_with(json!({ "pages": [{ "width": 612, "height": 792, "fragments": [word], "pictures": [picture] }] }), png);
+        assert!(texts(&doc).contains(&"Approved".to_string()));
+    }
+
+    #[test]
     fn keeps_hyphenated_words_and_joins_broken_ones() {
         let doc = convert(vec![page(vec![
-            text(72.0, 100.0, 468.0, "This paragraph about the state-of-the-"),
-            text(72.0, 114.0, 468.0, "art methods and their recon-"),
-            text(72.0, 128.0, 200.0, "struction goes on."),
+            text(72.0, 100.0, 468.0, "This paragraph about the well-"),
+            text(72.0, 114.0, 468.0, "known state-of-the-"),
+            text(72.0, 128.0, 468.0, "art methods and their recon-"),
+            text(72.0, 142.0, 200.0, "struction goes on."),
+            text(72.0, 170.0, 300.0, "A reconstruction is said once more."),
         ])]);
-        assert_eq!(texts(&doc), ["This paragraph about the state-of-the-art methods and their reconstruction goes on."]);
+        assert_eq!(texts(&doc)[0], "This paragraph about the well-known state-of-the-art methods and their reconstruction goes on.");
     }
 
     #[test]

@@ -77,9 +77,8 @@ export async function pdfToDocx(opts: PdfToDocxOptions): Promise<Uint8Array> {
         media.push(encoded.bytes)
         offset += encoded.bytes.length
       }
-      // A scan with a text layer (an OCR'd PDF): its invisible text is the text read off the scan.
-      const textLayer = layout.invisibleChars > 20 && layout.invisibleChars > layout.visibleChars
-      const fragments = textLayer ? layout.fragments.map((f) => ({ ...f, ocr: true })) : layout.fragments
+      // A scan's text layer (an OCR'd PDF) is text read off the scan.
+      const fragments = layout.fragments.map(({ invisible, ...f }) => (invisible ? { ...f, ocr: true } : f))
       out.push({ width: layout.width, height: layout.height, fragments, rules: layout.rules, pictures })
     }
 

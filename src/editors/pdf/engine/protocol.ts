@@ -142,6 +142,8 @@ export interface LayoutFragment {
   size: number
   rtl: boolean
   spans: LayoutSpan[]
+  /** Drawn invisibly, as a scan's text layer is. */
+  invisible?: boolean
 }
 
 /** A picture on the page, drawn on its own, or a drawing (chart, diagram) taken with its labels. */
@@ -161,9 +163,6 @@ export interface PageLayout {
   pictures: LayoutPicture[]
   /** Thin lines: underlines and table borders. */
   rules: Box[]
-  /** Characters that are drawn invisibly, as the text layer on a scan is. */
-  invisibleChars: number
-  visibleChars: number
 }
 
 /** Methods take a page's `key` (see PageInfo), except where they take a position in the document. */

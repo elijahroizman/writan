@@ -659,12 +659,10 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
     const count = mod.FPDFText_CountChars(tp)
     const styles = new Map<number, FontStyle>()
     const fragments: PageLayout['fragments'] = []
-    let invisibleChars = 0
-    let visibleChars = 0
     // Text reads upright on screen when it's turned back against the page's own turn (PDFium
     // measures the character's angle the other way round from the page's /Rotate).
     const upright = (-p.rotation * Math.PI) / 2
-    type Building = { x0: number; y0: number; x1: number; y1: number; baseline: number; size: number; rtl: boolean; spans: LayoutSpan[]; lastLeft: number; lastRight: number; key: string }
+    type Building = { x0: number; y0: number; x1: number; y1: number; baseline: number; size: number; rtl: boolean; spans: LayoutSpan[]; lastLeft: number; lastRight: number; key: string; invisible: boolean }
     let frag: Building | null = null
     let pendingSpace = false
     const flush = () => {
@@ -673,7 +671,7 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
         if (last) last.text = last.text.trimEnd()
         const spans = frag.spans.filter((s) => s.text)
         if (spans.some((s) => s.text.trim())) {
-          fragments.push({ x: frag.x0, y: frag.y0, w: frag.x1 - frag.x0, h: frag.y1 - frag.y0, baseline: frag.baseline, size: frag.size, rtl: frag.rtl, spans })
+          fragments.push({ x: frag.x0, y: frag.y0, w: frag.x1 - frag.x0, h: frag.y1 - frag.y0, baseline: frag.baseline, size: frag.size, rtl: frag.rtl, spans, ...(frag.invisible ? { invisible: true } : {}) })
         }
       }
       frag = null
@@ -715,8 +713,6 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
       const obj = mod.FPDFText_GetTextObject(tp, i)
       let style = styles.get(obj)
       if (!style) styles.set(obj, (style = textStyle(obj)))
-      if (style.invisible) invisibleChars++
-      else visibleChars++
       let color: string | undefined
       if (!style.invisible && mod.FPDFText_GetFillColor(tp, i, rgba, rgba + 4, rgba + 8, rgba + 12)) {
         const [cr, cg, cb] = [0, 4, 8].map((o) => mod.pdfium.getValue(rgba + o, 'i32') & 0xff)
@@ -736,7 +732,8 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
         const forward = box.x >= f.lastRight - 0.5 * s && box.x - f.lastRight < 0.8 * s
         const backward = box.x + box.w <= f.lastLeft + 0.5 * s && f.lastLeft - (box.x + box.w) < 0.8 * s
         const rtlFlow = f.rtl ? backward || (LTR_CHAR.test(ch) && forward) : forward || (isRtl && backward)
-        if (sameLine && (ligature || rtlFlow)) {
+        // Invisible text (a scan's text layer) and visible text never share a fragment.
+        if (sameLine && (ligature || rtlFlow) && f.invisible === style.invisible) {
           joined = true
           const gap = ligature ? 0 : backward && (f.rtl || isRtl) ? f.lastLeft - (box.x + box.w) : box.x - f.lastRight
           let span = f.spans[f.spans.length - 1]
@@ -779,6 +776,7 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
           lastLeft: box.x,
           lastRight: box.x + box.w,
           key: spanKey,
+          invisible: style.invisible,
         }
       }
       pendingSpace = false
@@ -877,13 +875,20 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
     ).filter((f) => {
       const area = f.box.w * f.box.h
       const drawn = f.count >= 3 || (f.count >= 1 && area >= 5000) || f.blocks >= 3
-      return area >= 2500 && area <= pageArea * 0.6 && drawn && textIn(f.box) < area * 0.15
+      // Shaded blocks with words inside them are a table's cells, kept as text, not a chart.
+      const words = fragments.filter((t) => t.x + t.w / 2 >= f.box.x && t.x + t.w / 2 <= f.box.x + f.box.w && t.y + t.h / 2 >= f.box.y && t.y + t.h / 2 <= f.box.y + f.box.h).length
+      const table = f.count === 0 && words >= 4
+      return area >= 2500 && area <= pageArea * 0.6 && drawn && !table && textIn(f.box) < area * 0.15
     })
     // A chart's tick labels and captions sit just outside its lines: short text close by is part of it.
+    // Headings, set larger than the body text, aren't labels.
+    const sizes = fragments.map((t) => t.size).sort((a, b) => a - b)
+    const bodySize = sizes[Math.floor(sizes.length / 2)] ?? 12
     for (const f of figures) {
+      const lines = f.box
       for (const t of fragments) {
         const text = t.spans.reduce((all, sp) => all + sp.text, '').trim()
-        if (text.length <= 24 && overlaps(f.box, t, Math.max(6, t.size * 2))) f.box = unionBox(f.box, t)
+        if (text.length <= 24 && t.size <= bodySize * 1.1 && overlaps(lines, t, Math.max(6, t.size * 2))) f.box = unionBox(f.box, t)
       }
     }
     // Pictures drawn in strips, or overlapping, are one picture; one inside a drawing is part of it.
@@ -923,7 +928,7 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
         }
       }
     }
-    return { width: p.size.width, height: p.size.height, fragments, pictures: out, rules, invisibleChars, visibleChars }
+    return { width: p.size.width, height: p.size.height, fragments, pictures: out, rules }
   } finally {
     free(rect)
     free(point)
