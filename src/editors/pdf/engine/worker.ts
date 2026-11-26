@@ -875,9 +875,13 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
     ).filter((f) => {
       const area = f.box.w * f.box.h
       const drawn = f.count >= 3 || (f.count >= 1 && area >= 5000) || f.blocks >= 3
-      // Shaded blocks with words inside them are a table's cells, kept as text, not a chart.
-      const words = fragments.filter((t) => t.x + t.w / 2 >= f.box.x && t.x + t.w / 2 <= f.box.x + f.box.w && t.y + t.h / 2 >= f.box.y && t.y + t.h / 2 <= f.box.y + f.box.h).length
-      const table = f.count === 0 && words >= 4
+      // A ruled grid with words in its cells is a table, kept as text, not a chart (a bar chart's
+      // value labels sit inside its bars too, but it has no grid).
+      const within = (b: Box) => b.x + b.w / 2 >= f.box.x && b.x + b.w / 2 <= f.box.x + f.box.w && b.y + b.h / 2 >= f.box.y && b.y + b.h / 2 <= f.box.y + f.box.h
+      const words = fragments.filter(within).length
+      const across = rules.filter((r) => within(r) && r.w >= f.box.w * 0.6).length
+      const down = rules.filter((r) => within(r) && r.h >= f.box.h * 0.4).length
+      const table = f.count === 0 && words >= 4 && across >= 3 && down >= 2
       return area >= 2500 && area <= pageArea * 0.6 && drawn && !table && textIn(f.box) < area * 0.15
     })
     // A chart's tick labels and captions sit just outside its lines: short text close by is part of it.

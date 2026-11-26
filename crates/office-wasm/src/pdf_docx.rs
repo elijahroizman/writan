@@ -1397,14 +1397,12 @@ fn word_key(word: &str) -> String {
 }
 
 fn vocabulary(pages: &[Page]) -> Vocabulary {
-    pages
-        .iter()
-        .flat_map(|p| &p.pieces)
-        .flat_map(|p| &p.spans)
-        .flat_map(|s| s.text.split_whitespace())
-        .map(word_key)
-        .filter(|w| !w.is_empty())
-        .collect()
+    // Whole lines, so a word whose ending is in italics is still one word.
+    let mut words = Vocabulary::new();
+    for piece in pages.iter().flat_map(|p| &p.pieces) {
+        words.extend(piece.text().split_whitespace().map(word_key).filter(|w| !w.is_empty()));
+    }
+    words
 }
 
 /// Joins a paragraph's next line onto what came before: a space, or nothing where a word was
@@ -1412,6 +1410,9 @@ fn vocabulary(pages: &[Page]) -> Vocabulary {
 fn join_lines(content: &mut [Inline], next: &Piece, words: &Vocabulary) {
     let next_text = next.text();
     let next_first = next_text.trim_start().chars().next();
+    // The text so far, across its runs, to find the whole word that ends the line.
+    let line_end: String = content.iter().map(|i| if let Inline::Text(r) = i { r.text.as_str() } else { "" }).collect::<String>();
+    let line_end = line_end.trim_end();
     let Some(Inline::Text(run)) = content.iter_mut().rev().find(|i| matches!(i, Inline::Text(_))) else { return };
     let trimmed = run.text.trim_end().len();
     run.text.truncate(trimmed);
@@ -1420,7 +1421,7 @@ fn join_lines(content: &mut [Inline], next: &Piece, words: &Vocabulary) {
     if last == Some('-') && before.is_some_and(char::is_alphabetic) && next_first.is_some_and(char::is_lowercase) {
         // A hyphen at the end of a line either breaks a word (`recon-` `struction`) or belongs to
         // it (`well-` `known`). It goes only when the document has the word without it.
-        let word = run.text.rsplit(char::is_whitespace).next().unwrap_or("");
+        let word = line_end.rsplit(char::is_whitespace).next().unwrap_or("");
         let joined = word_key(&format!("{}{}", word.trim_end_matches('-'), next_text.split_whitespace().next().unwrap_or("")));
         if words.contains(&joined) {
             run.text.pop();
@@ -1882,6 +1883,18 @@ mod tests {
             text(72.0, 142.0, 200.0, "struction goes on."),
             text(72.0, 170.0, 300.0, "A reconstruction is said once more."),
         ])]);
+        let italic = |t: &str| json!({ "text": t, "size": 11, "font": "Arial", "italic": true });
+        let split = convert(vec![page(vec![
+            text(72.0, 100.0, 468.0, "The design was re-"),
+            text(72.0, 114.0, 468.0, "sign of the times, and it is a long line"),
+            frag(72.0, 128.0, 200.0, 11.0, vec![span("She resign", 11.0), italic("ed")]),
+            text(72.0, 156.0, 468.0, "A bold re-"),
+            frag(72.0, 170.0, 300.0, 11.0, vec![span("work", 11.0), italic("ing of it.")]),
+            text(72.0, 198.0, 300.0, "The reworking is done."),
+        ])]);
+        let all = texts(&split);
+        assert!(all[0].starts_with("The design was re-sign of"), "{all:?}");
+        assert!(all.iter().any(|t| t == "A bold reworking of it."), "{all:?}");
         assert_eq!(texts(&doc)[0], "This paragraph about the well-known state-of-the-art methods and their reconstruction goes on.");
     }
 
