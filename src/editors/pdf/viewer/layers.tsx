@@ -173,8 +173,10 @@ function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
   let inside: { span: HTMLElement; area: number } | null = null
   let row: { span: HTMLElement; r: DOMRect; d: number } | null = null
   let near: { span: HTMLElement; r: DOMRect; d: number; over: boolean } | null = null
+  const all: DOMRect[] = []
   for (const span of layer.querySelectorAll<HTMLElement>('span[data-run]')) {
     const r = span.getBoundingClientRect()
+    all.push(r)
     const dx = Math.max(r.left - x, 0, x - r.right)
     const dy = Math.max(r.top - y, 0, y - r.bottom)
     // Overlapping runs (letters drawn twice, a ligature split in two): the smaller one.
@@ -186,10 +188,46 @@ function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
     const d = Math.hypot(dx, dy)
     if (!near || d < near.d) near = { span, r, d, over: !dx }
   }
-  const differentColumn = (a: DOMRect, b: DOMRect) => a.right < b.left || b.right < a.left
+  // The stretch of the line a run is on: runs beside it, closer than the line is tall (the words of
+  // a scanned page's line, not the next column).
+  const line = (r: DOMRect) => {
+    let left = r.left
+    let right = r.right
+    for (let grew = true; grew; ) {
+      grew = false
+      for (const o of all) {
+        const mid = (o.top + o.bottom) / 2
+        if (mid < r.top || mid > r.bottom) continue
+        if (o.left < left && o.right >= left - r.height * 0.75) [left, grew] = [o.left, true]
+        if (o.right > right && o.left <= right + r.height * 0.75) [right, grew] = [o.right, true]
+      }
+    }
+    return { left, right }
+  }
+  const differentColumn = (a: DOMRect, b: DOMRect) => {
+    const [p, q] = [line(a), line(b)]
+    return p.right < q.left || q.right < p.left
+  }
   const span = inside?.span ?? (row && !(near?.over && differentColumn(row.r, near.r)) ? row.span : near?.span)
   const text = span?.firstChild
-  return text ? { node: text, offset: offsetIn(text, x, y) } : null
+  if (!span || !text) return null
+  // The browser's own hit test within the run handles right-to-left and mixed text; it can land in
+  // an overlapping run, so it's only taken when it stays in this one.
+  const r = span.getBoundingClientRect()
+  const px = Math.min(Math.max(x, r.left + 0.5), r.right - 0.5)
+  const py = Math.min(Math.max(y, r.top + 0.5), r.bottom - 0.5)
+  const hit = caretFromPoint(px, py)
+  return { node: text, offset: hit?.node === text ? hit.offset : offsetIn(text, x, y) }
+}
+
+function caretFromPoint(x: number, y: number): Caret | null {
+  const doc = document as Document & { caretPositionFromPoint?(x: number, y: number): { offsetNode: Node; offset: number } | null }
+  if (doc.caretPositionFromPoint) {
+    const p = doc.caretPositionFromPoint(x, y)
+    return p && { node: p.offsetNode, offset: p.offset }
+  }
+  const range = doc.caretRangeFromPoint?.(x, y)
+  return range ? { node: range.startContainer, offset: range.startOffset } : null
 }
 
 /** How many of a run's characters come before a point, along the direction its text runs. */
@@ -342,6 +380,8 @@ export const AnnotationLayer = memo(function AnnotationLayer({
     const onClick = (e: MouseEvent) => {
       if (!down || Math.hypot(e.clientX - down.x, e.clientY - down.y) > 4) return
       if ((e.target as HTMLElement).closest('.annot-hit, .annot-selection, a, input, select, textarea, button')) return
+      // Shift-click extended the text selection.
+      if (e.shiftKey && !window.getSelection()?.isCollapsed) return
       const r = pageEl.getBoundingClientRect()
       const x = (e.clientX - r.left) / unit
       const y = (e.clientY - r.top) / unit
