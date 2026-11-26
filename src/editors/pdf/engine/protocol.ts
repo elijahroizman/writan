@@ -103,7 +103,7 @@ export interface PageTextStats {
   index: number
   charCount: number
   nonWhitespaceCount: number
-  /** Share of the page (0–1) under its largest picture. */
+  /** Share of the page (0–1) under pictures. */
   imageCoverage: number
   /** Share of the page (0–1) covered by its characters; measured only on pages that are mostly a picture. */
   textCoverage: number

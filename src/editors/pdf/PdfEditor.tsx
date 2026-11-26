@@ -737,7 +737,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
 
   const findJob = useRef<AbortController | null>(null)
   /** The search in progress: its query and the hits it has collected so far. */
-  const findRun = useRef<{ query: string; hits: Map<number, Box[][]> } | null>(null)
+  const findRun = useRef<{ query: string; hits: Map<number, Box[][]>; searched: Set<number> } | null>(null)
   const runFind = useCallback(
     (query: string) => {
       findJob.current?.abort()
@@ -750,7 +750,8 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
       const job = new AbortController()
       findJob.current = job
       const hits = new Map<number, Box[][]>()
-      findRun.current = { query, hits }
+      const searched = new Set<number>()
+      findRun.current = { query, hits, searched }
       setFind({ query, hits, done: false })
       setFindIndex(-1)
       const order = s.pages.map((_, i) => (i + page) % s.pages.length)
@@ -764,6 +765,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
             const recognized = s.ocrText(p)
             const found = recognized ? [...own, ...searchPageText(recognized, query)] : own
             if (found.length) hits.set(p.key, found)
+            searched.add(p.key)
           } catch (err) {
             if (isCancelled(err) && job.signal.aborted) return
           }
@@ -818,7 +820,8 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     const run = findRun.current
     const s = storeRef.current
     const recognized = s?.ocrText(p)
-    if (!run || !s || !recognized) return
+    // A page the search hasn't finished takes its recognized text then, after its own matches.
+    if (!run || !s || !recognized || !run.searched.has(p.key)) return
     const extra = searchPageText(recognized, run.query)
     if (!extra.length) return
     run.hits.set(p.key, [...(run.hits.get(p.key) ?? []), ...extra])

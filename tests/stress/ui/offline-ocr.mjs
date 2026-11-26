@@ -256,8 +256,8 @@ export async function makeScans(page, fixtures) {
 // A PDF with real JPEG XObjects and an optional digital first page, blank pages, a line of real
 // text over each scan (as library copies have), scans drawn in a unit-square form XObject on pages
 // whose box starts at 100, 100 (`wrapped`), a small copy beside a page-sized drawing in a form
-// scaled 2× (`art`), or a synthetic signature field.
-export function scanPdf(scans, { digital = '', blank = 0, footer = '', wrapped = false, art = false, signed = false } = {}) {
+// scaled 2× (`art`), drawn in four strips through a form (`strips`), or a synthetic signature field.
+export function scanPdf(scans, { digital = '', blank = 0, footer = '', wrapped = false, art = false, strips = false, signed = false } = {}) {
   const objects = [null, null]
   const add = object => objects.push(object)
   const stream = (dict, content) => {
@@ -277,6 +277,13 @@ export function scanPdf(scans, { digital = '', blank = 0, footer = '', wrapped =
     const h = height * 0.75
     const text = footer ? ` BT /F1 9 Tf 20 12 Td (${footer}) Tj ET` : ''
     const fonts = footer ? ` /Font << /F1 ${font} 0 R >>` : ''
+    if (strips) {
+      const bands = [0, 0.25, 0.5, 0.75].map(y => `q 1 0 0 0.25 0 ${y} cm /Scan Do Q`).join(' ')
+      const form = add(stream(`/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Scan ${image} 0 R >> >>`, bands))
+      const body = add(stream('', `q ${w} 0 0 ${h} 0 0 cm /Fm Do Q`))
+      pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Fm ${form} 0 R >> >> /Contents ${body} 0 R >>`))
+      continue
+    }
     if (art) {
       const form = add(stream(`/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /Scan ${image} 0 R >> >>`, '0 0 300 300 re f q 10 0 0 10 5 5 cm /Scan Do Q'))
       const body = add(stream('', 'q 2 0 0 2 0 0 cm /Fm Do Q'))
@@ -591,8 +598,8 @@ async function verifyAutomaticRecognition(page, scan, real) {
     } finally {
       engine.destroy()
     }
-  }, [scanPdf([scan]), scanPdf([scan], { wrapped: true }), scanPdf([scan], { art: true })].map(base64))
-  assert(coverage[0] >= 0.5 && coverage[1] >= 0.5, 'A scan, also through a scaled form on a moved page box, is mostly picture: ' + coverage)
+  }, [scanPdf([scan]), scanPdf([scan], { wrapped: true }), scanPdf([scan], { art: true }), scanPdf([scan], { strips: true })].map(base64))
+  assert(coverage[0] >= 0.5 && coverage[1] >= 0.5 && coverage[3] >= 0.5, 'A scan, also through a scaled form on a moved page box or in strips, is mostly picture: ' + coverage)
   assert(coverage[2] < 0.01, 'A small picture beside a drawing is not: ' + coverage[2])
   const recognizedLayers = () => page.evaluate(() =>
     [...document.querySelectorAll('.text-layer')].filter(layer => /quick/i.test(layer.textContent ?? '')).length)
