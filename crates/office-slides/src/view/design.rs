@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use office_core::drawing::Theme;
+use office_core::drawing::{Theme, Xfrm};
 use office_core::model::{Body, Frame, FrameContent, Origin, Placeholder, Slide, SlideSize};
 use office_core::opc::{content_types::types, names, rels::kind, Package};
 use office_core::xml::{ns, Element};
@@ -115,6 +115,7 @@ impl SlidesView {
             .clone();
         let donor_layout_count = layouts.len();
         let mut fallbacks = HashMap::new();
+        let plain_heading = default.then(|| templates::plain_content(scale.0, scale.1).remove(0).shape.xfrm).flatten();
         for slide in &before.slides {
             let Some(old) = before.templates.iter().find(|t| Some(t.part.as_str()) == slide.layout.as_deref()) else { continue };
             if old.name.is_empty()
@@ -128,7 +129,8 @@ impl SlidesView {
             let fallback_count = fallbacks.len() + 1;
             let part = format!("{folder}/fallbackLayout{fallback_count}.xml");
             fallbacks.insert(old.part.clone(), layouts.len());
-            layouts.push(add_fallback_layout(package, &master.part, &blank, &part, old, old_master)?);
+            let heading = plain_heading.as_ref().filter(|_| old.name == "Title Only" && old.layout_type.as_deref() == Some("titleOnly"));
+            layouts.push(add_fallback_layout(package, &master.part, &blank, &part, old, old_master, heading)?);
         }
         for (slide, original) in after.slides.iter_mut().zip(&before.slides) {
             let old = before.templates.iter().find(|t| Some(t.part.as_str()) == original.layout.as_deref());
@@ -202,6 +204,7 @@ fn add_fallback_layout(
     part: &str,
     old: &Template,
     old_master: Option<&Template>,
+    heading: Option<&Xfrm>,
 ) -> Result<Template> {
     let mut layout = pkg.xml(blank)?;
     layout.root.set_attr("", "type", old.layout_type.as_deref().unwrap_or("cust"));
@@ -216,7 +219,8 @@ fn add_fallback_layout(
             ph.set_attr("", "idx", index.to_string());
         }
         let mut shape = Element::new(ns::P, "spPr");
-        if let Some(xfrm) = p.xfrm.as_ref().or_else(|| old_master?.matching(&p.kind, None)?.xfrm.as_ref()) {
+        let plain = heading.filter(|_| crate::templates::family(&p.kind) == "title");
+        if let Some(xfrm) = plain.or(p.xfrm.as_ref()).or_else(|| old_master?.matching(&p.kind, None)?.xfrm.as_ref()) {
             shape.push(xfrm.to_xml(ns::A));
         }
         tree.push(
@@ -460,6 +464,27 @@ mod tests {
                 let bounds = panel.shape.xfrm.as_ref().unwrap();
                 assert!(placement.y.0 + placement.height.0 <= bounds.y.0, "title overlaps {}", panel.name);
             }
+        }
+    }
+
+    #[test]
+    fn default_restores_the_plain_heading_on_starter_layouts() {
+        let mut view = SlidesView::blank();
+        for (i, starter) in ["titleOnly", "twoContent", "comparison"].iter().enumerate() {
+            view.add_template(i + 1, starter);
+        }
+        let headings = |view: &SlidesView| {
+            view.slides()[2..].iter().map(|slide| crate::resolve(&view.doc, slide, &slide.frames[0]).xfrm).collect::<Vec<_>>()
+        };
+        let original = headings(&view);
+        view.apply_theme("Graphite").unwrap();
+        assert_ne!(headings(&view)[0], original[0]);
+        let mut view = SlidesView::open(&view.save().unwrap()).unwrap();
+        view.apply_theme("Default").unwrap();
+        let view = SlidesView::open(&view.save().unwrap()).unwrap();
+        assert_eq!(headings(&view), original);
+        for (slide, expected) in view.slides()[2..].iter().zip(["Title Only", "Two Content", "Comparison"]) {
+            assert_eq!(crate::template(&view.doc, slide.layout.as_deref()).unwrap().name, expected);
         }
     }
 
