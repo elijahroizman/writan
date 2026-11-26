@@ -342,6 +342,9 @@ impl WordView {
     pub(crate) fn blocks_mut(&mut self, story: StoryId) -> &mut Vec<Block> {
         self.stale = true;
         self.revision += 1;
+        // Marks address text by byte offset. They are transient overlays whose owners reapply
+        // them after an edit; keeping them meanwhile can point into a different character.
+        self.marks.clear();
         if story == StoryId::Body {
             self.unrecorded = true;
         }
@@ -484,9 +487,16 @@ impl WordView {
     /// Replaces the marks in set `set`.
     pub fn set_marks(&mut self, set: &str, marks: Vec<(String, Pos, Pos)>) {
         let blocks = self.blocks(StoryId::Body);
+        let valid = |p: &Pos| {
+            pos::para(blocks, &p.path).is_some_and(|q| {
+                let flat = text::flat(q);
+                let offset = p.offset as usize;
+                offset <= flat.text.len() && flat.text.is_char_boundary(offset)
+            })
+        };
         let kept: Vec<Mark> = marks
             .into_iter()
-            .filter(|(_, from, to)| pos::para(blocks, &from.path).is_some() && pos::para(blocks, &to.path).is_some())
+            .filter(|(_, from, to)| from <= to && valid(from) && valid(to))
             .map(|(id, from, to)| Mark { set: set.to_string(), id, from, to })
             .collect();
         self.marks.retain(|m| m.set != set);

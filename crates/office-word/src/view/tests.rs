@@ -1488,3 +1488,28 @@ fn double_click_math_image_beside_punctuation_keeps_math_tag() {
     assert_eq!(v.selection().ordered(), (Pos::new(Path::top(0), 1), Pos::new(Path::top(0), 4)));
     assert_eq!(v.state().math_tag.as_deref(), Some(tag.as_str()));
 }
+
+#[test]
+fn editing_clears_marks_before_their_offsets_go_stale() {
+    let mut host = FixedMeasurer::default();
+    let text = "start — zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let start = text.as_bytes().windows(3).position(|w| w == b"zzq").unwrap() as u32;
+    let end = start + "zzqmisspell".len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), start), Pos::new(Path::top(0), end))]);
+    assert!(!v.overlay(&mut host).marks.is_empty());
+
+    v.set_selection(Selection::caret(Pos::start()));
+    v.insert_text("x");
+    assert!(v.overlay(&mut host).marks.is_empty(), "stale byte offsets can land inside a multibyte character");
+}
+
+#[test]
+fn marks_inside_a_character_are_dropped() {
+    let text = "start — zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let inside_dash = text.find('—').unwrap() as u32 + 1;
+    let end = text.len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), inside_dash), Pos::new(Path::top(0), end))]);
+    assert!(v.overlay(&mut FixedMeasurer::default()).marks.is_empty());
+}
