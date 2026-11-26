@@ -1,10 +1,11 @@
 // A small viewer for PNG, JPEG, HEIC and WebP, with a few touch-ups: highlight, draw, lines and arrows,
-// box, crop and rotate, and copy to the clipboard. Edits are a list replayed over the decoded picture, so undo
-// is exact and saving re-encodes once from the original pixels. An unedited file is saved back
+// box, crop and rotate, and copy to the clipboard. ⌘F finds words in the picture: its text is read
+// the first time Find opens, and the matches are drawn over it. Edits are a list replayed over the
+// decoded picture, so undo is exact and saving re-encodes once from the original pixels. An unedited file is saved back
 // byte for byte. HEIC can't be written, so HEIC photos open for viewing, with a button that makes
 // a JPEG copy to mark up.
 
-import type { ImageOcrResult, PluginEditor, PluginEditorContext } from '../../src/plugins/api'
+import type { ImageOcrResult, PluginEditor, PluginEditorContext, SearchResult } from '../../src/plugins/api'
 import type { IconName } from './icons'
 import { icon } from './icons'
 import css from './images.css?inline'
@@ -313,7 +314,7 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
 
   function updateStatus() {
     if (!work) return
-    status.textContent = note?.text ?? `${work.width} × ${work.height}${format ? ` · ${format.toUpperCase()}` : ''} · ${Math.round(scale * 100)}%`
+    status.textContent = note?.text ?? `${work.width} × ${work.height}${format ? ` · ${format.toUpperCase()}` : ''} · ${Math.round(scale * 100)}%${findJob ? ' · Reading the text…' : ''}`
   }
 
   function flash(text: string) {
@@ -364,6 +365,8 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
       refreshOcrActions()
       showOcrStatus('The picture changed. Recognize the text again.')
     }
+    // Marks leave the words where they were; a crop or a turn moves them, so read again.
+    if ((findText && findText.geometry !== geometry()) || (findJob && findJob.geometry !== geometry())) forgetFindText()
     context.onChange()
     refreshToolbar()
   }
@@ -474,6 +477,17 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     if (!work) return
     const k = (window.devicePixelRatio || 1) * scale
     ctx.setTransform(k, 0, 0, k, 0, 0)
+    if (matches.length) {
+      // Like Find in a PDF: every match in yellow, the current one in orange.
+      ctx.save()
+      ctx.globalCompositeOperation = 'multiply'
+      const pad = 1.5 / scale
+      matches.forEach((boxes, i) => {
+        ctx.fillStyle = i === currentMatch ? 'rgba(255, 140, 0, 0.55)' : 'rgba(255, 214, 10, 0.4)'
+        for (const b of boxes) ctx.fillRect(b.x - pad, b.y - pad, b.w + pad * 2, b.h + pad * 2)
+      })
+      ctx.restore()
+    }
     if (drag?.kind === 'stroke') drawEdit(ctx, drag.edit)
     if (drag?.kind === 'rect' && (tool === 'line' || tool === 'arrow')) drawEdit(ctx, lineEdit(tool, drag.from, drag.to))
     if (drag?.kind === 'rect' && tool === 'box') drawEdit(ctx, { type: 'box', color: colors.box, width: WIDTHS.box / scale, rect: normalize(drag.from, drag.to) })
@@ -534,6 +548,8 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
   const ocrActions = el('div', 'img-ocr-actions')
   let ocrJob: AbortController | undefined
   let ocrResult: ImageOcrResult | undefined
+  /** The languages `ocrResult` was read in. */
+  let ocrLangs = ''
   const ocrAction = (label: string, action: () => void) => {
     const btn = el('button', 'btn', label)
     btn.type = 'button'
@@ -548,7 +564,7 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
   const closeOcr = ocrAction('Close', () => {
     ocrJob?.abort()
     ocrPanel.hidden = true
-    recognizeButton?.focus()
+    root.focus({ preventScroll: true })
   })
   ocrActions.append(copyText, copyMarkdown, saveDocx, savePdf, cancelOcr, closeOcr)
   ocrPanel.append(ocrHeading, ocrLanguages, ocrStatus, ocrText, ocrActions)
@@ -581,7 +597,8 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     ocrPanel.hidden = false
     ocrLanguages.textContent = service.selectedLanguages().join(', ')
     showOcrStatus('Preparing picture…')
-    if (!reuse) ocrResult = undefined
+    const langs = service.selectedLanguages().join()
+    if (!reuse && ocrLangs !== langs) ocrResult = undefined
     refreshOcrActions()
     try {
       await ready
@@ -597,6 +614,9 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
         )
         if (revision !== started) throw new Error('The picture changed. Recognize the text again.')
         ocrResult = result
+        ocrLangs = langs
+        // Find can use it too, unless it's already reading.
+        if (!findJob) useFindText({ geometry: geometry(), langs, result })
       }
       ocrText.value = ocrResult.text
       if (searchable) {
@@ -612,6 +632,139 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
       ocrJob = undefined
       refreshOcrActions()
     }
+  }
+
+  // ── Find (⌘F): Writan's find bar asks, the matches are drawn over the picture
+
+  type FindText = { geometry: string; langs: string; result: ImageOcrResult }
+  /** The text found in, read from the picture with its crops and turns but not its marks. */
+  let findText: FindText | undefined
+  let findJob: (AbortController & { geometry: string }) | undefined
+  let findQuery = ''
+  /** For each match, one box per line, in the picture's pixels. */
+  let matches: Rect[][] = []
+  let currentMatch = -1
+  let rereadTimer = 0
+
+  /** The crops and turns made, which move the words. */
+  const geometry = () => edits.filter((e) => e.type === 'crop' || e.type === 'rotate').map((e) => JSON.stringify(e)).join()
+
+  /** The picture with its crops and turns but none of its marks, so a highlighter over a word doesn't hide it. */
+  async function plainPicture(): Promise<{ bytes: Uint8Array; mime: string }> {
+    const moved = edits.filter((e) => e.type === 'crop' || e.type === 'rotate')
+    if (!moved.length && format && format !== 'heic') return { bytes: original, mime: MIME[format] }
+    let c = canvas(source!.width, source!.height)
+    context2d(c).drawImage(source!, 0, 0)
+    for (const edit of moved) c = apply(c, edit)
+    const bytes = await encode(c, 'png')
+    c.width = c.height = 0
+    return { bytes, mime: MIME.png }
+  }
+
+  function findResult(): SearchResult {
+    // Waiting to read again after a turn counts as reading.
+    return { count: matches.length, current: currentMatch, pending: (!!findJob || !!rereadTimer) && !!findQuery.trim() }
+  }
+
+  /** Matches for the query in what's been read; the current one stays where it was if it still exists. */
+  function rematch() {
+    const result = findText?.geometry === geometry() ? findText.result : undefined
+    const hits = result && work && findQuery.trim() ? result.find(findQuery) : []
+    const sx = result && work ? work.width / Math.max(1, result.width) : 1
+    const sy = result && work ? work.height / Math.max(1, result.height) : 1
+    matches = hits.map((boxes) => boxes.map((b) => ({ x: b.x * sx, y: b.y * sy, w: b.w * sx, h: b.h * sy })))
+    currentMatch = matches.length ? Math.min(Math.max(0, currentMatch), matches.length - 1) : -1
+  }
+
+  /** Scrolls the current match into view, if it's out of it. */
+  function revealMatch() {
+    const boxes = matches[currentMatch]
+    if (!boxes) return
+    const x = Math.min(...boxes.map((b) => b.x))
+    const y = Math.min(...boxes.map((b) => b.y))
+    const right = Math.max(...boxes.map((b) => b.x + b.w))
+    const bottom = Math.max(...boxes.map((b) => b.y + b.h))
+    const at = page.getBoundingClientRect()
+    const view = stage.getBoundingClientRect()
+    const style = getComputedStyle(stage)
+    // The toolbar floats over the top of the stage, inside its padding.
+    const top = view.top + parseFloat(style.paddingTop)
+    const left = view.left
+    const box = { left: at.left + x * scale, top: at.top + y * scale, right: at.left + right * scale, bottom: at.top + bottom * scale }
+    if (box.left < left || box.right > view.right) stage.scrollLeft += (box.left + box.right) / 2 - (left + view.right) / 2
+    if (box.top < top || box.bottom > view.bottom) stage.scrollTop += (box.top + box.bottom) / 2 - (top + view.bottom) / 2
+  }
+
+  function useFindText(text: FindText) {
+    findText = text
+    rematch()
+    revealMatch()
+    drawOverlay()
+  }
+
+  /** The text that was read no longer matches the picture: drop it, and read again if Find is in use. */
+  function forgetFindText() {
+    findJob?.abort()
+    findJob = undefined
+    findText = undefined
+    matches = []
+    currentMatch = -1
+    drawOverlay()
+    updateStatus()
+    window.clearTimeout(rereadTimer)
+    rereadTimer = 0
+    if (findQuery.trim()) {
+      // Turning a few times in a row reads once, at the end.
+      rereadTimer = window.setTimeout(readForFind, 600)
+      context.searchChanged?.(findResult())
+    }
+  }
+
+  /** Reads the picture's text for Find, once, in the background. */
+  function readForFind() {
+    window.clearTimeout(rereadTimer)
+    rereadTimer = 0
+    const service = context.imageOcr
+    if (!service || destroyed || findJob) return
+    const langs = service.selectedLanguages().join()
+    if (findText && findText.geometry === geometry() && findText.langs === langs) return
+    const job = Object.assign(new AbortController(), { geometry: geometry() })
+    findJob = job
+    updateStatus()
+    void (async () => {
+      try {
+        await ready
+        job.signal.throwIfAborted()
+        if (!work || !source) throw new Error('Open a picture to find text in it.')
+        const result = await service.recognize(await plainPicture(), { signal: job.signal })
+        if (findJob !== job) return
+        findJob = undefined
+        useFindText({ geometry: job.geometry, langs, result })
+        if (!result.text.trim()) flash('No text was found in this picture.')
+      } catch (err) {
+        if (findJob !== job) return
+        findJob = undefined
+        flash(err instanceof Error ? err.message : String(err))
+      } finally {
+        updateStatus()
+        if (findJob === undefined && !destroyed && findQuery.trim()) context.searchChanged?.(findResult())
+      }
+    })()
+  }
+
+  function search(query: string, step: 1 | -1 | 0): SearchResult {
+    if (step === 0) {
+      findQuery = query
+      currentMatch = 0
+      // Opening Find starts reading, so the words are there by the time they're typed.
+      if (context.imageOcr) readForFind()
+      rematch()
+    } else if (matches.length) {
+      currentMatch = (currentMatch + step + matches.length) % matches.length
+    }
+    revealMatch()
+    drawOverlay()
+    return findResult()
   }
 
   // ── Toolbar
@@ -663,7 +816,10 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     menuItem('Save a copy as PNG…', () => void saveCopy('png'))
     menuItem('Save a copy as JPEG…', () => void saveCopy('jpeg'))
   }
-  if (context.imageOcr) menuItem('Save as Searchable PDF', () => void runOcr(true))
+  if (context.imageOcr) {
+    menuItem('Show Recognized Text', () => void runOcr())
+    menuItem('Save as Searchable PDF', () => void runOcr(true))
+  }
   menuItem('Print…', () => void print())
 
   if (editable) {
@@ -677,13 +833,6 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     editButton.title = 'Open a JPEG copy in a new tab to mark up and save.'
     editButton.addEventListener('click', () => void editCopy())
     toolbar.append(editButton, divider())
-  }
-  const recognizeButton = context.imageOcr ? el('button', 'btn img-text-btn', 'Recognize Text (OCR)') : null
-  if (recognizeButton) {
-    recognizeButton.type = 'button'
-    recognizeButton.dataset.testid = 'image-ocr-button'
-    recognizeButton.addEventListener('click', () => void runOcr())
-    toolbar.append(recognizeButton, divider())
   }
   toolbar.append(button('copy', 'copy', keyLabel('Copy', '\u2318C'), () => void copy()), button('more', 'more', 'More', toggleMenu))
   root.appendChild(menu)
@@ -804,9 +953,12 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     },
     print,
     recognizeText: context.imageOcr ? () => void runOcr() : undefined,
+    search: context.imageOcr ? search : undefined,
     destroy() {
       destroyed = true
       ocrJob?.abort()
+      findJob?.abort()
+      window.clearTimeout(rereadTimer)
       resize.disconnect()
       window.removeEventListener('keydown', onKey)
       document.removeEventListener('pointerdown', closeMenu, true)

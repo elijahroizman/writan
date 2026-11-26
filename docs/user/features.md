@@ -43,7 +43,7 @@ Scanned PDFs work like any other PDF. When a page is a picture of text, Writan r
 
 English is built in. If your scans are in other languages, choose them in **Settings › General › Text in scanned PDFs**. Each one downloads once, from a pinned release checked with SHA-256, the first time you choose it. Your documents are never sent anywhere.
 
-**Convert file…** turns a scanned PDF into a Word document. Pictures (PNG, JPEG, HEIC and WebP) open in the Images viewer, where **File › Recognize Text (OCR)…** (`⌥⌘O` on a Mac, `Ctrl+Alt+O` on Windows and Linux) shows their text to copy, or saves it as Word or a searchable PDF.
+**Convert file…** turns a scanned PDF into a Word document. Pictures (PNG, JPEG, HEIC and WebP) open in the Images viewer, where **Find** (⌘F, or Ctrl+F on Windows and Linux) finds the words in the picture and highlights them. Writan reads its text, on your computer, the first time you search it, and the bottom of the window says "Reading the text…" meanwhile. Drawing on the picture keeps the matches; cropping or turning it reads it again. **Show Recognized Text** in the **⋯** menu, or **File › Recognize Text (OCR)…** (`⌥⌘O` on a Mac, `Ctrl+Alt+O` on Windows and Linux), shows the text to copy, or saves it as Word or a searchable PDF.
 
 ## Tabs
 

@@ -24,12 +24,21 @@ function imageOcrService(title: () => string): ImageOcrService {
     selectedLanguages: () => useOcrPacks.getState().selectedLangs.map((code) => getPackMeta(code)?.name ?? code),
     async recognize({ bytes, mime }, { signal, onProgress }) {
       const result = await recognizeImage(bytes, mime, signal, onProgress)
-      const { ocrResultsToPlainText, ocrResultsToMarkdown, ocrResultsToDocx } = await import('../lib/ocr/toDocx')
+      const [{ ocrResultsToPlainText, ocrResultsToMarkdown, ocrResultsToDocx }, { pageText, searchPageText }] = await Promise.all([
+        import('../lib/ocr/toDocx'),
+        import('../editors/pdf/ocr'),
+      ])
       signal?.throwIfAborted()
       const pages = [result.page]
+      const { widthPx: width, heightPx: height } = result.page
+      // Found the way a scanned PDF page is: the same folding of case, quotes and dashes.
+      const words = pageText(result.page, { width, height })
       return {
         text: ocrResultsToPlainText(pages),
         markdown: ocrResultsToMarkdown(pages),
+        width,
+        height,
+        find: (query) => searchPageText(words, query),
         saveDocx: async () => {
           const name = title()
           return saveOcrCopy(`${name} (OCR).docx`, await ocrResultsToDocx(pages, name))
@@ -197,7 +206,13 @@ export default function PluginEditor({ tab, active }: EditorProps) {
     return registerEditor(tab.id, {
       getBytes: () => it.getBytes(),
       markSaved: it.markSaved && (() => it.markSaved!()),
-      find: it.search ? () => setFindOpen(true) : it.find && (() => it.find!()),
+      find: it.search
+        ? () => {
+            setFindOpen(true)
+            // The bar comes back with its last query: show its matches again (and let a picture start reading).
+            setFound(it.search!(findQuery.current, 0))
+          }
+        : it.find && (() => it.find!()),
       zoom: it.zoom && ((direction) => it.zoom!(direction)),
       print: it.print && (() => it.print!()),
       actions: it.recognizeText ? { 'ocr-document': () => it.recognizeText!() } : undefined,
@@ -248,8 +263,8 @@ export default function PluginEditor({ tab, active }: EditorProps) {
         }}
         onNext={() => search(1)}
         onPrev={() => search(-1)}
-        count={found?.count ?? null}
-        current={found ? Math.max(0, found.current) : null}
+        count={found && !found.pending ? found.count : null}
+        current={found && !found.pending ? Math.max(0, found.current) : null}
       />
       {ready && instance.current?.views && (
         <div className="canvas-bar">

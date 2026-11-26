@@ -32,7 +32,7 @@ export interface PageOcrText {
 }
 
 /** `own` is where the page's own text is: words recognized there are left out, as they're already there. */
-export function pageText(result: OcrPageResult, page: PageInfo, own: Box[] = []): PageOcrText {
+export function pageText(result: OcrPageResult, page: Pick<PageInfo, 'width' | 'height'>, own: Box[] = []): PageOcrText {
   const sx = result.widthPx > 0 ? page.width / result.widthPx : 1
   const sy = result.heightPx > 0 ? page.height / result.heightPx : 1
   const sideways = result.detectedRotation === 90 || result.detectedRotation === 270
