@@ -5,6 +5,7 @@
 import type { PdfEngine } from './client'
 import { isCancelled, Priority } from './client'
 import type { PageOcrText } from '../ocr'
+import { withRecognized } from '../ocr'
 import type { Annot, Bitmap, PageInfo, TextRun } from './protocol'
 
 export const THUMB_WIDTH = 150
@@ -123,6 +124,15 @@ export class DocStore {
     return this.ocr.get(`${page.key}:${page.rotation}`)
   }
 
+  /** Forget recognized text (the languages to read changed). */
+  clearOcr() {
+    if (!this.ocr.size) return
+    for (const id of this.ocr.keys()) this.text.delete(id)
+    this.ocr.clear()
+    this.pages = this.pages.slice()
+    this.emit()
+  }
+
   setOcr(page: PageInfo, text: PageOcrText) {
     const id = `${page.key}:${page.rotation}`
     this.ocr.set(id, text)
@@ -131,14 +141,14 @@ export class DocStore {
     this.emit()
   }
 
-  /** The page's own text, then any recognized on it (scanned pages have little or none of their own). */
+  /** The page's own text, with any recognized on it (scanned pages have little or none of their own). */
   getText(index: number): Promise<TextRun[]> {
     const page = this.pages[index]
     const id = `${page.key}:${page.rotation}`
     let hit = this.text.get(id)
     if (!hit) {
       const ocr = this.ocr.get(id)
-      hit = this.engine.call('text', [page.key], { priority: Priority.text }).then((runs) => (ocr ? [...runs, ...ocr.runs] : runs))
+      hit = this.engine.call('text', [page.key], { priority: Priority.text }).then((runs) => (ocr ? withRecognized(runs, ocr.runs) : runs))
       hit.catch(() => this.text.delete(id))
       this.text.set(id, hit)
     }

@@ -75,6 +75,20 @@ export function pageText(result: OcrPageResult, page: PageInfo, own: Box[] = [])
   return { runs, text, word: Int32Array.from(word), offset: Int32Array.from(offset), line: Int32Array.from(lines) }
 }
 
+/**
+ * The page's own text and its recognized words in one reading order: each run of its own goes
+ * before the first word below it, so a selection dragged into a footer doesn't take the whole page.
+ */
+export function withRecognized(own: TextRun[], words: TextRun[]): TextRun[] {
+  const out = words.slice()
+  for (const run of own) {
+    const middle = run.box.y + run.box.h / 2
+    const at = out.findIndex((w) => w.ocr && w.box.y > middle)
+    out.splice(at === -1 ? out.length : at, 0, run)
+  }
+  return out
+}
+
 /** The part of a recognized word covering its characters [from, to), estimated by even spacing. */
 export function wordPart(run: TextRun, from: number, to: number): Box {
   const n = run.text.length || 1

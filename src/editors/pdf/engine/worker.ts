@@ -329,32 +329,43 @@ function textArea(tp: number, count: number, pagePtr: number): number {
   return Math.min(1, area / (width * height))
 }
 
-/** Share of the page (0–1) under its largest picture, looking inside form XObjects too. */
+/**
+ * Share of the page (0–1) under its largest picture. A picture inside a form XObject is measured
+ * by the form's box on the page, as objects inside a form report bounds in the form's own space.
+ */
 function pictureCoverage(pagePtr: number): number {
-  const width = mod.FPDF_GetPageWidthF(pagePtr)
-  const height = mod.FPDF_GetPageHeightF(pagePtr)
-  if (!(width > 0 && height > 0)) return 0
+  const page = scratch(16)
   const rect = scratch(16)
-  let best = 0
-  const visit = (obj: number, depth: number) => {
-    const type = mod.FPDFPageObj_GetType(obj)
-    if (type === 3 /* FPDF_PAGEOBJ_IMAGE */) {
-      if (!mod.FPDFPageObj_GetBounds(obj, rect, rect + 4, rect + 8, rect + 12)) return
-      const w = Math.min(getF(rect + 8), width) - Math.max(getF(rect), 0)
-      const h = Math.min(getF(rect + 12), height) - Math.max(getF(rect + 4), 0)
-      if (w > 0 && h > 0) best = Math.max(best, (w * h) / (width * height))
-    } else if (type === 5 /* FPDF_PAGEOBJ_FORM */ && depth < 4) {
-      const n = mod.FPDFFormObj_CountObjects(obj)
-      for (let i = 0; i < n && best < 0.5; i++) visit(mod.FPDFFormObj_GetObject(obj, i), depth + 1)
-    }
-  }
   try {
+    // The visible page, in the same space as the page's objects (its origin needn't be 0, 0).
+    if (!mod.FPDF_GetPageBoundingBox(pagePtr, page)) return 0
+    const [a, b, c, d] = [getF(page), getF(page + 4), getF(page + 8), getF(page + 12)]
+    const [x0, x1, y0, y1] = [Math.min(a, c), Math.max(a, c), Math.min(b, d), Math.max(b, d)]
+    const area = (x1 - x0) * (y1 - y0)
+    if (!(area > 0)) return 0
+    const hasPicture = (obj: number, depth: number): boolean => {
+      const type = mod.FPDFPageObj_GetType(obj)
+      if (type === 3 /* FPDF_PAGEOBJ_IMAGE */) return true
+      if (type !== 5 /* FPDF_PAGEOBJ_FORM */ || depth >= 4) return false
+      const n = mod.FPDFFormObj_CountObjects(obj)
+      for (let i = 0; i < n; i++) if (hasPicture(mod.FPDFFormObj_GetObject(obj, i), depth + 1)) return true
+      return false
+    }
+    let best = 0
     const n = mod.FPDFPage_CountObjects(pagePtr)
-    for (let i = 0; i < n && best < 0.5; i++) visit(mod.FPDFPage_GetObject(pagePtr, i), 0)
+    for (let i = 0; i < n && best < 0.5; i++) {
+      const obj = mod.FPDFPage_GetObject(pagePtr, i)
+      // left, bottom, right, top
+      if (!hasPicture(obj, 0) || !mod.FPDFPageObj_GetBounds(obj, rect, rect + 4, rect + 8, rect + 12)) continue
+      const w = Math.min(getF(rect + 8), x1) - Math.max(getF(rect), x0)
+      const h = Math.min(getF(rect + 12), y1) - Math.max(getF(rect + 4), y0)
+      if (w > 0 && h > 0) best = Math.max(best, (w * h) / area)
+    }
+    return Math.min(1, best)
   } finally {
+    free(page)
     free(rect)
   }
-  return Math.min(1, best)
 }
 
 function pageTextStats(key: number): PageTextStats {

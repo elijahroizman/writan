@@ -30,6 +30,7 @@ import type { EditorProps } from '../../App'
 import { FindBar, InspectorHeader, Workbench, formatZoom } from '../../components/Workbench'
 import type { MenuEntry } from '../../components/ui'
 import { Button, CenterState, IconButton, PopoverMenu, Section, Segmented, TextField, ToolButton } from '../../components/ui'
+import { useOcrPacks } from '../../lib/ocr/packs'
 import * as platform from '../../lib/platform'
 import { registerEditor, useWorkspace } from '../../state/workspace'
 import { isCancelled, PdfEngine, Priority } from './engine/client'
@@ -811,14 +812,21 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   }
 
   // A scanned page whose text was just recognized adds its matches to the search that's open.
+  const findAt = useRef({ matchList, findIndex })
+  findAt.current = { matchList, findIndex }
   const recognizedPage = useCallback((p: PageInfo) => {
     const run = findRun.current
-    const recognized = storeRef.current?.ocrText(p)
-    if (!run || !recognized) return
+    const s = storeRef.current
+    const recognized = s?.ocrText(p)
+    if (!run || !s || !recognized) return
     const extra = searchPageText(recognized, run.query)
     if (!extra.length) return
     run.hits.set(p.key, [...(run.hits.get(p.key) ?? []), ...extra])
     setFind((have) => (have && have.query === run.query ? { ...have, hits: new Map(run.hits) } : have))
+    // Matches added on an earlier page move the current one along, so it stays the same match.
+    const { matchList: list, findIndex: at } = findAt.current
+    const current = list[at]
+    if (current && s.pages.findIndex((q) => q.key === p.key) < current[0]) setFindIndex(at + extra.length)
   }, [])
 
   // Page edits move or reshape pages, so search again.
@@ -834,7 +842,12 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   // Recognize the text of scanned pages in the background, nearest the page on screen first.
   const pageRef = useRef(page)
   pageRef.current = page
+  // Choosing other languages reads the scans again.
+  const ocrLangs = useOcrPacks((s) => s.selectedLangs.join('+'))
+  const readWith = useRef(ocrLangs)
   useEffect(() => {
+    if (store && readWith.current !== ocrLangs) store.clearOcr()
+    readWith.current = ocrLangs
     if (!store || !awake || !scannedKeys.length) return
     const scanned = new Set(scannedKeys)
     const todo = store.pages.filter((p) => scanned.has(p.key) && !store.ocrText(p))
@@ -849,7 +862,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
       setOcrProgress(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, awake, scannedKeys, layoutSig])
+  }, [store, awake, scannedKeys, layoutSig, ocrLangs])
 
   // ── Shell integration
   const saveBytes = async () => {

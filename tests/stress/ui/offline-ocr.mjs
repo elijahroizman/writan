@@ -254,8 +254,9 @@ export async function makeScans(page, fixtures) {
 }
 
 // A PDF with real JPEG XObjects and an optional digital first page, blank pages, a line of real
-// text over each scan (as library copies have), or a synthetic signature field.
-export function scanPdf(scans, { digital = '', blank = 0, footer = '', signed = false } = {}) {
+// text over each scan (as library copies have), scans drawn in a unit-square form XObject on pages
+// whose box starts at 100, 100 (`wrapped`), or a synthetic signature field.
+export function scanPdf(scans, { digital = '', blank = 0, footer = '', wrapped = false, signed = false } = {}) {
   const objects = [null, null]
   const add = object => objects.push(object)
   const stream = (dict, content) => {
@@ -274,8 +275,14 @@ export function scanPdf(scans, { digital = '', blank = 0, footer = '', signed = 
     const w = width * 0.75
     const h = height * 0.75
     const text = footer ? ` BT /F1 9 Tf 20 12 Td (${footer}) Tj ET` : ''
-    const body = add(stream('', `q ${w} 0 0 ${h} 0 0 cm /Scan Do Q${text}`))
     const fonts = footer ? ` /Font << /F1 ${font} 0 R >>` : ''
+    if (wrapped) {
+      const form = add(stream(`/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Scan ${image} 0 R >> >>`, '/Scan Do'))
+      const body = add(stream('', `q ${w} 0 0 ${h} 100 100 cm /Fm Do Q`))
+      pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [100 100 ${100 + w} ${100 + h}] /Resources << /XObject << /Fm ${form} 0 R >> >> /Contents ${body} 0 R >>`))
+      continue
+    }
+    const body = add(stream('', `q ${w} 0 0 ${h} 0 0 cm /Scan Do Q${text}`))
     pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Scan ${image} 0 R >>${fonts} >> /Contents ${body} 0 R >>`))
   }
   let form = ''
@@ -566,6 +573,10 @@ async function verifyAutomaticRecognition(page, scan, real) {
   assert.equal(calls, 0)
   const recognizedLayers = () => page.evaluate(() =>
     [...document.querySelectorAll('.text-layer')].filter(layer => /quick/i.test(layer.textContent ?? '')).length)
+  const closeAll = () => page.evaluate(async () => {
+    const { tabs, closeTab } = window.__workspace.useWorkspace.getState()
+    for (const tab of [...tabs].reverse()) await closeTab(tab.id)
+  })
   const open = async (bytes, name) => {
     const tabId = await page.evaluate(({ encoded, name }) =>
       window.__workspace.useWorkspace.getState().openUnsaved(Uint8Array.fromBase64(encoded), name), { encoded: base64(bytes), name })
@@ -583,8 +594,16 @@ async function verifyAutomaticRecognition(page, scan, real) {
     if (!real) assert.equal(await page.evaluate(() => window.ocrCalls), 1, 'The digital and blank pages are not recognized')
     assert.equal(await page.locator('[data-testid="pdf-ocr-banner"], [data-testid="pdf-ocr-panel"]').count(), 0, 'No banner or dialog')
 
+    // A scan drawn through a scaled form XObject, on a page whose box doesn't start at 0, 0.
+    await closeAll()
+    await open(scanPdf([scan], { wrapped: true }), 'wrapped.pdf')
+    await page.waitForFunction(() => [...document.querySelectorAll('.text-layer')].some(layer => /quick/i.test(layer.textContent ?? '')), null, { timeout: 30_000 })
+
     await open(withFooter, 'library-copy.pdf')
-    await page.waitForFunction(() => [...document.querySelectorAll('.text-layer')].filter(layer => /quick/i.test(layer.textContent ?? '')).length === 2, null, { timeout: 60_000 })
+    await page.waitForFunction(() => [...document.querySelectorAll('.text-layer')].filter(layer => /Downloaded from/.test(layer.textContent ?? '') && /quick/i.test(layer.textContent ?? '')).length === 2, null, { timeout: 60_000 })
+    // The footer follows the page's words, so a selection dragged into it takes only what it crosses.
+      const footers = await page.evaluate(() => [...document.querySelectorAll('.text-layer')].map(layer => layer.textContent ?? '').filter(text => /Downloaded from/.test(text)))
+    assert(footers.length >= 2 && footers.every(text => /(?:dog|lunch)\.?\s*Downloaded from/.test(text)), 'Footer text comes after the recognized words: ' + JSON.stringify(footers))
     await page.waitForFunction(() => !/Reading scans/.test(document.body.innerText), null, { timeout: 60_000 })
 
     // ⌘F / Ctrl+F finds the recognized words like any other text.
@@ -611,10 +630,7 @@ async function verifyAutomaticRecognition(page, scan, real) {
     assert.equal(state.bytes, base64(withFooter))
     console.log('PASS  Scanned pages are recognized automatically, found with ⌘F, and the file is left unchanged')
   } finally {
-    await page.evaluate(async () => {
-      const { tabs, closeTab } = window.__workspace.useWorkspace.getState()
-      for (const tab of [...tabs].reverse()) await closeTab(tab.id)
-    })
+    await closeAll()
   }
 }
 

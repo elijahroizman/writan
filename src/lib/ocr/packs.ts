@@ -204,17 +204,16 @@ async function builtInBytes(signal?: AbortSignal): Promise<Uint8Array<ArrayBuffe
  */
 export async function availableLangs(signal?: AbortSignal): Promise<string[]> {
   const { selectedLangs } = useOcrPacks.getState()
-  const installed = new Set((await refreshPacks()).installed.filter((pack) => pack.sha256Verified).map((pack) => pack.code))
-  for (const code of selectedLangs) {
-    if (installed.has(code)) continue
+  const verified = async () => new Set((await refreshPacks()).installed.filter((pack) => pack.sha256Verified).map((pack) => pack.code))
+  let installed = await verified()
+  const missing = selectedLangs.filter((code) => !installed.has(code))
+  for (const code of missing) {
     signal?.throwIfAborted()
-    try {
-      await (downloads.has(code) ? waitForDownload(code) : downloadPack(code))
-      installed.add(code)
-    } catch {
-      // Offline or blocked: recognize with the languages there are.
-    }
+    // Offline or blocked: recognize with the languages there are.
+    await (downloads.has(code) ? waitForDownload(code) : downloadPack(code)).catch(() => {})
   }
+  // A download someone else started may have failed or been cancelled, so look again.
+  if (missing.length) installed = await verified()
   signal?.throwIfAborted()
   const langs = selectedLangs.filter((code) => installed.has(code))
   return langs.length ? langs : [BUILT_IN_PACK]
