@@ -837,6 +837,11 @@ export function ensureTabBytes(tabId: string): Promise<boolean> {
       }
       return true
     } catch (err) {
+      const now = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+      // This read can lose a race with crash recovery: recovery already replaced the shell with
+      // the newer unsaved document, so a stale disk failure must not delete that tab or its copy.
+      if (!now) return false
+      if (!now.deferred) return true
       if (!(await platform.pathExists(path))) useWorkspace.getState().removeRecent(path)
       useWorkspace.setState((s) => ({
         tabs: s.tabs.filter((t) => t.id !== tabId),
