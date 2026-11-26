@@ -8,3 +8,5 @@ plugins/*/dist
 release
 crates/target
 src/engine/wasm
+src/lib/pdf/wasm
+.cache

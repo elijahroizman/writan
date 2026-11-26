@@ -2,6 +2,8 @@ import { ArrowLeft, Copy, Download, FolderOpen, Keyboard, MoreHorizontal, Monito
 import type { ReactNode } from 'react'
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { canSetDefaults, defaultStatus, makeDefault, openDefaultAppsSettings } from '../lib/defaults'
+import { formatBytes as formatOcrBytes, OCR_PACK_CATALOG } from '../lib/ocr/catalog'
+import { useOcrPacks } from '../lib/ocr/packs'
 import type { CliStatus } from '../lib/platform'
 import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isMac, isTauri, isWindows, openExternal, revealInFinder, saveBytesAs, setCliInstalled, shortcut, showError } from '../lib/platform'
 import type { Appearance, ThemeDef } from '../lib/themes'
@@ -126,6 +128,8 @@ function GeneralPage() {
 
       <OptionalPlugins />
 
+      <OfflineOcr />
+
       <RecentFilesRow />
 
       <CommandLineRow />
@@ -141,6 +145,73 @@ function GeneralPage() {
         <Button onClick={() => setPage('licenses')}>View licenses</Button>
       </SettingsRow>
     </>
+  )
+}
+
+function OfflineOcr() {
+  const { selectedLangs, setSelectedLangs, installed, totalBytes, progress, refreshPacks, downloadPack, cancelDownload, removePack } = useOcrPacks()
+  const [errors, setErrors] = useState<Record<string, string>>({})
+  const [removing, setRemoving] = useState<Record<string, boolean>>({})
+  const report = (code: string, error: unknown) => {
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      setErrors((state) => ({ ...state, [code]: error instanceof Error ? error.message : String(error) }))
+    }
+  }
+
+  useEffect(() => {
+    void refreshPacks().catch((err) => report('inventory', err))
+  }, [refreshPacks])
+
+  const updatePack = async (code: string, action: 'download' | 'cancel' | 'remove') => {
+    setErrors((state) => ({ ...state, [code]: '' }))
+    if (action === 'remove') setRemoving((state) => ({ ...state, [code]: true }))
+    try {
+      if (action === 'download') await downloadPack(code)
+      else if (action === 'cancel') await cancelDownload(code)
+      else await removePack(code)
+    } catch (err) {
+      report(code, err)
+    } finally {
+      if (action === 'remove') setRemoving((state) => ({ ...state, [code]: false }))
+    }
+  }
+
+  return (
+    <section data-testid="settings-ocr-packs" aria-label="Offline OCR">
+      <SettingsRow
+        label="Offline OCR"
+        hint="Recognition runs entirely on this device without external network requests. Language packs download on demand from a pinned upstream version and are verified with SHA-256."
+        column
+      >
+        <span className="muted">{formatOcrBytes(totalBytes)} cached. Select the languages Writan should use by default.</span>
+      </SettingsRow>
+      {errors.inventory && <p role="alert">{errors.inventory}</p>}
+      {OCR_PACK_CATALOG.map((pack) => {
+        const selected = selectedLangs.includes(pack.code)
+        const cached = installed.find((entry) => entry.code === pack.code)
+        const download = progress[pack.code]
+        const action = download ? 'cancel' : cached?.sha256Verified ? 'remove' : 'download'
+        return (
+          <SettingsRow
+            key={pack.code}
+            label={<Checkbox checked={selected} disabled={selected && selectedLangs.length === 1} label={pack.name}
+              onChange={(on) => setSelectedLangs(on ? [...selectedLangs, pack.code] : selectedLangs.filter((code) => code !== pack.code))} />}
+            hint={
+              <>
+                <bdi>{pack.nativeName}</bdi> · {pack.code} · {formatOcrBytes(pack.size)}
+                {cached?.sha256Verified && <strong> · Installed</strong>}
+                {download && <><br /><progress aria-label={`Downloading ${pack.name}`} value={download.received} max={download.total} /> {formatOcrBytes(download.received)} downloaded</>}
+                {errors[pack.code] && <><br /><span role="alert">{errors[pack.code]}</span></>}
+              </>
+            }
+          >
+            <Button aria-label={`${action} ${pack.name} pack`} disabled={removing[pack.code]} onClick={() => void updatePack(pack.code, action)}>
+              {action === 'download' ? 'Download' : action === 'cancel' ? 'Cancel' : 'Remove'}
+            </Button>
+          </SettingsRow>
+        )
+      })}
+    </section>
   )
 }
 

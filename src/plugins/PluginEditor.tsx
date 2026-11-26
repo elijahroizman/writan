@@ -4,17 +4,45 @@ import { Button, CenterState } from '../components/ui'
 import type { ViewMode } from '../components/ViewSwitch'
 import { initialView, nextView, ViewSwitch } from '../components/ViewSwitch'
 import { FindBar, Workbench } from '../components/Workbench'
+import { recognizeImage, saveOcrCopy } from '../lib/convert'
 import { KINDS } from '../lib/kinds'
-import { isTauri, openExternal, saveBytesAs, showError } from '../lib/platform'
+import { getPackMeta } from '../lib/ocr/catalog'
+import { useOcrPacks } from '../lib/ocr/packs'
+import { isTauri, openExternal, saveBytesAs, shortcut, showError } from '../lib/platform'
 import { installSettled, pluginBaseUrl } from '../state/plugins'
 import { useSettings } from '../state/settings'
 import { forgetTexBuild, texService, texTestHook } from '../state/tex'
 import { registerEditor, useWorkspace } from '../state/workspace'
-import type { PluginEditor as Instance, PdfView, PluginModule, SearchResult } from './api'
+import type { ImageOcrService, PluginEditor as Instance, PdfView, PluginModule, SearchResult } from './api'
 import { PLUGIN_API_VERSION } from './api'
 import { pluginForKind } from './catalog'
 
 const modules = new Map<string, Promise<PluginModule>>()
+
+function imageOcrService(title: () => string): ImageOcrService {
+  return {
+    selectedLanguages: () => useOcrPacks.getState().selectedLangs.map((code) => getPackMeta(code)?.name ?? code),
+    async recognize({ bytes, mime }, { signal, onProgress }) {
+      const result = await recognizeImage(bytes, mime, signal, onProgress)
+      const { ocrResultsToPlainText, ocrResultsToMarkdown, ocrResultsToDocx } = await import('../lib/ocr/toDocx')
+      signal?.throwIfAborted()
+      const pages = [result.page]
+      return {
+        text: ocrResultsToPlainText(pages),
+        markdown: ocrResultsToMarkdown(pages),
+        saveDocx: async () => {
+          const name = title()
+          return saveOcrCopy(`${name} (OCR).docx`, await ocrResultsToDocx(pages, name))
+        },
+        saveSearchablePdf: async (buildSignal) => {
+          const pdf = await result.buildSearchablePdf(buildSignal)
+          buildSignal?.throwIfAborted()
+          return saveOcrCopy(`${title()} (OCR).pdf`, pdf, buildSignal)
+        },
+      }
+    },
+  }
+}
 
 /** A plugin's module, loaded once per launch. */
 function loadModule(kind: string): Promise<PluginModule> {
@@ -119,6 +147,10 @@ export default function PluginEditor({ tab, active }: EditorProps) {
               return false
             }),
           createPdfView: lazyPdfView,
+          shortcut,
+          imageOcr: plugin.id === 'images'
+            ? imageOcrService(() => useWorkspace.getState().tabs.find((t) => t.id === tab.id)?.title ?? tab.title)
+            : undefined,
           tex,
           print: async (content) => {
             const root = document.getElementById('print-root')!
@@ -168,6 +200,7 @@ export default function PluginEditor({ tab, active }: EditorProps) {
       find: it.search ? () => setFindOpen(true) : it.find && (() => it.find!()),
       zoom: it.zoom && ((direction) => it.zoom!(direction)),
       print: it.print && (() => it.print!()),
+      actions: it.recognizeText ? { 'ocr-document': () => it.recognizeText!() } : undefined,
       viewMode: it.setView && ((command) => setView((v) => nextView(v, command))),
     })
   }, [tab.id, ready])

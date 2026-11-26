@@ -3,7 +3,7 @@
 # See docs/internals/office-compiler.md.
 [workspace]
 resolver = "2"
-members = ["office-core", "office-engine", "office-sheets", "office-slides", "office-wasm", "office-word"]
+members = ["office-core", "office-engine", "office-pdf", "office-pdf-wasm", "office-sheets", "office-slides", "office-wasm", "office-word"]
 
 [workspace.package]
 edition = "2021"
@@ -24,6 +24,19 @@ office-word = { path = "office-word" }
 office-slides = { path = "office-slides" }
 office-sheets = { path = "office-sheets" }
 office_oxide = "0.1.16"
+office-pdf = { path = "office-pdf" }
+pdf-writer = "0.15"
+subsetter = { version = "0.2", default-features = false }
+rustybuzz = "0.20"
+ttf-parser = "0.25"
+lopdf = { version = "0.43", default-features = false }
+flate2 = "1"
+png = "0.18"
+svgtypes = "0.16"
+unicode-segmentation = "1"
+unicode-script = "0.5"
+jpeg-decoder = { version = "0.3", default-features = false }
+csscolorparser = { version = "0.8", default-features = false, features = ["named-colors"] }
 
 # The app's engine is built from here for WebAssembly (office-wasm): fast code matters more
 # than a few hundred kilobytes.

@@ -4,6 +4,105 @@
   min-height: 0;
 }
 
+.pdf-ocr-banner,
+.pdf-ocr-panel {
+  position: absolute;
+  z-index: 2;
+  color: var(--fg);
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+
+.pdf-ocr-banner {
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100% - 24px);
+  padding: 5px 6px 5px 10px;
+}
+
+.pdf-ocr-banner > svg {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.pdf-ocr-panel {
+  top: 12px;
+  right: 12px;
+  display: grid;
+  gap: 12px;
+  width: min(400px, calc(100% - 24px));
+  max-height: calc(100% - 60px);
+  overflow: auto;
+  padding: 16px;
+}
+
+.pdf-ocr-panel header,
+.pdf-ocr-option,
+.pdf-ocr-actions,
+.pdf-ocr-languages label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.pdf-ocr-panel header, .pdf-ocr-option:first-of-type {
+  justify-content: space-between;
+}
+
+.pdf-ocr-panel :is(h3, p, input) {
+  margin: 0;
+}
+
+.pdf-ocr-panel fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.pdf-ocr-panel select,
+.pdf-ocr-panel input[type='text'] {
+  color: inherit;
+  background: var(--canvas);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font: inherit;
+}
+
+.pdf-ocr-panel input[type='text'] {
+  min-width: 0;
+  flex: 1;
+}
+
+.pdf-ocr-range {
+  display: grid;
+  gap: 4px;
+}
+
+.pdf-ocr-range-error {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.pdf-ocr-languages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 6px 10px;
+}
+
+.pdf-ocr-actions {
+  flex-wrap: wrap;
+}
+
 .pdf-container {
   position: absolute;
   inset: 0;

@@ -8,6 +8,49 @@
   background: var(--canvas);
 }
 
+.img-ocr-panel {
+  position: absolute;
+  z-index: 2;
+  top: 62px;
+  right: 14px;
+  display: grid;
+  gap: 10px;
+  width: min(370px, calc(100% - 28px));
+  max-height: calc(100% - 82px);
+  overflow: auto;
+  padding: 16px;
+  background: var(--raised);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  box-shadow: var(--shadow-pop);
+}
+
+.img-ocr-panel [hidden],
+.img-ocr-panel[hidden] {
+  display: none;
+}
+
+.img-ocr-panel :is(h3, p) {
+  margin: 0;
+}
+
+.img-ocr-panel textarea {
+  min-height: 135px;
+  padding: 8px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--canvas);
+  color: var(--fg);
+  font: inherit;
+}
+
+.img-ocr-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
 .img-stage {
   position: absolute;
   inset: 0;

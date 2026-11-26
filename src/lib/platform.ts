@@ -98,7 +98,7 @@ export async function readFile(path: string): Promise<Uint8Array> {
  * Save bytes to a file. `history` also keeps this version in the file's version history, named
  * `label` if given (see src-tauri/src/history.rs).
  */
-export async function writeFile(path: string, bytes: Uint8Array, opts: { history?: boolean; label?: string } = {}): Promise<void> {
+export async function writeFile(path: string, bytes: Uint8Array, opts: { history?: boolean; label?: string; noClobber?: boolean } = {}): Promise<void> {
   if (!isTauri) {
     if (opts.history) browserHistory(path, bytes, opts.label)
     browserFiles.set(path, bytes)
@@ -107,6 +107,7 @@ export async function writeFile(path: string, bytes: Uint8Array, opts: { history
   }
   const { invoke } = await core()
   const headers: Record<string, string> = { 'x-path': encodeURIComponent(path) }
+  if (opts.noClobber) headers['x-no-clobber'] = '1'
   if (opts.history) headers['x-history'] = '1'
   if (opts.history && opts.label?.trim()) headers['x-history-label'] = encodeURIComponent(opts.label.trim())
   await invoke('write_file', bytes, { headers })

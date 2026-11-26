@@ -133,6 +133,13 @@ fn build_with<R: Runtime>(app: &AppHandle<R>, keys: &Shortcuts) -> tauri::Result
         .item(&item(
             app,
             keys,
+            "ocr-document",
+            "Recognize Text (OCR)…",
+            Some("CmdOrCtrl+Alt+O"),
+        )?)
+        .item(&item(
+            app,
+            keys,
             "copy-markdown",
             "Copy as Markdown (for LLMs)",
             None,

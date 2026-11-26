@@ -44,6 +44,7 @@ const WINDOWS_FILE_ASSOCIATIONS: &[(&str, &str)] = &[
     ("jpeg", "JPEG Image"),
     ("heic", "HEIC Image"),
     ("heif", "HEIC Image"),
+    ("webp", "WebP Image"),
 ];
 
 /// The installer's Windows file class (ProgID) for `ext`.

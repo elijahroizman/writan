@@ -10,6 +10,7 @@
 import type { ComponentType } from 'react'
 import { FileCode2, FileSpreadsheet, FileText, FileType2, Image as ImageIcon, NotepadText, Presentation, Sheet, Sigma } from 'lucide-react'
 import latex from '../../plugins/latex/plugin.json'
+import images from '../../plugins/images/plugin.json'
 
 export interface KindInfo {
   id: string
@@ -183,7 +184,7 @@ export const PLUGINS: PluginInfo[] = [
   {
     id: 'images',
     name: 'Images',
-    description: 'A simple viewer for PNG, JPEG and HEIC pictures, with highlighting, drawing, cropping and turning.',
+    description: 'View PNG, JPEG, HEIC and WebP pictures, mark up copies, and recognize text offline.',
     homepage: 'https://github.com/elijahroizman/writan/tree/main/plugins/images',
     license: 'MIT, LGPL-3.0',
     source: { type: 'builtin' },
@@ -193,7 +194,7 @@ export const PLUGINS: PluginInfo[] = [
         prose: 'image',
         label: 'Image',
         short: 'Image',
-        extensions: ['png', 'jpg', 'jpeg', 'heic', 'heif'],
+        extensions: images.extensions,
         color: 'var(--kind-image)',
         icon: ImageIcon,
         untitled: 'Untitled Image',

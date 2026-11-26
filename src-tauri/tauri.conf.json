@@ -176,6 +176,15 @@
         "mimeType": "image/heic"
       },
       {
+        "ext": [
+          "webp"
+        ],
+        "name": "WebP Image",
+        "role": "Viewer",
+        "rank": "Alternate",
+        "mimeType": "image/webp"
+      },
+      {
         "ext": [],
         "contentTypes": [
           "public.folder"

@@ -8,6 +8,7 @@ import {
   convertAndDeliver,
   copyTabAsMarkdown,
   targetsForKind,
+  usesOcr,
 } from '../lib/convert'
 import type { ConvertFormat } from '../lib/convert'
 import * as platform from '../lib/platform'
@@ -20,7 +21,9 @@ interface ConvertModalState {
   open: boolean
   mode: ConvertModalMode
   tabId: string | null
-  openConvert(tabId?: string | null): void
+  /** The format selected when the dialog opens. */
+  format: ConvertFormat | null
+  openConvert(tabId?: string | null, format?: ConvertFormat): void
   openBundle(): void
   close(): void
 }
@@ -29,9 +32,10 @@ export const useConvertDialog = create<ConvertModalState>((set) => ({
   open: false,
   mode: 'convert',
   tabId: null,
-  openConvert: (tabId = null) => set({ open: true, mode: 'convert', tabId }),
-  openBundle: () => set({ open: true, mode: 'bundle', tabId: null }),
-  close: () => set({ open: false, tabId: null }),
+  format: null,
+  openConvert: (tabId = null, format) => set({ open: true, mode: 'convert', tabId, format: format ?? null }),
+  openBundle: () => set({ open: true, mode: 'bundle', tabId: null, format: null }),
+  close: () => set({ open: false, tabId: null, format: null }),
 }))
 
 export function ConvertModal() {
@@ -48,29 +52,43 @@ function ConvertFileDialog() {
   const tab = useMemo(() => tabs.find((t) => t.id === (requestedId ?? activeId)) ?? null, [tabs, requestedId, activeId])
   const targets = useMemo(() => (tab ? targetsForKind(tab.kind) : []), [tab])
 
-  const [index, setIndex] = useState(0)
+  const [index, setIndex] = useState(() => Math.max(0, targets.findIndex((t) => t.format === useConvertDialog.getState().format)))
   const [delivery, setDelivery] = useState<'open' | 'save'>('open')
   const [busy, setBusy] = useState<string | null>(null)
+  const [ocrRunning, setOcrRunning] = useState(false)
   const [copied, setCopied] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const listRef = useRef<HTMLDivElement>(null)
+  const conversion = useRef<AbortController | null>(null)
 
   useEffect(() => {
     listRef.current?.focus()
+    return () => conversion.current?.abort()
   }, [])
 
   const runConvert = async (format: ConvertFormat) => {
-    if (!tab || busy) return
+    if (!tab || busy || conversion.current) return
+    const ocr = usesOcr(tab.kind, format)
+    const job = new AbortController()
+    conversion.current = job
     setError(null)
+    setOcrRunning(ocr)
     setBusy(`Converting to ${format.toUpperCase()}…`)
     try {
-      const ok = await convertAndDeliver(tab.id, format, delivery)
+      const ok = await convertAndDeliver(tab.id, format, delivery, { signal: job.signal, onProgress: setBusy })
       if (ok) close()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
+      conversion.current = null
       setBusy(null)
+      setOcrRunning(false)
     }
+  }
+
+  const dismiss = () => {
+    if (ocrRunning) conversion.current?.abort()
+    else close()
   }
 
   const runCopyMarkdown = async () => {
@@ -91,13 +109,14 @@ function ConvertFileDialog() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        close()
+        dismiss()
       } else if (targets.length && e.key === 'ArrowDown') {
         setIndex((i) => (i + 1) % targets.length)
       } else if (targets.length && e.key === 'ArrowUp') {
         setIndex((i) => (i - 1 + targets.length) % targets.length)
       } else if (targets.length && e.key === 'Enter' && !busy) {
-        void runConvert(targets[index].format)
+        if (e.target instanceof HTMLButtonElement) return
+        void runConvert((targets[index] ?? targets[0]).format)
       } else if (!e.metaKey && !e.ctrlKey && !e.altKey && !busy) {
         const at = Number(e.key)
         if (at >= 1 && at <= Math.min(9, targets.length)) {
@@ -129,7 +148,7 @@ function ConvertFileDialog() {
   const showCopyMd = canExportMarkdown(tab.kind)
 
   return (
-    <Modal placement="top" dim="light" layer="picker" onClose={close}>
+    <Modal placement="top" dim="light" layer="picker" onClose={dismiss}>
       <div className="new-file convert-dialog" role="dialog" aria-modal="true" aria-label="Convert file">
         <div className="convert-head">
           <DocBadge kind={tab.kind} size={22} />
@@ -139,6 +158,7 @@ function ConvertFileDialog() {
           <button
             type="button"
             className="convert-switch"
+            disabled={!!busy}
             onClick={() => useConvertDialog.getState().openBundle()}
             title="Bundle open files into one PDF"
           >
@@ -204,7 +224,8 @@ function ConvertFileDialog() {
               <span>Save to disk</span>
             </button>
           </div>
-          {busy && <span className="convert-status muted">{busy}</span>}
+          {busy && <span className="convert-status muted" role="status">{busy}</span>}
+          {ocrRunning && <button type="button" className="btn" onClick={() => conversion.current?.abort()}>Cancel</button>}
         </div>
         {error && <p className="convert-error">{error}</p>}
       </div>

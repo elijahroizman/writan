@@ -107,19 +107,19 @@ function npmPackages(names, group) {
   return [...unique.values()]
 }
 
-function cratePackages() {
+function cratePackages(manifestRel, group, extraArgs = []) {
   let metadata
   try {
     metadata = JSON.parse(
-      execFileSync('cargo', ['metadata', '--format-version', '1', '--manifest-path', join(root, 'src-tauri', 'Cargo.toml')], {
+      execFileSync('cargo', ['metadata', '--format-version', '1', ...extraArgs, '--manifest-path', join(root, manifestRel)], {
         encoding: 'utf8',
         maxBuffer: 256 * 1024 * 1024,
         stdio: ['ignore', 'pipe', 'inherit'],
       }),
     )
   } catch (err) {
-    // A list without the native app's crates would claim to be complete; don't write one.
-    throw new Error(`licenses: cargo metadata failed, so the Rust crates can't be listed: ${err.message}`)
+    // A list without the crates would claim to be complete; don't write one.
+    throw new Error(`licenses: cargo metadata failed for ${manifestRel}, so the Rust crates can't be listed: ${err.message}`)
   }
   const ours = new Set(metadata.workspace_members)
   const inGraph = new Set(metadata.resolve.nodes.map((n) => n.id))
@@ -140,7 +140,7 @@ function cratePackages() {
         const holder = p.authors?.length ? p.authors.map((a) => a.replace(/\s*<.*$/, '')).join(', ') : `the ${p.name} authors`
         files = [{ file: 'MIT (from Cargo.toml)', text: textId(TEMPLATES.MIT(holder)) }]
       }
-      return { group: 'Native app (Rust)', name: p.name, version: p.version, license, homepage: p.homepage ?? p.repository ?? `https://crates.io/crates/${p.name}`, files }
+      return { group, name: p.name, version: p.version, license, homepage: p.homepage ?? p.repository ?? `https://crates.io/crates/${p.name}`, files }
     })
 }
 
@@ -151,6 +151,7 @@ function bundledFonts() {
     ['Carlito', 'OFL-Carlito.txt', 'https://github.com/googlefonts/carlito'],
     ['Caladea', 'OFL-Caladea.txt', 'https://github.com/huertatipografica/Caladea'],
     ['Liberation Sans, Serif and Mono', 'LICENSE-Liberation.txt', 'https://github.com/liberationfonts/liberation-fonts'],
+    ['Noto Sans, Noto Sans Arabic and Noto Sans Math', 'pdf/OFL-Noto.txt', 'https://github.com/notofonts/notofonts.github.io'],
   ].map(([name, file, homepage]) => ({ group: 'App', name, version: 'bundled', license: 'OFL-1.1', homepage, files: [{ file, text: textId(readFileSync(join(fonts, file), 'utf8').trim()) }] }))
 }
 
@@ -167,7 +168,8 @@ const packages = [
   // libheif-js decodes HEIC in the Images viewer, which ships inside the app.
   ...npmPackages([...Object.keys(pkg.dependencies), 'libheif-js'], 'App').sort(byName),
   ...Object.entries(PLUGIN_PACKAGES).flatMap(([plugin, names]) => npmPackages(names, `${plugin} plugin`).sort(byName)),
-  ...cratePackages().sort(byName),
+  ...cratePackages(join('src-tauri', 'Cargo.toml'), 'Native app (Rust)').sort(byName),
+  ...cratePackages(join('crates', 'Cargo.toml'), 'Document engine (Rust/WASM)', ['--filter-platform', 'wasm32-unknown-unknown']).sort(byName),
   ...bundledFonts(),
   ...adaptedCode(),
 ]

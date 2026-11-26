@@ -8,6 +8,7 @@ use office_engine::measure::{Font, Measurer, Metrics};
 use wasm_bindgen::prelude::*;
 
 mod convert;
+mod ocr_docx;
 mod sheets;
 mod slides;
 mod word;
@@ -16,6 +17,12 @@ pub use convert::{convert_document, to_markdown};
 pub use sheets::SheetsDoc;
 pub use slides::SlidesDoc;
 pub use word::WordDoc;
+
+/// Reconstructs an editable Word document from structured OCR results.
+#[wasm_bindgen(js_name = ocrToDocx)]
+pub fn ocr_to_docx(json: &str) -> Result<Vec<u8>, JsError> {
+    ocr_docx::ocr_document_to_docx(json).map_err(err)
+}
 
 #[wasm_bindgen]
 extern "C" {

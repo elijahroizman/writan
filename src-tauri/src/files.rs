@@ -36,6 +36,21 @@ pub fn write_file<R: tauri::Runtime>(
     let InvokeBody::Raw(bytes) = request.body() else {
         return Err("Expected raw file bytes".into());
     };
+    let no_clobber = header("x-no-clobber").is_some();
+    if no_clobber {
+        atomic_write_noclobber(&path, bytes).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                "Choose a new file name for the OCR copy.".into()
+            } else {
+                format!(
+                    "Couldn't save “{}”: {}.",
+                    display_name(&path.to_string_lossy()),
+                    save_error(&e)
+                )
+            }
+        })?;
+        return Ok(());
+    }
     let history = header("x-history").and_then(|_| crate::history::history_root(&app));
     let label = header("x-history-label").map(percent_decode).transpose()?;
     if let Some(root) = &history {
@@ -340,6 +355,32 @@ fn atomic_write_with(
     Ok(())
 }
 
+/// Writes `bytes` to a brand-new `path` using a directory-local temp file and `persist_noclobber`
+/// so concurrent exports cannot race past an existence check and overwrite an existing destination.
+pub(crate) fn atomic_write_noclobber(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let dir = path
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let builder = tempfile::Builder::new();
+    #[cfg(unix)]
+    let builder = {
+        use std::os::unix::fs::PermissionsExt;
+        let mut builder = builder;
+        builder.permissions(fs::Permissions::from_mode(0o666));
+        builder
+    };
+    let mut tmp = builder.tempfile_in(dir)?;
+    tmp.as_file_mut().write_all(bytes)?;
+    tmp.as_file().sync_all()?;
+    tmp.persist_noclobber(path).map_err(|e| e.error)?;
+    #[cfg(unix)]
+    if let Ok(dir) = fs::File::open(dir) {
+        let _ = dir.sync_all();
+    }
+    Ok(())
+}
+
 /// Why a save failed, in words; the original file is untouched in every case.
 fn save_error(e: &std::io::Error) -> String {
     use std::io::ErrorKind;
@@ -565,6 +606,18 @@ mod tests {
             .is_symlink());
         assert_eq!(fs::read(&target).unwrap(), b"two");
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn atomic_write_noclobber_rejects_existing_destination() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("copy.pdf");
+        atomic_write_noclobber(&file, b"first").unwrap();
+        assert_eq!(fs::read(&file).unwrap(), b"first");
+        let err = atomic_write_noclobber(&file, b"second").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&file).unwrap(), b"first");
+        assert_eq!(fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

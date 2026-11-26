@@ -10,7 +10,7 @@ import { Home } from './components/Home'
 import { showVersionHistory, useVersionHistory, VersionHistory } from './components/VersionHistory'
 import { NewFilePicker, useNewFile } from './components/NewFile'
 import { ConvertModal, useConvertDialog } from './components/ConvertDialog'
-import { canExportMarkdown, canIncludeInPdfBundle, convertAndDeliver, copyTabAsMarkdown, targetsForKind } from './lib/convert'
+import { canExportMarkdown, canIncludeInPdfBundle, convertAndDeliver, copyTabAsMarkdown, targetsForKind, usesOcr } from './lib/convert'
 import { TexInstall, TexRemove } from './components/TexInstall'
 import { Dialogs } from './components/Dialogs'
 import { canShare, JoinDialog, showJoinDialog, showSharePanel, useSharePanel } from './components/Share'
@@ -291,6 +291,9 @@ export async function runCommand(id: string) {
     case 'convert-file':
       useConvertDialog.getState().openConvert(ws.activeId === HOME_TAB_ID ? null : ws.activeId)
       break
+    case 'ocr-document':
+      if (commandAvailable(id)) editor?.actions?.[id]?.()
+      break
     case 'copy-markdown': {
       try {
         const md = await copyTabAsMarkdown()
@@ -300,9 +303,13 @@ export async function runCommand(id: string) {
       }
       break
     }
-    case 'export-markdown':
-      await convertAndDeliver(undefined, 'md', 'open')
+    case 'export-markdown': {
+      // A picture's Markdown needs OCR, which runs in the Convert dialog where it can be cancelled.
+      const active = ws.tabs.find((t) => t.id === ws.activeId)
+      if (active && usesOcr(active.kind, 'md')) useConvertDialog.getState().openConvert(active.id, 'md')
+      else await convertAndDeliver(undefined, 'md', 'open')
       break
+    }
     case 'export-pdf':
       await convertAndDeliver(undefined, 'pdf', 'open')
       break
@@ -481,10 +488,13 @@ export function commandAvailable(command: string) {
       return !!tab
     case 'convert-file':
       return !!tab && targetsForKind(tab.kind).length > 0
+    case 'ocr-document':
+      return tab?.kind === 'pdf' || tab?.kind === 'image'
     case 'copy-markdown':
       return !!tab && canExportMarkdown(tab.kind)
     case 'export-markdown':
-      return !!tab && targetsForKind(tab.kind).some((t) => t.format === 'md')
+      // A picture's Markdown needs OCR, which runs from the Convert dialog where it can be cancelled.
+      return !!tab && !usesOcr(tab.kind, 'md') && targetsForKind(tab.kind).some((t) => t.format === 'md')
     case 'export-pdf':
       return !!tab && targetsForKind(tab.kind).some((t) => t.format === 'pdf')
     case 'bundle-pdf':
@@ -522,6 +532,7 @@ export function editorHandles(command: string) {
   if (command === 'find') return !!editor?.find
   if (command === 'replace') return !!editor?.replace
   if (command === 'print') return !!editor?.print
+  if (command === 'ocr-document') return !!editor?.actions?.[command]
   return true
 }
 
