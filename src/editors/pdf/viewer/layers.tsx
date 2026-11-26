@@ -188,35 +188,31 @@ function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
     const d = Math.hypot(dx, dy)
     if (!near || d < near.d) near = { span, r, d, over: !dx }
   }
-  // The stretch of the line a run is on: runs beside it, closer than the line is tall (the words of
-  // a scanned page's line, not the next column).
-  const line = (r: DOMRect) => {
-    let left = r.left
-    let right = r.right
-    for (let grew = true; grew; ) {
-      grew = false
-      for (const o of all) {
-        const mid = (o.top + o.bottom) / 2
-        if (mid < r.top || mid > r.bottom) continue
-        if (o.left < left && o.right >= left - r.height * 0.75) [left, grew] = [o.left, true]
-        if (o.right > right && o.left <= right + r.height * 0.75) [right, grew] = [o.right, true]
-      }
+  // Whether text on the rows around the point spans the space between it and a run beside it on
+  // its row. Text in the same column does (word gaps don't line up from row to row); a gutter
+  // between columns is empty on every row.
+  const bridged = (r: DOMRect) => {
+    const [from, to] = x > r.right ? [r.right, x] : [x, r.left]
+    const slack = r.height * 0.3
+    const cover = all.filter((o) => o !== r && o.bottom > y - 3 * r.height && o.top < y + 3 * r.height && o.right > from && o.left < to).sort((a, b) => a.left - b.left)
+    let at = from
+    for (const o of cover) {
+      if (o.left > at + slack) return false
+      at = Math.max(at, o.right)
     }
-    return { left, right }
+    return at >= to - slack
   }
-  const differentColumn = (a: DOMRect, b: DOMRect) => {
-    const [p, q] = [line(a), line(b)]
-    return p.right < q.left || q.right < p.left
-  }
-  const span = inside?.span ?? (row && !(near?.over && differentColumn(row.r, near.r)) ? row.span : near?.span)
+  const span = inside?.span ?? (row && (!near?.over || bridged(row.r)) ? row.span : near?.span)
   const text = span?.firstChild
   if (!span || !text) return null
-  // The browser's own hit test within the run handles right-to-left and mixed text; it can land in
-  // an overlapping run, so it's only taken when it stays in this one.
+  // Within the run's length, the browser's own hit test (moved onto the run's line) handles
+  // right-to-left and mixed text. It can land in an overlapping run, so it's only taken when it
+  // stays in this one. Before or past the run, the offset is its start or end.
   const r = span.getBoundingClientRect()
+  const vertical = r.height > r.width && (text.textContent?.length ?? 0) > 1
   const px = Math.min(Math.max(x, r.left + 0.5), r.right - 0.5)
   const py = Math.min(Math.max(y, r.top + 0.5), r.bottom - 0.5)
-  const hit = caretFromPoint(px, py)
+  const hit = (vertical ? y >= r.top && y <= r.bottom : x >= r.left && x <= r.right) ? caretFromPoint(px, py) : null
   return { node: text, offset: hit?.node === text ? hit.offset : offsetIn(text, x, y) }
 }
 

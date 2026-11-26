@@ -103,6 +103,17 @@ try {
   await page.getByRole('button', { name: 'Select', exact: true }).click()
   await page.mouse.click(across(1, 0.5), box[1].mid)
   await page.locator('.annot-selection').waitFor()
+
+  // Zoomed far out, where a period is under a pixel wide, a drag past a line's end still takes all of it.
+  const zoomOut = page.getByRole('button', { name: /zoom out/i }).first()
+  for (let i = 0; i < 25; i++) await zoomOut.click()
+  await page.waitForTimeout(300)
+  const tiny = await page.evaluate(() => {
+    const r = document.querySelectorAll('.text-layer span[data-run]')[2].getBoundingClientRect()
+    return { left: r.left, right: r.right, mid: (r.top + r.bottom) / 2 }
+  })
+  got = await drag({ x: tiny.left - 5, y: tiny.mid }, { x: tiny.right + 5, y: tiny.mid })
+  assert.equal(got, LINES[2][1], 'a whole line at the smallest zoom')
   console.log('PASS  PDF text selection follows the pointer, and highlights it')
 } finally {
   await done(browser, logs)

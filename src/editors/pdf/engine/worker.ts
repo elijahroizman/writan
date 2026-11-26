@@ -242,9 +242,8 @@ function text(key: number): TextRun[] {
           ? Math.abs(box.x + box.w / 2 - (run.x0 + run.x1) / 2) < h * 0.5 && box.y >= run.y1 - h
           : run.rtl
             ? !/[A-Za-z0-9]/.test(ch) && midY > run.y0 && midY < run.y1 && box.x + box.w <= run.lastX + h * 0.5 && run.x0 - (box.x + box.w) < h * 3
-            : // The letters of a ligature (fi, ffi) each get the whole ligature's box, so the next one
-              // starts where the last one did.
-              midY > run.y0 && midY < run.y1 && (box.x >= run.lastX - h * 0.5 || box.x >= run.lastLeft - h * 0.05) && box.x - run.x1 < h * 3
+            : // The letters of a ligature (fi, ffi) each get the whole ligature's box.
+              midY > run.y0 && midY < run.y1 && (box.x >= run.lastX - h * 0.5 || (Math.abs(box.x - run.lastLeft) < h * 0.05 && Math.abs(box.x + box.w - run.lastX) < h * 0.05)) && box.x - run.x1 < h * 3
         if (!sameLine) {
           // A single character can't tell us the direction yet; a second one straight below makes it vertical,
           // and a short non-LTR prefix moving leftward makes it right-to-left.
