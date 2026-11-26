@@ -63,16 +63,17 @@ export const host = {
     // per face and size. Body, headings, footnotes and captions then share the same entries.
     const scaled = /^(?:(italic) )?(?:(bold) )?(\d+(?:\.\d+)?)px (.+)$/.exec(font)
     const key = scaled ? `${scaled[1] ?? ''} ${scaled[2] ?? ''} ${scaled[4]}\0${text}` : `${font}\0${text}`
-    const hit = widthCache.get(key)
-    if (hit !== undefined) return hit
     const size = scaled ? Number(scaled[3]) : 0
+    const hit = widthCache.get(key)
+    if (hit !== undefined) return scaled ? hit * (size / 100) : hit
     const measureFont = scaled && size !== 100 ? font.replace(`${size}px `, '100px ') : font
     setFont(measureFont)
-    let width = ctx.measureText(text).width
-    if (scaled && size !== 100) width *= size / 100
+    // Entries are always the width at 100px, whatever size first needed them; each caller scales
+    // for its own font size.
+    const width = ctx.measureText(text).width
     if (widthCache.size >= MAX_WIDTH_CACHE) widthCache.clear()
     widthCache.set(key, width)
-    return width
+    return scaled ? width * (size / 100) : width
   },
   metrics(font: string): number[] {
     const hit = metricsCache.get(font)
