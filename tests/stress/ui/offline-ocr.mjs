@@ -691,6 +691,113 @@ async function verifyImageAndRtl(page, real) {
   console.log('PASS  Scanned PDF with heb+eng yields searchable Hebrew RTL text')
 }
 
+async function verifyImageFind(page, real) {
+  const recognitions = () => page.evaluate(real => real
+    ? window.ocrWorkerMessages.filter(m => m.kind === 'recognize').length
+    : window.ocrCalls, real)
+  const count = () => page.evaluate(() => document.querySelector('.find-bar .count')?.textContent ?? '')
+  const waitCount = (pattern, timeout = 60_000) =>
+    page.waitForFunction(source => new RegExp(source).test(document.querySelector('.find-bar .count')?.textContent ?? ''), pattern.source, { timeout })
+  /** Pixels the find highlights cover on the picture's overlay. */
+  const highlighted = () => page.evaluate(() => {
+    const overlay = document.querySelector('.img-overlay')
+    const data = overlay.getContext('2d').getImageData(0, 0, overlay.width, overlay.height).data
+    let orange = 0
+    for (let i = 0; i < data.length; i += 4) if (data[i + 3] > 0 && data[i] > 200 && data[i + 2] < 80) orange++
+    return orange
+  })
+  const tabId = await page.evaluate(encoded =>
+    window.__workspace.useWorkspace.getState().openUnsaved(Uint8Array.fromBase64(encoded), 'notes.jpg'),
+  await page.evaluate(() => window.ocrScans.english.jpeg.toBase64()))
+  assert.ok(tabId)
+  // A narrow window: Find mustn't cover the picture's toolbar.
+  const viewport = page.viewportSize()
+  await page.setViewportSize({ width: 800, height: viewport.height })
+  try {
+    await page.locator('.img-viewer canvas.img-picture').waitFor({ timeout: 30_000 })
+    assert.equal(await page.getByRole('button', { name: /Recognize Text/ }).count(), 0, 'No OCR button on the toolbar')
+    const before = await recognitions()
+    // Nothing is read until Find is used.
+    await page.waitForTimeout(500)
+    assert.equal(await recognitions(), before, 'Opening a picture reads nothing')
+
+    await page.locator('.img-viewer').focus()
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+F' : 'Control+F')
+    const find = page.getByRole('textbox', { name: 'Find' })
+    await find.waitFor()
+    await find.fill('Quick Brown')
+    await waitCount(/^1 of 1$/)
+    assert.equal(await recognitions(), before + 1, 'The picture is read once')
+    const [bar, tools] = await Promise.all(['.find-bar', '.img-toolbar'].map(s => page.locator(s).boundingBox()))
+    assert(bar.y >= tools.y + tools.height || bar.x >= tools.x + tools.width, 'Find is clear of the toolbar: ' + JSON.stringify({ bar, tools }))
+    // The ⋯ menu and the recognized-text panel open over it.
+    const onTop = selector => page.evaluate(selector => {
+      const el = document.querySelector(selector)
+      const r = el.getBoundingClientRect()
+      return el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + 4))
+    }, selector)
+    await page.getByRole('button', { name: 'More' }).click()
+    assert(await onTop('.img-menu-item'), 'The menu is over Find')
+    await page.getByRole('button', { name: 'Show Recognized Text' }).click()
+    await page.locator('.img-ocr-panel textarea').waitFor({ timeout: 60_000 })
+    assert(await onTop('.img-ocr-panel h3'), 'The panel is over Find')
+    await page.locator('.img-ocr-panel').getByRole('button', { name: 'Close' }).click()
+    await find.focus()
+    // The panel reads the picture as it is, marks and all, for its exports; Find keeps its own reading.
+    const read = await recognitions()
+    assert(await highlighted() > 50, 'The match is highlighted on the picture')
+    if (process.env.IMAGE_FIND_SHOT) await page.locator('.img-viewer:visible').screenshot({ path: process.env.IMAGE_FIND_SHOT })
+
+    await find.fill('the')
+    await waitCount(/^1 of \d+$/)
+    const total = Number((await count()).split(' of ')[1])
+    assert(total >= 2, 'Every match is counted: ' + total)
+    await find.press('Enter')
+    await waitCount(/^2 of \d+$/)
+    await find.press('Shift+Enter')
+    await waitCount(/^1 of \d+$/)
+
+    // A mark leaves the words where they were: no second read, the matches stay.
+    await page.getByRole('button', { name: /^Draw/ }).click()
+    const box = await page.locator('.img-viewer canvas.img-picture').boundingBox()
+    await page.mouse.move(box.x + box.width * 0.2, box.y + box.height * 0.6)
+    await page.mouse.down()
+    await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.65, { steps: 5 })
+    await page.mouse.up()
+    // ⌘F with the bar open goes back to it, keeping the match.
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+F' : 'Control+F')
+    await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Find')
+    assert.match(await count(), /^1 of \d+$/)
+    await find.fill('Quick Brown')
+    await waitCount(/^1 of 1$/)
+    assert.equal(await recognitions(), read, 'A mark does not read the picture again')
+
+    // A turn moves them: it's read again and found again.
+    await page.getByRole('button', { name: 'Turn right' }).click()
+    await page.waitForFunction(({ real, want }) => (real
+      ? window.ocrWorkerMessages.filter(m => m.kind === 'recognize').length
+      : window.ocrCalls) === want, { real, want: read + 1 }, { timeout: 60_000 })
+    await waitCount(/^1 of 1$/)
+    assert(await highlighted() > 50, 'The match is highlighted after the turn')
+
+    // Closing Find takes the highlights away.
+    await find.press('Escape')
+    await page.waitForFunction(() => !document.querySelector('.find-bar'))
+    assert.equal(await highlighted(), 0, 'No highlights once Find closes')
+    console.log('PASS  ⌘F in a picture reads its text once and highlights the matches, again after a turn')
+  } finally {
+    await page.setViewportSize(viewport)
+    await page.evaluate(async () => {
+      const { tabs, closeTab, markDirty } = window.__workspace.useWorkspace.getState()
+      // The marks made above aren't worth asking about.
+      for (const tab of [...tabs].reverse()) {
+        markDirty(tab.id, false)
+        await closeTab(tab.id)
+      }
+    })
+  }
+}
+
 async function verifyTransformsAndCancellation(page, scan) {
   const transformed = await page.evaluate(async () => {
     const { ocrClient, preprocess } = window.ocrApi
@@ -869,6 +976,7 @@ async function main() {
     await verifyPdfProtection(page, scan)
     await verifyReconstruction(page)
     await verifyImageAndRtl(page, real)
+    await verifyImageFind(page, real)
     if (real) {
       await verifyTransformsAndCancellation(page, scan)
       await verifyOfflineReuse(session)

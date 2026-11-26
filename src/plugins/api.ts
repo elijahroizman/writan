@@ -68,6 +68,11 @@ export interface ImageOcrService {
 export interface ImageOcrResult {
   text: string
   markdown: string
+  /** The size of the picture that was read; `find`'s boxes are in its pixels. */
+  width: number
+  height: number
+  /** Where `query` is in the picture: for each match, one box per line it spans. */
+  find(query: string): { x: number; y: number; w: number; h: number }[][]
   saveDocx(): Promise<boolean>
   saveSearchablePdf(signal?: AbortSignal): Promise<boolean>
 }
@@ -111,6 +116,8 @@ export interface SearchResult {
   count: number
   /** Index of the selected match; -1 for none. */
   current: number
+  /** Still looking (reading the text in a picture): the count isn't known yet. */
+  pending?: boolean
 }
 
 export interface PluginEditor {

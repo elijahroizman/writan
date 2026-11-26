@@ -10,7 +10,8 @@
 
 .img-ocr-panel {
   position: absolute;
-  z-index: 2;
+  /* Over Writan's find bar (25), which sits in the same corner. */
+  z-index: 30;
   top: 62px;
   right: 14px;
   display: grid;
@@ -170,7 +171,8 @@
   border-radius: 10px;
   background: var(--raised);
   box-shadow: var(--shadow-pop);
-  z-index: 2;
+  /* Over Writan's find bar (25). */
+  z-index: 30;
 }
 
 .img-menu[hidden] {

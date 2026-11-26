@@ -160,6 +160,7 @@ export function FindBar({
   replacing = false,
   onReplace,
   onReplaceAll,
+  focusRequest,
 }: {
   open: boolean
   onClose: () => void
@@ -175,6 +176,8 @@ export function FindBar({
   onReplace?: (text: string) => void
   /** Replace every match. */
   onReplaceAll?: (text: string) => void
+  /** Changes each time Find is asked for, so ⌘F with the bar already open goes back to it. */
+  focusRequest?: number
 }) {
   const input = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
@@ -187,7 +190,7 @@ export function FindBar({
     if (replacing && canReplace) setShowReplace(true)
     input.current?.focus()
     input.current?.select()
-  }, [open, replacing, canReplace])
+  }, [open, replacing, canReplace, focusRequest])
 
   if (!open) return null
   const escape = (e: React.KeyboardEvent) => {
