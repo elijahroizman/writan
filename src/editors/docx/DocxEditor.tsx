@@ -1159,6 +1159,8 @@ function useLinks(stageRef: React.RefObject<HTMLDivElement | null>) {
 /** Draw every page into the print root at its true size, then open the print panel. */
 async function printPages(editor: WordEngine | null) {
   if (!editor) return
+  // Printing needs every page, even when the document is still completing its progressive open.
+  editor.finishProgressive()
   const root = document.getElementById('print-root')!
   root.innerHTML = ''
   const sizes = editor.sizes

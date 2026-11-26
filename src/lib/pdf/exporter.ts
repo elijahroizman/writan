@@ -615,6 +615,8 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
   const { WordEngine } = await import('../../engine/word/engine')
   const engine = await WordEngine.open(bytes.length ? bytes : null)
   try {
+    // Exporting needs every page, not just the prefix a large document opened with.
+    engine.finishProgressive()
     const sizes = engine.sizes
     if (!sizes.length) throw new Error('This document has no pages to export.')
     const ctx: CollectContext = { usedStyleIds: new Set(), texts: [], mediaKeys: new Set(), hasSvg: false }
