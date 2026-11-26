@@ -1490,9 +1490,9 @@ fn double_click_math_image_beside_punctuation_keeps_math_tag() {
 }
 
 #[test]
-fn editing_clears_marks_before_their_offsets_go_stale() {
+fn stale_marks_inside_a_character_are_not_drawn() {
     let mut host = FixedMeasurer::default();
-    let text = "start — zzqmisspell end";
+    let text = "start —zzqmisspell end";
     let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
     let start = text.as_bytes().windows(3).position(|w| w == b"zzq").unwrap() as u32;
     let end = start + "zzqmisspell".len() as u32;
@@ -1501,7 +1501,20 @@ fn editing_clears_marks_before_their_offsets_go_stale() {
 
     v.set_selection(Selection::caret(Pos::start()));
     v.insert_text("x");
-    assert!(v.overlay(&mut host).marks.is_empty(), "stale byte offsets can land inside a multibyte character");
+    assert!(v.overlay(&mut host).marks.is_empty(), "the stale start now falls inside the shifted em dash");
+}
+
+#[test]
+fn formatting_leaves_text_marks_in_place() {
+    let mut host = FixedMeasurer::default();
+    let text = "start — zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let start = text.as_bytes().windows(3).position(|w| w == b"zzq").unwrap() as u32;
+    let end = start + "zzqmisspell".len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), start), Pos::new(Path::top(0), end))]);
+    v.set_selection(Selection { anchor: Pos::new(Path::top(0), start), focus: Pos::new(Path::top(0), end) });
+    v.toggle(Toggle::Bold);
+    assert!(!v.overlay(&mut host).marks.is_empty(), "formatting does not move the text a mark addresses");
 }
 
 #[test]

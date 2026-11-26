@@ -220,6 +220,15 @@ pub struct Mark {
     pub to: Pos,
 }
 
+/// Whether `p` is still a place a mark may end: an existing paragraph, at a character boundary.
+fn mark_pos_valid(blocks: &[Block], p: &Pos) -> bool {
+    pos::para(blocks, &p.path).is_some_and(|q| {
+        let flat = text::flat(q);
+        let offset = p.offset as usize;
+        offset <= flat.text.len() && flat.text.is_char_boundary(offset)
+    })
+}
+
 /// One page drawn: its size and items.
 #[derive(Clone, Debug, Serialize)]
 pub struct PagePaint {
@@ -342,9 +351,6 @@ impl WordView {
     pub(crate) fn blocks_mut(&mut self, story: StoryId) -> &mut Vec<Block> {
         self.stale = true;
         self.revision += 1;
-        // Marks address text by byte offset. They are transient overlays whose owners reapply
-        // them after an edit; keeping them meanwhile can point into a different character.
-        self.marks.clear();
         if story == StoryId::Body {
             self.unrecorded = true;
         }
@@ -487,16 +493,9 @@ impl WordView {
     /// Replaces the marks in set `set`.
     pub fn set_marks(&mut self, set: &str, marks: Vec<(String, Pos, Pos)>) {
         let blocks = self.blocks(StoryId::Body);
-        let valid = |p: &Pos| {
-            pos::para(blocks, &p.path).is_some_and(|q| {
-                let flat = text::flat(q);
-                let offset = p.offset as usize;
-                offset <= flat.text.len() && flat.text.is_char_boundary(offset)
-            })
-        };
         let kept: Vec<Mark> = marks
             .into_iter()
-            .filter(|(_, from, to)| from <= to && valid(from) && valid(to))
+            .filter(|(_, from, to)| from <= to && mark_pos_valid(blocks, from) && mark_pos_valid(blocks, to))
             .map(|(id, from, to)| Mark { set: set.to_string(), id, from, to })
             .collect();
         self.marks.retain(|m| m.set != set);
@@ -748,7 +747,7 @@ impl WordView {
         if !sel.is_collapsed() {
             rects_for(&from, &to, false, &mut out.rects);
         }
-        for mark in marks.iter() {
+        for mark in marks.iter().filter(|m| m.from <= m.to && mark_pos_valid(blocks, &m.from) && mark_pos_valid(blocks, &m.to)) {
             let mut rects = Vec::new();
             rects_for(&mark.from, &mark.to, true, &mut rects);
             out.marks.extend(rects.into_iter().map(|(p, x, y, w, h)| (p, x, y, w, h, mark.set.clone(), mark.id.clone())));
