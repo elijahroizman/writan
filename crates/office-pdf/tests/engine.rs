@@ -377,10 +377,12 @@ fn inspection_detects_forms_outlines_annotations_signatures_and_encryption() {
 #[test]
 fn blank_signature_field_is_not_a_signature() {
     let mut pdf = loaded(&original_pdf(false, false));
+    // One field without a value, and one whose value is null, which PDF treats the same.
     let field = pdf.add_object(dictionary! {"FT" => "Sig", "T" => Object::string_literal("SignHere")});
+    let null = pdf.add_object(dictionary! {"FT" => "Sig", "T" => Object::string_literal("Later"), "V" => Object::Null});
     let root = pdf.trailer.get(b"Root").unwrap().as_reference().unwrap();
     let form = pdf.get_dictionary(root).unwrap().get(b"AcroForm").unwrap().as_reference().unwrap();
-    pdf.get_object_mut(form).unwrap().as_dict_mut().unwrap().set("Fields", vec![Object::Reference(field)]);
+    pdf.get_object_mut(form).unwrap().as_dict_mut().unwrap().set("Fields", vec![Object::Reference(field), Object::Reference(null)]);
     let mut bytes = Vec::new();
     pdf.save_to(&mut bytes).unwrap();
     let inspection = inspect_pdf(&bytes).unwrap();

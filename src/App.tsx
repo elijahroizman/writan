@@ -303,9 +303,13 @@ export async function runCommand(id: string) {
       }
       break
     }
-    case 'export-markdown':
-      await convertAndDeliver(undefined, 'md', 'open')
+    case 'export-markdown': {
+      // A picture's Markdown needs OCR, which runs in the Convert dialog where it can be cancelled.
+      const active = ws.tabs.find((t) => t.id === ws.activeId)
+      if (active && usesOcr(active.kind, 'md')) useConvertDialog.getState().openConvert(active.id)
+      else await convertAndDeliver(undefined, 'md', 'open')
       break
+    }
     case 'export-pdf':
       await convertAndDeliver(undefined, 'pdf', 'open')
       break

@@ -58,7 +58,8 @@ fn signatures(doc: &Document) -> (bool, Vec<String>) {
         let has_name = |key| dict.get_deref(key, doc).and_then(Object::as_name).ok() == Some(b"Sig");
         // A signature field without a value is blank and can still be signed, so only a filled
         // field or a signature dictionary counts.
-        if has_name(b"Type") || (has_name(b"FT") && dict.has(b"V")) || dict.has(b"ByteRange") {
+        let has_value = dict.get_deref(b"V", doc).is_ok_and(|v| !matches!(v, Object::Null));
+        if has_name(b"Type") || (has_name(b"FT") && has_value) || dict.has(b"ByteRange") {
             found = true;
             let mut seen = HashSet::new();
             let mut parts = Vec::new();
