@@ -1508,3 +1508,41 @@ fn a_header_growing_moves_the_body_down() {
     v.layout(&mut host);
     assert!(v.pages[0].body_y > before, "body_y stayed at {before}");
 }
+
+#[test]
+fn stale_marks_inside_a_character_are_not_drawn() {
+    let mut host = FixedMeasurer::default();
+    let text = "start —zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let start = text.as_bytes().windows(3).position(|w| w == b"zzq").unwrap() as u32;
+    let end = start + "zzqmisspell".len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), start), Pos::new(Path::top(0), end))]);
+    assert!(!v.overlay(&mut host).marks.is_empty());
+
+    v.set_selection(Selection::caret(Pos::start()));
+    v.insert_text("x");
+    assert!(v.overlay(&mut host).marks.is_empty(), "the stale start now falls inside the shifted em dash");
+}
+
+#[test]
+fn formatting_leaves_text_marks_in_place() {
+    let mut host = FixedMeasurer::default();
+    let text = "start — zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let start = text.as_bytes().windows(3).position(|w| w == b"zzq").unwrap() as u32;
+    let end = start + "zzqmisspell".len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), start), Pos::new(Path::top(0), end))]);
+    v.set_selection(Selection { anchor: Pos::new(Path::top(0), start), focus: Pos::new(Path::top(0), end) });
+    v.toggle(Toggle::Bold);
+    assert!(!v.overlay(&mut host).marks.is_empty(), "formatting does not move the text a mark addresses");
+}
+
+#[test]
+fn marks_inside_a_character_are_dropped() {
+    let text = "start — zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let inside_dash = text.find('—').unwrap() as u32 + 1;
+    let end = text.len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), inside_dash), Pos::new(Path::top(0), end))]);
+    assert!(v.overlay(&mut FixedMeasurer::default()).marks.is_empty());
+}

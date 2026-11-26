@@ -222,6 +222,15 @@ pub struct Mark {
     pub to: Pos,
 }
 
+/// Whether `p` is still a place a mark may end: an existing paragraph, at a character boundary.
+fn mark_pos_valid(blocks: &[Block], p: &Pos) -> bool {
+    pos::para(blocks, &p.path).is_some_and(|q| {
+        let flat = text::flat(q);
+        let offset = p.offset as usize;
+        offset <= flat.text.len() && flat.text.is_char_boundary(offset)
+    })
+}
+
 /// One page drawn: its size and items.
 #[derive(Clone, Debug, Serialize)]
 pub struct PagePaint {
@@ -529,7 +538,7 @@ impl WordView {
         let blocks = self.blocks(StoryId::Body);
         let kept: Vec<Mark> = marks
             .into_iter()
-            .filter(|(_, from, to)| pos::para(blocks, &from.path).is_some() && pos::para(blocks, &to.path).is_some())
+            .filter(|(_, from, to)| from <= to && mark_pos_valid(blocks, from) && mark_pos_valid(blocks, to))
             .map(|(id, from, to)| Mark { set: set.to_string(), id, from, to })
             .collect();
         self.marks.retain(|m| m.set != set);
@@ -785,7 +794,7 @@ impl WordView {
         if !sel.is_collapsed() {
             rects_for(&from, &to, false, &mut out.rects);
         }
-        for mark in marks.iter() {
+        for mark in marks.iter().filter(|m| m.from <= m.to && mark_pos_valid(blocks, &m.from) && mark_pos_valid(blocks, &m.to)) {
             let mut rects = Vec::new();
             rects_for(&mark.from, &mark.to, true, &mut rects);
             out.marks.extend(rects.into_iter().map(|(p, x, y, w, h)| (p, x, y, w, h, mark.set.clone(), mark.id.clone())));
