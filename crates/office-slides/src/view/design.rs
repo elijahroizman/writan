@@ -176,13 +176,12 @@ impl SlidesView {
 }
 
 fn plain_frames(slide: &Slide, layout: Option<&Template>, (sx, sy): (f64, f64)) -> Option<(&'static str, Vec<Frame>)> {
-    if layout.is_some_and(|l| l.layout_type.as_deref() != Some("blank"))
-        || !slide.frames.iter().any(|f| f.name == "Title" && f.placeholder.is_none())
-    {
+    if layout.is_some_and(|l| l.layout_type.as_deref() != Some("blank")) {
         return None;
     }
+    let title = slide.frames.iter().find(|f| f.name == "Title" && f.placeholder.is_none())?;
     for (name, frames) in [("Title Slide", templates::plain_title(sx, sy)), ("Title and Content", templates::plain_content(sx, sy))] {
-        if slide.frames.iter().any(|f| f.name == frames[1].name && f.placeholder.is_none()) {
+        if title.shape.xfrm == frames[0].shape.xfrm || slide.frames.iter().any(|f| f.name == frames[1].name && f.placeholder.is_none()) {
             return Some((name, frames));
         }
     }
@@ -320,6 +319,19 @@ mod tests {
                 assert_eq!(ink == Rgb(255, 255, 255), light_ink, "{theme}: {layout}");
             }
         }
+    }
+
+    #[test]
+    fn a_starter_title_without_a_subtitle_inherits_the_dark_theme_ink() {
+        let mut view = SlidesView::blank();
+        view.slides_mut()[0].frames.truncate(1);
+        view.apply_theme("Graphite").unwrap();
+        let slide = &view.slides()[0];
+        let title = &slide.frames[0];
+        assert_eq!(crate::template(&view.doc, slide.layout.as_deref()).unwrap().name, "Title Slide");
+        assert!(title.placeholder.is_some());
+        let run = &crate::resolve(&view.doc, slide, title).paragraphs[0].1[0];
+        assert_eq!(crate::color(&view.doc, slide, run.color.as_ref().unwrap()).rgb, office_core::drawing::Rgb(255, 255, 255));
     }
 
     #[test]
