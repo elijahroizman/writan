@@ -388,7 +388,12 @@ impl SlidesView {
     pub fn apply_layout(&mut self, layout: &str) {
         let active = self.sel.active;
         let l = layout.to_string();
-        self.change_slide(active, None, |s| s.layout = Some(l));
+        self.change_slide(active, None, |s| {
+            if s.layout.as_deref() != Some(layout) {
+                super::templates::clear_starter(s);
+                s.layout = Some(l);
+            }
+        });
     }
 
     pub fn set_notes(&mut self, index: usize, text_: &str) {

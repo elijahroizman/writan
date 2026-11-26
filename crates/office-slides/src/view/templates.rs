@@ -16,6 +16,49 @@ const RIGHT: f64 = MARGIN + HALF + 320_000.0;
 
 type Rect = (f64, f64, f64, f64);
 
+const STARTER_EXT: &str = "{FA914283-6ABE-4CDC-A300-93169E1ED82F}";
+const STARTER_NS: &str = "https://writan.com/ns/slides";
+
+fn mark_starter(root: &mut Element, starter: &str) {
+    root.child_or_insert(ns::P, "extLst").push(
+        Element::new(ns::P, "ext")
+            .with_attr("", "uri", STARTER_EXT)
+            .with_child(Element::new(STARTER_NS, "starter").with_attr("", "template", starter)),
+    );
+}
+
+pub(super) fn starter_kind(slide: &Slide) -> Option<&str> {
+    slide
+        .origin
+        .get()?
+        .child(ns::P, "extLst")?
+        .children_named(ns::P, "ext")
+        .find(|ext| ext.attr("uri") == Some(STARTER_EXT))?
+        .child(STARTER_NS, "starter")?
+        .attr("template")
+}
+
+pub(super) fn clear_starter(slide: &mut Slide) {
+    if starter_kind(slide).is_none() {
+        return;
+    }
+    let mut root = slide.origin.get().unwrap().clone();
+    let extensions = root.child_mut(ns::P, "extLst").unwrap();
+    extensions.children.retain(
+        |node| !matches!(node, office_core::xml::Node::Element(ext) if ext.is(ns::P, "ext") && ext.attr("uri") == Some(STARTER_EXT)),
+    );
+    if extensions.elements().next().is_none() {
+        root.remove_children(ns::P, "extLst");
+    }
+    slide.origin = Origin::new(root);
+}
+
+pub(super) fn initial_slide(starter: &str, frames: Vec<Frame>) -> Slide {
+    let mut root = Element::new(ns::P, "sld").with_child(Element::new(ns::P, "cSld"));
+    mark_starter(&mut root, starter);
+    Slide { frames, origin: Origin::new(root), ..Default::default() }
+}
+
 struct Builder {
     sx: f64,
     sy: f64,
@@ -314,9 +357,11 @@ impl SlidesView {
         let layout = crate::layout(&self.doc, "blank").or_else(|| crate::layouts(&self.doc).first().copied()).map(|l| l.part.clone());
         let part = Some(crate::free_part_in(&self.doc, &[], self.new_part_seed().as_deref()));
         let to = after.saturating_add(1).min(self.slides().len());
-        let origin = Element::new(ns::P, "sld").with_child(Element::new(ns::P, "cSld").with_child(Element::new(ns::P, "bg").with_child(
-            Element::new(ns::P, "bgPr").with_child(Element::new(ns::A, "solidFill").with_child(Color::scheme("bg1").to_drawingml())),
-        )));
+        let mut origin =
+            Element::new(ns::P, "sld").with_child(Element::new(ns::P, "cSld").with_child(Element::new(ns::P, "bg").with_child(
+                Element::new(ns::P, "bgPr").with_child(Element::new(ns::A, "solidFill").with_child(Color::scheme("bg1").to_drawingml())),
+            )));
+        mark_starter(&mut origin, template);
         self.change_deck(|slides| {
             slides.insert(to, Slide { frames: b.frames, part, layout, origin: Origin::new(origin), ..Default::default() })
         });

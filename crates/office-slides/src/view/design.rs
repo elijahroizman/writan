@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use office_core::drawing::{Theme, Xfrm};
+use office_core::drawing::Theme;
 use office_core::model::{Body, Frame, FrameContent, Origin, Placeholder, Slide, SlideSize};
 use office_core::opc::{content_types::types, names, rels::kind, Package};
 use office_core::xml::{ns, Element};
@@ -115,12 +115,11 @@ impl SlidesView {
             .clone();
         let donor_layout_count = layouts.len();
         let mut fallbacks = HashMap::new();
-        let plain_heading = default.then(|| templates::plain_content(scale.0, scale.1).remove(0).shape.xfrm).flatten();
         for slide in &before.slides {
             let Some(old) = before.templates.iter().find(|t| Some(t.part.as_str()) == slide.layout.as_deref()) else { continue };
             if old.name.is_empty()
                 || layouts[..donor_layout_count].iter().any(|l| l.name.eq_ignore_ascii_case(&old.name))
-                || default && matches!(old.name.as_str(), "Title Slide" | "Title and Content")
+                || default && plain_layout(slide).is_some()
                 || fallbacks.contains_key(&old.part)
             {
                 continue;
@@ -129,19 +128,23 @@ impl SlidesView {
             let fallback_count = fallbacks.len() + 1;
             let part = format!("{folder}/fallbackLayout{fallback_count}.xml");
             fallbacks.insert(old.part.clone(), layouts.len());
-            let heading = plain_heading.as_ref().filter(|_| old.name == "Title Only" && old.layout_type.as_deref() == Some("titleOnly"));
-            layouts.push(add_fallback_layout(package, &master.part, &blank, &part, old, old_master, heading)?);
+            layouts.push(add_fallback_layout(package, &master.part, &blank, &part, old, old_master)?);
         }
         for (slide, original) in after.slides.iter_mut().zip(&before.slides) {
             let old = before.templates.iter().find(|t| Some(t.part.as_str()) == original.layout.as_deref());
-            let plain = plain_frames(original, old, scale);
-            let layout = plain
-                .as_ref()
-                .and_then(|plain| layouts.iter().find(|l| l.name == plain.name))
-                .or_else(|| old.and_then(|old| fallbacks.get(&old.part).map(|&index| &layouts[index])))
-                .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.name.eq_ignore_ascii_case(&old.name))))
-                .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.layout_type == old.layout_type)))
-                .unwrap_or_else(|| layouts.iter().find(|l| l.part == blank).unwrap());
+            let plain = plain_frames(original, scale);
+            let blank_layout = || layouts.iter().find(|l| l.part == blank).unwrap();
+            let layout = if default && plain.is_some() {
+                blank_layout()
+            } else {
+                plain
+                    .as_ref()
+                    .and_then(|plain| layouts.iter().find(|l| l.name == plain.name))
+                    .or_else(|| old.and_then(|old| fallbacks.get(&old.part).map(|&index| &layouts[index])))
+                    .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.name.eq_ignore_ascii_case(&old.name))))
+                    .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.layout_type == old.layout_type)))
+                    .unwrap_or_else(blank_layout)
+            };
             slide.layout = Some(layout.part.clone());
             if let Some(origin) = slide.origin.get() {
                 let mut origin = origin.clone();
@@ -160,7 +163,7 @@ impl SlidesView {
                 slide.origin = Origin::new(origin);
             }
             for (frame, previous) in slide.frames.iter_mut().zip(&original.frames) {
-                let plain_frame = plain.as_ref().and_then(|plain| plain.frames.iter().find(|f| f.name == frame.name));
+                let plain_frame = plain.as_ref().and_then(|plain| plain.frames.iter().find(|f| f.id == frame.id && f.name == frame.name));
                 let ph = previous.placeholder.as_ref();
                 let target = if let Some(ph) = ph {
                     layout.matching(ph.kind.as_deref().unwrap_or("obj"), ph.index)
@@ -180,11 +183,11 @@ impl SlidesView {
                         }
                         inherit_plain_text(frame, reference);
                     }
-                } else if let Some(ph) = ph {
+                } else if ph.is_some() {
                     frame.shape.xfrm = crate::resolve(&self.doc, original, previous).xfrm;
                     frame.placeholder = None;
-                    if default {
-                        restore_plain_frame(frame, old, ph, scale, previous.shape.xfrm.is_some());
+                    if let Some(reference) = plain_frame.filter(|_| default) {
+                        restore_plain_frame(frame, reference, previous.shape.xfrm.is_some());
                     }
                 }
             }
@@ -204,7 +207,6 @@ fn add_fallback_layout(
     part: &str,
     old: &Template,
     old_master: Option<&Template>,
-    heading: Option<&Xfrm>,
 ) -> Result<Template> {
     let mut layout = pkg.xml(blank)?;
     layout.root.set_attr("", "type", old.layout_type.as_deref().unwrap_or("cust"));
@@ -219,8 +221,7 @@ fn add_fallback_layout(
             ph.set_attr("", "idx", index.to_string());
         }
         let mut shape = Element::new(ns::P, "spPr");
-        let plain = heading.filter(|_| crate::templates::family(&p.kind) == "title");
-        if let Some(xfrm) = plain.or(p.xfrm.as_ref()).or_else(|| old_master?.matching(&p.kind, None)?.xfrm.as_ref()) {
+        if let Some(xfrm) = p.xfrm.as_ref().or_else(|| old_master?.matching(&p.kind, None)?.xfrm.as_ref()) {
             shape.push(xfrm.to_xml(ns::A));
         }
         tree.push(
@@ -258,30 +259,24 @@ struct PlainStarter {
     composite: bool,
 }
 
-fn plain_frames(slide: &Slide, layout: Option<&Template>, (sx, sy): (f64, f64)) -> Option<PlainStarter> {
-    if layout.is_some_and(|l| l.layout_type.as_deref() != Some("blank")) {
-        return None;
+fn plain_layout(slide: &Slide) -> Option<&'static str> {
+    Some(match templates::starter_kind(slide)? {
+        "title" => "Title Slide",
+        "titleAndContent" => "Title and Content",
+        "titleOnly" => "Title Only",
+        "twoContent" => "Two Content",
+        "comparison" => "Comparison",
+        _ => return None,
+    })
+}
+
+fn plain_frames(slide: &Slide, (sx, sy): (f64, f64)) -> Option<PlainStarter> {
+    let name = plain_layout(slide)?;
+    let mut frames = if name == "Title Slide" { templates::plain_title(sx, sy) } else { templates::plain_content(sx, sy) };
+    if !matches!(name, "Title Slide" | "Title and Content") {
+        frames.truncate(1);
     }
-    let title = slide.frames.iter().find(|f| f.name == "Title" && f.placeholder.is_none())?;
-    let has = |names: &[&str]| slide.frames.iter().any(|f| f.placeholder.is_none() && names.contains(&f.name.as_str()));
-    let cover = templates::plain_title(sx, sy);
-    if title.shape.xfrm == cover[0].shape.xfrm || has(&["Subtitle"]) {
-        return Some(PlainStarter { name: "Title Slide", frames: cover, composite: false });
-    }
-    let mut content = templates::plain_content(sx, sy);
-    let (name, composite) = if has(&["Left Header", "Right Header", "Left Body", "Right Body"]) {
-        ("Comparison", true)
-    } else if has(&["Left Content", "Right Content"]) {
-        ("Two Content", true)
-    } else if has(&["Content"]) {
-        return Some(PlainStarter { name: "Title and Content", frames: content, composite: false });
-    } else if title.shape.xfrm == content[0].shape.xfrm {
-        ("Title Only", false)
-    } else {
-        return None;
-    };
-    content.truncate(1);
-    Some(PlainStarter { name, frames: content, composite })
+    Some(PlainStarter { name, frames, composite: matches!(name, "Two Content" | "Comparison") })
 }
 
 fn inherit_plain_text(frame: &mut Frame, plain: &Frame) {
@@ -313,13 +308,7 @@ fn inherit_plain_text(frame: &mut Frame, plain: &Frame) {
     }
 }
 
-fn restore_plain_frame(frame: &mut Frame, layout: Option<&Template>, ph: &Placeholder, (sx, sy): (f64, f64), moved: bool) {
-    let frames = match layout.map(|l| l.name.as_str()) {
-        Some("Title Slide") => templates::plain_title(sx, sy),
-        Some("Title and Content") => templates::plain_content(sx, sy),
-        _ => return,
-    };
-    let Some(plain) = frames.get(ph.index.unwrap_or(0) as usize) else { return };
+fn restore_plain_frame(frame: &mut Frame, plain: &Frame, moved: bool) {
     let FrameContent::Shape { text: Some(body), .. } = &mut frame.content else { return };
     if let Some(props) = plain.paragraphs()[0].runs().next().map(|r| &r.props) {
         for p in &mut body.paragraphs {
@@ -481,11 +470,27 @@ mod tests {
         assert_ne!(headings(&view)[0], original[0]);
         let mut view = SlidesView::open(&view.save().unwrap()).unwrap();
         view.apply_theme("Default").unwrap();
-        let view = SlidesView::open(&view.save().unwrap()).unwrap();
+        let mut view = SlidesView::open(&view.save().unwrap()).unwrap();
         assert_eq!(headings(&view), original);
+        view.apply_theme("Grove").unwrap();
         for (slide, expected) in view.slides()[2..].iter().zip(["Title Only", "Two Content", "Comparison"]) {
             assert_eq!(crate::template(&view.doc, slide.layout.as_deref()).unwrap().name, expected);
         }
+    }
+
+    #[test]
+    fn imported_title_only_keeps_its_heading_geometry_on_default() {
+        let mut view = SlidesView::open(THEMES.iter().find(|(name, _)| *name == "Graphite").unwrap().1).unwrap();
+        let index =
+            view.slides().iter().position(|s| crate::template(&view.doc, s.layout.as_deref()).unwrap().name == "Title Only").unwrap();
+        let heading = |view: &SlidesView| {
+            let slide = &view.slides()[index];
+            crate::resolve(&view.doc, slide, &slide.frames[0]).xfrm
+        };
+        let original = heading(&view);
+        assert_ne!(original, templates::plain_content(1.0, 1.0)[0].shape.xfrm);
+        view.apply_theme("Default").unwrap();
+        assert_eq!(heading(&SlidesView::open(&view.save().unwrap()).unwrap()), original);
     }
 
     #[test]
