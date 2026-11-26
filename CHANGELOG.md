@@ -2,6 +2,13 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.17.1 — 2026-11-26
+
+### Images
+- **Find** (⌘F, or Ctrl+F on Windows and Linux) now finds words in a picture, the way it does in a scanned PDF. Writan reads the picture's text on your computer the first time you search it, and highlights every match on the picture. Enter and Shift+Enter go from one to the next.
+- The **Recognize Text (OCR)** button is gone from the toolbar. To copy the text or save it as Word or a searchable PDF, use **Show Recognized Text** in the **⋯** menu, or **File › Recognize Text (OCR)…**.
+- Drawing or highlighting on the picture keeps the matches, so you can find a word and mark it. Cropping or turning the picture reads it again.
+
 ## 0.17.0 — 2026-11-26
 
 ### Slides
