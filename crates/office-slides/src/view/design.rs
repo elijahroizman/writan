@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use office_core::drawing::Theme;
-use office_core::model::{Body, Frame, FrameContent, Origin, Placeholder, Slide, SlideSize};
+use office_core::model::{Body, Frame, FrameContent, Origin, Placeholder, RunProps, Slide, SlideSize};
 use office_core::opc::{content_types::types, names, rels::kind, Package};
 use office_core::xml::{ns, Element};
 use office_core::{Error, Result};
@@ -65,8 +65,9 @@ impl SlidesView {
             return Ok(false);
         }
         let default = name == "Default";
-        let donor = if default {
-            SlidesView::blank().doc.package.unwrap()
+        let plain_view = default.then(SlidesView::blank);
+        let donor = if let Some(view) = &plain_view {
+            view.doc.package.clone().unwrap()
         } else {
             let bytes = THEMES.iter().find(|(n, _)| *n == name).ok_or_else(|| Error::Invalid(format!("unknown theme: {name}")))?.1;
             Package::read(bytes)?
@@ -130,9 +131,9 @@ impl SlidesView {
             fallbacks.insert(old.part.clone(), layouts.len());
             layouts.push(add_fallback_layout(package, &master.part, &blank, &part, old, old_master)?);
         }
-        for (slide, original) in after.slides.iter_mut().zip(&before.slides) {
+        for (index, (slide, original)) in after.slides.iter_mut().zip(&before.slides).enumerate() {
             let old = before.templates.iter().find(|t| Some(t.part.as_str()) == original.layout.as_deref());
-            let plain = plain_frames(original, scale);
+            let plain = plain_frames(plain_view.as_ref().unwrap_or(self), original, index, scale);
             let blank_layout = || layouts.iter().find(|l| l.part == blank).unwrap();
             let layout = if default && plain.is_some() {
                 blank_layout()
@@ -163,30 +164,30 @@ impl SlidesView {
                 slide.origin = Origin::new(origin);
             }
             for (frame, previous) in slide.frames.iter_mut().zip(&original.frames) {
-                let plain_frame = plain.as_ref().and_then(|plain| plain.frames.iter().find(|f| f.id == frame.id && f.name == frame.name));
+                let plain_frame = plain.as_ref().and_then(|plain| {
+                    plain
+                        .frames
+                        .iter()
+                        .position(|f| f.id == frame.id && f.name == frame.name)
+                        .map(|index| (index as u32, &plain.frames[index]))
+                });
                 let ph = previous.placeholder.as_ref();
                 let target = if let Some(ph) = ph {
                     layout.matching(ph.kind.as_deref().unwrap_or("obj"), ph.index)
-                } else if plain_frame.is_some() {
-                    layout
-                        .placeholders
-                        .iter()
-                        .find(|p| (p.index.unwrap_or(0) == 0 && frame.name == "Title") || (p.index == Some(1) && frame.name != "Title"))
+                } else if let Some((index, _)) = plain_frame {
+                    layout.matching(if index == 0 { "title" } else { "obj" }, Some(index))
                 } else {
                     continue;
                 };
                 if let Some(p) = target {
                     frame.placeholder = Some(Placeholder { kind: (p.kind != "obj").then(|| p.kind.clone()), index: p.index });
-                    if let (Some(starter), Some(reference)) = (&plain, plain_frame) {
-                        if !starter.composite && frame.shape.xfrm == reference.shape.xfrm {
-                            frame.shape.xfrm = None;
-                        }
-                        inherit_plain_text(frame, reference);
+                    if let Some((_, reference)) = plain_frame.filter(|_| ph.is_none()) {
+                        inherit_plain_frame(frame, reference);
                     }
                 } else if ph.is_some() {
                     frame.shape.xfrm = crate::resolve(&self.doc, original, previous).xfrm;
                     frame.placeholder = None;
-                    if let Some(reference) = plain_frame.filter(|_| default) {
+                    if let Some((_, reference)) = plain_frame.filter(|_| default) {
                         restore_plain_frame(frame, reference, previous.shape.xfrm.is_some());
                     }
                 }
@@ -256,7 +257,6 @@ fn add_fallback_layout(
 struct PlainStarter {
     name: &'static str,
     frames: Vec<Frame>,
-    composite: bool,
 }
 
 fn plain_layout(slide: &Slide) -> Option<&'static str> {
@@ -270,34 +270,56 @@ fn plain_layout(slide: &Slide) -> Option<&'static str> {
     })
 }
 
-fn plain_frames(slide: &Slide, (sx, sy): (f64, f64)) -> Option<PlainStarter> {
+fn plain_frames(view: &SlidesView, slide: &Slide, at: usize, (sx, sy): (f64, f64)) -> Option<PlainStarter> {
     let name = plain_layout(slide)?;
-    let mut frames = if name == "Title Slide" { templates::plain_title(sx, sy) } else { templates::plain_content(sx, sy) };
-    if !matches!(name, "Title Slide" | "Title and Content") {
-        frames.truncate(1);
-    }
-    Some(PlainStarter { name, frames, composite: matches!(name, "Two Content" | "Comparison") })
+    let frames = match name {
+        "Title Slide" => templates::plain_title(sx, sy),
+        "Two Content" | "Comparison" => view.column_starter((sx, sy), at, name == "Comparison"),
+        "Title Only" => vec![templates::plain_content(sx, sy).remove(0)],
+        _ => templates::plain_content(sx, sy),
+    };
+    Some(PlainStarter { name, frames })
 }
 
-fn inherit_plain_text(frame: &mut Frame, plain: &Frame) {
+fn inherit_plain_frame(frame: &mut Frame, plain: &Frame) {
+    fn clear_default<T: PartialEq>(value: &mut Option<T>, default: &Option<T>) {
+        if *value == *default {
+            *value = None;
+        }
+    }
+    clear_default(&mut frame.shape.xfrm, &plain.shape.xfrm);
+    clear_default(&mut frame.shape.preset, &plain.shape.preset);
+    clear_default(&mut frame.shape.fill, &plain.shape.fill);
+    clear_default(&mut frame.shape.line, &plain.shape.line);
     let FrameContent::Shape { text: Some(body), .. } = &mut frame.content else { return };
-    let Some(props) = plain.paragraphs()[0].runs().next().map(|r| &r.props) else { return };
+    let FrameContent::Shape { text: Some(reference), .. } = &plain.content else { return };
+    let Some(paragraph) = reference.paragraphs.first() else { return };
+    let Some(props) = paragraph.runs().next().map(|r| &r.props) else { return };
+    let inherit = |target: &mut RunProps| {
+        clear_default(&mut target.font, &props.font);
+        clear_default(&mut target.size, &props.size);
+        clear_default(&mut target.color, &props.color);
+        clear_default(&mut target.bold, &props.bold);
+    };
     for p in &mut body.paragraphs {
+        clear_default(&mut p.props.align, &paragraph.props.align);
         for r in p.runs_mut() {
-            let target = &mut r.props;
-            if target.font == props.font {
-                target.font = None;
-            }
-            if target.size == props.size {
-                target.size = None;
-            }
-            if target.color == props.color {
-                target.color = None;
-            }
-            if target.bold == props.bold {
-                target.bold = None;
+            inherit(&mut r.props);
+        }
+        if let Some(mark) = &mut p.mark {
+            inherit(mark);
+        }
+    }
+    if let (Some(mut origin), Some(reference)) = (body.origin.get().cloned(), reference.origin.get().and_then(|o| o.child(ns::A, "bodyPr")))
+    {
+        if let Some(pr) = origin.child_mut(ns::A, "bodyPr") {
+            for attr in reference.attrs.iter().filter(|attr| attr.ns.is_none()) {
+                if pr.attr(&attr.local) == Some(&attr.value) {
+                    pr.remove_attr("", &attr.local);
+                }
             }
         }
+        body.origin = Origin::new(origin);
     }
     if let Some(origin) = frame.origin.get() {
         let mut origin = origin.clone();
@@ -309,15 +331,36 @@ fn inherit_plain_text(frame: &mut Frame, plain: &Frame) {
 }
 
 fn restore_plain_frame(frame: &mut Frame, plain: &Frame, moved: bool) {
+    frame.shape.preset = frame.shape.preset.take().or_else(|| plain.shape.preset.clone());
+    frame.shape.fill = frame.shape.fill.take().or_else(|| plain.shape.fill.clone());
+    frame.shape.line = frame.shape.line.take().or_else(|| plain.shape.line.clone());
     let FrameContent::Shape { text: Some(body), .. } = &mut frame.content else { return };
-    if let Some(props) = plain.paragraphs()[0].runs().next().map(|r| &r.props) {
+    let FrameContent::Shape { text: Some(reference), .. } = &plain.content else { return };
+    if let Some(paragraph) = reference.paragraphs.first() {
+        let props = paragraph.runs().next().map(|r| r.props.clone()).unwrap_or_default();
         for p in &mut body.paragraphs {
+            p.props.align = p.props.align.or(paragraph.props.align);
             for r in p.runs_mut() {
                 let mut restored = props.clone();
                 restored.overlay(&r.props);
                 r.props = restored;
             }
+            if let Some(mark) = &mut p.mark {
+                let mut restored = props.clone();
+                restored.overlay(mark);
+                *mark = restored;
+            }
         }
+    }
+    if let Some(reference) = reference.origin.get().and_then(|o| o.child(ns::A, "bodyPr")) {
+        let mut origin = body.origin.get().cloned().unwrap_or_else(|| Element::new(ns::P, "txBody"));
+        let pr = origin.child_or_insert(ns::A, "bodyPr");
+        for attr in reference.attrs.iter().filter(|attr| attr.ns.is_none()) {
+            if pr.attr(&attr.local).is_none() {
+                pr.set_attr("", &attr.local, &attr.value);
+            }
+        }
+        body.origin = Origin::new(origin);
     }
     frame.name = plain.name.clone();
     if !moved {
@@ -441,18 +484,29 @@ mod tests {
     }
 
     #[test]
-    fn themed_column_starter_titles_do_not_overlap_their_panels() {
+    fn themed_column_starters_inherit_layout_positions_without_moving_added_shapes() {
         let mut view = SlidesView::blank();
         view.add_template(1, "twoContent");
         view.add_template(2, "comparison");
-        view.apply_theme("Graphite").unwrap();
-        for slide in &view.slides()[2..] {
-            let title = &slide.frames[0];
-            let placement = crate::resolve(&view.doc, slide, title).xfrm.unwrap();
-            for panel in &slide.frames[1..] {
-                let bounds = panel.shape.xfrm.as_ref().unwrap();
-                assert!(placement.y.0 + placement.height.0 <= bounds.y.0, "title overlaps {}", panel.name);
+        let id = view.insert_shape("ellipse");
+        let shape = view.slides()[3].frames.iter().find(|f| f.id == id).unwrap().clone();
+        let original = content(&view);
+        for theme in ["Grove", "Graphite"] {
+            view.apply_theme(theme).unwrap();
+            for slide in &view.slides()[2..] {
+                let layout = crate::template(&view.doc, slide.layout.as_deref()).unwrap();
+                for (index, frame) in slide.frames.iter().filter(|f| f.name != shape.name).enumerate() {
+                    let ph = frame.placeholder.as_ref().unwrap();
+                    assert_eq!(ph.index.unwrap_or(0), index as u32);
+                    let template = layout.matching(ph.kind.as_deref().unwrap_or("obj"), ph.index).unwrap();
+                    let geometry = crate::resolve(&view.doc, slide, frame).xfrm;
+                    assert!(geometry.is_some());
+                    assert_eq!(geometry, template.xfrm);
+                    assert!(frame.shape.fill.is_none());
+                }
             }
+            assert_eq!(view.slides()[3].frames.iter().find(|f| f.id == id).unwrap(), &shape);
+            assert_eq!(content(&view), original);
         }
     }
 

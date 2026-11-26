@@ -154,6 +154,22 @@ impl Builder {
         heading.truncate(1);
         self.frames.extend(heading);
     }
+
+    fn columns(&mut self, comparison: bool, ink: impl Fn(&str) -> &'static str) {
+        self.title();
+        if comparison {
+            for (x, side, option, accent, text) in [
+                (MARGIN, "Left", "Option A", "accent1", "First content area"),
+                (RIGHT, "Right", "Option B", "accent2", "Second content area"),
+            ] {
+                self.panel((x, 1_720_000.0, HALF, 700_000.0), &format!("{side} Header"), option, accent, 18.0, ink(accent), true);
+                self.panel((x, 2_540_000.0, HALF, 3_580_000.0), &format!("{side} Body"), text, "bg2", 16.0, "tx2", false);
+            }
+        } else {
+            self.panel((MARGIN, 1_720_000.0, HALF, 4_400_000.0), "Left Content", "First content area", "bg2", 16.0, "tx2", false);
+            self.panel((RIGHT, 1_720_000.0, HALF, 4_400_000.0), "Right Content", "Second content area", "bg2", 16.0, "tx2", false);
+        }
+    }
 }
 
 /// A text box for the plain slides, `x`, `y`, `w` and `h` in inches on a 16:9 slide, scaled by
@@ -222,6 +238,12 @@ fn luminance(c: office_core::drawing::Rgb) -> f64 {
 }
 
 impl SlidesView {
+    pub(super) fn column_starter(&self, scale: (f64, f64), at: usize, comparison: bool) -> Vec<Frame> {
+        let mut b = Builder { sx: scale.0, sy: scale.1, frames: Vec::new() };
+        b.columns(comparison, |accent| self.ink_on(at, accent));
+        b.frames
+    }
+
     /// The theme's light or dark color, whichever reads better on `fill` (white on a dark
     /// accent, near-black on a yellow one), as the slide at `at` shows them.
     fn ink_on(&self, at: usize, fill: &str) -> &'static str {
@@ -280,29 +302,7 @@ impl SlidesView {
                     "t",
                 );
             }
-            "twoContent" => {
-                b.title();
-                b.panel((MARGIN, 1_720_000.0, HALF, 4_400_000.0), "Left Content", "First content area", "bg2", 16.0, "tx2", false);
-                b.panel((RIGHT, 1_720_000.0, HALF, 4_400_000.0), "Right Content", "Second content area", "bg2", 16.0, "tx2", false);
-            }
-            "comparison" => {
-                b.title();
-                for (x, side, option, accent, text) in [
-                    (MARGIN, "Left", "Option A", "accent1", "First content area"),
-                    (RIGHT, "Right", "Option B", "accent2", "Second content area"),
-                ] {
-                    b.panel(
-                        (x, 1_720_000.0, HALF, 700_000.0),
-                        &format!("{side} Header"),
-                        option,
-                        accent,
-                        18.0,
-                        self.ink_on(after, accent),
-                        true,
-                    );
-                    b.panel((x, 2_540_000.0, HALF, 3_580_000.0), &format!("{side} Body"), text, "bg2", 16.0, "tx2", false);
-                }
-            }
+            "twoContent" | "comparison" => b.columns(template == "comparison", |accent| self.ink_on(after, accent)),
             "titleOnly" => b.title(),
             "quote" => {
                 b.text((MARGIN, 1_100_000.0, 1_600_000.0, 1_500_000.0), "Quote Mark", "“", 96.0, "accent1", true, Align::Left, "t");
