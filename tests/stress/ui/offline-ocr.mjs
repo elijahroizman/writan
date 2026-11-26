@@ -255,8 +255,9 @@ export async function makeScans(page, fixtures) {
 
 // A PDF with real JPEG XObjects and an optional digital first page, blank pages, a line of real
 // text over each scan (as library copies have), scans drawn in a unit-square form XObject on pages
-// whose box starts at 100, 100 (`wrapped`), or a synthetic signature field.
-export function scanPdf(scans, { digital = '', blank = 0, footer = '', wrapped = false, signed = false } = {}) {
+// whose box starts at 100, 100 (`wrapped`), a small copy beside a page-sized drawing in a form
+// scaled 2× (`art`), or a synthetic signature field.
+export function scanPdf(scans, { digital = '', blank = 0, footer = '', wrapped = false, art = false, signed = false } = {}) {
   const objects = [null, null]
   const add = object => objects.push(object)
   const stream = (dict, content) => {
@@ -276,6 +277,12 @@ export function scanPdf(scans, { digital = '', blank = 0, footer = '', wrapped =
     const h = height * 0.75
     const text = footer ? ` BT /F1 9 Tf 20 12 Td (${footer}) Tj ET` : ''
     const fonts = footer ? ` /Font << /F1 ${font} 0 R >>` : ''
+    if (art) {
+      const form = add(stream(`/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /Scan ${image} 0 R >> >>`, '0 0 300 300 re f q 10 0 0 10 5 5 cm /Scan Do Q'))
+      const body = add(stream('', 'q 2 0 0 2 0 0 cm /Fm Do Q'))
+      pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /Resources << /XObject << /Fm ${form} 0 R >> >> /Contents ${body} 0 R >>`))
+      continue
+    }
     if (wrapped) {
       const form = add(stream(`/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Scan ${image} 0 R >> >>`, '/Scan Do'))
       const body = add(stream('', `q ${w} 0 0 ${h} 100 100 cm /Fm Do Q`))
@@ -571,6 +578,22 @@ async function verifyAutomaticRecognition(page, scan, real) {
     return window.ocrCalls
   })
   assert.equal(calls, 0)
+  // How much of each page is picture, as the scan check measures it.
+  const coverage = await page.evaluate(async encoded => {
+    const engine = await window.ocrApi.PdfEngine.create()
+    try {
+      const out = []
+      for (const bytes of encoded) {
+        const { pages } = await engine.call('open', [Uint8Array.fromBase64(bytes).buffer, ''])
+        out.push((await engine.call('pageTextStats', [pages[0].key])).imageCoverage)
+      }
+      return out
+    } finally {
+      engine.destroy()
+    }
+  }, [scanPdf([scan]), scanPdf([scan], { wrapped: true }), scanPdf([scan], { art: true })].map(base64))
+  assert(coverage[0] >= 0.5 && coverage[1] >= 0.5, 'A scan, also through a scaled form on a moved page box, is mostly picture: ' + coverage)
+  assert(coverage[2] < 0.01, 'A small picture beside a drawing is not: ' + coverage[2])
   const recognizedLayers = () => page.evaluate(() =>
     [...document.querySelectorAll('.text-layer')].filter(layer => /quick/i.test(layer.textContent ?? '')).length)
   const closeAll = () => page.evaluate(async () => {

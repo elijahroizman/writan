@@ -823,10 +823,14 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     if (!extra.length) return
     run.hits.set(p.key, [...(run.hits.get(p.key) ?? []), ...extra])
     setFind((have) => (have && have.query === run.query ? { ...have, hits: new Map(run.hits) } : have))
-    // Matches added on an earlier page move the current one along, so it stays the same match.
+    // Every match collected so far is now shown, so count those before the current one again:
+    // it stays the same match (a page's added matches come after its own).
     const { matchList: list, findIndex: at } = findAt.current
     const current = list[at]
-    if (current && s.pages.findIndex((q) => q.key === p.key) < current[0]) setFindIndex(at + extra.length)
+    if (!current) return
+    let n = current[1]
+    for (let i = 0; i < current[0]; i++) n += run.hits.get(s.pages[i]?.key)?.length ?? 0
+    setFindIndex(n)
   }, [])
 
   // Page edits move or reshape pages, so search again.
@@ -846,7 +850,11 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const ocrLangs = useOcrPacks((s) => s.selectedLangs.join('+'))
   const readWith = useRef(ocrLangs)
   useEffect(() => {
-    if (store && readWith.current !== ocrLangs) store.clearOcr()
+    if (store && readWith.current !== ocrLangs) {
+      store.clearOcr()
+      // The open search loses the matches read with the old languages.
+      if (findRun.current) runFind(findRun.current.query)
+    }
     readWith.current = ocrLangs
     if (!store || !awake || !scannedKeys.length) return
     const scanned = new Set(scannedKeys)

@@ -77,13 +77,16 @@ export function pageText(result: OcrPageResult, page: PageInfo, own: Box[] = [])
 
 /**
  * The page's own text and its recognized words in one reading order: each run of its own goes
- * before the first word below it, so a selection dragged into a footer doesn't take the whole page.
+ * before the first word to its right on its line, or else below it, so a selection dragged into a
+ * footer doesn't take the whole page and a label stays before what follows it.
  */
 export function withRecognized(own: TextRun[], words: TextRun[]): TextRun[] {
   const out = words.slice()
   for (const run of own) {
-    const middle = run.box.y + run.box.h / 2
-    const at = out.findIndex((w) => w.ocr && w.box.y > middle)
+    const { x, y, h } = run.box
+    const middle = y + h / 2
+    const sameLine = (w: TextRun) => w.box.y < middle && w.box.y + w.box.h > middle
+    const at = out.findIndex((w) => w.ocr && (sameLine(w) ? w.box.x > x : w.box.y > middle))
     out.splice(at === -1 ? out.length : at, 0, run)
   }
   return out

@@ -329,12 +329,17 @@ function textArea(tp: number, count: number, pagePtr: number): number {
   return Math.min(1, area / (width * height))
 }
 
+type Matrix = [number, number, number, number, number, number]
+
+/** `outer` after `inner`: maps what `inner` maps from to where `outer` maps to. */
+const compose = ([a, b, c, d, e, f]: Matrix, [p, q, r, s, t, u]: Matrix): Matrix => [a * p + c * q, b * p + d * q, a * r + c * s, b * r + d * s, a * t + c * u + e, b * t + d * u + f]
+
 /**
- * Share of the page (0–1) under its largest picture. A picture inside a form XObject is measured
- * by the form's box on the page, as objects inside a form report bounds in the form's own space.
+ * Share of the page (0–1) under its largest picture. Objects inside a form XObject report bounds
+ * in the form's own space, so they're carried to the page through each form's matrix.
  */
 function pictureCoverage(pagePtr: number): number {
-  const page = scratch(16)
+  const page = scratch(24)
   const rect = scratch(16)
   try {
     // The visible page, in the same space as the page's objects (its origin needn't be 0, 0).
@@ -343,24 +348,29 @@ function pictureCoverage(pagePtr: number): number {
     const [x0, x1, y0, y1] = [Math.min(a, c), Math.max(a, c), Math.min(b, d), Math.max(b, d)]
     const area = (x1 - x0) * (y1 - y0)
     if (!(area > 0)) return 0
-    const hasPicture = (obj: number, depth: number): boolean => {
-      const type = mod.FPDFPageObj_GetType(obj)
-      if (type === 3 /* FPDF_PAGEOBJ_IMAGE */) return true
-      if (type !== 5 /* FPDF_PAGEOBJ_FORM */ || depth >= 4) return false
-      const n = mod.FPDFFormObj_CountObjects(obj)
-      for (let i = 0; i < n; i++) if (hasPicture(mod.FPDFFormObj_GetObject(obj, i), depth + 1)) return true
-      return false
-    }
     let best = 0
-    const n = mod.FPDFPage_CountObjects(pagePtr)
-    for (let i = 0; i < n && best < 0.5; i++) {
-      const obj = mod.FPDFPage_GetObject(pagePtr, i)
+    const visit = (obj: number, toPage: Matrix, depth: number) => {
+      const type = mod.FPDFPageObj_GetType(obj)
+      if (type === 5 /* FPDF_PAGEOBJ_FORM */ && depth < 4) {
+        if (!mod.FPDFPageObj_GetMatrix(obj, page)) return
+        const form: Matrix = [0, 4, 8, 12, 16, 20].map((o) => getF(page + o)) as Matrix
+        const inner = compose(toPage, form)
+        const n = mod.FPDFFormObj_CountObjects(obj)
+        for (let i = 0; i < n && best < 0.5; i++) visit(mod.FPDFFormObj_GetObject(obj, i), inner, depth + 1)
+        return
+      }
       // left, bottom, right, top
-      if (!hasPicture(obj, 0) || !mod.FPDFPageObj_GetBounds(obj, rect, rect + 4, rect + 8, rect + 12)) continue
-      const w = Math.min(getF(rect + 8), x1) - Math.max(getF(rect), x0)
-      const h = Math.min(getF(rect + 12), y1) - Math.max(getF(rect + 4), y0)
+      if (type !== 3 /* FPDF_PAGEOBJ_IMAGE */ || !mod.FPDFPageObj_GetBounds(obj, rect, rect + 4, rect + 8, rect + 12)) return
+      const [l, bt, r, t] = [getF(rect), getF(rect + 4), getF(rect + 8), getF(rect + 12)]
+      const [ma, mb, mc, md, me, mf] = toPage
+      const xs = [l * ma + bt * mc + me, r * ma + bt * mc + me, l * ma + t * mc + me, r * ma + t * mc + me]
+      const ys = [l * mb + bt * md + mf, r * mb + bt * md + mf, l * mb + t * md + mf, r * mb + t * md + mf]
+      const w = Math.min(Math.max(...xs), x1) - Math.max(Math.min(...xs), x0)
+      const h = Math.min(Math.max(...ys), y1) - Math.max(Math.min(...ys), y0)
       if (w > 0 && h > 0) best = Math.max(best, (w * h) / area)
     }
+    const n = mod.FPDFPage_CountObjects(pagePtr)
+    for (let i = 0; i < n && best < 0.5; i++) visit(mod.FPDFPage_GetObject(pagePtr, i), [1, 0, 0, 1, 0, 0], 0)
     return Math.min(1, best)
   } finally {
     free(page)
