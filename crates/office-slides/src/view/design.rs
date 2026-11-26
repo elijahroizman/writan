@@ -253,12 +253,25 @@ fn plain_frames(slide: &Slide, layout: Option<&Template>, (sx, sy): (f64, f64)) 
         return None;
     }
     let title = slide.frames.iter().find(|f| f.name == "Title" && f.placeholder.is_none())?;
-    for (name, frames) in [("Title Slide", templates::plain_title(sx, sy)), ("Title and Content", templates::plain_content(sx, sy))] {
-        if title.shape.xfrm == frames[0].shape.xfrm || slide.frames.iter().any(|f| f.name == frames[1].name && f.placeholder.is_none()) {
-            return Some((name, frames));
-        }
+    let has = |names: &[&str]| slide.frames.iter().any(|f| f.placeholder.is_none() && names.contains(&f.name.as_str()));
+    let cover = templates::plain_title(sx, sy);
+    if title.shape.xfrm == cover[0].shape.xfrm || has(&["Subtitle"]) {
+        return Some(("Title Slide", cover));
     }
-    None
+    let mut content = templates::plain_content(sx, sy);
+    let name = if has(&["Left Header", "Right Header", "Left Body", "Right Body"]) {
+        "Comparison"
+    } else if has(&["Left Content", "Right Content"]) {
+        "Two Content"
+    } else if has(&["Content"]) {
+        return Some(("Title and Content", content));
+    } else if title.shape.xfrm == content[0].shape.xfrm {
+        "Title Only"
+    } else {
+        return None;
+    };
+    content.truncate(1);
+    Some((name, content))
 }
 
 fn inherit_plain_text(frame: &mut Frame, plain: &Frame) {
@@ -409,6 +422,23 @@ mod tests {
         assert!(title.placeholder.is_some());
         let run = &crate::resolve(&view.doc, slide, title).paragraphs[0].1[0];
         assert_eq!(crate::color(&view.doc, slide, run.color.as_ref().unwrap()).rgb, office_core::drawing::Rgb(255, 255, 255));
+    }
+
+    #[test]
+    fn plain_starters_with_the_same_title_geometry_map_to_their_own_layouts() {
+        let mut view = SlidesView::blank();
+        let cases = [("titleOnly", "Title Only"), ("twoContent", "Two Content"), ("comparison", "Comparison")];
+        for (i, (starter, _)) in cases.iter().enumerate() {
+            view.add_template(i + 1, starter);
+        }
+        let mut view = SlidesView::open(&view.save().unwrap()).unwrap();
+        let original = content(&view);
+        view.apply_theme("Graphite").unwrap();
+        assert_eq!(content(&view), original);
+        for (slide, (_, expected)) in view.slides()[2..].iter().zip(cases) {
+            assert_eq!(crate::template(&view.doc, slide.layout.as_deref()).unwrap().name, expected);
+            assert!(slide.frames[0].placeholder.is_some());
+        }
     }
 
     #[test]
