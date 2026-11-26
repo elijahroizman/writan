@@ -13,6 +13,23 @@ const check = (name, ok, detail = '') => {
 const shot = async (name) => {
   if (process.env.SLIDE_THEME_SCREENSHOTS) await page.screenshot({ path: join(process.env.SLIDE_THEME_SCREENSHOTS, `${name}.png`) })
 }
+const run = (command) => page.evaluate((cmd) => window.__slides.run(cmd), command)
+const typeIn = async (id, value) => {
+  await run({ cmd: 'beginEdit', id: Number(id), x: null, y: null })
+  await page.locator('.sc-input').focus()
+  await page.keyboard.insertText(value)
+  await run({ cmd: 'endEdit' })
+}
+const contrast = (value) => page.locator('.sc-slide .slide-surface').getByText(value, { exact: true }).evaluate((el) => {
+  const luminance = (css) => {
+    const rgb = css.match(/\d+/g).slice(0, 3).map((n) => Number(n) / 255)
+    const linear = rgb.map((v) => v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4)
+    return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+  }
+  const ink = luminance(getComputedStyle(el).color)
+  const bg = luminance(getComputedStyle(el.closest('.slide-surface').firstElementChild).backgroundColor)
+  return (Math.max(ink, bg) + 0.05) / (Math.min(ink, bg) + 0.05)
+})
 
 try {
   await page.goto(process.env.WRITAN_URL ?? 'http://localhost:1420/')
@@ -33,6 +50,15 @@ try {
 
   const theme = page.getByRole('button', { name: 'Theme', exact: true })
   const themeItems = page.getByRole('menu').getByRole('menuitem')
+  const applyTheme = async (name) => {
+    await theme.click()
+    await themeItems.getByText(name, { exact: true }).click()
+    await page.waitForFunction((expected) => window.__slides.theme.name === expected, name === 'Default' ? plain.theme.name : name)
+  }
+  const addSlide = async (name) => {
+    await page.getByRole('button', { name: 'Slide', exact: true }).click()
+    await page.getByRole('menuitem', { name, exact: true }).click()
+  }
   await theme.click()
   const options = await themeItems.allTextContents()
   check('the in-deck Design control offers Default and all nine themes', options.join(', ') === 'Default, Harbor, Summit, Grove, Copper, Graphite, Meridian, Standard, Gallery, Dune', JSON.stringify(options))
@@ -62,6 +88,24 @@ try {
   const restored = await page.evaluate(() => ({ theme: window.__slides.theme, layouts: window.__slides.layouts.length, title: window.__slides.elements[0] }))
   check('Default restores the plain title and theme', restored.theme.name === plain.theme.name && restored.layouts === 1 &&
     restored.title.x === plain.title.x && restored.title.text === plain.title.text, JSON.stringify(restored))
+
+  await applyTheme('Copper')
+  await addSlide('Comparison')
+  const comparison = await page.evaluate(() => window.__slides.elements.map((e) => e.id))
+  const values = ['Evaluation', 'FirstOption', 'FirstBenefit', 'SecondOption', 'SecondBenefit']
+  check('the Comparison slide has five editable placeholders', comparison.length === values.length, JSON.stringify(comparison))
+  for (const [i, id] of comparison.entries()) await typeIn(id, values[i])
+  const activeLayout = () => page.evaluate(() => {
+    const deck = window.__slides
+    return deck.layouts.find((l) => l.path === deck.slides[deck.state.active].layout)?.name
+  })
+  await applyTheme('Default')
+  check('Default retains Comparison layout identity', await activeLayout() === 'Comparison')
+  await applyTheme('Graphite')
+  check('Graphite restores Comparison rather than Blank', await activeLayout() === 'Comparison')
+  const contrastRatios = await Promise.all(values.map(contrast))
+  check('all five Comparison strings remain readable on Graphite', contrastRatios.every((value) => value >= 4.5), JSON.stringify(contrastRatios))
+  await shot('05-comparison-round-trip')
 
   // The + menu has no template entry.
   await page.getByRole('tab', { name: 'Home' }).click()

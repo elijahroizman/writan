@@ -342,10 +342,11 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
 
   const newSlideMenu = (anchor: { x: number; y: number }) => {
     const after = deckRef.current.activeIndex
-    const themed = engine.layouts.length > 1 && engine.layouts.some((layout) => layout.path.startsWith('ppt/writan-design/'))
+    const themed = engine.layouts.length > 1 && engine.layouts.some((layout) => layout.path.startsWith('ppt/writan-design/') && !layout.path.startsWith('ppt/writan-design/default/'))
     const items: MenuEntry[] = themed ? [] : NEW_SLIDE_TEMPLATES.map((id) => ({ label: templateLabel(id), onSelect: () => engine.run({ cmd: 'addTemplate', after, template: id }) }))
     if (engine.layouts.length > 1) {
-      engine.layouts.forEach((l, i) => items.push({ label: l.name, separatorBefore: !themed && i === 0, onSelect: () => engine.run({ cmd: 'addSlide', after, layout: l.path }) }))
+      const layouts = engine.layouts.filter((l) => !l.path.startsWith('ppt/writan-design/default/'))
+      layouts.forEach((l, i) => items.push({ label: l.name, separatorBefore: !themed && i === 0, onSelect: () => engine.run({ cmd: 'addSlide', after, layout: l.path }) }))
     }
     setMenu({ ...anchor, items })
   }

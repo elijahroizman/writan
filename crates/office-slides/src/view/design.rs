@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use office_core::drawing::Theme;
 use office_core::model::{Body, Frame, FrameContent, Origin, Placeholder, Slide, SlideSize};
-use office_core::opc::{names, rels::kind, Package};
+use office_core::opc::{content_types::types, names, rels::kind, Package};
 use office_core::xml::{ns, Element};
 use office_core::{Error, Result};
 
@@ -101,7 +101,7 @@ impl SlidesView {
         after.origin = Origin::new(pres);
         let master = Template::read(package, &master)?;
         after.theme = master.theme.clone();
-        let layouts: Vec<Template> = package
+        let mut layouts: Vec<Template> = package
             .related(&master.part, kind::SLIDE_LAYOUT)?
             .into_iter()
             .map(|(_, part)| Template::read(package, &part))
@@ -110,7 +110,23 @@ impl SlidesView {
             .iter()
             .find(|l| l.layout_type.as_deref() == Some("blank"))
             .or_else(|| layouts.first())
-            .ok_or_else(|| Error::MissingPart("theme layout".into()))?;
+            .ok_or_else(|| Error::MissingPart("theme layout".into()))?
+            .part
+            .clone();
+        let mut fallback_count = 0;
+        for slide in &before.slides {
+            let Some(old) = before.templates.iter().find(|t| Some(t.part.as_str()) == slide.layout.as_deref()) else { continue };
+            if old.name.is_empty()
+                || layouts.iter().any(|l| l.name.eq_ignore_ascii_case(&old.name))
+                || default && matches!(old.name.as_str(), "Title Slide" | "Title and Content")
+            {
+                continue;
+            }
+            fallback_count += 1;
+            let old_master = before.templates.iter().find(|t| Some(t.part.as_str()) == old.master.as_deref());
+            let part = format!("{folder}/fallbackLayout{fallback_count}.xml");
+            layouts.push(add_fallback_layout(package, &master.part, &blank, &part, old, old_master)?);
+        }
         for (slide, original) in after.slides.iter_mut().zip(&before.slides) {
             let old = before.templates.iter().find(|t| Some(t.part.as_str()) == original.layout.as_deref());
             let plain = plain_frames(original, old, scale);
@@ -119,7 +135,7 @@ impl SlidesView {
                 .and_then(|(name, _)| layouts.iter().find(|l| l.name == *name))
                 .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.name.eq_ignore_ascii_case(&old.name))))
                 .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.layout_type == old.layout_type)))
-                .unwrap_or(blank);
+                .unwrap_or_else(|| layouts.iter().find(|l| l.part == blank).unwrap());
             slide.layout = Some(layout.part.clone());
             if let Some(origin) = slide.origin.get() {
                 let mut origin = origin.clone();
@@ -173,6 +189,59 @@ impl SlidesView {
         self.record(vec![SStep::Design { before: Box::new(before), after: Box::new(after) }], sel, None);
         Ok(true)
     }
+}
+
+fn add_fallback_layout(
+    pkg: &mut Package,
+    master: &str,
+    blank: &str,
+    part: &str,
+    old: &Template,
+    old_master: Option<&Template>,
+) -> Result<Template> {
+    let mut layout = pkg.xml(blank)?;
+    layout.root.set_attr("", "type", old.layout_type.as_deref().unwrap_or("cust"));
+    let c = layout.root.child_or_insert(ns::P, "cSld");
+    c.set_attr("", "name", &old.name);
+    c.remove_children(ns::P, "bg");
+    let tree = c.child_or_insert(ns::P, "spTree");
+    tree.children.retain(|node| !matches!(node, office_core::xml::Node::Element(el) if el.in_ns(ns::P) && !matches!(el.local.as_str(), "nvGrpSpPr" | "grpSpPr")));
+    for (i, p) in old.placeholders.iter().enumerate() {
+        let mut ph = Element::new(ns::P, "ph").with_attr("", "type", &p.kind);
+        if let Some(index) = p.index {
+            ph.set_attr("", "idx", index.to_string());
+        }
+        let mut shape = Element::new(ns::P, "spPr");
+        if let Some(xfrm) = p.xfrm.as_ref().or_else(|| old_master?.matching(&p.kind, None)?.xfrm.as_ref()) {
+            shape.push(xfrm.to_xml(ns::A));
+        }
+        tree.push(
+            Element::new(ns::P, "sp")
+                .with_child(
+                    Element::new(ns::P, "nvSpPr")
+                        .with_child(Element::new(ns::P, "cNvPr").with_attr("", "id", (i + 2).to_string()).with_attr("", "name", &p.name))
+                        .with_child(Element::new(ns::P, "cNvSpPr"))
+                        .with_child(Element::new(ns::P, "nvPr").with_child(ph)),
+                )
+                .with_child(shape)
+                .with_child(
+                    Element::new(ns::P, "txBody")
+                        .with_child(Element::new(ns::A, "bodyPr"))
+                        .with_child(Element::new(ns::A, "lstStyle"))
+                        .with_child(Element::new(ns::A, "p")),
+                ),
+        );
+    }
+    layout.root.remove_children(ns::P, "clrMapOvr");
+    pkg.put_xml(part, &layout, types::PPTX_LAYOUT);
+    pkg.relate(part, kind::SLIDE_MASTER, master)?;
+    let rid = pkg.relate(master, kind::SLIDE_LAYOUT, part)?;
+    let mut master_xml = pkg.xml(master)?;
+    let ids = master_xml.root.child_or_insert(ns::P, "sldLayoutIdLst");
+    let id = ids.children_named(ns::P, "sldLayoutId").filter_map(|e| e.attr("id")?.parse::<u32>().ok()).max().unwrap_or(2147483648) + 1;
+    ids.push(Element::new(ns::P, "sldLayoutId").with_attr("", "id", id.to_string()).with_attr(ns::R, "id", rid));
+    pkg.put_xml(master, &master_xml, types::PPTX_MASTER);
+    Template::read(pkg, part)
 }
 
 fn plain_frames(slide: &Slide, layout: Option<&Template>, (sx, sy): (f64, f64)) -> Option<(&'static str, Vec<Frame>)> {
