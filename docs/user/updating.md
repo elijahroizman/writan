@@ -4,7 +4,7 @@ The update button (↑) at the top right shows the release notes, from [CHANGELO
 
 ## Mac and Windows
 
-New versions download in the background, checked after launch and every four hours, and install when you quit. To install one straight away, click the update button in the tab bar. Updates are signed, and Writan refuses one whose signature doesn't match.
+New versions download in the background, checked after launch and every four hours, and install when you quit. If the update feed is temporarily unavailable, Writan retries after 5 seconds, then 30 seconds, then 2 minutes. You can still click **Try again**. To install one straight away, click the update button in the tab bar. Updates are signed, and Writan refuses one whose signature doesn't match.
 
 ## Debian and Ubuntu
 

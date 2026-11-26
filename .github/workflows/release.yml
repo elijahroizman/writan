@@ -33,7 +33,48 @@ permissions:
   contents: write
 
 jobs:
+  prepare:
+    name: Prepare release
+    runs-on: ubuntu-24.04
+    outputs:
+      release_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Release notes
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
+          section="$(awk -v v="$version" '/^## /{ if (found) exit; if (index($0, "## " v " ") == 1) { found = 1; next } } found' CHANGELOG.md)"
+          if [ -z "$(printf '%s' "$section" | tr -d '[:space:]')" ]; then
+            echo "CHANGELOG.md has no section for $version." >&2
+            exit 1
+          fi
+          {
+            printf '%s\n\n' "$section"
+            echo "Earlier versions: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/v${version}/CHANGELOG.md). How to install: [README](https://github.com/${GITHUB_REPOSITORY}#install)."
+          } > "$RUNNER_TEMP/notes.md"
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+      - name: Create or resume the draft
+        id: draft
+        if: github.event_name == 'push' || inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG" > /dev/null 2>&1; then
+            gh release create "$TAG" --draft --target "$GITHUB_SHA" --title "Writan $TAG" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          release="$(gh release view "$TAG" --json databaseId,isDraft)"
+          if ! jq -e '.isDraft' <<< "$release" > /dev/null; then
+            echo "::error::$TAG is already public; refusing to replace live update assets."
+            exit 1
+          fi
+          echo "id=$(jq -r .databaseId <<< "$release")" >> "$GITHUB_OUTPUT"
+
   build:
+    needs: prepare
     strategy:
       fail-fast: false
       matrix:
@@ -114,25 +155,6 @@ jobs:
         with:
           tool: wasm-bindgen@0.2.129
       - run: npm ci
-      - name: Release notes
-        id: notes
-        shell: bash
-        run: |
-          set -euo pipefail
-          # The release body is this version's section of CHANGELOG.md: what the update panel
-          # in the app shows. A version without one doesn't get released.
-          version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-          section="$(awk -v v="$version" '/^## /{ if (found) exit; if (index($0, "## " v " ") == 1) { found = 1; next } } found' CHANGELOG.md)"
-          if [ -z "$(printf '%s' "$section" | tr -d '[:space:]')" ]; then
-            echo "CHANGELOG.md has no section for $version. Add one headed '## $version — <date>'." >&2
-            exit 1
-          fi
-          {
-            echo 'body<<RELEASE_NOTES_EOF'
-            printf '%s\n\n' "$section"
-            echo "Earlier versions: [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/v${version}/CHANGELOG.md). How to install: [README](https://github.com/${GITHUB_REPOSITORY}#install)."
-            echo 'RELEASE_NOTES_EOF'
-          } >> "$GITHUB_OUTPUT"
       - name: App Store Connect key
         if: runner.os == 'macOS'
         env:
@@ -171,15 +193,11 @@ jobs:
           APPLE_API_KEY: ${{ runner.os == 'macOS' && secrets.APPLE_API_KEY_ID || '' }}
           APPLE_API_ISSUER: ${{ runner.os == 'macOS' && secrets.APPLE_API_ISSUER || '' }}
         with:
-          tagName: ${{ env.PUBLISH == 'true' && 'v__VERSION__' || '' }}
-          releaseName: ${{ env.PUBLISH == 'true' && 'Writan v__VERSION__' || '' }}
-          releaseBody: ${{ steps.notes.outputs.body }}
-          releaseDraft: false
-          prerelease: false
+          releaseId: ${{ needs.prepare.outputs.release_id }}
           # The updater-feed job writes latest.json once every build is done. Here the two Mac
           # jobs, finishing at about the same moment, would each read it, add their own entry and
           # replace it, and one could drop the other's.
-          uploadUpdaterJson: false
+          includeUpdaterJson: false
           args: ${{ matrix.args }}
       - name: Finish the Linux packages
         # Tauri writes Provides and Replaces but no Breaks, so scripts/debian-repack.sh adds
@@ -269,12 +287,11 @@ jobs:
     # latest.json, the feed installed Mac and Windows copies check (plugins.updater.endpoints in
     # src-tauri/tauri.conf.json), written once from the update bundles and signatures the build
     # jobs uploaded. tauri-action writes it like this too, with the release body as the notes.
-    # A platform whose build failed is left out, so its copies stay on the version they have, and
-    # the job fails after publishing the rest. Copies of the universal app (0.11 to 0.15) look
+    # A failed build leaves the draft private and the previous feed live. Universal copies look
     # up darwin-aarch64 or darwin-x86_64 for the Mac they run on and get that build.
     name: Update feed
     needs: build
-    if: ${{ !cancelled() && (github.event_name == 'push' || inputs.publish) }}
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-24.04
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -282,25 +299,25 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Publish latest.json
+      - name: Upload the complete feed, then publish the release
         run: |
           set -euo pipefail
           version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           tag="v$version"
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
           cd "$RUNNER_TEMP"
-          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p '*.sig' || true
+          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json body,assets,isDraft > release.json
+          jq -e '.isDraft' release.json > /dev/null
+          gh release download "$tag" -R "$GITHUB_REPOSITORY" -p '*.sig'
           platforms='{}'
-          missing=0
           # Each update bundle under the keys Tauri's updater looks up: {os}-{arch}-{installer},
           # then {os}-{arch}.
           add() {
             local file="$1"
             shift
-            if [ ! -s "$file.sig" ]; then
-              echo "::error::No $file.sig on the release, so latest.json leaves out $*"
-              missing=1
-              return
+            if [ ! -s "$file.sig" ] || ! jq -e --arg f "$file" 'any(.assets[]; .name == $f and .size > 0)' release.json > /dev/null; then
+              echo "::error::Missing $file or its signature; leaving $tag in draft."
+              exit 1
             fi
             for key in "$@"; do
               platforms="$(jq --arg key "$key" --arg url "$base/$file" --rawfile sig "$file.sig" \
@@ -310,11 +327,6 @@ jobs:
           add "Writan_${version}_x64-setup.exe" windows-x86_64 windows-x86_64-nsis
           add Writan_aarch64.app.tar.gz darwin-aarch64 darwin-aarch64-app
           add Writan_x64.app.tar.gz darwin-x86_64 darwin-x86_64-app
-          if [ "$platforms" = '{}' ]; then
-            echo "::error::No update bundles on the release"
-            exit 1
-          fi
-          gh release view "$tag" -R "$GITHUB_REPOSITORY" --json body > release.json
           jq -n \
             --arg version "$version" \
             --arg pub_date "$(date -u +%Y-%m-%dT%H:%M:%S.000Z)" \
@@ -323,7 +335,7 @@ jobs:
             '{version: $version, notes: $release[0].body, pub_date: $pub_date, platforms: $platforms}' > latest.json
           jq '.platforms | map_values(.url)' latest.json
           gh release upload "$tag" -R "$GITHUB_REPOSITORY" latest.json --clobber
-          exit "$missing"
+          gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false
 
   linux-repos:
     # Publishes the APT, dnf and pacman repositories once both Linux jobs have built. It runs when

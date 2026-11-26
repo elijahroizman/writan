@@ -37,6 +37,7 @@ const scripts = [
   'tests/stress/ui/tab-overflow.mjs',
   'tests/stress/ui/themes.mjs',
   'tests/stress/ui/tracked-changes.mjs',
+  'tests/stress/ui/updater.mjs',
   'tests/stress/ui/ux-regressions.mjs',
   'tests/stress/ui/version-history.mjs',
   'tests/stress/native/pdf-page-select.mjs',

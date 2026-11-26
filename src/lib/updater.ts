@@ -9,6 +9,7 @@ import { isLinux, isMac, isTauri } from './platform'
 
 const FIRST_CHECK = 10_000
 const CHECK_EVERY = 4 * 60 * 60_000
+const FEED_RETRY_DELAYS = [5_000, 30_000, 2 * 60_000]
 const RELEASES_URL = 'https://api.github.com/repos/elijahroizman/writan/releases?per_page=50'
 export const RELEASES_PAGE = 'https://github.com/elijahroizman/writan/releases'
 
@@ -223,7 +224,7 @@ function remember(release: ReleaseNotes | null, update: Update | null) {
 async function findUpdate(): Promise<Update | null> {
   if (!updatesInstallable) return null
   const { check } = await import('@tauri-apps/plugin-updater')
-  return check()
+  return check({ timeout: 15_000 })
 }
 
 /** Read the latest release notes and, in a release build, download a newer version. */
@@ -249,7 +250,8 @@ export async function checkForUpdates(): Promise<void> {
     if (update) {
       useUpdate.setState({ phase: 'downloading', ...info, error: null })
       try {
-        await update.download()
+        // Tauri would otherwise reuse the short manifest timeout for the whole bundle.
+        await update.download(undefined, { timeout: 15 * 60_000 })
         downloaded = update
         useUpdate.setState({ phase: 'ready', ...info, error: null })
       } catch (err) {
@@ -288,9 +290,27 @@ export function closeUpdatePanel(): void {
 
 export function startUpdateChecks(): () => void {
   if (!checksUpdates) return () => {}
-  const first = window.setTimeout(() => void checkForUpdates(), FIRST_CHECK)
-  const timer = window.setInterval(() => void checkForUpdates(), CHECK_EVERY)
+  let attempts = 0
+  let retry: number | undefined
+  const unsubscribe = useUpdate.subscribe(({ phase }, prev) => {
+    if (phase === prev.phase || !updatesInstallable) return
+    window.clearTimeout(retry)
+    if (phase === 'error' && prev.phase === 'checking') {
+      const delay = FEED_RETRY_DELAYS[attempts++]
+      if (delay !== undefined) retry = window.setTimeout(() => void checkForUpdates(), delay)
+    } else if (phase !== 'checking') {
+      attempts = 0
+    }
+  })
+  const scheduledCheck = () => {
+    attempts = 0
+    void checkForUpdates()
+  }
+  const first = window.setTimeout(scheduledCheck, FIRST_CHECK)
+  const timer = window.setInterval(scheduledCheck, CHECK_EVERY)
   return () => {
+    unsubscribe()
+    window.clearTimeout(retry)
     window.clearTimeout(first)
     window.clearInterval(timer)
   }
