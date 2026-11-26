@@ -8,6 +8,7 @@ import {
   convertAndDeliver,
   copyTabAsMarkdown,
   targetsForKind,
+  usesOcr,
 } from '../lib/convert'
 import type { ConvertFormat } from '../lib/convert'
 import * as platform from '../lib/platform'
@@ -64,11 +65,11 @@ function ConvertFileDialog() {
 
   const runConvert = async (format: ConvertFormat) => {
     if (!tab || busy || conversion.current) return
-    const usesOcr = tab.kind === 'image' || (tab.kind === 'pdf' && format === 'docx')
+    const ocr = usesOcr(tab.kind, format)
     const job = new AbortController()
     conversion.current = job
     setError(null)
-    setOcrRunning(usesOcr)
+    setOcrRunning(ocr)
     setBusy(`Converting to ${format.toUpperCase()}…`)
     try {
       const ok = await convertAndDeliver(tab.id, format, delivery, { signal: job.signal, onProgress: setBusy })

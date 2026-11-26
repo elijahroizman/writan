@@ -121,7 +121,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     draftRef.current = draft
   }, [draft])
   const [awake, setAwake] = useState(true)
-  const [historyVersion, setHistoryVersion] = useState(0)
+  const [, setHistoryVersion] = useState(0)
   const history = useRef(new History())
   const fieldsDirty = useRef(false)
   const passwordRef = useRef('')
@@ -134,8 +134,10 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const [scannedPages, setScannedPages] = useState<number[]>([])
   const ocrKeys = useShortcuts((s) => keysFor('ocr-document', s.custom))
 
+  // Once per list of pages: annotation edits don't change a page's text, and the check reads every page.
+  const pageKeys = pages.map((p) => p.key).join(',')
   useEffect(() => {
-    if (!store) return
+    if (!store || !pageKeys) return
     const job = new AbortController()
     void store.engine.call('documentTextStats', [], { priority: Priority.search, signal: job.signal })
       .then((stats) => {
@@ -143,7 +145,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
         if (!job.signal.aborted) setScannedPages(stats.filter((p) => p.nonWhitespaceCount < 10).map((p) => p.index))
       }).catch(() => {})
     return () => job.abort()
-  }, [store, historyVersion])
+  }, [store, pageKeys])
 
   const refreshDirty = useCallback(() => {
     markDirty(tab.id, history.current.dirty || fieldsDirty.current)

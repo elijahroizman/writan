@@ -10,7 +10,7 @@ import { Home } from './components/Home'
 import { showVersionHistory, useVersionHistory, VersionHistory } from './components/VersionHistory'
 import { NewFilePicker, useNewFile } from './components/NewFile'
 import { ConvertModal, useConvertDialog } from './components/ConvertDialog'
-import { canExportMarkdown, canIncludeInPdfBundle, convertAndDeliver, copyTabAsMarkdown, targetsForKind } from './lib/convert'
+import { canExportMarkdown, canIncludeInPdfBundle, convertAndDeliver, copyTabAsMarkdown, targetsForKind, usesOcr } from './lib/convert'
 import { TexInstall, TexRemove } from './components/TexInstall'
 import { Dialogs } from './components/Dialogs'
 import { canShare, JoinDialog, showJoinDialog, showSharePanel, useSharePanel } from './components/Share'
@@ -489,7 +489,8 @@ export function commandAvailable(command: string) {
     case 'copy-markdown':
       return !!tab && canExportMarkdown(tab.kind)
     case 'export-markdown':
-      return !!tab && targetsForKind(tab.kind).some((t) => t.format === 'md')
+      // A picture's Markdown needs OCR, which runs from the Convert dialog where it can be cancelled.
+      return !!tab && !usesOcr(tab.kind, 'md') && targetsForKind(tab.kind).some((t) => t.format === 'md')
     case 'export-pdf':
       return !!tab && targetsForKind(tab.kind).some((t) => t.format === 'pdf')
     case 'bundle-pdf':

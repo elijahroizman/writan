@@ -662,8 +662,34 @@ try {
       })
     }
   }
+  try {
+    // A photo converts to a plain PDF without OCR: no language packs, no text layer, and an opaque WebP stays JPEG-sized.
+    const photo = await page.evaluate(async () => {
+      const canvas = new OffscreenCanvas(64, 48)
+      const ctx = canvas.getContext('2d')
+      ctx.fillStyle = '#336699'
+      ctx.fillRect(0, 0, 64, 48)
+      const webp = new Uint8Array(await (await canvas.convertToBlob({ type: 'image/webp', quality: 0.9 })).arrayBuffer())
+      const { convert } = await window.__loadPdfOcrTestApi()
+      const ws = window.__workspace.useWorkspace.getState()
+      ws.openUnsaved(webp, 'photo.webp')
+      const tab = window.__workspace.useWorkspace.getState().tabs.find((t) => t.title === 'photo')
+      const hint = convert.targetsForKind('image').find((t) => t.format === 'pdf')?.hint
+      const { bytes } = await convert.convertTab(tab, 'pdf', { onProgress: (message) => { throw new Error(`Unexpected OCR: ${message}`) } })
+      await ws.closeTab(tab.id)
+      return { kind: tab.kind, hint, pdf: new TextDecoder('latin1').decode(bytes) }
+    })
+    assert.equal(photo.kind, 'image')
+    assert.doesNotMatch(photo.hint, /OCR|recogni|searchable/i, 'Image to PDF should not promise OCR')
+    assert.match(photo.pdf, /\/DCTDecode\b/, 'Expected the opaque WebP photo as JPEG')
+    assert.doesNotMatch(photo.pdf, /\/Type\s*\/Font\b/, 'Expected no OCR text layer')
+    console.log('PASS Image to PDF is a plain JPEG page')
+  } catch (error) {
+    failures++
+    console.error('FAIL Image to PDF is a plain JPEG page', error)
+  }
   assert.ok(!logs.some((line) => line.startsWith('[pageerror]')), logs.join('\n'))
-  console.log(`Vector PDF export: ${cases.length - failures} passed, ${failures} failed`)
+  console.log(`Vector PDF export: ${cases.length + 1 - failures} passed, ${failures} failed`)
   process.exitCode = failures ? 1 : 0
 } finally {
   await browser.close()

@@ -45,10 +45,13 @@ export function targetsForKind(kind: DocKind): ConvertTarget[] {
   const list = TARGETS_BY_KIND[kind] ?? []
   return list.map((format) => ({
     format, ...TARGET_INFO[format],
-    ...(kind === 'image' || (kind === 'pdf' && format === 'docx')
-      ? { hint: format === 'pdf' ? 'Searchable PDF with a locally recognized text layer' : 'Recognize text with offline OCR' }
-      : {}),
+    ...(usesOcr(kind, format) ? { hint: 'Recognize text with offline OCR' } : {}),
   }))
+}
+
+/** Whether converting a `kind` tab to `format` recognizes its text. A picture becomes a plain PDF. */
+export function usesOcr(kind: DocKind, format: ConvertFormat): boolean {
+  return (kind === 'image' && format !== 'pdf') || (kind === 'pdf' && format === 'docx')
 }
 
 export type OcrStatus = (message: string) => void
@@ -198,12 +201,8 @@ interface ConvertOptions {
 export async function convertTab(tab: DocTab, target: ConvertFormat, options: ConvertOptions = {}): Promise<{ bytes: Uint8Array; name: string }> {
   const name = `${tab.title}.${TARGET_INFO[target].extension}`
   const { signal, onProgress } = options
-  if (tab.kind === 'image') {
+  if (tab.kind === 'image' && target !== 'pdf') {
     const result = await recognizeImage(await readTabBytes(tab), fileNameForTab(tab), signal, onProgress)
-    if (target === 'pdf') {
-      onProgress?.('Building searchable PDF…')
-      return { bytes: await result.buildSearchablePdf(signal), name }
-    }
     const { ocrResultsToPlainText, ocrResultsToMarkdown, ocrResultsToDocx } = await import('./ocr/toDocx')
     const pages = [result.page]
     if (target === 'docx') return { bytes: await ocrResultsToDocx(pages, tab.title), name }
@@ -255,7 +254,7 @@ export async function convertAndDeliver(tabId: string | undefined, target: Conve
   try {
     const { bytes, name } = await convertTab(tab, target, options)
     options?.signal?.throwIfAborted()
-    const save = tab.kind === 'image' || (tab.kind === 'pdf' && target === 'docx') ? saveOcrCopy : platform.saveBytesAs
+    const save = usesOcr(tab.kind, target) ? saveOcrCopy : platform.saveBytesAs
     if (mode === 'save') {
       return await save(name, bytes, options?.signal)
     }

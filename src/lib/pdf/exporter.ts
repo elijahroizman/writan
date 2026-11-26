@@ -196,12 +196,13 @@ export async function decodeImageToRgba(bytes: Uint8Array, hint: string): Promis
   }
 }
 
-async function encodeRgbaToPng(rgba: { data: Uint8ClampedArray; width: number; height: number }): Promise<Uint8Array> {
+async function encodeRgba(rgba: { data: Uint8ClampedArray; width: number; height: number }, type: 'image/png' | 'image/jpeg'): Promise<Uint8Array> {
+  const quality = type === 'image/jpeg' ? 0.92 : undefined
   if (typeof OffscreenCanvas !== 'undefined') {
     const canvas = new OffscreenCanvas(rgba.width, rgba.height)
     const ctx = canvas.getContext('2d')!
     ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0)
-    const blob = await canvas.convertToBlob({ type: 'image/png' })
+    const blob = await canvas.convertToBlob({ type, quality })
     return new Uint8Array(await blob.arrayBuffer())
   }
   const canvas = document.createElement('canvas')
@@ -210,16 +211,22 @@ async function encodeRgbaToPng(rgba: { data: Uint8ClampedArray; width: number; h
   const ctx = canvas.getContext('2d')!
   ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0)
   const blob = await new Promise<Blob>((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode PNG image.'))), 'image/png'),
+    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode image.'))), type, quality),
   )
   return new Uint8Array(await blob.arrayBuffer())
 }
 
-/** Targeted single-element PNG conversion for formats not natively accepted by PDF (WebP/GIF/HEIC/TIFF). */
-async function convertRasterToPng(bytes: Uint8Array, hint: string): Promise<{ bytes: Uint8Array; width: number; height: number }> {
+/**
+ * A picture PDF can't hold as it is (WebP, GIF, HEIC, TIFF) as PNG or JPEG. Opaque photos (HEIC, WebP)
+ * become JPEG, as the canvas export made them: PNG would make a phone photo's PDF many times bigger.
+ */
+async function convertRasterForPdf(bytes: Uint8Array, hint: string): Promise<{ bytes: Uint8Array; mime: 'image/png' | 'image/jpeg'; width: number; height: number }> {
   const rgba = await decodeImageToRgba(bytes, hint)
-  const pngBytes = await encodeRgbaToPng(rgba)
-  return { bytes: pngBytes, width: rgba.width, height: rgba.height }
+  const photo = ['image/heic', 'image/webp'].includes(guessImageMime(bytes, hint))
+  let opaque = true
+  for (let i = 3; opaque && i < rgba.data.length; i += 4) opaque = rgba.data[i] === 255
+  const mime = photo && opaque ? 'image/jpeg' : 'image/png'
+  return { bytes: await encodeRgba(rgba, mime), mime, width: rgba.width, height: rgba.height }
 }
 
 function pngDimensions(bytes: Uint8Array): { width: number; height: number } | null {
@@ -456,7 +463,7 @@ async function resolveMediaPack(
       entries.push([id, raw.bytes])
     } else {
       try {
-        const converted = await convertRasterToPng(raw.bytes, raw.type)
+        const converted = await convertRasterForPdf(raw.bytes, raw.type)
         entries.push([id, converted.bytes])
       } catch {
         // Skip unreadable image rather than crashing export.
@@ -645,7 +652,7 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
     const docJson = JSON.stringify({
       pages,
       styles,
-      metadata: { title: title?.replace(/\.[^.]+$/, '') || undefined, creator: 'Writan' },
+      metadata: { title: title || undefined, creator: 'Writan' },
     })
     return await pdfEngineClient.renderDocument(docJson, mediaPack, finalFontPack, signal)
   } finally {
@@ -696,7 +703,7 @@ export async function exportSlidesToPdf(bytes: Uint8Array, title?: string, signa
     const docJson = JSON.stringify({
       pages,
       styles,
-      metadata: { title: title?.replace(/\.[^.]+$/, '') || undefined, creator: 'Writan' },
+      metadata: { title: title || undefined, creator: 'Writan' },
     })
     return await pdfEngineClient.renderDocument(docJson, mediaPack, finalFontPack, signal)
   } finally {
@@ -909,9 +916,9 @@ export async function exportImagesToPdf(images: ImagePdfPageSpec[], signal?: Abo
       width = dims.width
       height = dims.height
     } else {
-      const converted = await convertRasterToPng(item.bytes, item.nameOrMime)
+      const converted = await convertRasterForPdf(item.bytes, item.nameOrMime)
       outBytes = converted.bytes
-      outMime = 'image/png'
+      outMime = converted.mime
       width = converted.width
       height = converted.height
     }
