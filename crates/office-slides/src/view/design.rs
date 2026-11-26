@@ -300,6 +300,29 @@ mod tests {
     }
 
     #[test]
+    fn new_text_boxes_use_light_theme_ink_on_dark_layouts() {
+        use office_core::drawing::{Color, Rgb};
+
+        for (theme, dark_layout, light_layout) in
+            [("Graphite", "Blank", None), ("Gallery", "Title Slide", Some("Blank")), ("Summit", "Title Slide", Some("Blank"))]
+        {
+            let mut view = SlidesView::blank();
+            view.apply_theme(theme).unwrap();
+            for (layout, light_ink) in std::iter::once((dark_layout, true)).chain(light_layout.map(|name| (name, false))) {
+                let layout = crate::layout(&view.doc, layout).unwrap().part.clone();
+                view.add_slide(1, Some(&layout));
+                view.insert_text_box();
+                view.insert_text("Sample");
+                let slide = &view.slides()[view.sel.active];
+                let frame = slide.frames.last().unwrap();
+                let inherited = &crate::resolve(&view.doc, slide, frame).paragraphs[0].1[0].color;
+                let ink = crate::color(&view.doc, slide, inherited.as_ref().unwrap_or(&Color::scheme("tx1"))).rgb;
+                assert_eq!(ink == Rgb(255, 255, 255), light_ink, "{theme}: {layout}");
+            }
+        }
+    }
+
+    #[test]
     fn themes_switch_the_master_and_round_trip_without_importing_sample_slides() {
         let mut view = SlidesView::blank();
         let original = content(&view);
