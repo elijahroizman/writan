@@ -2,7 +2,7 @@ import { ChevronDown, ChevronRight } from 'lucide-react'
 import { memo, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { Priority } from './engine/client'
 import type { OutlineItem, PageInfo } from './engine/protocol'
-import type { DocStore, Thumb as ThumbImage } from './engine/store'
+import type { DocStore } from './engine/store'
 import { THUMB_WIDTH } from './engine/store'
 
 /** Space around each thumbnail: padding, the page number, and the gap to the next one. */
@@ -194,7 +194,7 @@ export function Thumbnails({
         }}
         onPointerDown={(e) => startDrag(e, i)}
       >
-        <Thumb store={store} index={i} page={page} rev={store.rev(page.key)} thumb={store.thumb(i)} priority={Priority.thumbnails + Math.abs(i - middle) / 100} />
+        <Thumb store={store} index={i} page={page} priority={Priority.thumbnails + Math.abs(i - middle) / 100} />
         <span className="thumb-label">{i + 1}</span>
       </div>,
     )
@@ -207,11 +207,19 @@ export function Thumbnails({
   )
 }
 
-const Thumb = memo(function Thumb({ store, index, page, rev, thumb, priority }: { store: DocStore; index: number; page: PageInfo; rev: number; thumb: ThumbImage | undefined; priority: number }) {
+const Thumb = memo(function Thumb({ store, index, page, priority }: { store: DocStore; index: number; page: PageInfo; priority: number }) {
   const indexRef = useRef(index)
   indexRef.current = index
   const priorityRef = useRef(priority)
   priorityRef.current = priority
+  const rev = useSyncExternalStore(
+    (cb) => store.subscribeKey(page.key, cb),
+    () => store.rev(page.key),
+  )
+  const thumb = useSyncExternalStore(
+    (cb) => store.subscribeThumb(page.key, cb),
+    () => store.thumb(indexRef.current),
+  )
 
   useEffect(() => {
     const job = new AbortController()

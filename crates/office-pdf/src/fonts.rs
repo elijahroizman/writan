@@ -1,6 +1,8 @@
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashMap};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::ops::Range;
+use std::rc::Rc;
 
 use pdf_writer::{
     types::{CidFontType, FontFlags, SystemInfo, UnicodeCmap},
@@ -121,9 +123,12 @@ impl FontId {
     }
 }
 
+type CandidateEntry = ((Vec<String>, bool, bool), Rc<[usize]>);
+
 pub(crate) struct Fonts<'a> {
     fonts: Vec<Font<'a>>,
-    by_key: HashMap<&'a str, usize>,
+    by_pair: HashMap<(&'a str, &'a str), usize>,
+    candidate_cache: Vec<CandidateEntry>,
 }
 
 #[derive(Clone, Copy)]
@@ -175,11 +180,11 @@ impl<'a> Fonts<'a> {
         self.fonts.len()
     }
 
-    pub fn new(blobs: &'a HashMap<String, Vec<u8>>) -> Self {
-        let mut entries: Vec<_> = blobs.iter().collect();
+    pub fn new<K: Borrow<str> + Ord, V: AsRef<[u8]>>(blobs: &'a HashMap<K, V>) -> Self {
+        let mut entries: Vec<(&'a str, &'a [u8])> = blobs.iter().map(|(k, v)| (k.borrow(), v.as_ref())).collect();
         entries.sort_unstable_by_key(|(key, _)| *key);
         let mut fonts = Vec::new();
-        let mut by_key = HashMap::new();
+        let mut by_pair = HashMap::new();
         for (key, bytes) in entries {
             let Some(face) = rustybuzz::Face::from_slice(bytes, 0) else {
                 continue;
@@ -193,13 +198,22 @@ impl<'a> Fonts<'a> {
                 .filter(|name| name.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
                 .find_map(|name| name.to_string())
                 .unwrap_or_else(|| key.replace(':', "-"));
-            by_key.insert(key.as_str(), fonts.len());
+            if let Some((family, variant)) = key.split_once(':') {
+                by_pair.insert((family, variant), fonts.len());
+            }
             fonts.push(Font { bytes, face, postscript_name, remapper: GlyphRemapper::new(), unicode: vec![BTreeMap::new()] });
         }
-        Self { fonts, by_key }
+        Self { fonts, by_pair, candidate_cache: Vec::new() }
     }
 
-    fn candidates(&self, spec: &FontSpec) -> Vec<usize> {
+    fn candidates(&mut self, spec: &FontSpec) -> Rc<[usize]> {
+        if let Some((_, cached)) = self
+            .candidate_cache
+            .iter()
+            .find(|((families, bold, italic), _)| *bold == spec.bold && *italic == spec.italic && families == &spec.families)
+        {
+            return Rc::clone(cached);
+        }
         let mut fonts = Vec::new();
         for family in spec.families.iter().map(String::as_str).chain(["liberation-sans", "noto-arabic", "noto-math", "noto-sans"]) {
             let variants = match (spec.bold, spec.italic) {
@@ -208,7 +222,7 @@ impl<'a> Fonts<'a> {
                 (false, true) => &["italic", "regular"],
                 (false, false) => &["regular"],
             };
-            if let Some(&font) = variants.iter().find_map(|variant| self.by_key.get(format!("{family}:{variant}").as_str())) {
+            if let Some(&font) = variants.iter().find_map(|variant| self.by_pair.get(&(family, *variant))) {
                 if !fonts.contains(&font) {
                     fonts.push(font);
                 }
@@ -217,7 +231,11 @@ impl<'a> Fonts<'a> {
         if fonts.is_empty() {
             fonts.extend(0..self.fonts.len());
         }
-        fonts
+        let resolved: Rc<[usize]> = Rc::from(fonts);
+        if self.candidate_cache.len() < 64 {
+            self.candidate_cache.push(((spec.families.clone(), spec.bold, spec.italic), Rc::clone(&resolved)));
+        }
+        resolved
     }
 
     fn choose_font(&self, candidates: &[usize], text: &str, small: bool) -> usize {

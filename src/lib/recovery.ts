@@ -44,6 +44,8 @@ function enqueue(op: () => Promise<unknown>): Promise<void> {
 
 /** Tabs this run has copied into the store. Entries of other runs are only touched by recover(). */
 const stored = new Set<string>()
+/** Last editor content revision written to crash recovery, to avoid redundant re-serializations. */
+const revisions = new Map<string, number | string>()
 /** `asRecovered`: copy the tab's recovered bytes instead of asking its editor. */
 const timers = new Map<string, { timer: number; since: number; asRecovered: boolean }>()
 let started = false
@@ -53,11 +55,13 @@ const stopped = () => !started || paused
 
 function schedule(tabId: string, wait = DELAY, asRecovered = false) {
   if (stopped()) return
+  const byteSize = useWorkspace.getState().tabs.find((t) => t.id === tabId)?.bytes?.byteLength ?? 0
+  const effectiveWait = byteSize > 2_000_000 ? Math.max(wait, 2500) : wait
   const now = Date.now()
   const pending = timers.get(tabId)
   if (pending) window.clearTimeout(pending.timer)
   const since = pending?.since ?? now
-  const timer = window.setTimeout(() => void store(tabId, asRecovered), Math.max(0, Math.min(wait, since + MAX_WAIT - now)))
+  const timer = window.setTimeout(() => void store(tabId, asRecovered), Math.max(0, Math.min(effectiveWait, since + MAX_WAIT - now)))
   timers.set(tabId, { since, timer, asRecovered })
 }
 
@@ -69,6 +73,7 @@ function cancel(tabId: string) {
 
 function forget(tabId: string) {
   cancel(tabId)
+  revisions.delete(tabId)
   if (!stored.delete(tabId)) return
   void enqueue(() => withStore('readwrite', (s) => s.delete(tabId)))
 }
@@ -82,6 +87,8 @@ async function store(tabId: string, asRecovered = false) {
   const editor = asRecovered && tab.recovered ? undefined : getEditor(tabId)
   // Reading the bytes would cut short what the user is typing (a cell, a PDF form field).
   if (editor?.busy?.()) return schedule(tabId)
+  const rev = editor?.getRevision?.()
+  if (rev !== undefined && stored.has(tabId) && revisions.get(tabId) === rev) return
   let bytes: Uint8Array | null
   try {
     // A recovered tab nobody has opened yet has no editor: its bytes are the document.
@@ -95,6 +102,7 @@ async function store(tabId: string, asRecovered = false) {
   if (!bytes || !now?.dirty || stopped()) return
   const doc: RecoveredDoc = { id: tabId, kind: now.kind, title: now.title, path: now.path, bytes, base, index: tabs.indexOf(now), savedAt: Date.now() }
   stored.add(tabId)
+  if (rev !== undefined) revisions.set(tabId, rev)
   await enqueue(() => withStore('readwrite', (s) => s.put(doc)))
 }
 

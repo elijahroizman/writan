@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react'
-import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { forwardRef, memo, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { wheelZoomFactor } from '../../../lib/pinch'
 import { Priority } from '../engine/client'
 import type { Box, PageInfo } from '../engine/protocol'
@@ -352,7 +352,6 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer({ store, p
             store={store}
             index={i}
             page={pages[i]}
-            rev={store.rev(pages[i].key)}
             layout={layout}
             scrollRef={scrollRef}
             listeners={listeners.current}
@@ -376,7 +375,6 @@ const PageView = memo(function PageView({
   store,
   index,
   page,
-  rev,
   layout,
   scrollRef,
   listeners,
@@ -386,13 +384,16 @@ const PageView = memo(function PageView({
   store: DocStore
   index: number
   page: PageInfo
-  rev: number
   layout: Layout
   scrollRef: React.RefObject<HTMLDivElement | null>
   listeners: Set<() => void>
   priority: number
   children: ReactNode
 }) {
+  const rev = useSyncExternalStore(
+    (cb) => store.subscribeKey(page.key, cb),
+    () => store.rev(page.key),
+  )
   const pageRef = useRef<HTMLDivElement>(null)
   const hostRef = useRef<HTMLDivElement>(null)
   const renderer = useRef<PageRenderer | null>(null)

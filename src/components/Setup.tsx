@@ -1,6 +1,6 @@
 import { ArrowLeft, ArrowRight } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { canSetDefaults, defaultStatus, makeDefault } from '../lib/defaults'
 import { isMac, showError } from '../lib/platform'
 import { PLUGINS, isBuiltIn } from '../plugins/catalog'
@@ -26,18 +26,22 @@ export default function SetupScreen() {
   const next = () => (at + 1 < steps.length ? setStep(steps[at + 1]) : finish())
   const back = () => at > 0 && setStep(steps[at - 1])
 
+  const stepRef = useRef({ step, next, back })
+  stepRef.current = { step, next, back }
+
   // ← and → step through the tour (not while typing or on a checkbox).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.metaKey || e.ctrlKey || e.altKey) return
-      if (e.key === 'ArrowRight' && step !== 'defaults' && step !== 'windows') next()
-      else if (e.key === 'ArrowLeft' && step !== 'windows') back()
+      const { step: cur, next: goNext, back: goBack } = stepRef.current
+      if (e.key === 'ArrowRight' && cur !== 'defaults' && cur !== 'windows') goNext()
+      else if (e.key === 'ArrowLeft' && cur !== 'windows') goBack()
       else return
       e.preventDefault()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  })
+  }, [])
 
   return (
     <Modal dim="blur" layer="welcome">

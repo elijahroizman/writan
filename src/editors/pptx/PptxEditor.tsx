@@ -23,7 +23,7 @@ import {
   Undo2,
   Ungroup,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { EditorProps } from '../../App'
 import type { Rect } from '../../components/CropOverlay'
@@ -43,9 +43,10 @@ import { registerEditor, useWorkspace } from '../../state/workspace'
 import { LinkExcelModal } from '../../links/LinkExcelModal'
 import type { ExcelLink, LinkedDocumentTarget } from '../../links/excelLinks'
 import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
-import { LatexMathModal } from '../../math/LatexMathModal'
-import type { LatexMathSpec } from '../../math/latexMath'
-import { encodeLatexTag, parseLatexTag } from '../../math/latexMath'
+import type { LatexMathSpec } from '../../math/latexTag'
+import { encodeLatexTag, parseLatexTag } from '../../math/latexTag'
+
+const LatexMathModal = lazy(() => import('../../math/LatexMathModal').then((m) => ({ default: m.LatexMathModal })))
 import type { Restack } from './arrange'
 import { Inspector } from './Inspector'
 import { NotesPane } from './Notes'
@@ -76,7 +77,11 @@ export default function PptxEditor({ tab, active }: EditorProps) {
       .catch((e) => setError(String(e?.message ?? e)))
     return () => {
       live = false
-      opened?.dispose()
+      if (opened) {
+        const w = window as unknown as Record<string, unknown>
+        if (w.__slides === opened) delete w.__slides
+        opened.dispose()
+      }
     }
   }, [tab.bytes])
   if (error) {
@@ -671,21 +676,25 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
       {menu && <PopoverMenu anchor={menu} items={menu.items} onClose={() => setMenu(null)} />}
       {crop && <CropOverlay src={crop.src} frame={crop.frame} image={crop.image} onDone={endCrop} onCancel={() => endCrop()} />}
       <LinkExcelModal open={excelModalOpen} onClose={() => setExcelModalOpen(false)} controller={excelLinks} targetLabel="Slides" />
-      <LatexMathModal
-        open={!!mathModal}
-        mode={mathModal?.mode ?? 'insert'}
-        targetLabel="Slides"
-        initialSpec={mathModal?.initialSpec ?? { latex: '', display: true, fontSizePt: 28, color: '#000000' }}
-        onClose={() => setMathModal(null)}
-        onCommit={({ spec, omml, linear, fingerprint, width, height }) => {
-          const tag = encodeLatexTag(spec, { width, height, fingerprint })
-          if (mathModal?.mode === 'edit' && mathModal.frameId != null) {
-            engine.updateMath(mathModal.frameId, tag, omml, linear, width, height)
-          } else {
-            engine.insertMath(tag, omml, linear, width, height)
-          }
-        }}
-      />
+      {mathModal && (
+        <Suspense fallback={null}>
+          <LatexMathModal
+            open
+            mode={mathModal.mode}
+            targetLabel="Slides"
+            initialSpec={mathModal.initialSpec}
+            onClose={() => setMathModal(null)}
+            onCommit={({ spec, omml, linear, fingerprint, width, height }) => {
+              const tag = encodeLatexTag(spec, { width, height, fingerprint })
+              if (mathModal.mode === 'edit' && mathModal.frameId != null) {
+                engine.updateMath(mathModal.frameId, tag, omml, linear, width, height)
+              } else {
+                engine.insertMath(tag, omml, linear, width, height)
+              }
+            }}
+          />
+        </Suspense>
+      )}
       {presenting !== null && (
         <PresentMode
           engine={engine}
@@ -741,8 +750,9 @@ async function printSlides(engine: SlidesEngine) {
   )
   await new Promise((r) => setTimeout(r, 400))
   await Promise.all(Array.from(root.querySelectorAll('img')).map((img) => img.decode().catch(() => {})))
+  const { schedulePrintCleanup } = await import('../../lib/print')
+  schedulePrintCleanup(() => reactRoot.unmount())
   window.print()
-  setTimeout(() => reactRoot.unmount(), 60_000)
 }
 
 export { SLIDES_CLIPBOARD }

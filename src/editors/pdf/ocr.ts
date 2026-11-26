@@ -5,7 +5,7 @@
 
 import type { OcrPageResult } from '../../lib/ocr/types'
 import { isCancelled, Priority } from './engine/client'
-import type { Bitmap, Box, PageInfo, PageTextStats, TextRun } from './engine/protocol'
+import type { Box, PageInfo, PageTextStats, TextRun } from './engine/protocol'
 import type { DocStore } from './engine/store'
 
 /**
@@ -23,6 +23,8 @@ export interface PageOcrText {
   runs: TextRun[]
   /** The words, joined by single spaces, as searched. */
   text: string
+  /** Case-folded copy of `text` for instant search across all pages. */
+  foldedText: string
   /** For each UTF-16 unit of `text`: the word it's in, or -1 for the spaces between words. */
   word: Int32Array
   /** Its position within that word. */
@@ -72,7 +74,7 @@ export function pageText(result: OcrPageResult, page: Pick<PageInfo, 'width' | '
       offset.push(j)
     }
   })
-  return { runs, text, word: Int32Array.from(word), offset: Int32Array.from(offset), line: Int32Array.from(lines) }
+  return { runs, text, foldedText: fold(text), word: Int32Array.from(word), offset: Int32Array.from(offset), line: Int32Array.from(lines) }
 }
 
 /**
@@ -120,7 +122,7 @@ function fold(text: string): string {
 export function searchPageText(page: PageOcrText, query: string): Box[][] {
   const needle = fold(query.trim().replace(/\s+/g, ' '))
   if (!needle) return []
-  const haystack = fold(page.text)
+  const haystack = page.foldedText
   const hits: Box[][] = []
   for (let at = haystack.indexOf(needle); at !== -1; at = haystack.indexOf(needle, at + needle.length)) {
     const boxes: Box[] = []
@@ -159,27 +161,6 @@ function recognitionScale(page: PageInfo) {
   return Math.min(220 / 72, 2800 / Math.max(1, page.width, page.height))
 }
 
-function bitmapPixels(bitmap: Bitmap): Uint8ClampedArray {
-  const { width, height, bands } = bitmap
-  const out = new Uint8ClampedArray(width * height * 4)
-  let canvas: HTMLCanvasElement | undefined
-  for (const band of bands) {
-    if (band.data) {
-      out.set(new Uint8ClampedArray(band.data), band.y * width * 4)
-    } else if (band.image) {
-      canvas ??= Object.assign(document.createElement('canvas'), { width, height: band.height })
-      if (canvas.height < band.height) canvas.height = band.height
-      const ctx = canvas.getContext('2d', { willReadFrequently: true })!
-      ctx.clearRect(0, 0, width, band.height)
-      ctx.drawImage(band.image, 0, 0)
-      out.set(ctx.getImageData(0, 0, width, band.height).data, band.y * width * 4)
-      band.image.close()
-    }
-  }
-  if (canvas) canvas.width = canvas.height = 0
-  return out
-}
-
 export interface OcrProgress {
   done: number
   total: number
@@ -213,9 +194,11 @@ export async function recognizePages(opts: {
       remaining.sort((a, b) => Math.abs(indexOf(a) - here) - Math.abs(indexOf(b) - here))
       const page = remaining[0]
       try {
-        const bitmap = await store.engine.call('render', [page.key, recognitionScale(page), null], { priority: Priority.ocr, signal })
-        const result = await client.recognize({ data: bitmapPixels(bitmap), width: bitmap.width, height: bitmap.height }, { langs, signal })
-        const own = await store.engine.call('text', [page.key], { priority: Priority.ocr, signal })
+        const gray = await store.engine.call('renderGrayscale', [page.key, recognitionScale(page), null], { priority: Priority.ocr, signal })
+        const [result, own] = await Promise.all([
+          client.recognize({ data: new Uint8Array(gray.data), width: gray.width, height: gray.height, channels: 1, transfer: true }, { langs, signal }),
+          store.engine.call('text', [page.key], { priority: Priority.ocr, signal }),
+        ])
         signal.throwIfAborted()
         store.setOcr(page, pageText(result, page, own.map((run) => run.box)))
         onPage(page)

@@ -25,6 +25,7 @@
 //! assert_eq!(office_sheets::display(&back, 0, CellRef::new(0, 0)), "25.6%");
 //! ```
 
+mod calc;
 pub mod conditional;
 pub mod dates;
 pub mod eval;
@@ -36,6 +37,7 @@ pub mod validation;
 pub mod view;
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use office_core::model::{Body, CellRef, Document, Kind, Origin, Sheet, SheetCell, Value};
 use office_core::opc::Package;
@@ -46,6 +48,7 @@ use office_core::{Layer, Result};
 pub use dates::{DateSystem, DateTime};
 pub use styles::{Alignment, Border, BorderSide, CellFormat, Fill, Font, StyleSheet};
 
+use calc::CalcGraph;
 use eval::{Book, V};
 use formula::{Expr, Reference, TableReference};
 use tables::Table;
@@ -322,17 +325,17 @@ pub fn formula(doc: &Document, sheet_index: usize, at: CellRef) -> Option<String
     None
 }
 
-struct SheetFormulas<'a> {
+pub(crate) struct SheetFormulas<'a> {
     sheet: &'a Sheet,
     leaders: Option<HashMap<&'a str, (CellRef, &'a str)>>,
 }
 
 impl<'a> SheetFormulas<'a> {
-    fn new(sheet: &'a Sheet) -> Self {
+    pub(crate) fn new(sheet: &'a Sheet) -> Self {
         Self { sheet, leaders: None }
     }
 
-    fn read(&mut self, at: CellRef, cell: &SheetCell) -> Option<String> {
+    pub(crate) fn read(&mut self, at: CellRef, cell: &SheetCell) -> Option<String> {
         if let Some(text) = &cell.formula {
             return Some(text.clone());
         }
@@ -411,10 +414,35 @@ pub fn circular_references(doc: &Document, now: Option<f64>) -> Vec<(usize, Cell
     evaluate(doc, now, |_| true).1
 }
 
-type CellKey = (usize, u32, u32);
+pub(crate) type CellKey = (usize, u32, u32);
 
 /// Every formula's result, and the formulas in a circular reference (see [`evaluate`]).
 type Evaluated = (Vec<(CellKey, Value)>, Vec<(usize, CellRef)>);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum LookupKey {
+    Num(u64),
+    Bool(bool),
+    TextLower(String),
+    Empty,
+}
+
+impl LookupKey {
+    fn from_v(v: &V) -> Option<Self> {
+        Some(match v {
+            V::Num(n) => Self::Num(if *n == 0.0 { 0.0f64.to_bits() } else { n.to_bits() }),
+            V::Bool(b) => Self::Bool(*b),
+            V::Text(t) => Self::TextLower(t.to_lowercase()),
+            V::Empty => Self::Empty,
+            V::Err(_) | V::Range(_) => return None,
+        })
+    }
+}
+
+struct LookupIndex {
+    map: HashMap<LookupKey, usize>,
+    deps: Vec<CellKey>,
+}
 
 /// Works out the formulas of the cells `include` picks; the rest keep their stored results.
 fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Evaluated {
@@ -426,19 +454,25 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
             for c in row.cells.iter().filter(|c| include(c)) {
                 if let Some(text) = reader.read(CellRef::new(row.index, c.col), c) {
                     let expr = formula::parse(&text).unwrap_or(Expr::Error("#NAME?".into()));
-                    formulas.insert((si, row.index, c.col), std::rc::Rc::new(expr));
+                    formulas.insert((si, row.index, c.col), Rc::new(expr));
                 }
             }
         }
     }
+    let tables = doc.package.as_ref().map(|pkg| Table::read(pkg, sheets)).unwrap_or_default();
     let x = excel(doc);
+    let names = x.map(|x| x.names.as_slice()).unwrap_or(&[]);
+    let mut keys: Vec<CellKey> = formulas.keys().copied().collect();
+    keys.sort_unstable();
     let mut book = Workbook {
         sheets,
-        tables: doc.package.as_ref().map(|pkg| Table::read(pkg, sheets)).unwrap_or_default(),
-        names: x.map(|x| x.names.clone()).unwrap_or_default(),
+        tables: &tables,
+        names,
+        name_asts: None,
         date_system: x.map(|x| x.date_system).unwrap_or_default(),
         now,
-        formulas,
+        formulas: &formulas,
+        dirty_filter: None,
         done: HashMap::new(),
         working: HashSet::new(),
         path: Vec::new(),
@@ -446,8 +480,9 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
         current: vec![0],
         deep: None,
         extents: vec![Default::default(); sheets.len()],
+        lookup_caches: HashMap::new(),
     };
-    let keys = book.work_out();
+    book.work_out_keys(&keys);
     // A formula is in a circular reference when, through the formulas it reads, it comes back
     // to itself. What the loop got to depends on where it was entered, so the loop's formulas
     // come to 0, as in Excel, and everything is worked out again with that.
@@ -462,12 +497,132 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
         circular.extend(found);
         book.done = circular.iter().map(|&k| (k, V::Num(0.0))).collect();
         book.reads.clear();
-        book.work_out();
+        book.lookup_caches.clear();
+        book.work_out_keys(&keys);
     }
     let results = keys.iter().map(|k| (*k, book.done.get(k).map(V::to_value).unwrap_or(Value::Number(0.0)))).collect();
     let mut circular: Vec<CellKey> = circular.into_iter().collect();
     circular.sort_unstable();
     (results, circular.into_iter().map(|(s, r, c)| (s, CellRef::new(r, c))).collect())
+}
+
+pub(crate) fn circular_with_graph(doc: &Document, now: Option<f64>, graph: &CalcGraph) -> Vec<(usize, CellRef)> {
+    let Body::Workbook { sheets } = &doc.body else { return Vec::new() };
+    if graph.formulas.is_empty() {
+        return Vec::new();
+    }
+    let x = excel(doc);
+    let names = x.map(|x| x.names.as_slice()).unwrap_or(&[]);
+    let mut book = Workbook {
+        sheets,
+        tables: &graph.tables,
+        names,
+        name_asts: Some(&graph.name_asts),
+        date_system: x.map(|x| x.date_system).unwrap_or_default(),
+        now,
+        formulas: &graph.formulas,
+        dirty_filter: None,
+        done: HashMap::new(),
+        working: HashSet::new(),
+        path: Vec::new(),
+        reads: HashMap::new(),
+        current: vec![0],
+        deep: None,
+        extents: vec![Default::default(); sheets.len()],
+        lookup_caches: HashMap::new(),
+    };
+    book.work_out_keys(&graph.formula_keys);
+    let mut circular = HashSet::new();
+    loop {
+        let found = loops(&book.reads);
+        if found.is_subset(&circular) {
+            break;
+        }
+        circular.extend(found);
+        book.done = circular.iter().map(|&k| (k, V::Num(0.0))).collect();
+        book.reads.clear();
+        book.lookup_caches.clear();
+        book.work_out_keys(&graph.formula_keys);
+    }
+    let mut list: Vec<CellKey> = circular.into_iter().collect();
+    list.sort_unstable();
+    list.into_iter().map(|(s, r, c)| (s, CellRef::new(r, c))).collect()
+}
+
+pub(crate) fn has_uncached_formulas(doc: &Document, graph: &CalcGraph) -> bool {
+    let Body::Workbook { sheets } = &doc.body else { return false };
+    graph.formula_keys.iter().any(|&(s, r, c)| sheets.get(s).and_then(|sh| sh.cell(CellRef::new(r, c))).is_some_and(uncached))
+}
+
+pub(crate) fn recalculate_incremental(
+    doc: &mut Document,
+    now: Option<f64>,
+    graph: &CalcGraph,
+    roots: &[CellKey],
+    prev_circular: &[(usize, CellRef)],
+) -> Vec<(usize, CellRef)> {
+    let (dirty_keys, dirty_set) = graph.dirty_closure(doc, roots, prev_circular);
+    if dirty_keys.is_empty() {
+        return prev_circular.iter().copied().filter(|&(s, c)| graph.formulas.contains_key(&(s, c.row, c.col))).collect();
+    }
+    let (results, dirty_circular) = {
+        let Body::Workbook { sheets } = &doc.body else {
+            return Vec::new();
+        };
+        let x = excel(doc);
+        let names = x.map(|x| x.names.as_slice()).unwrap_or(&[]);
+        let mut book = Workbook {
+            sheets,
+            tables: &graph.tables,
+            names,
+            name_asts: Some(&graph.name_asts),
+            date_system: x.map(|x| x.date_system).unwrap_or_default(),
+            now,
+            formulas: &graph.formulas,
+            dirty_filter: Some(&dirty_set),
+            done: HashMap::new(),
+            working: HashSet::new(),
+            path: Vec::new(),
+            reads: HashMap::new(),
+            current: vec![0],
+            deep: None,
+            extents: vec![Default::default(); sheets.len()],
+            lookup_caches: HashMap::new(),
+        };
+        book.work_out_keys(&dirty_keys);
+        let mut circular = HashSet::new();
+        loop {
+            let found = loops(&book.reads);
+            if found.is_subset(&circular) {
+                break;
+            }
+            circular.extend(found);
+            book.done = circular.iter().map(|&k| (k, V::Num(0.0))).collect();
+            book.reads.clear();
+            book.lookup_caches.clear();
+            book.work_out_keys(&dirty_keys);
+        }
+        let results: Vec<(CellKey, Value)> =
+            dirty_keys.iter().map(|k| (*k, book.done.get(k).map(V::to_value).unwrap_or(Value::Number(0.0)))).collect();
+        (results, circular)
+    };
+    if let Body::Workbook { sheets } = &mut doc.body {
+        for ((s, r, c), value) in results {
+            let cell = sheets[s].cell_mut(CellRef::new(r, c));
+            if cell.value != value {
+                cell.value = value;
+            }
+        }
+    }
+    let mut merged: Vec<CellKey> = prev_circular
+        .iter()
+        .map(|&(s, c)| (s, c.row, c.col))
+        .filter(|k| graph.formulas.contains_key(k) && !dirty_set.contains(k))
+        .chain(dirty_circular)
+        .collect();
+    merged.sort_unstable();
+    merged.dedup();
+    merged.into_iter().map(|(s, r, c)| (s, CellRef::new(r, c))).collect()
 }
 
 /// The formulas that, through the formulas they read, come back to themselves: every
@@ -539,24 +694,19 @@ fn loops(reads: &HashMap<CellKey, HashSet<CellKey>>) -> HashSet<CellKey> {
 }
 
 impl Workbook<'_> {
-    /// Works out every formula, returning their cells in order.
-    fn work_out(&mut self) -> Vec<CellKey> {
-        let book = self;
-        // Top to bottom, so a chain that runs down the sheet (a running total) is worked out a
-        // cell at a time instead of all at once from its last cell.
-        let mut keys: Vec<CellKey> = book.formulas.keys().copied().collect();
-        keys.sort_unstable();
-        for &key in &keys {
+    /// Works out the given formula keys in order.
+    fn work_out_keys(&mut self, keys: &[CellKey]) {
+        for &key in keys {
             // A chain deeper than MAX_DEPTH stops where it gets too deep; that cell is worked out
             // first, then the chain again, which now finds it done.
             let mut stack = vec![key];
             while let Some(&(s, r, c)) = stack.last() {
-                book.current = vec![s];
-                book.value(s, r, c);
-                match book.deep.take() {
+                self.current = vec![s];
+                self.value(s, r, c);
+                match self.deep.take() {
                     // A loop that long: it's found in `reads` all the same.
                     Some(d) if stack.contains(&d) => {
-                        book.done.insert(d, V::Num(0.0));
+                        self.done.insert(d, V::Num(0.0));
                     }
                     Some(d) => stack.push(d),
                     None => {
@@ -565,20 +715,21 @@ impl Workbook<'_> {
                 }
             }
         }
-        keys
     }
 }
 
 /// The workbook as formulas see it while they're worked out.
 struct Workbook<'a> {
     sheets: &'a [Sheet],
-    tables: Vec<Table<'a>>,
-    names: Vec<DefinedName>,
+    tables: &'a [Table],
+    names: &'a [DefinedName],
+    name_asts: Option<&'a crate::calc::NameAstMap>,
     date_system: DateSystem,
     now: Option<f64>,
     /// Shared, so working one out doesn't copy its tree: a copy recurses, and a sum of a
     /// hundred thousand terms overflowed the stack.
-    formulas: HashMap<CellKey, std::rc::Rc<Expr>>,
+    formulas: &'a HashMap<CellKey, Rc<Expr>>,
+    dirty_filter: Option<&'a HashSet<CellKey>>,
     done: HashMap<CellKey, V>,
     working: HashSet<CellKey>,
     /// The formulas being worked out, outermost first.
@@ -592,6 +743,7 @@ struct Workbook<'a> {
     deep: Option<CellKey>,
     /// Each sheet's last used row and column, once asked for.
     extents: Vec<std::cell::OnceCell<Option<(u32, u32)>>>,
+    lookup_caches: HashMap<(usize, u32, u32, u32, bool), LookupIndex>,
 }
 
 /// How many formulas deep one is worked out before [`Workbook::deep`] takes over. Each level
@@ -608,11 +760,16 @@ impl Workbook<'_> {
 
     fn value(&mut self, s: usize, r: u32, c: u32) -> V {
         let key = (s, r, c);
-        let Some(expr) = self.formulas.get(&key).cloned() else {
+        let Some(expr) = self.formulas.get(&key) else {
             return V::from_value(self.sheets[s].value(CellRef::new(r, c)));
         };
         if let Some(&from) = self.path.last() {
             self.reads.entry(from).or_default().insert(key);
+        }
+        if let Some(dirty) = self.dirty_filter {
+            if !dirty.contains(&key) {
+                return V::from_value(self.sheets[s].value(CellRef::new(r, c)));
+            }
         }
         if let Some(v) = self.done.get(&key) {
             return v.clone();
@@ -629,6 +786,7 @@ impl Workbook<'_> {
             self.deep = Some(key);
             return V::Empty;
         }
+        let expr = Rc::clone(expr);
         self.path.push(key);
         self.current.push(s);
         let v = eval::eval(&expr, self);
@@ -664,6 +822,13 @@ impl Book for Workbook<'_> {
 
     fn name(&self, name: &str) -> Option<Expr> {
         let here = self.current.last().copied();
+        if let Some(asts) = self.name_asts {
+            let low = name.to_ascii_lowercase();
+            if let Some(e) = asts.get(&(here, low.clone())).or_else(|| asts.get(&(None, low))) {
+                return Some((**e).clone());
+            }
+            return None;
+        }
         // A sheet's own name wins over the workbook's.
         let found = self
             .names
@@ -675,7 +840,7 @@ impl Book for Workbook<'_> {
 
     fn table(&self, reference: &TableReference) -> Option<Result<Vec<Reference>, &'static str>> {
         let here = self.path.last().map(|&(sheet, row, col)| (sheet, CellRef::new(row, col)));
-        Some(Table::find(&self.tables, reference.table.as_deref(), here)?.resolve(reference, here))
+        Some(Table::find(self.tables, reference.table.as_deref(), here)?.resolve(reference, here))
     }
 
     fn date_system(&self) -> DateSystem {
@@ -684,6 +849,102 @@ impl Book for Workbook<'_> {
 
     fn now(&self) -> Option<f64> {
         self.now
+    }
+
+    fn visit_range(
+        &mut self,
+        sheet: Option<&str>,
+        r0: u32,
+        r1: u32,
+        c0: u32,
+        c1: u32,
+        visit: &mut dyn FnMut(u32, u32, V) -> Result<(), &'static str>,
+    ) -> Option<Result<u64, &'static str>> {
+        let si = match self.sheet_index(sheet) {
+            Some(s) => s,
+            None => return Some(Err("#REF!")),
+        };
+        let row_len = self.sheets[si].rows.len();
+        let mut ri = self.sheets[si].rows.partition_point(|row| row.index < r0);
+        let mut visited = 0u64;
+        while ri < row_len {
+            let r_idx = self.sheets[si].rows[ri].index;
+            if r_idx > r1 {
+                break;
+            }
+            let cell_len = self.sheets[si].rows[ri].cells.len();
+            let mut ci = self.sheets[si].rows[ri].cells.partition_point(|c| c.col < c0);
+            while ci < cell_len {
+                let col = self.sheets[si].rows[ri].cells[ci].col;
+                if col > c1 {
+                    break;
+                }
+                let is_formula = self.formulas.contains_key(&(si, r_idx, col));
+                let v = if is_formula { self.value(si, r_idx, col) } else { V::from_value(&self.sheets[si].rows[ri].cells[ci].value) };
+                visited += 1;
+                if let Err(e) = visit(r_idx, col, v) {
+                    return Some(Err(e));
+                }
+                ci += 1;
+            }
+            ri += 1;
+        }
+        Some(Ok(visited))
+    }
+
+    fn exact_lookup(
+        &mut self,
+        sheet: Option<&str>,
+        r0: u32,
+        r1: u32,
+        c0: u32,
+        c1: u32,
+        horizontal: bool,
+        key: &V,
+    ) -> Option<Result<Option<usize>, &'static str>> {
+        if let V::Text(k) = key {
+            if k.contains(['*', '?', '~']) {
+                return None;
+            }
+        }
+        let Some(lk) = LookupKey::from_v(key) else {
+            return Some(Ok(None));
+        };
+        let si = match self.sheet_index(sheet) {
+            Some(s) => s,
+            None => return Some(Err("#REF!")),
+        };
+        let (cache_key, len) =
+            if horizontal { ((si, c0, c1, r0, true), (c1 - c0 + 1) as usize) } else { ((si, r0, r1, c0, false), (r1 - r0 + 1) as usize) };
+        if !self.lookup_caches.contains_key(&cache_key) {
+            let mut map = HashMap::with_capacity(len.min(4096));
+            let mut deps = Vec::new();
+            let mut hit_working = false;
+            for i in 0..len {
+                let (rr, cc) = if horizontal { (r0, c0 + i as u32) } else { (r0 + i as u32, c0) };
+                if self.working.contains(&(si, rr, cc)) {
+                    hit_working = true;
+                }
+                if self.formulas.contains_key(&(si, rr, cc)) {
+                    deps.push((si, rr, cc));
+                }
+                let v = self.value(si, rr, cc);
+                if let Some(item_key) = LookupKey::from_v(&v) {
+                    map.entry(item_key).or_insert(i);
+                }
+            }
+            if hit_working {
+                return Some(Ok(map.get(&lk).copied()));
+            }
+            self.lookup_caches.insert(cache_key, LookupIndex { map, deps });
+        }
+        let index = &self.lookup_caches[&cache_key];
+        if !index.deps.is_empty() {
+            if let Some(&from) = self.path.last() {
+                self.reads.entry(from).or_default().extend(index.deps.iter().copied());
+            }
+        }
+        Some(Ok(index.map.get(&lk).copied()))
     }
 }
 

@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use lopdf::{decode_text_string, Dictionary, Document, IncrementalDocument, Object, ObjectId, Stream};
@@ -304,35 +305,65 @@ fn collect_sig_ids(doc: &Document) -> HashSet<ObjectId> {
     ids
 }
 
-fn prune_sig_object(object: &mut Object, doc: &Document, sig_ids: &HashSet<ObjectId>, keep: &mut bool) {
+fn collect_sig_name_ids(doc: &Document) -> HashSet<ObjectId> {
+    let mut ids = HashSet::new();
+    for (&id, object) in &doc.objects {
+        if matches!(object, Object::Name(name) if name == b"Sig") {
+            ids.insert(id);
+        }
+    }
+    loop {
+        let before = ids.len();
+        for (&id, object) in &doc.objects {
+            if matches!(object, Object::Reference(target) if ids.contains(target)) {
+                ids.insert(id);
+            }
+        }
+        if ids.len() == before {
+            break;
+        }
+    }
+    ids
+}
+
+fn is_sig_dict_with_names(dict: &Dictionary, sig_name_ids: &HashSet<ObjectId>) -> bool {
+    let has_sig = |key| match dict.get(key) {
+        Ok(Object::Name(name)) => name == b"Sig",
+        Ok(Object::Reference(id)) => sig_name_ids.contains(id),
+        _ => false,
+    };
+    has_sig(b"Type") || has_sig(b"FT") || dict.has(b"ByteRange")
+}
+
+fn prune_sig_object(object: &mut Object, sig_name_ids: &HashSet<ObjectId>, sig_ids: &HashSet<ObjectId>, keep: &mut bool) {
     match object {
         Object::Reference(id) if sig_ids.contains(id) => *keep = false,
         Object::Array(items) => {
             items.retain_mut(|item| {
                 let mut child_keep = true;
-                prune_sig_object(item, doc, sig_ids, &mut child_keep);
+                prune_sig_object(item, sig_name_ids, sig_ids, &mut child_keep);
                 child_keep
             });
         }
         Object::Dictionary(dict) => {
-            if is_sig_dict(dict, doc) {
+            if is_sig_dict_with_names(dict, sig_name_ids) {
                 *keep = false;
                 return;
             }
-            prune_sig_dict(dict, doc, sig_ids);
+            prune_sig_dict(dict, sig_name_ids, sig_ids);
         }
         Object::Stream(stream) => {
-            if is_sig_dict(&stream.dict, doc) {
+            if is_sig_dict_with_names(&stream.dict, sig_name_ids) {
                 *keep = false;
                 return;
             }
-            prune_sig_dict(&mut stream.dict, doc, sig_ids);
+            prune_sig_dict(&mut stream.dict, sig_name_ids, sig_ids);
         }
         _ => {}
     }
 }
 
-fn prune_sig_dict(dict: &mut Dictionary, doc: &Document, sig_ids: &HashSet<ObjectId>) {
+fn prune_sig_dict(dict: &mut Dictionary, sig_name_ids: &HashSet<ObjectId>, sig_ids: &HashSet<ObjectId>) {
     let keys: Vec<Vec<u8>> = dict.iter().map(|(k, _)| k.clone()).collect();
     for key in keys {
         if key == b"SigFlags" {
@@ -341,7 +372,7 @@ fn prune_sig_dict(dict: &mut Dictionary, doc: &Document, sig_ids: &HashSet<Objec
         }
         if let Ok(val) = dict.get_mut(&key) {
             let mut keep = true;
-            prune_sig_object(val, doc, sig_ids, &mut keep);
+            prune_sig_object(val, sig_name_ids, sig_ids, &mut keep);
             if !keep {
                 dict.remove(&key);
             }
@@ -388,8 +419,8 @@ fn reach_from(doc: &Document, seeds: Vec<ObjectId>) -> HashSet<ObjectId> {
 
 fn strip_signatures(doc: &mut Document) -> Result<(), String> {
     let sig_ids = collect_sig_ids(doc);
+    let sig_name_ids = collect_sig_name_ids(doc);
     let sig_attached = reach_from(doc, sig_ids.iter().copied().collect());
-    let snapshot = doc.clone();
     for &id in &sig_ids {
         doc.objects.remove(&id);
     }
@@ -397,7 +428,7 @@ fn strip_signatures(doc: &mut Document) -> Result<(), String> {
     for id in object_ids {
         if let Some(obj) = doc.objects.get_mut(&id) {
             let mut keep = true;
-            prune_sig_object(obj, &snapshot, &sig_ids, &mut keep);
+            prune_sig_object(obj, &sig_name_ids, &sig_ids, &mut keep);
             if !keep {
                 doc.objects.remove(&id);
             }
@@ -438,6 +469,24 @@ pub fn inject_ocr_text_layer(
     pdf_bytes: &[u8],
     layers: &[OcrPageLayer],
     blobs: &HashMap<String, Vec<u8>>,
+    allow_signed: bool,
+) -> Result<Vec<u8>, String> {
+    inject_ocr_text_layer_with(pdf_bytes, layers, blobs, allow_signed)
+}
+
+pub fn inject_ocr_text_layer_slices(
+    pdf_bytes: &[u8],
+    layers: &[OcrPageLayer],
+    blobs: &HashMap<&str, &[u8]>,
+    allow_signed: bool,
+) -> Result<Vec<u8>, String> {
+    inject_ocr_text_layer_with(pdf_bytes, layers, blobs, allow_signed)
+}
+
+fn inject_ocr_text_layer_with<K: Borrow<str> + Ord, V: AsRef<[u8]>>(
+    pdf_bytes: &[u8],
+    layers: &[OcrPageLayer],
+    blobs: &HashMap<K, V>,
     allow_signed: bool,
 ) -> Result<Vec<u8>, String> {
     let doc = load_pdf(pdf_bytes)?;
@@ -571,6 +620,7 @@ pub(crate) fn write_words(
     fonts: &mut Fonts<'_>,
     names: &BTreeMap<usize, String>,
 ) -> Result<(), String> {
+    let mut spec = FontSpec::from_family("Liberation Sans", 12., false, false);
     content.begin_text().set_text_rendering_mode(TextRenderingMode::Invisible);
     for word in &layer.words {
         if word.text.trim().is_empty() {
@@ -603,7 +653,7 @@ pub(crate) fn write_words(
             let len = vx.hypot(vy);
             if len > 0.5 && (vy.abs() > 1e-3 || vx < 0.) {
                 let word_h = oriented_h.unwrap_or_else(|| word.h_pt.min(word.w_pt).max(1.));
-                let spec = FontSpec::from_family("Liberation Sans", word_h, false, false);
+                spec.size = word_h;
                 let shaped = fonts.shape(&word.text, &spec, Some(word.rtl), false, 0.)?;
                 if shaped.width <= 0. {
                     continue;
@@ -623,7 +673,7 @@ pub(crate) fn write_words(
             }
         }
         let word_h = oriented_h.unwrap_or(word.h_pt);
-        let spec = FontSpec::from_family("Liberation Sans", word_h, false, false);
+        spec.size = word_h;
         let shaped = fonts.shape(&word.text, &spec, Some(word.rtl), false, 0.)?;
         if shaped.width <= 0. {
             continue;

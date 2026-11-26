@@ -6,16 +6,19 @@
 // window.__fake.failWrite = 'message' makes every write_file reject with that message.
 import { chromium, webkit } from 'playwright'
 import { existsSync, mkdirSync, readFileSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 export const BASE = process.env.WRITAN_URL ?? 'http://localhost:1420/'
 export const ENGINE = process.env.ENGINE ?? 'chromium'
+export const TMP = join(tmpdir(), 'writan-stress')
 
 // `scrollbars` shows classic scrollbars, which take room as on a Mac with a mouse or on Windows.
 // `scale` is 2, as on a Retina Mac, so screenshots are sharp: at 1x a line of the document is 11
 // pixels tall and looks faint and blurred on the screen of whoever reads it. SCALE=1 overrides it.
 export async function launch({ scale = Number(process.env.SCALE) || 2, viewport = { width: 1400, height: 900 }, tauri = true, init, scrollbars = false } = {}) {
   const browser = await (ENGINE === 'webkit' ? webkit : chromium).launch(ENGINE === 'webkit' ? {} : { args: ['--no-sandbox', '--enable-precise-memory-info'], ignoreDefaultArgs: scrollbars ? ['--hide-scrollbars'] : [] })
-  mkdirSync('/tmp/writan-stress', { recursive: true })
+  mkdirSync(TMP, { recursive: true })
   const context = await browser.newContext({ viewport, deviceScaleFactor: scale })
   const page = await context.newPage()
   page.setDefaultTimeout(15000)
@@ -30,16 +33,20 @@ export async function launch({ scale = Number(process.env.SCALE) || 2, viewport 
   })
   // Popups are navigations away from the app (window.open in browser mode).
   context.on('page', (p) => logs.push(`[popup] ${p.url()}`))
-  await context.route('**/__fs/**', async (route) => {
+  await context.route(/\/__fs(?:\?|$|\/)/, async (route) => {
     const url = new URL(route.request().url())
-    const path = decodeURIComponent(url.pathname.slice('/__fs'.length))
+    let filePath = url.searchParams.get('path')
+    if (filePath === null) {
+      filePath = decodeURIComponent(url.pathname.slice('/__fs'.length))
+      if (process.platform === 'win32' && /^\/[A-Za-z]:/.test(filePath)) filePath = filePath.slice(1)
+    }
     if (url.searchParams.has('info')) {
-      const exists = existsSync(path)
-      const st = exists ? statSync(path) : null
+      const exists = existsSync(filePath)
+      const st = exists ? statSync(filePath) : null
       return route.fulfill({ json: { exists, isDir: !!st?.isDirectory(), size: st?.size ?? 0, modifiedMs: st ? Math.round(st.mtimeMs) : 0 } })
     }
-    if (!existsSync(path)) return route.fulfill({ status: 404, body: 'missing' })
-    return route.fulfill({ body: readFileSync(path), contentType: 'application/octet-stream' })
+    if (!existsSync(filePath)) return route.fulfill({ status: 404, body: 'missing' })
+    return route.fulfill({ body: readFileSync(filePath), contentType: 'application/octet-stream' })
   })
   await page.addInitScript(() => localStorage.getItem('workspace.setupDone') || localStorage.setItem('workspace.setupDone', '1'))
   if (tauri) await page.addInitScript(fakeTauri)
@@ -69,7 +76,8 @@ function fakeTauri() {
   }
   window.__fake = fake
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener: () => {} }
-  const fsUrl = (path, q = '') => '/__fs' + encodeURI(path).replace(/\?/g, '%3F').replace(/#/g, '%23') + q
+  const fsUrl = (path, info = false) => `/__fs?path=${encodeURIComponent(path)}${info ? '&info=1' : ''}`
+  fake.fsUrl = fsUrl
   window.__TAURI_INTERNALS__ = {
     metadata: { currentWindow: { label: 'main' }, currentWebview: { windowLabel: 'main', label: 'main' } },
     plugins: {},
@@ -93,7 +101,7 @@ function fakeTauri() {
         case 'path_info': {
           if (fake.infoOverride.has(args.path)) return fake.infoOverride.get(args.path)
           if (fake.files.has(args.path)) return { exists: true, isDir: false, size: fake.files.get(args.path).length, modifiedMs: fake.files.get(args.path).mtime }
-          return (await fetch(fsUrl(args.path, '?info'))).json()
+          return (await fetch(fsUrl(args.path, true))).json()
         }
         case 'write_file': {
           const path = decodeURIComponent(opts.headers['x-path'])

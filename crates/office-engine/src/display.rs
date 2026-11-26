@@ -162,7 +162,11 @@ impl Objects for PreviewObjects<'_> {
 /// Paints a flow with its top left at (`x`, `y`), drawing only what's within `rows` (from the
 /// flow's top), so a page can paint its share of a flow cut across pages.
 pub fn paint_flow(ctx: &mut Ctx, flow: &FlowLayout, x: f64, y: f64, rows: (f64, f64), sink: &mut Sink) {
-    for b in &flow.blocks {
+    let start = if rows.0 > f64::MIN / 2.0 { flow.blocks.partition_point(|b| b.bottom_y() <= rows.0 - 0.01) } else { 0 };
+    for b in &flow.blocks[start..] {
+        if rows.1 < f64::MAX / 2.0 && b.top_y() >= rows.1 + 0.01 {
+            break;
+        }
         match b {
             BlockBox::Para(p) => paint_para(ctx, p, x, y, rows, sink),
             BlockBox::Table(t) => paint_table(ctx, t, x, y, rows, sink),
@@ -185,9 +189,20 @@ pub fn paint_flow(ctx: &mut Ctx, flow: &FlowLayout, x: f64, y: f64, rows: (f64, 
 
 /// Paints a paragraph's lines that fall within `rows`.
 pub fn paint_para(ctx: &mut Ctx, p: &ParaBox, x: f64, y: f64, rows: (f64, f64), sink: &mut Sink) {
-    for line in &p.layout.lines {
+    if p.y + p.layout.height <= rows.0 + 0.01 || p.y >= rows.1 - 0.01 {
+        return;
+    }
+    let start = if p.layout.lines.len() > 8 && rows.0 > f64::MIN / 2.0 {
+        p.layout.lines.partition_point(|line| p.y + line.top + line.height <= rows.0 + 0.01)
+    } else {
+        0
+    };
+    for line in &p.layout.lines[start..] {
         let top = p.y + line.top;
-        if top + line.height <= rows.0 + 0.01 || top >= rows.1 - 0.01 {
+        if top >= rows.1 - 0.01 {
+            break;
+        }
+        if top + line.height <= rows.0 + 0.01 {
             continue;
         }
         paint_line(ctx, p, line, x, y + top, sink);
@@ -218,7 +233,7 @@ pub fn paint_line(ctx: &mut Ctx, p: &ParaBox, line: &crate::para::Line, x: f64, 
                     s: s.0,
                     text: shown,
                     ws: r(f.space),
-                    link: links(&p.path, f.start),
+                    link: if style.link { links(&p.path, f.start) } else { None },
                     rtl: f.rtl,
                 });
             }

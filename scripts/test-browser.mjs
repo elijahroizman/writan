@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { once } from 'node:events'
 import { existsSync } from 'node:fs'
 import { createServer } from 'node:net'
@@ -56,6 +56,7 @@ function kill(child) {
   if (!child.pid) return
   try {
     if (detached) process.kill(-child.pid, 'SIGKILL')
+    else if (process.platform === 'win32') spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' })
     else child.kill('SIGKILL')
   } catch (error) {
     if (error.code !== 'ESRCH') throw error

@@ -57,7 +57,14 @@ export class DocStore {
   pages: PageInfo[] = []
   /** Bumped when a page's content changes (annotations), so its renders are redone. */
   private revs = new Map<number, number>()
+  /** Bumped when OCR text for a page is added or cleared. */
+  private ocrRevs = new Map<number, number>()
+  private revTickValue = 0
   private listeners = new Set<() => void>()
+  private revListeners = new Set<() => void>()
+  private keyListeners = new Map<number, Set<() => void>>()
+  private thumbListeners = new Map<number, Set<() => void>>()
+  private thumbSubCount = 0
   private text = new Lru<Promise<TextRun[]>>(48)
   private annots = new Lru<Promise<Annot[]>>(48)
   /** Text recognized on scanned pages, by `key:rotation`. Small, and slow to make again. */
@@ -65,6 +72,7 @@ export class DocStore {
   /** Thumbnails as small JPEGs, newest version per page. Cheap enough to keep many. */
   private thumbs = new Lru<Thumb>(4000, 48 * 1024 * 1024, (t) => URL.revokeObjectURL(t.url))
   private thumbJobs = new Map<string, Promise<Thumb | null>>()
+  private thumbAborters = new Map<string, AbortController>()
   private destroyed = false
 
   constructor(readonly engine: PdfEngine) {}
@@ -77,9 +85,58 @@ export class DocStore {
     for (const fn of this.listeners) fn()
   }
 
+  subscribeRev(fn: () => void) {
+    this.revListeners.add(fn)
+    return () => void this.revListeners.delete(fn)
+  }
+  revTick = () => this.revTickValue
+  private emitRev() {
+    this.revTickValue++
+    for (const fn of this.revListeners) fn()
+  }
+
+  subscribeKey(key: number, fn: () => void) {
+    let set = this.keyListeners.get(key)
+    if (!set) {
+      set = new Set()
+      this.keyListeners.set(key, set)
+    }
+    set.add(fn)
+    return () => {
+      set.delete(fn)
+      if (!set.size) this.keyListeners.delete(key)
+    }
+  }
+  private emitKey(key: number) {
+    const set = this.keyListeners.get(key)
+    if (set) for (const fn of set) fn()
+  }
+
+  subscribeThumb(key: number, fn: () => void) {
+    let set = this.thumbListeners.get(key)
+    if (!set) {
+      set = new Set()
+      this.thumbListeners.set(key, set)
+    }
+    set.add(fn)
+    this.thumbSubCount++
+    return () => {
+      if (set.delete(fn)) this.thumbSubCount--
+      if (!set.size) this.thumbListeners.delete(key)
+    }
+  }
+  hasThumbSubscribers() {
+    return this.thumbSubCount > 0
+  }
+  private emitThumb(key: number) {
+    const set = this.thumbListeners.get(key)
+    if (set) for (const fn of set) fn()
+  }
+
   setPages(pages: PageInfo[]) {
     this.pages = pages
     this.emit()
+    this.emitRev()
   }
 
   /** After the engine reopened the file: keys may now name other pages, so forget what we cached. */
@@ -91,8 +148,11 @@ export class DocStore {
       this.annots.clear()
       this.thumbs.clear()
       this.revs.clear()
+      this.ocrRevs.clear()
     }
     this.setPages(pages)
+    for (const key of this.keyListeners.keys()) this.emitKey(key)
+    for (const key of this.thumbListeners.keys()) this.emitThumb(key)
   }
 
   /** A different document now (a recompiled preview): drop every cache and redraw every page. */
@@ -101,13 +161,19 @@ export class DocStore {
     this.ocr.clear()
     this.annots.clear()
     this.thumbs.clear()
+    this.ocrRevs.clear()
     // Revs only go up, so pages that keep their key still redraw.
     for (const page of pages) this.revs.set(page.key, this.rev(page.key) + 1)
     this.setPages(pages)
+    for (const key of this.keyListeners.keys()) this.emitKey(key)
+    for (const key of this.thumbListeners.keys()) this.emitThumb(key)
   }
 
   rev(key: number) {
     return this.revs.get(key) ?? 0
+  }
+  ocrRev(key: number) {
+    return this.ocrRevs.get(key) ?? 0
   }
 
   /** A page's drawing changed (annotation added, moved, removed, form filled). */
@@ -115,8 +181,9 @@ export class DocStore {
     const page = this.pages[index]
     if (!page) return
     this.revs.set(page.key, this.rev(page.key) + 1)
-    this.pages = this.pages.slice()
-    this.emit()
+    this.emitKey(page.key)
+    this.emitThumb(page.key)
+    this.emitRev()
   }
 
   /** Text recognized on a scanned page, as it's now turned. */
@@ -127,18 +194,26 @@ export class DocStore {
   /** Forget recognized text (the languages to read changed). */
   clearOcr() {
     if (!this.ocr.size) return
-    for (const id of this.ocr.keys()) this.text.delete(id)
+    const affected = new Set<number>()
+    for (const id of this.ocr.keys()) {
+      this.text.delete(id)
+      const sep = id.indexOf(':')
+      const key = Number(sep === -1 ? id : id.slice(0, sep))
+      if (Number.isFinite(key)) affected.add(key)
+    }
     this.ocr.clear()
-    this.pages = this.pages.slice()
-    this.emit()
+    for (const key of affected) {
+      this.ocrRevs.set(key, this.ocrRev(key) + 1)
+      this.emitKey(key)
+    }
   }
 
   setOcr(page: PageInfo, text: PageOcrText) {
     const id = `${page.key}:${page.rotation}`
     this.ocr.set(id, text)
     this.text.delete(id)
-    this.pages = this.pages.slice()
-    this.emit()
+    this.ocrRevs.set(page.key, this.ocrRev(page.key) + 1)
+    this.emitKey(page.key)
   }
 
   /** The page's own text, with any recognized on it (scanned pages have little or none of their own). */
@@ -182,17 +257,29 @@ export class DocStore {
     const job = `${page.key}:${page.rotation}:${rev}`
     let pending = this.thumbJobs.get(job)
     if (!pending) {
+      const ctrl = new AbortController()
+      this.thumbAborters.set(job, ctrl)
+      const onCallerAbort = () => ctrl.abort()
+      signal.addEventListener('abort', onCallerAbort, { once: true })
       const scale = (THUMB_WIDTH * devicePixelRatioCapped()) / page.width
       pending = this.engine
-        .call('render', [page.key, scale, null], { priority, signal })
+        .call('render', [page.key, scale, null], { priority, signal: ctrl.signal })
         .then((bitmap) => this.storeThumb(page.key, page.rotation, rev, bitmap))
         .catch((err) => {
           if (!isCancelled(err)) console.warn(err)
           return null
         })
-        .finally(() => forget())
-      const forget = () => this.thumbJobs.get(job) === pending && this.thumbJobs.delete(job)
-      signal.addEventListener('abort', forget, { once: true })
+        .finally(() => {
+          signal.removeEventListener('abort', onCallerAbort)
+          forget()
+        })
+      const forget = () => {
+        if (this.thumbJobs.get(job) === pending) {
+          this.thumbJobs.delete(job)
+          this.thumbAborters.delete(job)
+        }
+      }
+      ctrl.signal.addEventListener('abort', forget, { once: true })
       this.thumbJobs.set(job, pending)
     }
     return pending
@@ -200,11 +287,14 @@ export class DocStore {
 
   /** Reuse a full-size page render for the thumbnail, so scanned pages aren't decoded twice. */
   offerThumb(index: number, source: HTMLCanvasElement) {
+    if (!this.hasThumbSubscribers()) return
     const page = this.pages[index]
     if (!page) return
     const rev = this.rev(page.key)
     const have = this.thumbs.get(String(page.key))
     if (have && have.rotation === page.rotation && have.rev === rev) return
+    const job = `${page.key}:${page.rotation}:${rev}`
+    this.thumbAborters.get(job)?.abort()
     const w = Math.round(THUMB_WIDTH * devicePixelRatioCapped())
     const h = Math.max(1, Math.round((w * source.height) / source.width))
     const canvas = document.createElement('canvas')
@@ -237,17 +327,23 @@ export class DocStore {
     if (have && have.rev > rev) return have
     const thumb = { url: URL.createObjectURL(blob), rotation, rev }
     this.thumbs.set(String(key), thumb, blob.size)
-    this.emit()
+    this.emitThumb(key)
     return thumb
   }
 
   destroy() {
     this.destroyed = true
+    for (const ctrl of this.thumbAborters.values()) ctrl.abort()
+    this.thumbAborters.clear()
+    this.thumbJobs.clear()
     this.thumbs.clear()
     this.text.clear()
     this.ocr.clear()
     this.annots.clear()
     this.listeners.clear()
+    this.revListeners.clear()
+    this.keyListeners.clear()
+    this.thumbListeners.clear()
     this.engine.destroy()
   }
 }

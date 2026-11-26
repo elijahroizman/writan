@@ -1,5 +1,6 @@
 // Many open tabs: Home and the tabs keep their size, and the tabs scroll instead of squeezing.
-import { launch, start, check, done } from './harness.mjs'
+import { join } from 'node:path'
+import { launch, start, check, done, TMP } from './harness.mjs'
 
 const { browser, page, logs } = await launch({ tauri: false, viewport: { width: 1000, height: 700 } })
 try {
@@ -84,7 +85,7 @@ try {
   await page.mouse.up()
   check('a half-hidden tab stays under the pointer while dragged', Math.abs(held - pressed) < 2, `pressed ${Math.round(pressed)}px into the tab, held ${Math.round(held)}px`)
 
-  await page.screenshot({ path: '/tmp/writan-stress/tab-overflow.png' })
+  await page.screenshot({ path: join(TMP, 'tab-overflow.png') })
 } finally {
   await done(browser, logs)
 }

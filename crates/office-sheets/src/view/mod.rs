@@ -123,6 +123,12 @@ pub struct SheetsView {
     pub(crate) grids: HashMap<usize, Grid>,
     /// Goes up with every change, so the app knows to draw again.
     pub(crate) revision: u64,
+    /// Goes up when column/row geometry or sheet structure changes.
+    pub(crate) grid_revision: u64,
+    /// Conditional formatting rules cached per sheet until invalidated.
+    pub(crate) cf_cache: HashMap<usize, crate::conditional::Rules>,
+    /// Persistent formula AST + dependency graph for incremental recalculation.
+    pub(crate) calc: crate::calc::CalcGraph,
     /// What NOW() and TODAY() give: a serial number.
     pub(crate) now: Option<f64>,
     pending_cut: Option<commands::PendingCut>,
@@ -181,6 +187,11 @@ const DEFAULT_PT: f64 = 11.0;
 impl SheetsView {
     /// Opens a workbook or a CSV file (`name` tells which, with the bytes).
     pub fn open(bytes: &[u8], name: &str) -> office_core::Result<SheetsView> {
+        Self::open_with_now(bytes, name, None)
+    }
+
+    /// Opens a workbook or CSV file with a known clock serial, avoiding duplicate open-time passes.
+    pub fn open_with_now(bytes: &[u8], name: &str, now: Option<f64>) -> office_core::Result<SheetsView> {
         let mut doc = Compiler::new().with_layer(Sheets).read(bytes, Some(name))?;
         let kind = doc.kind;
         if !matches!(kind, Kind::Sheets | Kind::Csv) {
@@ -190,7 +201,7 @@ impl SheetsView {
             // A CSV file is edited as a workbook of one sheet, and saved back as CSV.
             crate::excel_mut(&mut doc);
         }
-        Ok(SheetsView::from_document(doc, kind))
+        Ok(SheetsView::from_document_with_now(doc, kind, now))
     }
 
     /// A new, empty workbook (or CSV file).
@@ -203,7 +214,25 @@ impl SheetsView {
     }
 
     pub fn from_document(doc: Document, kind: Kind) -> SheetsView {
-        let circular = crate::circular_references(&doc, None);
+        Self::from_document_with_now(doc, kind, None)
+    }
+
+    pub fn from_document_with_now(mut doc: Document, kind: Kind, now: Option<f64>) -> SheetsView {
+        let calc = crate::calc::CalcGraph::build(&doc);
+        let circular = crate::circular_with_graph(&doc, now, &calc);
+        if now.is_some() {
+            if let Body::Workbook { sheets } = &mut doc.body {
+                for &(s, c) in &circular {
+                    let cell = sheets[s].cell_mut(c);
+                    if cell.value != Value::Number(0.0) {
+                        cell.value = Value::Number(0.0);
+                    }
+                }
+            }
+            if crate::has_uncached_formulas(&doc, &calc) {
+                crate::calculate_uncached(&mut doc, now);
+            }
+        }
         SheetsView {
             doc,
             kind,
@@ -216,8 +245,11 @@ impl SheetsView {
             styles_sent: 0,
             grids: HashMap::new(),
             revision: 1,
+            grid_revision: 1,
+            cf_cache: HashMap::new(),
+            calc,
             pending_cut: None,
-            now: None,
+            now,
             circular,
             shared_styles: 0,
             others_changed: false,
@@ -242,15 +274,22 @@ impl SheetsView {
         self.revision
     }
 
+    pub fn grid_revision(&self) -> u64 {
+        self.grid_revision
+    }
+
     /// Sets what NOW() and TODAY() give, and works out the formulas that have no result yet.
     /// Opening a file must keep its cached results: our evaluator cannot reproduce every
     /// formula Excel supports.
     pub fn set_now(&mut self, serial: f64) {
+        if self.now == Some(serial) {
+            return;
+        }
         self.now = Some(serial);
         // A circular reference's cached result is whatever the app that saved it got to round
         // the loop, so it is 0 instead, before the formulas that read it are worked out.
         // Without the clock, NOW() would make some look circular.
-        self.circular = crate::circular_references(&self.doc, self.now);
+        self.circular = crate::circular_with_graph(&self.doc, self.now, &self.calc);
         let mut zeroed = false;
         if let Body::Workbook { sheets } = &mut self.doc.body {
             for &(s, c) in &self.circular {
@@ -261,7 +300,11 @@ impl SheetsView {
                 }
             }
         }
-        let worked_out = crate::calculate_uncached(&mut self.doc, self.now) > 0;
+        let worked_out = if crate::has_uncached_formulas(&self.doc, &self.calc) {
+            crate::calculate_uncached(&mut self.doc, self.now) > 0
+        } else {
+            false
+        };
         if worked_out || zeroed {
             self.changed(None);
         }
@@ -272,9 +315,31 @@ impl SheetsView {
         &self.circular
     }
 
+    pub(crate) fn rebuild_calc(&mut self) {
+        self.calc = crate::calc::CalcGraph::build(&self.doc);
+    }
+
     /// Works the formulas out again after a change.
     pub(crate) fn recalculate(&mut self) {
-        self.circular = crate::recalculate_with_report(&mut self.doc, self.now).circular;
+        self.rebuild_calc();
+        let all: Vec<crate::CellKey> = self.calc.formula_keys.clone();
+        self.circular = crate::recalculate_incremental(&mut self.doc, self.now, &self.calc, &all, &[]);
+    }
+
+    pub(crate) fn recalculate_for_steps(&mut self, steps: &[CStep]) {
+        let mut roots: Vec<crate::CellKey> = Vec::new();
+        for step in steps {
+            let CStep::Cells { sheet, cells } = step else {
+                self.recalculate();
+                return;
+            };
+            let coords: Vec<CellRef> = cells.iter().map(|&(at, _, _)| at).collect();
+            self.calc.update_cells(&self.doc, *sheet, &coords);
+            for at in coords {
+                roots.push((*sheet, at.row, at.col));
+            }
+        }
+        self.circular = crate::recalculate_incremental(&mut self.doc, self.now, &self.calc, &roots, &self.circular);
     }
 
     pub fn sheets(&self) -> &[Sheet] {
@@ -311,7 +376,21 @@ impl SheetsView {
             }
             None => self.grids.clear(),
         }
+        self.cf_cache.clear();
         self.revision += 1;
+        self.grid_revision += 1;
+    }
+
+    pub(crate) fn cells_changed(&mut self, sheet: usize, cells: &[CellRef]) {
+        self.cf_cache.clear();
+        self.revision += 1;
+        if let Some(g) = self.grids.get(&sheet) {
+            let needs_grid = cells.iter().any(|at| at.row >= g.content.0 || at.col >= g.content.1);
+            if needs_grid {
+                self.grids.remove(&sheet);
+                self.grid_revision += 1;
+            }
+        }
     }
 
     fn make_grid(&self, sheet: usize) -> Grid {
@@ -359,8 +438,10 @@ impl SheetsView {
                 let hidden = c.attr("hidden").and_then(office_core::units::parse_bool).unwrap_or(false);
                 let w = if hidden { Some(0.0) } else { c.attr("width").and_then(|v| v.parse::<f64>().ok()).map(chars) };
                 if let Some(w) = w {
-                    for col in n("min").max(1)..=n("max").min(cols) {
-                        widths.push((col - 1, w));
+                    if hidden || (w - default_width).abs() > 0.01 {
+                        for col in n("min").max(1)..=n("max").min(cols) {
+                            widths.push((col - 1, w));
+                        }
                     }
                 }
             }
@@ -410,9 +491,13 @@ impl SheetsView {
     pub fn paint(&mut self, host: &mut dyn Measurer, sheet: usize, r0: u32, r1: u32, c0: u32, c1: u32) -> GridPaint {
         self.grid(sheet);
         let gridlines = self.show_gridlines(sheet);
-        let SheetsView { doc, measure, styles, cache, grids, now, .. } = self;
+        if !self.cf_cache.contains_key(&sheet) {
+            let r = crate::conditional::Rules::read(&self.doc, sheet, self.now);
+            self.cf_cache.insert(sheet, r);
+        }
+        let SheetsView { doc, measure, styles, cache, grids, cf_cache, .. } = self;
         let doc: &Document = doc;
-        let rules = crate::conditional::Rules::read(doc, sheet, *now);
+        let rules = &cf_cache[&sheet];
         let grid = &grids[&sheet];
         let Some(s) = (match &doc.body {
             Body::Workbook { sheets } => sheets.get(sheet),
@@ -433,7 +518,9 @@ impl SheetsView {
                 items.push(Item::Line { x1: r(x0), y1: r(y), x2: r(x1), y2: r(y), color: "#e1e1e1".into(), w: 1.0, dash: "solid" });
             }
         }
-        let covered = |at: CellRef| s.merges.iter().find(|m| m.contains(at));
+        let visible_merges: Vec<&Range> =
+            s.merges.iter().filter(|m| m.end.row >= r0 && m.start.row <= r1 && m.end.col >= c0 && m.start.col <= (c1 + 40)).collect();
+        let covered = |at: CellRef| visible_merges.iter().copied().find(|m| m.contains(at));
         let mut texts = Vec::new();
         let mut borders = Vec::new();
         let start = s.rows.partition_point(|row| row.index < r0);
@@ -474,6 +561,8 @@ impl SheetsView {
             blank.dedup();
             cells.extend(blank);
         }
+        let mut style_cache: HashMap<u32, para::StyleId> = HashMap::new();
+        let date_system = crate::excel(doc).map(|x| x.date_system).unwrap_or_default();
         for at in cells {
             let merge = covered(at);
             if merge.is_some_and(|m| m.start != at) {
@@ -487,7 +576,10 @@ impl SheetsView {
             if cw <= 0.0 || ch <= 0.0 {
                 continue;
             }
-            let mut f = format_of(doc, sheet, at);
+            let row_ref = s.rows.binary_search_by_key(&at.row, |row| row.index).ok().map(|i| &s.rows[i]);
+            let cell_ref = row_ref.and_then(|row| row.cells.binary_search_by_key(&at.col, |c| c.col).ok().map(|i| &row.cells[i]));
+            let raw_style_idx = cell_ref.and_then(|c| c.style).unwrap_or(0);
+            let mut f = crate::excel(doc).map(|x| x.styles.format(raw_style_idx)).unwrap_or_default();
             let look = if rules.is_empty() { None } else { rules.look(doc, at) };
             if let Some(look) = &look {
                 look.dxf.apply(&mut f);
@@ -496,7 +588,8 @@ impl SheetsView {
                 items.push(Item::Rect { x: r(cx), y: r(cy), w: r(cw), h: r(ch), fill: Some(fill) });
             }
             borders_of(doc, &f, cx, cy, cw, ch, &mut borders);
-            let value = s.value(at);
+            static EMPTY_VAL: Value = Value::Empty;
+            let value = cell_ref.map(|c| &c.value).unwrap_or(&EMPTY_VAL);
             if value.is_empty() {
                 continue;
             }
@@ -531,7 +624,7 @@ impl SheetsView {
                     continue;
                 }
             }
-            let formatted = crate::numfmt::format(value, &f.number_format, crate::excel(doc).map(|x| x.date_system).unwrap_or_default());
+            let formatted = crate::numfmt::format(value, &f.number_format, date_system);
             let mut shown = formatted.text.clone();
             let is_number = matches!(value, Value::Number(_));
             let align = f.alignment.horizontal.clone().unwrap_or_else(|| match value {
@@ -539,7 +632,17 @@ impl SheetsView {
                 Value::Bool(_) | Value::Error(_) => "center".into(),
                 _ => "left".into(),
             });
-            let mut style = style_of(doc, styles, measure, &f);
+            let mut style = if look.is_none() {
+                if let Some(&cached) = style_cache.get(&raw_style_idx) {
+                    cached
+                } else {
+                    let id = style_of(doc, styles, measure, &f);
+                    style_cache.insert(raw_style_idx, id);
+                    id
+                }
+            } else {
+                style_of(doc, styles, measure, &f)
+            };
             if let Some(color) = formatted.color.as_deref().and_then(numfmt_color) {
                 let mut ts = styles.get(style).clone();
                 ts.color = color;
@@ -548,10 +651,11 @@ impl SheetsView {
             // Text running past the cell into empty cells, as Excel draws it (left-aligned only).
             let mut room = cw;
             if merge.is_none() && !f.alignment.wrap && align == "left" && !is_number {
-                let row = s.rows.binary_search_by_key(&at.row, |row| row.index).ok().map(|i| &s.rows[i]);
                 let mut next = at.col + 1;
                 while next < c1.max(at.col + 40)
-                    && row.is_none_or(|row| row.cells.iter().find(|c| c.col == next).is_none_or(|c| c.value.is_empty()))
+                    && row_ref.is_none_or(|row| {
+                        row.cells.binary_search_by_key(&next, |c| c.col).ok().is_none_or(|idx| row.cells[idx].value.is_empty())
+                    })
                     && covered(CellRef::new(at.row, next)).is_none()
                 {
                     room += grid.width(next);
@@ -950,8 +1054,8 @@ fn style_of(doc: &Document, styles: &mut Styles, measure: &mut Measure, f: &Cell
         strike: f.font.strike.then_some(office_core::model::Strike::Single),
         ..Default::default()
     };
-    let theme = doc.theme.clone();
-    let paint = move |c: &office_core::drawing::Color| c.resolve(&|n| theme.as_ref()?.scheme_color(n));
+    let theme = doc.theme.as_ref();
+    let paint = move |c: &office_core::drawing::Color| c.resolve(&|n| theme?.scheme_color(n));
     let mut s = TextStyle::from_props(&props, DEFAULT_PT * 96.0 / 72.0, &paint);
     if let Some(c) = &f.font.color {
         s.color = paint(c);

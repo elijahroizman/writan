@@ -207,8 +207,53 @@ export async function resolveExcelLink(link: ExcelLink): Promise<ResolvedLinkDat
 
 // ---- OOXML zip persistence (`writan/excel-links.json`) ----
 
+const LINK_ENTRY_BYTES = new TextEncoder().encode(EXCEL_LINKS_PART)
+
+/**
+ * Fast central-directory check for `EXCEL_LINKS_PART` before loading JSZip.
+ * Returns `true`/`false` when definitive, or `null` for ZIP64 / unusual archives to fall back to JSZip.
+ */
+function hasZipEntry(bytes: Uint8Array, nameBytes: Uint8Array): boolean | null {
+  if (bytes.length < 22 || bytes[0] !== 0x50 || bytes[1] !== 0x4b) return null
+  const searchStart = Math.max(0, bytes.length - 65558)
+  let eocd = -1
+  for (let i = bytes.length - 22; i >= searchStart; i--) {
+    if (bytes[i] === 0x50 && bytes[i + 1] === 0x4b && bytes[i + 2] === 0x05 && bytes[i + 3] === 0x06) {
+      eocd = i
+      break
+    }
+  }
+  if (eocd === -1) return null
+  const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const count = dv.getUint16(eocd + 10, true)
+  const cdSize = dv.getUint32(eocd + 12, true)
+  const cdOffset = dv.getUint32(eocd + 16, true)
+  if (count === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff || cdOffset + cdSize > bytes.length) return null
+  let pos = cdOffset
+  for (let idx = 0; idx < count && pos + 46 <= bytes.length; idx++) {
+    if (dv.getUint32(pos, true) !== 0x02014b50) return null
+    const nameLen = dv.getUint16(pos + 28, true)
+    const extraLen = dv.getUint16(pos + 30, true)
+    const commentLen = dv.getUint16(pos + 32, true)
+    if (pos + 46 + nameLen > bytes.length) return null
+    if (nameLen === nameBytes.length) {
+      let match = true
+      for (let j = 0; j < nameLen; j++) {
+        if (bytes[pos + 46 + j] !== nameBytes[j]) {
+          match = false
+          break
+        }
+      }
+      if (match) return true
+    }
+    pos += 46 + nameLen + extraLen + commentLen
+  }
+  return false
+}
+
 export async function readExcelLinks(bytes: Uint8Array | null): Promise<ExcelLink[]> {
   if (!bytes || bytes.length < 4) return []
+  if (hasZipEntry(bytes, LINK_ENTRY_BYTES) === false) return []
   try {
     const { default: JSZip } = await import('jszip')
     const zip = await JSZip.loadAsync(bytes)
@@ -223,6 +268,7 @@ export async function readExcelLinks(bytes: Uint8Array | null): Promise<ExcelLin
 }
 
 export async function writeExcelLinks(bytes: Uint8Array, links: ExcelLink[]): Promise<Uint8Array> {
+  if (!links.length && hasZipEntry(bytes, LINK_ENTRY_BYTES) === false) return bytes
   const { default: JSZip } = await import('jszip')
   const zip = await JSZip.loadAsync(bytes)
   const existing = zip.file(EXCEL_LINKS_PART)
@@ -431,8 +477,12 @@ export function useExcelLinks(
         onMutatedRef.current?.()
       }
     }
-    return subscribeOpenWorkbooks((changedTabId) => {
-      setOpenWorkbooks(listOpenWorkbooks())
+    const unsub = subscribeOpenWorkbooks((changedTabId) => {
+      const next = listOpenWorkbooks()
+      setOpenWorkbooks((prev) => {
+        if (prev.length === next.length && prev.every((w, i) => w.tabId === next[i].tabId && w.name === next[i].name && w.path === next[i].path && w.engine === next[i].engine)) return prev
+        return next
+      })
       if (changedTabId) {
         pendingTabs.add(changedTabId)
         if (timer) clearTimeout(timer)
@@ -441,6 +491,10 @@ export function useExcelLinks(
         }, 120)
       }
     })
+    return () => {
+      unsub()
+      if (timer) clearTimeout(timer)
+    }
   }, [applyResolved])
 
   const insertRange = useCallback(

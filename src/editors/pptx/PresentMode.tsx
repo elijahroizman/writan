@@ -39,6 +39,22 @@ export function PresentMode({
   const stageRef = useRef<HTMLDivElement>(null)
   const exitRef = useRef(onExit)
   exitRef.current = onExit
+  const elementsCacheRef = useRef(new Map<string, Element[]>())
+
+  // Pre-warm the next slide in idle time so advancing is instant.
+  useEffect(() => {
+    const next = order[pos + 1]
+    if (!next) return
+    const warm = () => {
+      engine.html(next.i)
+    }
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(warm, { timeout: 200 })
+      return () => cancelIdleCallback(id)
+    }
+    const id = window.setTimeout(warm, 50)
+    return () => window.clearTimeout(id)
+  }, [engine, order, pos])
 
   const current = order[pos]
   const steps = current?.s.animations ?? NO_STEPS
@@ -132,7 +148,13 @@ export function PresentMode({
     const stage = stageRef.current!.getBoundingClientRect()
     const x = (e.clientX - stage.left - left) / scale
     const y = (e.clientY - stage.top - top) / scale
-    const elements = JSON.parse(engine.doc.elements(current.i)) as Element[]
+    const cacheKey = `${current.s.id}:${current.s.revision}`
+    let elements = elementsCacheRef.current.get(cacheKey)
+    if (!elements) {
+      elements = JSON.parse(engine.doc.elements(current.i)) as Element[]
+      if (elementsCacheRef.current.size > 32) elementsCacheRef.current.clear()
+      elementsCacheRef.current.set(cacheKey, elements)
+    }
     const hit = linkedAt(elements, x, y, hiddenAfter(steps, build.done))
     const url = hit?.link?.url
     if (hit && url) {

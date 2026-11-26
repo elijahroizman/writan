@@ -98,28 +98,36 @@ function renderFrontmatter(data: Record<string, unknown>): string {
   return `<section class="frontmatter" data-line="0">${title}<table><tbody>${rows}</tbody></table></section>`
 }
 
-export function renderMarkdown(source: string): { html: string; headings: Heading[]; frontmatter: Record<string, unknown> | null } {
+export function renderMarkdown(source: string): { html: string; headings: Heading[]; minHeadingLevel: number; frontmatter: Record<string, unknown> | null } {
   const env = {}
   const { data: frontmatter, body } = splitFrontmatter(source)
   const tokens = md.parse(body, env)
   const headings: Heading[] = []
-  tokens.forEach((token, i) => {
+  let minHeadingLevel = 6
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i]
     if (token.type === 'heading_open') {
       const inline = tokens[i + 1]
-      const text = inline?.children?.map((c) => c.content).join('') ?? inline?.content ?? ''
+      let text = inline?.content ?? ''
+      if (inline?.children?.length) {
+        text = ''
+        for (const c of inline.children) text += c.content
+      }
+      const level = Number(token.tag.slice(1))
+      if (level < minHeadingLevel) minHeadingLevel = level
       headings.push({
-        level: Number(token.tag.slice(1)),
+        level,
         text,
         slug: String(token.attrGet('id') ?? slugify(text)),
         line: token.map?.[0] ?? 0,
       })
     }
-  })
+  }
   const rendered = (frontmatter ? renderFrontmatter(frontmatter) : '') + md.renderer.render(tokens, md.options, env)
   const html = DOMPurify.sanitize(rendered, {
     ADD_ATTR: ['data-line', 'target'],
     // Inline <script>/<style>/forms from untrusted files never run.
     FORBID_TAGS: ['style', 'form'],
   })
-  return { html, headings, frontmatter }
+  return { html, headings, minHeadingLevel: headings.length ? minHeadingLevel : 1, frontmatter }
 }

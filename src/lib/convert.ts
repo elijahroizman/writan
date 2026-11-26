@@ -2,57 +2,17 @@
 // multiple open tabs into a single PDF.
 
 import type { TextRun } from '../editors/pdf/engine/protocol'
-import { loadEngine } from '../engine/load'
-import type { DocKind } from './kinds'
 import { KINDS } from './kinds'
 import * as platform from './platform'
 import type { PdfOcrProgress } from './ocr/pdfOcr'
 import type { DocTab } from '../state/workspace'
 import { getEditor, useWorkspace } from '../state/workspace'
+import type { ConvertFormat, ConvertTarget } from './convertMeta'
+import { canExportMarkdown, canIncludeInPdfBundle, TARGET_INFO, targetsForKind, usesOcr } from './convertMeta'
 
-export type ConvertFormat = 'pdf' | 'md' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'txt'
+export { canExportMarkdown, canIncludeInPdfBundle, targetsForKind, usesOcr, type ConvertFormat, type ConvertTarget }
 
-export interface ConvertTarget {
-  format: ConvertFormat
-  label: string
-  hint: string
-  extension: string
-}
-
-const TARGET_INFO: Record<ConvertFormat, Omit<ConvertTarget, 'format'>> = {
-  md: { label: 'Markdown (LLM-ready)', hint: 'Clean headings, lists, tables and formatting', extension: 'md' },
-  pdf: { label: 'PDF', hint: 'Rendered pages as a PDF document', extension: 'pdf' },
-  docx: { label: 'Word (.docx)', hint: 'Editable Word document', extension: 'docx' },
-  pptx: { label: 'PowerPoint (.pptx)', hint: 'Slides deck', extension: 'pptx' },
-  xlsx: { label: 'Excel (.xlsx)', hint: 'Spreadsheet workbook', extension: 'xlsx' },
-  csv: { label: 'CSV (.csv)', hint: 'Comma-separated values', extension: 'csv' },
-  txt: { label: 'Plain text (.txt)', hint: 'Unformatted text', extension: 'txt' },
-}
-
-const TARGETS_BY_KIND: Record<string, ConvertFormat[]> = {
-  docx: ['md', 'pdf', 'pptx', 'xlsx', 'txt'],
-  pptx: ['pdf', 'md', 'docx', 'txt'],
-  xlsx: ['pdf', 'md', 'csv', 'docx', 'pptx'],
-  csv: ['xlsx', 'md', 'pdf', 'docx'],
-  md: ['pdf', 'docx', 'pptx', 'txt'],
-  txt: ['pdf', 'docx', 'md'],
-  pdf: ['md', 'txt', 'docx'],
-  image: ['pdf', 'txt', 'md', 'docx'],
-}
-
-/** Target formats a tab of `kind` can be converted to in one click. */
-export function targetsForKind(kind: DocKind): ConvertTarget[] {
-  const list = TARGETS_BY_KIND[kind] ?? []
-  return list.map((format) => ({
-    format, ...TARGET_INFO[format],
-    ...(usesOcr(kind, format) ? { hint: 'Recognize text with offline OCR' } : {}),
-  }))
-}
-
-/** Whether converting a `kind` tab to `format` recognizes its text. A picture becomes a plain PDF. */
-export function usesOcr(kind: DocKind, format: ConvertFormat): boolean {
-  return (kind === 'image' && format !== 'pdf') || (kind === 'pdf' && format === 'docx')
-}
+const loadEngine = () => import('../engine/load').then((m) => m.loadEngine())
 
 export type OcrStatus = (message: string) => void
 
@@ -141,15 +101,7 @@ export async function saveOcrCopy(name: string, bytes: Uint8Array, signal?: Abor
   return true
 }
 
-/** Whether a tab can be exported or copied as clean Markdown. */
-export function canExportMarkdown(kind: DocKind): boolean {
-  return kind === 'docx' || kind === 'pptx' || kind === 'xlsx' || kind === 'csv' || kind === 'pdf' || kind === 'md' || kind === 'txt'
-}
-
-/** Whether a tab can be included in a bundled PDF. */
-export function canIncludeInPdfBundle(kind: DocKind): boolean {
-  return kind === 'pdf' || kind === 'docx' || kind === 'pptx' || kind === 'xlsx' || kind === 'csv' || kind === 'md' || kind === 'txt' || kind === 'image'
-}
+// Export helpers live in convertMeta.ts and are re-exported above.
 
 function fileNameForTab(tab: DocTab): string {
   if (tab.path && !tab.path.startsWith('browser:')) return platform.basename(tab.path)
@@ -159,6 +111,7 @@ function fileNameForTab(tab: DocTab): string {
 
 /** Reads the live bytes of an open tab (including unsaved edits if its editor is mounted). */
 export async function readTabBytes(tab: DocTab): Promise<Uint8Array> {
+  if (!tab.dirty && tab.bytes) return tab.bytes
   const editor = getEditor(tab.id)
   if (editor) {
     editor.prepareSave?.()

@@ -245,7 +245,7 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
   // ── Layout and zoom
 
   function fitScale() {
-    if (!work) return 1
+    if (!work || stage.clientWidth === 0 || stage.clientHeight === 0) return 1
     // Inside the stage's padding (the toolbar's room), with a little air.
     const style = getComputedStyle(stage)
     const width = stage.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight) - 8
@@ -254,15 +254,18 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
   }
 
   function layout() {
-    if (!work) return
+    if (!work || stage.clientWidth === 0 || stage.clientHeight === 0) return
     scale = Math.max(MIN_ZOOM, zoom ?? fitScale())
     const w = work.width * scale
     const h = work.height * scale
     page.style.width = `${w}px`
     page.style.height = `${h}px`
     const dpr = window.devicePixelRatio || 1
-    overlay.width = Math.max(1, Math.round(w * dpr))
-    overlay.height = Math.max(1, Math.round(h * dpr))
+    const rawW = Math.max(1, Math.round(w * dpr))
+    const rawH = Math.max(1, Math.round(h * dpr))
+    const cap = Math.min(1, 4096 / rawW, 4096 / rawH)
+    overlay.width = Math.max(1, Math.round(rawW * cap))
+    overlay.height = Math.max(1, Math.round(rawH * cap))
     // Pixels stay sharp when zoomed in past 100%.
     work.style.imageRendering = scale > 2 ? 'pixelated' : ''
     drawOverlay()
@@ -299,7 +302,7 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     if (tool !== 'pan') return
     setZoom(zoom === null && scale < 1 ? 1 : null, e)
   })
-  const resize = new ResizeObserver(() => zoom === null && layout())
+  const resize = new ResizeObserver(() => zoom === null && stage.clientWidth > 0 && stage.clientHeight > 0 && layout())
   resize.observe(stage)
 
   function showWork(next: HTMLCanvasElement) {
@@ -475,8 +478,9 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
     ctx.setTransform(1, 0, 0, 1, 0, 0)
     ctx.clearRect(0, 0, overlay.width, overlay.height)
     if (!work) return
-    const k = (window.devicePixelRatio || 1) * scale
-    ctx.setTransform(k, 0, 0, k, 0, 0)
+    const kx = overlay.width / work.width
+    const ky = overlay.height / work.height
+    ctx.setTransform(kx, 0, 0, ky, 0, 0)
     if (matches.length) {
       // Like Find in a PDF: every match in yellow, the current one in orange.
       ctx.save()
@@ -962,7 +966,7 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
       document.removeEventListener('pointerdown', closeMenu, true)
       if (note) window.clearTimeout(note.timer)
       // Let go of the pixels now rather than whenever the canvases are collected.
-      for (const c of [source, work]) if (c) c.width = c.height = 0
+      for (const c of [source, work, overlay]) if (c) c.width = c.height = 0
       root.remove()
     },
   }

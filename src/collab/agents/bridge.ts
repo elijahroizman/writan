@@ -3,23 +3,16 @@
 // open, and the answers go back the same way. The connection goes through transport.ts like a
 // shared document's, so in the browser it reaches the standalone relay the same way.
 
-import { create } from 'zustand'
 import { isTauri } from '../../lib/platform'
 import { browserRelay, connect, resetNative, type Transport } from '../transport'
 import { agentFrom } from './identity'
-import { AgentSession, listTools, runTool, ToolError, TOOLS } from './tools'
-import SKILL from './SKILL.md?raw'
+import { useAgentsStatus, type AgentsStatus } from './status'
+import type { AgentSession } from './tools'
 
-/** Whether agents can connect, and where. */
-export interface AgentsStatus {
-  state: 'off' | 'starting' | 'on' | 'error'
-  /** The MCP URL on this computer, and on the network, without the agent part. */
-  local: string | null
-  network: string[]
-  message: string | null
-}
+export { useAgentsStatus, type AgentsStatus }
 
-export const useAgentsStatus = create<AgentsStatus>(() => ({ state: 'off', local: null, network: [], message: null }))
+let toolsPromise: Promise<typeof import('./tools')> | null = null
+const loadTools = () => (toolsPromise ??= import('./tools'))
 
 let bridge: Transport | null = null
 /** Bumped by every start and stop, so a start that a later one overtook lets its connection go. */
@@ -39,6 +32,7 @@ interface Call {
 }
 
 async function answer(call: Call): Promise<unknown> {
+  const { AgentSession, listTools, runTool, ToolError, TOOLS } = await loadTools()
   if (call.method === 'tools/list') return { tools: listTools() }
   let session = sessions.get(call.session)
   if (!session) {
@@ -119,8 +113,11 @@ export async function startAgents(token: string): Promise<void> {
     if (isTauri) {
       // After an update (or a new address or port), an agent set up before may hold an older
       // address or skill: bring the ones that have one up to date.
-      const { invoke } = await import('@tauri-apps/api/core')
-      void invoke<string[]>('agents_sync', { url: `http://${base}/mcp/${token}`, skill: SKILL })
+      const [{ invoke }, { default: skill }] = await Promise.all([
+        import('@tauri-apps/api/core'),
+        import('./SKILL.md?raw'),
+      ])
+      void invoke<string[]>('agents_sync', { url: `http://${base}/mcp/${token}`, skill })
         .then((updated) => updated.length && console.info(`Agents updated: ${updated.join(', ')}`))
         .catch(() => {})
     }

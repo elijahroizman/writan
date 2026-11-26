@@ -7,7 +7,7 @@ import { PdfiumNative } from '@embedpdf/engines/pdfium'
 import type { PdfAnnotationObject, PdfDocumentObject, PdfPageObject, PdfBookmarkObject, PdfLinkTarget, PdfWidgetAnnoObject, Rect } from '@embedpdf/models'
 import { AppearanceMode, PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfActionType, PdfAnnotationFlags, PdfAnnotationSubtype, PdfPageFlattenFlag, PdfPageFlattenResult, PdfZoomMode } from '@embedpdf/models'
 import { init } from '@embedpdf/pdfium'
-import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, Method, OpenResult, OutlineItem, PageInfo, PageTextStats, Request, Response, TextRun } from './protocol'
+import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, GrayBitmap, Method, OpenResult, OutlineItem, PageInfo, PageTextStats, Request, Response, TextRun } from './protocol'
 
 type Module = Awaited<ReturnType<typeof init>>
 
@@ -181,6 +181,53 @@ async function render(key: number, scale: number, rect: Box | null): Promise<Bit
   }
 }
 
+/** Render directly to 8-bit grayscale in the worker so OCR avoids main-thread canvas readback. */
+function renderGrayscale(key: number, scale: number, rect: Box | null): GrayBitmap {
+  const p = page(key)
+  const r = rect ?? { x: 0, y: 0, w: p.size.width, h: p.size.height }
+  const width = Math.max(1, Math.round(r.w * scale))
+  const height = Math.max(1, Math.round(r.h * scale))
+  const sx = width / r.w
+  const sy = height / r.h
+  const bandRows = Math.max(1, Math.min(height, Math.floor(BAND_PIXELS / width)))
+  const stride = width * 4
+  const pc = ctx().acquirePage(p.index)
+  const buffer = scratch(stride * bandRows)
+  const matrix = scratch(24)
+  const clip = scratch(16)
+  const gray = new Uint8Array(width * height)
+  const form = hasForms ? openForm(pc.pagePtr) : null
+  try {
+    for (let y = 0; y < height; y += bandRows) {
+      const rows = Math.min(bandRows, height - y)
+      const bitmap = mod.FPDFBitmap_CreateEx(width, rows, 4 /* BGRA */, buffer, stride)
+      try {
+        mod.FPDFBitmap_FillRect(bitmap, 0, 0, width, rows, 0xffffffff)
+        new Float32Array(heap().HEAPF32.buffer, matrix, 6).set([sx, 0, 0, sy, -sx * r.x, -sy * r.y - y])
+        new Float32Array(heap().HEAPF32.buffer, clip, 4).set([0, 0, width, rows])
+        mod.FPDF_RenderPageBitmapWithMatrix(bitmap, pc.pagePtr, matrix, clip, 0x01 | 0x10 | 0x200)
+        if (form) mod.FPDF_FFLDraw(form.handle, bitmap, pc.pagePtr, Math.round(-sx * r.x), Math.round(-sy * r.y - y), Math.round(p.size.width * sx), Math.round(p.size.height * sy), 0, 0x01 | 0x10)
+      } finally {
+        mod.FPDFBitmap_Destroy(bitmap)
+      }
+      const rgba = heap().HEAPU8
+      const pixels = width * rows
+      let dst = y * width
+      let src = buffer
+      for (let i = 0; i < pixels; i++, src += 4) {
+        gray[dst++] = (77 * rgba[src] + 150 * rgba[src + 1] + 29 * rgba[src + 2] + 128) >> 8
+      }
+    }
+    return { width, height, data: gray.buffer }
+  } finally {
+    form?.close()
+    free(buffer)
+    free(matrix)
+    free(clip)
+    pc.release()
+  }
+}
+
 // ── Text
 
 /** Lines of text with their positions, for the invisible layer that makes text selectable. */
@@ -298,6 +345,7 @@ function statsForIndex(index: number): PageTextStats {
       const code = mod.FPDFText_GetUnicode(tp, i)
       if (code > 0x20 && code !== 0xfeff && code !== 0xfffe && code !== 0xfffd && !(code >= 0x7f && code < 0xa0)) {
         nonWhitespaceCount++
+        if (nonWhitespaceCount >= 1500) break
       }
     }
     // A page full of text isn't a scan to read (if it is one, it already has its text).
@@ -383,6 +431,12 @@ function pictureCoverage(pagePtr: number): number {
 
 function pageTextStats(key: number): PageTextStats {
   return statsForIndex(page(key).index)
+}
+
+function pageTextStatsBatch(keys: number[]): PageTextStats[] {
+  const out: PageTextStats[] = []
+  for (const key of keys) out.push(statsForIndex(page(key).index))
+  return out
 }
 
 function documentTextStats(): PageTextStats[] {
@@ -603,6 +657,15 @@ async function search(key: number, query: string, matchCase: boolean): Promise<B
   return hits.map((h) => h.rects.map(toBox))
 }
 
+async function searchBatch(keys: number[], query: string, matchCase: boolean): Promise<{ key: number; boxes: Box[][] }[]> {
+  const out: { key: number; boxes: Box[][] }[] = []
+  for (const key of keys) {
+    const boxes = await search(key, query, matchCase)
+    if (boxes.length) out.push({ key, boxes })
+  }
+  return out
+}
+
 async function outline(): Promise<OutlineItem[]> {
   const { bookmarks } = await task(engine.getBookmarks(doc!))
   const convert = (b: PdfBookmarkObject): OutlineItem => {
@@ -797,8 +860,10 @@ async function flatten(): Promise<ArrayBuffer> {
 const api: { [M in Method]: (...args: never[]) => unknown } = {
   open,
   render,
+  renderGrayscale,
   text,
   pageTextStats,
+  pageTextStatsBatch,
   documentTextStats,
   textBoxes,
   annotations,
@@ -808,6 +873,7 @@ const api: { [M in Method]: (...args: never[]) => unknown } = {
   restoreAnnotation,
   setField,
   search,
+  searchBatch,
   outline,
   rotate,
   move,
@@ -855,6 +921,8 @@ async function runNext() {
     if (result instanceof ArrayBuffer) transfer.push(result)
     else if (result && typeof result === 'object' && 'bands' in result) {
       for (const band of (result as Bitmap).bands) transfer.push((band.image ?? band.data)!)
+    } else if (result && typeof result === 'object' && 'data' in result && result.data instanceof ArrayBuffer) {
+      transfer.push(result.data)
     }
   } catch (err) {
     const e = err as Error & { code?: number }

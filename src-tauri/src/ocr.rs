@@ -6,6 +6,7 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, LazyLock, Mutex};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use tauri::{Emitter, Manager};
 
 const BASE_URL: &str = "https://raw.githubusercontent.com/tesseract-ocr/tessdata_fast/87416418657359cb625c412a48b6e1d6d41c29bd/";
@@ -106,13 +107,42 @@ fn storage_error(error: io::Error) -> String {
     }
 }
 
-fn installed_size(path: &Path) -> Result<Option<u64>, String> {
+fn installed_meta(path: &Path) -> Result<Option<(u64, u128)>, String> {
     match fs::symlink_metadata(path) {
-        Ok(meta) if meta.is_file() => Ok(Some(meta.len())),
+        Ok(meta) if meta.is_file() => {
+            let mtime = meta
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            Ok(Some((meta.len(), mtime)))
+        }
         Ok(_) => Ok(None),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(storage_error(error)),
     }
+}
+
+fn installed_size(path: &Path) -> Result<Option<u64>, String> {
+    Ok(installed_meta(path)?.map(|(size, _)| size))
+}
+
+type VerifiedMap = HashMap<PathBuf, (u64, u128, bool)>;
+
+static VERIFIED_CACHE: LazyLock<Mutex<VerifiedMap>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+fn cached_verify(path: &Path, size: u64, mtime: u128, pack: &Pack) -> bool {
+    if let Some(&(cached_size, cached_mtime, verified)) = VERIFIED_CACHE.lock().unwrap().get(path) {
+        if cached_size == size && cached_mtime == mtime {
+            return verified;
+        }
+    }
+    let verified = verified_bytes(path, pack).is_ok();
+    VERIFIED_CACHE
+        .lock()
+        .unwrap()
+        .insert(path.to_path_buf(), (size, mtime, verified));
+    verified
 }
 
 fn matches_digest(pack: &Pack, size: u64, digest: Sha256) -> bool {
@@ -173,12 +203,12 @@ fn inventory(dir: &Path) -> Result<PackInventory, String> {
     };
     for pack in PACKS {
         let path = destination(dir, pack);
-        if let Some(size) = installed_size(&path)? {
+        if let Some((size, mtime)) = installed_meta(&path)? {
             inventory.total_bytes += size;
             inventory.installed.push(InstalledPack {
                 code: pack.code,
                 size,
-                sha256_verified: verified_bytes(&path, pack).is_ok(),
+                sha256_verified: cached_verify(&path, size, mtime, pack),
             });
         }
     }
@@ -269,7 +299,9 @@ fn remove_pack(dir: &Path, pack: &Pack) -> Result<(), String> {
                 .into(),
         );
     }
-    match fs::remove_file(destination(dir, pack)) {
+    let path = destination(dir, pack);
+    VERIFIED_CACHE.lock().unwrap().remove(&path);
+    match fs::remove_file(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         result => result.map_err(storage_error),
     }
@@ -286,7 +318,12 @@ pub async fn ocr_download_pack(app: tauri::AppHandle, code: String) -> Result<()
     let dir = directory(&app)?;
     let download = Download::begin(pack.code)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let emit_progress = |received| {
+        let mut last_emit = Instant::now();
+        let mut emit_progress = |received: u64, force: bool| {
+            if !force && last_emit.elapsed() < Duration::from_millis(75) {
+                return;
+            }
+            last_emit = Instant::now();
             let _ = app.emit(
                 "ocr-pack-progress",
                 PackProgress {
@@ -296,7 +333,7 @@ pub async fn ocr_download_pack(app: tauri::AppHandle, code: String) -> Result<()
                 },
             );
         };
-        emit_progress(0);
+        emit_progress(0, true);
         check_cancelled(&download.cancelled)?;
         let response = crate::files::download_agent()
             .get(format!("{BASE_URL}{}.traineddata", pack.code))
@@ -308,13 +345,20 @@ pub async fn ocr_download_pack(app: tauri::AppHandle, code: String) -> Result<()
             pack,
             response.into_body().into_reader(),
             &download.cancelled,
-            emit_progress,
+            |received| emit_progress(received, received >= pack.size),
         )?;
         // Serialize the final rename with cancellation and removal.
         let _downloads = DOWNLOADS.lock().unwrap();
         check_cancelled(&download.cancelled)?;
-        tmp.persist(destination(&dir, pack))
+        let dest = destination(&dir, pack);
+        tmp.persist(&dest)
             .map_err(|error| storage_error(error.error))?;
+        if let Ok(Some((size, mtime))) = installed_meta(&dest) {
+            VERIFIED_CACHE
+                .lock()
+                .unwrap()
+                .insert(dest, (size, mtime, true));
+        }
         Ok(())
     })
     .await

@@ -16,6 +16,12 @@ function toTransferCopy(bytes: Uint8Array): Uint8Array {
   return bytes.slice()
 }
 
+function toTransferOwned(bytes: Uint8Array): Uint8Array {
+  return bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength && bytes.buffer instanceof ArrayBuffer
+    ? bytes
+    : bytes.slice()
+}
+
 export class PdfEngineClient {
   private worker?: Worker
   private idleTimer?: ReturnType<typeof setTimeout>
@@ -109,16 +115,16 @@ export class PdfEngineClient {
   }
 
   async renderDocument(docJson: string, mediaPack: Uint8Array, fontPack: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
-    const m = toTransferCopy(mediaPack)
-    const f = toTransferCopy(fontPack)
+    const m = toTransferOwned(mediaPack)
+    const f = toTransferOwned(fontPack)
     const res = await this.call({ kind: 'renderDocument', docJson, mediaPack: m, fontPack: f }, [m.buffer, f.buffer], signal)
     if (res.kind !== 'bytes') throw new Error('Unexpected response from PDF worker.')
     return res.bytes
   }
 
   async imagesToPdf(pagesJson: string, mediaPack: Uint8Array, fontPack: Uint8Array, signal?: AbortSignal): Promise<Uint8Array> {
-    const m = toTransferCopy(mediaPack)
-    const f = toTransferCopy(fontPack)
+    const m = toTransferOwned(mediaPack)
+    const f = toTransferOwned(fontPack)
     const res = await this.call({ kind: 'imagesToPdf', pagesJson, mediaPack: m, fontPack: f }, [m.buffer, f.buffer], signal)
     if (res.kind !== 'bytes') throw new Error('Unexpected response from PDF worker.')
     return res.bytes
@@ -138,7 +144,7 @@ export class PdfEngineClient {
     opts: { signal?: AbortSignal; allowSigned?: boolean } = {},
   ): Promise<Uint8Array> {
     const copy = toTransferCopy(pdfBytes)
-    const f = toTransferCopy(fontPack)
+    const f = toTransferOwned(fontPack)
     const res = await this.call(
       { kind: 'injectOcrTextLayer', pdfBytes: copy, layersJson, fontPack: f, allowSigned: opts.allowSigned },
       [copy.buffer, f.buffer],

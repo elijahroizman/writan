@@ -1257,3 +1257,12 @@ fn range_snapshot_evaluates_formulas_and_preserves_alignment() {
     assert_eq!(snap.rows[1][1].align.as_deref(), Some("right"));
     assert_eq!(snap.rows[2][1].text, "24");
 }
+
+#[test]
+fn overwriting_circular_formula_with_plain_value_clears_circular() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    v.set_input(0, CellRef::new(0, 0), "=A1+1");
+    assert_eq!(v.circular(), vec![(0, CellRef::new(0, 0))]);
+    v.set_input(0, CellRef::new(0, 0), "5");
+    assert!(v.circular().is_empty(), "circular list should clear when formula is replaced: {:?}", v.circular());
+}

@@ -47,14 +47,15 @@ pub(super) fn draw(ctx: &mut Ctx, doc: &Document, slide: &Slide, target: &str, b
     }
 
     let map = root.child(ns::C, "clrMapOvr");
-    let color = |c: &Color| crate::color_with_override(doc, slide, c, map);
+    let color_map = crate::SlideColorMap::new(doc, slide);
+    let color = |c: &Color| color_map.resolve_with_override(c, map);
     let series = SeriesColors::new(group, &color, slide_theme(doc, slide), radial);
     let mut items = Vec::new();
     if let Some(fill) = solid(root.child(ns::C, "spPr")).map(|c| color(&c).css()) {
         items.push(Item::Rect { x: 0.0, y: 0.0, w: r(b.w), h: r(b.h), fill: Some(fill) });
     }
 
-    let font = Paint { doc, slide }.body_font();
+    let font = Paint::new(doc, slide).body_font();
     let padding = (b.w.min(b.h) * 0.045).clamp(5.0, 18.0);
     let label_size = (b.w.min(b.h) * 0.045).clamp(8.0, 13.0);
     let title_size = label_size * 1.3;

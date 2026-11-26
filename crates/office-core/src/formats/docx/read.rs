@@ -29,10 +29,11 @@ pub fn read(pkg: Package) -> Result<Document> {
     let blocks = body.map(|b| read_blocks(b, &rels, &mut doc, false, |e| e.is(ns::W, "sectPr"))).unwrap_or_default();
     doc.body = Body::Flow { blocks };
     // The document without the body's blocks; the final section properties stay at its end.
-    let mut origin = xml.root.clone();
-    if let Some(body) = origin.child_mut(ns::W, "body") {
-        let kept = shell(body, |e| !e.is(ns::W, "sectPr"));
-        *body = kept.get().unwrap().clone();
+    let mut origin = shell(&xml.root, |e| e.is(ns::W, "body")).0.map(|a| (*a).clone()).unwrap_or_else(|| Element::new(ns::W, "document"));
+    if let Some(body_el) = body {
+        if let Some(kept) = shell(body_el, |e| !e.is(ns::W, "sectPr")).0 {
+            origin.children.push(Node::Element((*kept).clone()));
+        }
     }
     doc.origin = Origin::new(origin);
     doc.package = Some(pkg);

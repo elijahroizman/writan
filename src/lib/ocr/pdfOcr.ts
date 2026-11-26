@@ -1,5 +1,5 @@
-import { discardBitmap, PdfEngine, Priority } from '../../editors/pdf/engine/client'
-import type { Bitmap, PageInfo } from '../../editors/pdf/engine/protocol'
+import { PdfEngine, Priority } from '../../editors/pdf/engine/client'
+import type { GrayBitmap, PageInfo } from '../../editors/pdf/engine/protocol'
 import { pdfEngineClient, type PdfInspection } from '../pdf/client'
 import { decodeImageToRgba, exportImageToPdf, type OcrLayerInput } from '../pdf/exporter'
 import { loadFontsForOcrLayers } from '../pdf/fonts'
@@ -88,24 +88,6 @@ function pageToOcrLayer(page: OcrPageResult, pageWidthPt: number, pageHeightPt: 
   }
 }
 
-function bitmapToImageData(bitmap: Bitmap): { data: Uint8ClampedArray; width: number; height: number } {
-  const { width, height, bands } = bitmap
-  const canvas = document.createElement('canvas')
-  canvas.width = width
-  canvas.height = height
-  const ctx = canvas.getContext('2d')!
-  for (const band of bands) {
-    if (band.image) {
-      ctx.drawImage(band.image, 0, band.y)
-    } else if (band.data) {
-      const clamped = new Uint8ClampedArray(band.data)
-      ctx.putImageData(new ImageData(clamped, width, band.height), 0, band.y)
-    }
-  }
-  const imgData = ctx.getImageData(0, 0, width, height)
-  return { data: imgData.data, width, height }
-}
-
 export async function inspectPdfDocument(bytes: Uint8Array, signal?: AbortSignal): Promise<PdfInspection> {
   return await pdfEngineClient.inspectPdf(bytes, signal)
 }
@@ -144,7 +126,8 @@ export async function ocrPdfDocument(opts: PdfOcrOptions): Promise<PdfOcrResult>
       throw new Error('This PDF has no pages to recognise.')
     }
 
-    const stats = await engine.call('documentTextStats', [], { priority: Priority.action, signal })
+    const priority = opts.engine ? Priority.ocr : Priority.action
+    const stats = await engine.call('documentTextStats', [], { priority, signal })
     const requested = opts.pageIndices?.length
       ? [...new Set(opts.pageIndices)].filter((i) => i >= 0 && i < pagesInfo!.length).sort((a, b) => a - b)
       : pagesInfo.map((_, i) => i)
@@ -170,36 +153,45 @@ export async function ocrPdfDocument(opts: PdfOcrOptions): Promise<PdfOcrResult>
       }
     }
 
+    const renderPageGray = (pageIdx: number): Promise<GrayBitmap> => {
+      const info = pagesInfo![pageIdx]
+      const scale = Math.min(220 / 72, 2800 / Math.max(1, info.width, info.height))
+      return engine!.call('renderGrayscale', [info.key, scale, null], { priority, signal })
+    }
+
     const pages: OcrPageResult[] = []
     const layers: OcrLayerInput[] = []
-    for (let step = 0; step < toProcess.length; step++) {
-      signal?.throwIfAborted?.()
-      const pageIdx = toProcess[step]
-      const info = pagesInfo[pageIdx]
-      onProgress?.({ done: step, total: toProcess.length, pageIndex: pageIdx, phase: 'recognizing' })
+    let nextRender: Promise<GrayBitmap> | undefined = renderPageGray(toProcess[0])
+    try {
+      for (let step = 0; step < toProcess.length; step++) {
+        signal?.throwIfAborted?.()
+        const pageIdx = toProcess[step]
+        const info = pagesInfo[pageIdx]
+        onProgress?.({ done: step, total: toProcess.length, pageIndex: pageIdx, phase: 'recognizing' })
 
-      const scale = Math.min(220 / 72, 2800 / Math.max(1, info.width, info.height))
-      const bitmap = await engine.call('render', [info.key, scale, null], { priority: Priority.action, signal })
-      let imageData: { data: Uint8ClampedArray; width: number; height: number }
-      try {
-        imageData = bitmapToImageData(bitmap)
-      } finally {
-        discardBitmap(bitmap)
+        const gray = await nextRender!
+        nextRender = step + 1 < toProcess.length ? renderPageGray(toProcess[step + 1]) : undefined
+        nextRender?.catch(() => {})
+
+        const recognized = await ocrClient.recognize(
+          {
+            data: new Uint8Array(gray.data),
+            width: gray.width,
+            height: gray.height,
+            channels: 1,
+            transfer: true,
+            pageIndex: pageIdx,
+            widthPt: info.width,
+            heightPt: info.height,
+          },
+          { langs, signal },
+        )
+        pages.push(recognized)
+        layers.push(pageToOcrLayer(recognized, info.width, info.height))
       }
-
-      const recognized = await ocrClient.recognize(
-        {
-          data: imageData.data,
-          width: imageData.width,
-          height: imageData.height,
-          pageIndex: pageIdx,
-          widthPt: info.width,
-          heightPt: info.height,
-        },
-        { langs, signal },
-      )
-      pages.push(recognized)
-      layers.push(pageToOcrLayer(recognized, info.width, info.height))
+    } catch (err) {
+      nextRender?.catch(() => {})
+      throw err
     }
 
     if (!searchable) return { searchablePdfBytes: pdfBytes, pages, skippedPages, recognizedPages: toProcess, inspection }

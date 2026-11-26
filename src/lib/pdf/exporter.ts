@@ -1,4 +1,4 @@
-import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
+import { LATEX_MATH_PREFIX } from '../../math/latexTag'
 import type { PaintItem, PaintStyle, StyleSheet } from '../../engine/paint'
 import type { ChartView, PictureView } from '../../engine/sheets/engine'
 import { packBlobs } from './blobs'
@@ -198,22 +198,34 @@ export async function decodeImageToRgba(bytes: Uint8Array, hint: string): Promis
 
 async function encodeRgba(rgba: { data: Uint8ClampedArray; width: number; height: number }, type: 'image/png' | 'image/jpeg'): Promise<Uint8Array> {
   const quality = type === 'image/jpeg' ? 0.92 : undefined
+  const pixels =
+    rgba.data instanceof Uint8ClampedArray && rgba.data.buffer instanceof ArrayBuffer
+      ? (rgba.data as Uint8ClampedArray<ArrayBuffer>)
+      : new Uint8ClampedArray(rgba.data)
   if (typeof OffscreenCanvas !== 'undefined') {
     const canvas = new OffscreenCanvas(rgba.width, rgba.height)
-    const ctx = canvas.getContext('2d')!
-    ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0)
-    const blob = await canvas.convertToBlob({ type, quality })
-    return new Uint8Array(await blob.arrayBuffer())
+    try {
+      const ctx = canvas.getContext('2d')!
+      ctx.putImageData(new ImageData(pixels, rgba.width, rgba.height), 0, 0)
+      const blob = await canvas.convertToBlob({ type, quality })
+      return new Uint8Array(await blob.arrayBuffer())
+    } finally {
+      canvas.width = canvas.height = 0
+    }
   }
   const canvas = document.createElement('canvas')
-  canvas.width = rgba.width
-  canvas.height = rgba.height
-  const ctx = canvas.getContext('2d')!
-  ctx.putImageData(new ImageData(new Uint8ClampedArray(rgba.data), rgba.width, rgba.height), 0, 0)
-  const blob = await new Promise<Blob>((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode image.'))), type, quality),
-  )
-  return new Uint8Array(await blob.arrayBuffer())
+  try {
+    canvas.width = rgba.width
+    canvas.height = rgba.height
+    const ctx = canvas.getContext('2d')!
+    ctx.putImageData(new ImageData(pixels, rgba.width, rgba.height), 0, 0)
+    const blob = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode image.'))), type, quality),
+    )
+    return new Uint8Array(await blob.arrayBuffer())
+  } finally {
+    canvas.width = canvas.height = 0
+  }
 }
 
 /**
@@ -237,13 +249,13 @@ function pngDimensions(bytes: Uint8Array): { width: number; height: number } | n
 
 async function rasterizeSvgToPng(bytes: Uint8Array, scale = 4): Promise<Uint8Array> {
   const url = URL.createObjectURL(new Blob([bytes as Uint8Array<ArrayBuffer>], { type: 'image/svg+xml' }))
+  const canvas = document.createElement('canvas')
   try {
     const img = new Image()
     img.src = url
     await img.decode()
     const w = Math.max(1, Math.round((img.naturalWidth || 128) * scale))
     const h = Math.max(1, Math.round((img.naturalHeight || 128) * scale))
-    const canvas = document.createElement('canvas')
     canvas.width = w
     canvas.height = h
     const ctx = canvas.getContext('2d')!
@@ -253,6 +265,7 @@ async function rasterizeSvgToPng(bytes: Uint8Array, scale = 4): Promise<Uint8Arr
     )
     return new Uint8Array(await pngBlob.arrayBuffer())
   } finally {
+    canvas.width = canvas.height = 0
     URL.revokeObjectURL(url)
   }
 }
@@ -439,6 +452,7 @@ async function resolveMediaPack(
       continue
     }
     if (id.startsWith(LATEX_MATH_PREFIX)) {
+      const { renderLatexTagToSvgBytes } = await import('../../math/latexMath')
       const rendered = renderLatexTagToSvgBytes(id)
       if (rendered) {
         hasSvg = true
@@ -481,6 +495,10 @@ async function resolveMediaPack(
 const RASTER_TEXT_RE =
   /[^\u0000-\u052F\u0591-\u06FF\u0750-\u077F\u0870-\u08FF\u1AB0-\u1ACE\u1C80-\u1C88\u1D00-\u23E1\u2460-\u2475\u24EA-\u266F\u2776-\u277F\u27C0-\u27FF\u2900-\u2B4C\u2C60-\u2C7F\u2DE0-\u2E5D\uA640-\uA69F\uA700-\uA7FF\uFB00-\uFE2F\uFE70-\uFEFF\uFFFC\uFFFD\u{1D400}-\u{1D7FF}\u{1EE00}-\u{1EEF1}]/u
 
+let textProbeCtx: CanvasRenderingContext2D | null = null
+
+type TextOverlayMeta = { key: string; boxW: number; offsetX: number; offsetY: number; width: number; height: number }
+
 async function renderTextToPng(
   text: string,
   font: string,
@@ -491,7 +509,7 @@ async function renderTextToPng(
   rtl: boolean,
 ): Promise<{ bytes: Uint8Array; boxW: number; offsetX: number; offsetY: number; width: number; height: number }> {
   const scale = 4
-  const probe = document.createElement('canvas').getContext('2d')!
+  const probe = (textProbeCtx ??= document.createElement('canvas').getContext('2d')!)
   probe.font = font
   probe.textBaseline = 'alphabetic'
   const metrics = probe.measureText(text)
@@ -510,20 +528,24 @@ async function renderTextToPng(
   const width = boxW + padLeft + padRight
   const height = topPx + botPx
   const canvas = document.createElement('canvas')
-  canvas.width = Math.max(1, Math.ceil(width * scale))
-  canvas.height = Math.max(1, Math.ceil(height * scale))
-  const ctx = canvas.getContext('2d')!
-  ctx.scale(scale, scale)
-  ctx.translate(padLeft + drawX, topPx)
-  if (sx !== 1) ctx.scale(sx, 1)
-  ctx.font = font
-  ctx.fillStyle = color || '#000000'
-  ctx.textBaseline = 'alphabetic'
-  ctx.fillText(text, 0, 0)
-  const blob = await new Promise<Blob>((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode text fallback PNG.'))), 'image/png'),
-  )
-  return { bytes: new Uint8Array(await blob.arrayBuffer()), boxW, offsetX: -padLeft, offsetY: -topPx, width, height }
+  try {
+    canvas.width = Math.max(1, Math.ceil(width * scale))
+    canvas.height = Math.max(1, Math.ceil(height * scale))
+    const ctx = canvas.getContext('2d')!
+    ctx.scale(scale, scale)
+    ctx.translate(padLeft + drawX, topPx)
+    if (sx !== 1) ctx.scale(sx, 1)
+    ctx.font = font
+    ctx.fillStyle = color || '#000000'
+    ctx.textBaseline = 'alphabetic'
+    ctx.fillText(text, 0, 0)
+    const blob = await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('Failed to encode text fallback PNG.'))), 'image/png'),
+    )
+    return { bytes: new Uint8Array(await blob.arrayBuffer()), boxW, offsetX: -padLeft, offsetY: -topPx, width, height }
+  } finally {
+    canvas.width = canvas.height = 0
+  }
 }
 
 async function prepareTextOverlays(
@@ -531,11 +553,12 @@ async function prepareTextOverlays(
   styleSheet: StyleSheet,
   ctx: CollectContext,
   extraMedia: Map<string, Uint8Array>,
+  overlayCache = new Map<string, TextOverlayMeta>(),
 ): Promise<PdfPaintItem[]> {
   const out: PdfPaintItem[] = []
   for (const item of items) {
     if (item.t === 'group') {
-      out.push({ ...item, items: await prepareTextOverlays(item.items, styleSheet, ctx, extraMedia) })
+      out.push({ ...item, items: await prepareTextOverlays(item.items, styleSheet, ctx, extraMedia, overlayCache) })
       continue
     }
     if (item.t !== 'text' || !RASTER_TEXT_RE.test(item.text)) {
@@ -553,60 +576,102 @@ async function prepareTextOverlays(
     const ascent = resolved?.ascent ?? fontSize * 0.85
     const descent = resolved?.descent ?? fontSize * 0.25
     const baseline = item.y - (resolved?.style.shift ?? 0)
-    const overlay = await renderTextToPng(item.text, font, color, item.w, ascent, descent, !!item.rtl)
-    const key = `__wpdf_text_${extraMedia.size}`
-    extraMedia.set(key, overlay.bytes)
-    ctx.mediaKeys.add(key)
+    const cacheKey = `${item.text}\0${font}\0${color}\0${item.w}\0${item.rtl ? 1 : 0}`
+    let meta = overlayCache.get(cacheKey)
+    if (!meta) {
+      const overlay = await renderTextToPng(item.text, font, color, item.w, ascent, descent, !!item.rtl)
+      const key = `__wpdf_text_${extraMedia.size}`
+      extraMedia.set(key, overlay.bytes)
+      meta = { key, boxW: overlay.boxW, offsetX: overlay.offsetX, offsetY: overlay.offsetY, width: overlay.width, height: overlay.height }
+      overlayCache.set(cacheKey, meta)
+    }
+    ctx.mediaKeys.add(meta.key)
     const yTop = baseline - ascent
     if (resolved?.style.background) {
-      out.push({ t: 'rect', x: item.x, y: yTop, w: overlay.boxW, h: ascent + descent, fill: resolved.style.background })
+      out.push({ t: 'rect', x: item.x, y: yTop, w: meta.boxW, h: ascent + descent, fill: resolved.style.background })
     }
     out.push({
       t: 'image',
-      media: key,
-      x: item.x + overlay.offsetX,
-      y: baseline + overlay.offsetY,
-      w: overlay.width,
-      h: overlay.height,
+      media: meta.key,
+      x: item.x + meta.offsetX,
+      y: baseline + meta.offsetY,
+      w: meta.width,
+      h: meta.height,
     })
     out.push({ ...item, invisible: true })
   }
   return out
 }
 
-function itemIntersectsYRange(item: Exclude<PdfPaintItem, { t: 'text' | 'group' }>, yMin: number, yMax: number): boolean {
+function itemYBounds(item: Exclude<PdfPaintItem, { t: 'text' | 'group' }>): [number, number] {
   switch (item.t) {
     case 'rect':
     case 'image':
-      return item.y + item.h >= yMin && item.y <= yMax
+      return [item.y, item.y + item.h]
     case 'line':
-      return Math.max(item.y1, item.y2) + item.w >= yMin && Math.min(item.y1, item.y2) - item.w <= yMax
+      return [Math.min(item.y1, item.y2) - item.w, Math.max(item.y1, item.y2) + item.w]
     case 'path': {
       const nums = item.d.match(/-?\d+(?:\.\d+)?/g)
-      if (!nums?.length) return item.y + 64 >= yMin && item.y - 64 <= yMax
+      if (!nums?.length) return [item.y - 64, item.y + 64]
       const hasRel = /[mlhvcsqt]/.test(item.d)
       const radius = hasRel
         ? nums.reduce((acc, n) => acc + Math.abs(Number(n)), 24)
         : Math.max(24, ...nums.map((n) => Math.abs(Number(n))))
-      return item.y + radius >= yMin && item.y - radius <= yMax
+      return [item.y - radius, item.y + radius]
     }
   }
 }
 
 /**
- * What one page of a sheet draws. Shapes near the slice are kept and clipped to it. Text outside the
- * clip is hidden but still found by search and copy, so text goes only on the page that holds its
- * baseline, and a group (each cell is one) only on the pages it overlaps.
+ * Bucket sheet paint items across vertical page slices in a single pass with binary search,
+ * preserving the exact inclusion semantics of `filterItemsForSlice`.
  */
-function filterItemsForSlice(items: readonly PdfPaintItem[], yStart: number, yEnd: number, first: boolean, last: boolean): PdfPaintItem[] {
-  return items.filter((item) => {
-    if (item.t === 'text') return (first || item.y >= yStart) && (last || item.y < yEnd)
+function bucketItemsBySlices(items: readonly PdfPaintItem[], slices: ReadonlyArray<[number, number]>): PdfPaintItem[][] {
+  const n = slices.length
+  if (n === 1) return [items.slice()]
+  const buckets: PdfPaintItem[][] = Array.from({ length: n }, () => [])
+
+  const firstSliceWhereEndGt = (y: number, inclusive = false) => {
+    let lo = 0
+    let hi = n
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      const end = slices[mid][1]
+      if (inclusive ? end < y : end <= y) lo = mid + 1
+      else hi = mid
+    }
+    return lo
+  }
+
+  for (const item of items) {
+    if (item.t === 'text') {
+      if (item.y < slices[0][1]) buckets[0].push(item)
+      else if (item.y >= slices[n - 1][0]) buckets[n - 1].push(item)
+      else {
+        const k = firstSliceWhereEndGt(item.y, false)
+        if (k < n && item.y >= slices[k][0]) buckets[k].push(item)
+      }
+      continue
+    }
     if (item.t === 'group') {
       const pad = item.rot ? Math.hypot(item.w, item.h) * 0.5 : 0
-      return (first || item.y + item.h + pad > yStart) && (last || item.y - pad < yEnd)
+      const loY = item.y - pad
+      const hiY = item.y + item.h + pad
+      let k = firstSliceWhereEndGt(loY, false)
+      if (loY < slices[0][1]) k = 0
+      for (; k < n && (k === n - 1 || loY < slices[k][1]); k++) {
+        if (k === 0 || hiY > slices[k][0]) buckets[k].push(item)
+      }
+      continue
     }
-    return itemIntersectsYRange(item, yStart - 24, yEnd + 24)
-  })
+    const [minY, maxY] = itemYBounds(item)
+    const y0 = minY - 24
+    const y1 = maxY + 24
+    for (let k = firstSliceWhereEndGt(y0, true); k < n && slices[k][0] <= y1; k++) {
+      buckets[k].push(item)
+    }
+  }
+  return buckets
 }
 
 export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?: AbortSignal): Promise<Uint8Array> {
@@ -617,13 +682,14 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
     if (!sizes.length) throw new Error('This document has no pages to export.')
     const ctx: CollectContext = { usedStyleIds: new Set(), texts: [], mediaKeys: new Set(), hasSvg: false }
     const extraMedia = new Map<string, Uint8Array>()
+    const overlayCache = new Map<string, TextOverlayMeta>()
     const pages: PdfPageInput[] = []
     for (let i = 0; i < sizes.length; i++) {
       signal?.throwIfAborted?.()
       const p = engine.paint(i, true)
       if (!p) continue
       walkItems(p.items, ctx)
-      const items = await prepareTextOverlays(p.items, engine.styles, ctx, extraMedia)
+      const items = await prepareTextOverlays(p.items, engine.styles, ctx, extraMedia, overlayCache)
       pages.push({
         widthPt: p.width * PX_TO_PT,
         heightPt: p.height * PX_TO_PT,
@@ -668,6 +734,7 @@ export async function exportSlidesToPdf(bytes: Uint8Array, title?: string, signa
     if (!visible.length) throw new Error('This presentation has no visible slides.')
     const ctx: CollectContext = { usedStyleIds: new Set(), texts: [], mediaKeys: new Set(), hasSvg: false }
     const extraMedia = new Map<string, Uint8Array>()
+    const overlayCache = new Map<string, TextOverlayMeta>()
     const wPt = engine.width * PX_TO_PT
     const hPt = engine.height * PX_TO_PT
     const pages: PdfPageInput[] = []
@@ -675,7 +742,7 @@ export async function exportSlidesToPdf(bytes: Uint8Array, title?: string, signa
       signal?.throwIfAborted?.()
       const rawItems = engine.paintItems(i)
       walkItems(rawItems, ctx)
-      const items = await prepareTextOverlays(rawItems, engine.styles, ctx, extraMedia)
+      const items = await prepareTextOverlays(rawItems, engine.styles, ctx, extraMedia, overlayCache)
       pages.push({
         widthPt: wPt,
         heightPt: hPt,
@@ -759,6 +826,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
 
     const ctx: CollectContext = { usedStyleIds: new Set(), texts: [], mediaKeys: new Set(), hasSvg: false }
     const extraMedia = new Map<string, Uint8Array>()
+    const overlayCache = new Map<string, TextOverlayMeta>()
     const pages: PdfPageInput[] = []
     let chartTools: {
       createElement: typeof import('react').createElement
@@ -781,7 +849,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
         ...pictures.map((p): PaintItem => ({ t: 'image', media: p.media, x: p.x, y: p.y, w: p.w, h: p.h, crop: p.crop })),
       ]
       walkItems(rawPaintItems, ctx)
-      const preparedItems = await prepareTextOverlays(rawPaintItems, engine.styles, ctx, extraMedia)
+      const preparedItems = await prepareTextOverlays(rawPaintItems, engine.styles, ctx, extraMedia, overlayCache)
 
       let usedW = Math.max(1, g.x(cols))
       let usedH = Math.max(1, g.y(rows))
@@ -833,6 +901,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
       const scale = Math.min(PX_TO_PT, contentW / usedW)
       const maxSlicePx = Math.max(1, contentH / scale)
       const slices = buildRowSlices((r) => g.y(r), rows, usedH, maxSlicePx)
+      const bucketed = bucketItemsBySlices(preparedItems, slices)
       for (const [index, [yStart, yEnd]] of slices.entries()) {
         const sliceH = Math.max(1, yEnd - yStart)
         const svgs: SvgOverlayInput[] = []
@@ -850,7 +919,7 @@ export async function exportSheetsToPdf(bytes: Uint8Array, name: string, signal?
           offsetXPt: margin,
           offsetYPt: margin - yStart * scale,
           clipRectPx: [0, yStart, usedW, sliceH],
-          items: filterItemsForSlice(preparedItems, yStart, yEnd, index === 0, index === slices.length - 1),
+          items: bucketed[index],
           svgs,
         })
       }

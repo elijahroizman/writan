@@ -35,6 +35,13 @@ export interface OpenResult {
   hasForm: boolean
 }
 
+export interface GrayBitmap {
+  width: number
+  height: number
+  /** Packed 8-bit luminance pixels (row-major, 1 byte per pixel). */
+  data: ArrayBuffer
+}
+
 /** A strip of a drawing: an ImageBitmap where the worker can make one, otherwise raw RGBA. */
 export interface Band {
   y: number
@@ -114,8 +121,11 @@ export interface Api {
   open(bytes: ArrayBuffer, password: string): OpenResult
   /** Render `rect` (display points; whole page when omitted) at `scale` device pixels per point. */
   render(key: number, scale: number, rect: Box | null): Bitmap
+  /** Render a single-channel luminance buffer for OCR without main-thread canvas readback. */
+  renderGrayscale(key: number, scale: number, rect: Box | null): GrayBitmap
   text(key: number): TextRun[]
   pageTextStats(key: number): PageTextStats
+  pageTextStatsBatch(keys: number[]): PageTextStats[]
   documentTextStats(): PageTextStats[]
   /** Tight boxes around characters [start, start + count). */
   textBoxes(key: number, start: number, count: number): Box[]
@@ -127,6 +137,7 @@ export interface Api {
   restoreAnnotation(token: number): string
   setField(key: number, annot: PdfAnnotationObject, value: { text: string } | { checked: boolean } | { option: number }): void
   search(key: number, query: string, matchCase: boolean): Box[][]
+  searchBatch(keys: number[], query: string, matchCase: boolean): { key: number; boxes: Box[][] }[]
   outline(): OutlineItem[]
   rotate(keys: number[], quarterTurns: number): PageInfo[]
   move(key: number, to: number): PageInfo[]

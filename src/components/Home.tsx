@@ -1,15 +1,15 @@
 import { Folder, FolderOpen, MoreHorizontal, Moon, Settings, Sun, Users } from 'lucide-react'
-import { useMemo, useRef, useState } from 'react'
+import { memo, useMemo, useRef, useState } from 'react'
 import { KINDS } from '../lib/kinds'
 import { basename, dirname, revealInFinder, revealLabel, isTauri, shortcut, tildify } from '../lib/platform'
 import { folderName, useFolder } from '../state/folder'
+import { showJoinDialog } from '../state/modals'
 import { keysFor, withKeys } from '../state/shortcuts'
 import { enabledKinds, usePlugins } from '../state/plugins'
 import { useSettings } from '../state/settings'
 import type { RecentFile } from '../state/workspace'
 import { useWorkspace } from '../state/workspace'
 import { ActionCard, ActionRow, DocBadge, EmptyState, IconButton, KindIcon, PillTabs, PopoverMenu, Wordmark } from './ui'
-import { showJoinDialog } from './Share'
 
 /** Recent's filters: file types grouped the way people think of them. */
 const RECENT_GROUPS = [
@@ -22,7 +22,7 @@ const RECENT_GROUPS = [
 
 type RecentGroup = (typeof RECENT_GROUPS)[number]['id']
 
-export function Home() {
+export const Home = memo(function Home() {
   const recents = useWorkspace((s) => s.recents)
   const theme = useWorkspace((s) => s.theme)
   const dropHover = useWorkspace((s) => s.dropHover)
@@ -204,7 +204,7 @@ export function Home() {
       )}
     </div>
   )
-}
+})
 
 /** A row in the Recent list: a file, or a folder opened in the sidebar. */
 type Recent = RecentFile | { path: string; openedAt: number; kind: 'folder' }

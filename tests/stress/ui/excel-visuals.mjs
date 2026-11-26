@@ -1,5 +1,5 @@
-import { resolve } from 'node:path'
-import { launch, start, open, check, done } from './harness.mjs'
+import { join, resolve } from 'node:path'
+import { launch, start, open, check, done, TMP } from './harness.mjs'
 const { browser, page, logs } = await launch()
 try {
   await start(page)
@@ -35,5 +35,5 @@ try {
   check('a refused value explains why', (await dialog.textContent())?.includes('Pick Open, Late or Done'))
   await dialog.getByRole('button', { name: 'OK' }).click()
   check('a refused value is not put in', await page.evaluate(() => !window.__sheets.doc.cell(0, 6, 0).includes('Lost')))
-  await page.screenshot({ path: `/tmp/writan-stress/excel-visuals-${process.env.ENGINE ?? 'chromium'}.png` })
+  await page.screenshot({ path: join(TMP, `excel-visuals-${process.env.ENGINE ?? 'chromium'}.png`) })
 } finally { await done(browser, logs) }

@@ -1,8 +1,8 @@
 // Run against a VITE_TEST_HOOKS build. All writes stay in the fake native bridge.
 // ENGINE=webkit node tests/stress/ui/datasafety.mjs
 import { readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { launch, start, open, tabs, check, done } from './harness.mjs'
+import { join, resolve } from 'node:path'
+import { launch, start, open, tabs, check, done, TMP } from './harness.mjs'
 
 const S = resolve(import.meta.dirname, '../samples')
 const { browser, page, logs } = await launch({ init: () => {
@@ -21,7 +21,7 @@ const edit = async (text, where = 'End') => {
   await page.keyboard.insertText(text)
 }
 const ready = async (file) => {
-  await open(page, `${S}/${file}`)
+  await open(page, join(S, file))
   await page.waitForFunction(() => {
     const w = window.__workspace
     return !!w.getEditor(w.useWorkspace.getState().activeId)
@@ -55,7 +55,7 @@ try {
     'S2-markdown-crlf.md', 'S2-markdown-utf16le.md', 'S2-text-double-bom.txt',
     'S3-empty.txt', 'S3-empty.md',
   ]) {
-    const path = `${S}/${f}`
+    const path = join(S, f)
     const original = readFileSync(path)
     await ready(f)
     check(`${f}: untouched save succeeds`, await save())
@@ -74,22 +74,23 @@ try {
   }
 
   for (const file of ['S2-markdown-malformed-utf8-bom.md', 'S2-text-truncated-utf16.txt', 'S2-text-unpaired-utf16le.txt', 'S2-text-unpaired-utf16be.txt']) {
-    const original = readFileSync(`${S}/${file}`)
+    const filePath = join(S, file)
+    const original = readFileSync(filePath)
     await ready(file)
     check(`${file}: unchanged save succeeds`, await save())
-    check(`${file}: unchanged malformed bytes survive`, (await written(`${S}/${file}`)).equals(original))
+    check(`${file}: unchanged malformed bytes survive`, (await written(filePath)).equals(original))
     await edit('Z')
     const writesBefore = await page.evaluate(() => window.__fake.writes.length)
     check(`${file}: edited malformed save is refused`, await expectDialog(save(), /invalid UTF-(8|16) bytes/, 'OK') === false)
-    check(`${file}: refusal preserves disk and dirty state`, (await written(`${S}/${file}`)).equals(original) && (await activeTab()).dirty && await page.evaluate(() => window.__fake.writes.length) === writesBefore)
+    check(`${file}: refusal preserves disk and dirty state`, (await written(filePath)).equals(original) && (await activeTab()).dirty && await page.evaluate(() => window.__fake.writes.length) === writesBefore)
     await page.keyboard.press('Control+z')
     check(`${file}: undo then save succeeds`, await save())
-    check(`${file}: undo restores malformed bytes too`, (await written(`${S}/${file}`)).equals(original))
+    check(`${file}: undo restores malformed bytes too`, (await written(filePath)).equals(original))
     await ws((w) => w.closeTab())
   }
 
   // Insert and delete within a mixed-ending document, rather than only appending.
-  const path = `${S}/S3-text-mixed-eol.txt`
+  const path = join(S, 'S3-text-mixed-eol.txt')
   const original = readFileSync(path)
   await ready('S3-text-mixed-eol.txt')
   await edit('first\n', 'Home')
@@ -112,7 +113,7 @@ try {
   await ready('S1-text-windows1252.txt')
   await edit('日本語 😀')
   await save()
-  const upgraded = new TextDecoder().decode(await written(`${S}/S1-text-windows1252.txt`))
+  const upgraded = new TextDecoder().decode(await written(join(S, 'S1-text-windows1252.txt')))
   check('new characters outside Windows-1252 survive as UTF-8', upgraded.includes('Grüße, naïve café') && upgraded.includes('日本語 😀') && !upgraded.includes('�'))
   await ws((w) => w.closeTab())
 
@@ -239,7 +240,7 @@ try {
   await ws((w) => w.newDocument('txt'))
   await page.locator('.view[data-active=true] .cm-content').waitFor()
   await edit('queued Save As')
-  const queuedPath = '/tmp/writan-stress/queued-save-as.txt'
+  const queuedPath = join(TMP, 'queued-save-as.txt')
   await page.evaluate(() => (window.__fake.writeDelay = 200))
   const queuedBefore = await page.evaluate(() => window.__fake.writes.length)
   const callsBefore = await page.evaluate(() => window.__fake.calls.filter((c) => c === 'write_file').length)
@@ -252,7 +253,7 @@ try {
   check('queued Save uses the new destination', destinations.length === 2 && destinations.every((p) => p === queuedPath))
   check('queued Save writes the later edit and leaves a clean tab', (await written(queuedPath)).toString().includes('plus later edit') && !(await activeTab()).dirty)
   await page.evaluate(() => (window.__fake.writeDelay = 0))
-  await page.screenshot({ path: `/tmp/writan-stress/datasafety-${process.env.ENGINE ?? 'chromium'}.png` })
+  await page.screenshot({ path: join(TMP, `datasafety-${process.env.ENGINE ?? 'chromium'}.png`) })
 } finally {
   await done(browser, logs)
 }

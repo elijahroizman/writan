@@ -110,7 +110,7 @@ pub struct Look {
 impl Drawer<'_, '_, '_> {
     /// Everything on a slide: background, template shapes, then the slide's own frames.
     pub fn slide(&mut self, slide: &Slide, out: &mut Vec<Item>, w: f64, h: f64) {
-        let paint = Paint { doc: self.doc, slide };
+        let paint = Paint::new(self.doc, slide);
         let (layout, master) = self.art.chain(slide.layout.as_deref());
         let bg = slide
             .origin
@@ -162,13 +162,13 @@ impl Drawer<'_, '_, '_> {
 
     /// A frame's resolved box.
     pub fn boxed(&self, slide: &Slide, f: &Frame, map: Map) -> Boxed {
-        let x = crate::resolve(self.doc, slide, f).xfrm.or_else(|| f.shape.xfrm.clone()).unwrap_or_default();
+        let x = crate::resolve_xfrm(self.doc, slide, f).unwrap_or_default();
         map.apply(Boxed::of(&x))
     }
 
     /// How a frame's fill, line and text color resolve.
     pub fn look(&self, slide: &Slide, f: &Frame) -> Look {
-        let paint = Paint { doc: self.doc, slide };
+        let paint = Paint::new(self.doc, slide);
         let c = text::cascade(self.doc, self.art, slide, f);
         let style = f.origin.get().and_then(|o| o.child(ns::P, "style")).or_else(|| c.styles.last().copied());
         let style_color = |r: &str| {
@@ -354,7 +354,7 @@ impl Drawer<'_, '_, '_> {
         b: &Boxed,
         look: &Look,
     ) -> (f64, f64, Body, FlowLayout) {
-        let paint = Paint { doc: self.doc, slide };
+        let paint = Paint::new(self.doc, slide);
         let c = text::cascade(self.doc, self.art, slide, f);
         let settings = c.body();
         let resolved = crate::resolve(self.doc, slide, f).paragraphs;
@@ -445,12 +445,10 @@ impl Drawer<'_, '_, '_> {
     }
 
     fn table(&mut self, slide: &Slide, t: &Table, b: &Boxed, out: &mut Vec<Item>) {
-        let paint = Paint { doc: self.doc, slide };
+        let paint = Paint::new(self.doc, slide);
         let style = table_style::style_for(self.tables, t);
-        let look = table_style::look(&paint, t, &style, b.w);
         let mut resolver = CellText { paint: &paint, style: &style, table: t };
         let flow = flow::layout(self.ctx, self.cache, &mut resolver, &[office_core::model::Block::Table(t.clone())], &[], b.w);
-        let _ = look;
         let links = |_: &Path, _: u32| None;
         display::paint_flow(self.ctx, &flow, 0.0, 0.0, (f64::MIN, f64::MAX), &mut Sink { objects: &mut NoObjects, links: &links, out });
     }

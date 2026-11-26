@@ -128,8 +128,8 @@ impl SlidesView {
                 id: s.part.clone().unwrap_or_else(|| format!("new-{}", self.revisions.get(i).copied().unwrap_or(0))),
                 hidden: s.hidden,
                 layout: s.layout.clone(),
-                layout_name: crate::layouts(&self.doc).into_iter().find(|t| Some(&t.part) == s.layout.as_ref()).map(|t| t.name.clone()),
-                notes: crate::notes(&self.doc, i).iter().map(|p| p.plain_text()).collect::<Vec<_>>().join("\n"),
+                layout_name: crate::template(&self.doc, s.layout.as_deref()).map(|t| t.name.clone()),
+                notes: crate::notes_text(&self.doc, i),
                 transition: crate::transition(s).filter(|t| !t.kind.is_empty() || !t.on_click || t.after_ms.is_some()),
                 animations: crate::animation_steps(s),
                 revision: self.revisions.get(i).copied().unwrap_or(0),
@@ -183,7 +183,7 @@ fn element(d: &Drawer, slide: &office_core::model::Slide, f: &Frame, map: Map) -
             let run =
                 first.and_then(|(_, runs)| runs.first()).or_else(|| body.paragraphs.first()?.mark.as_ref()).cloned().unwrap_or_default();
             let look = d.look(slide, f);
-            let paint = super::text::Paint { doc: d.doc, slide };
+            let paint = super::text::Paint::new(d.doc, slide);
             let color = run.color.as_ref().or(look.text_color.as_ref()).map(|c| paint.color(c).css());
             Some(TextLook {
                 font_family: run.font.clone().or_else(|| Some(paint.body_font())),
@@ -237,16 +237,15 @@ fn element(d: &Drawer, slide: &office_core::model::Slide, f: &Frame, map: Map) -
                     })
                     .map(|p| {
                         let props = p.runs().next().map(|r| &r.props).or(p.mark.as_ref());
+                        let paint = super::text::Paint::new(d.doc, slide);
                         TextLook {
-                            font_family: props
-                                .and_then(|r| r.font.clone())
-                                .or_else(|| Some(super::text::Paint { doc: d.doc, slide }.body_font())),
+                            font_family: props.and_then(|r| r.font.clone()).or_else(|| Some(paint.body_font())),
                             font_size: Some(props.and_then(|r| r.size).map(|s| s.points()).unwrap_or(18.0)),
                             bold: props.and_then(|r| r.bold).unwrap_or(false),
                             italic: props.and_then(|r| r.italic).unwrap_or(false),
                             underline: props.and_then(|r| r.underline.as_deref()).is_some_and(|u| u != "none"),
                             strikethrough: props.and_then(|r| r.strike).is_some_and(|s| s != Strike::None),
-                            color: props.and_then(|r| r.color.as_ref()).map(|c| super::text::Paint { doc: d.doc, slide }.color(c).css()),
+                            color: props.and_then(|r| r.color.as_ref()).map(|c| paint.color(c).css()),
                             align: match p.props.align {
                                 Some(office_core::model::Align::Center) => "center",
                                 Some(office_core::model::Align::Right) => "right",

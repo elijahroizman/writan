@@ -1,42 +1,16 @@
 import { ArchiveRestore, ChevronLeft, ChevronRight, MoreHorizontal, Pencil, X } from 'lucide-react'
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
-import { create } from 'zustand'
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { KINDS } from '../lib/kinds'
 import type { FileVersion } from '../lib/platform'
 import * as platform from '../lib/platform'
-import { useSettings } from '../state/settings'
+import { formatVersionSize as formatSize, showVersionHistory, useVersionHistory } from '../state/modals'
 import { useWorkspace } from '../state/workspace'
 import { Button, EmptyState, IconButton, Modal, PopoverMenu, Spinner, TextField } from './ui'
 
+export { formatSize, showVersionHistory, useVersionHistory }
+
 // The engines that draw a version load the first time history opens.
 const VersionPreview = lazy(() => import('./VersionPreview'))
-
-/** Which tab's history is showing, if any. */
-export const useVersionHistory = create<{ tabId: string | null; show(tabId: string | null): void }>((set) => ({
-  tabId: null,
-  show: (tabId) => set({ tabId }),
-}))
-
-/** Open the history of the tab in front, or explain why there isn't one. */
-export function showVersionHistory(tabId = useWorkspace.getState().activeId) {
-  const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
-  if (!tab) return
-  if (!tab.path) {
-    void platform.showError('Save this document first. Writan keeps a version each time you save a file.', 'No versions yet')
-    return
-  }
-  if (!useSettings.getState().history) {
-    void platform
-      .confirmDialog('Version history is off, so Writan isn’t keeping copies when you save. Turn it on?', { okLabel: 'Turn On', kind: 'info' })
-      .then((ok) => {
-        if (!ok) return
-        useSettings.getState().setHistory(true)
-        useVersionHistory.getState().show(tabId)
-      })
-    return
-  }
-  useVersionHistory.getState().show(tabId)
-}
 
 const sameDay = (a: Date, b: Date) => a.toDateString() === b.toDateString()
 
@@ -56,12 +30,6 @@ const timeOf = (time: number) => new Date(time).toLocaleTimeString(undefined, { 
 
 /** "Today at 10:27", "Wednesday 18 November at 10:39". */
 const whenOf = (time: number) => `${dayName(time)} at ${timeOf(time)}`
-
-export function formatSize(n: number) {
-  if (n < 1024) return `${n} B`
-  if (n < 1024 * 1024) return `${Math.round(n / 1024)} KB`
-  return `${(n / 1024 / 1024).toFixed(1)} MB`
-}
 
 const sourceNote = (v: FileVersion) => (v.source === 'original' ? 'Before Writan first saved it' : v.source === 'outside' ? 'Changed in another app' : null)
 
@@ -353,28 +321,42 @@ function Timeline({ versions, index, onPick }: { versions: FileVersion[]; index:
   const track = useRef<HTMLDivElement>(null)
   const [hover, setHover] = useState<number | null>(null)
   const n = versions.length
-  const oldestFirst = [...versions].reverse()
-  const days: { label: string; from: number; items: FileVersion[] }[] = []
-  oldestFirst.forEach((v, i) => {
-    const label = dayName(v.time, true)
-    if (days[days.length - 1]?.label === label) days[days.length - 1].items.push(v)
-    else days.push({ label, from: i, items: [v] })
-  })
+  const days = useMemo(() => {
+    const oldestFirst = [...versions].reverse()
+    const out: { label: string; from: number; items: FileVersion[] }[] = []
+    oldestFirst.forEach((v, i) => {
+      const label = dayName(v.time, true)
+      if (out[out.length - 1]?.label === label) out[out.length - 1].items.push(v)
+      else out.push({ label, from: i, items: [v] })
+    })
+    return out
+  }, [versions])
   const pos = n - 1 - index
+  const tickCenters = useRef<number[] | null>(null)
+  useEffect(() => {
+    tickCenters.current = null
+  }, [versions])
+
+  const readCenters = () => {
+    const ticks = [...(track.current?.querySelectorAll<HTMLElement>('.vh-tick') ?? [])]
+    return ticks.map((t) => {
+      const r = t.getBoundingClientRect()
+      return r.left + r.width / 2
+    })
+  }
 
   /** The version (newest-first index) nearest a point on the track. */
   const at = (x: number) => {
-    const ticks = [...(track.current?.querySelectorAll<HTMLElement>('.vh-tick') ?? [])]
+    const centers = tickCenters.current ?? readCenters()
     let best = 0
     let dist = Infinity
-    ticks.forEach((t, i) => {
-      const r = t.getBoundingClientRect()
-      const d = Math.abs(r.left + r.width / 2 - x)
+    for (let i = 0; i < centers.length; i++) {
+      const d = Math.abs(centers[i] - x)
       if (d < dist) {
         dist = d
         best = i
       }
-    })
+    }
     return n - 1 - best
   }
 
@@ -406,15 +388,21 @@ function Timeline({ versions, index, onPick }: { versions: FileVersion[]; index:
         onPointerDown={(e) => {
           e.currentTarget.setPointerCapture(e.pointerId)
           e.currentTarget.focus()
+          tickCenters.current = readCenters()
           onPick(at(e.clientX))
         }}
         onPointerMove={(e) => {
           if (e.currentTarget.hasPointerCapture(e.pointerId)) {
             onPick(at(e.clientX))
             setHover(null)
-          } else setHover(at(e.clientX))
+          } else {
+            tickCenters.current ??= readCenters()
+            setHover(at(e.clientX))
+          }
         }}
-        onPointerLeave={() => setHover(null)}
+        onPointerUp={() => { tickCenters.current = null }}
+        onPointerCancel={() => { tickCenters.current = null }}
+        onPointerLeave={() => { tickCenters.current = null; setHover(null) }}
       >
         {days.map((d) => (
           <div key={d.from} className="vh-dayrun" style={{ flexGrow: d.items.length }}>

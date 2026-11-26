@@ -2,12 +2,13 @@
 // only while they're near the screen, with the caret and selection over them and a hidden text
 // field taking the keyboard (and the input method's composition, which shows at the caret).
 
-import { memo, useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { MenuEntry } from '../../components/ui'
 import { PopoverMenu } from '../../components/ui'
 import { shrinkPicture } from '../../lib/pictures'
 import { isMac, openExternal, shortcut } from '../../lib/platform'
 import { spellingMenu } from '../../lib/spelling'
+import { dimming, useFocus } from '../../state/focus'
 import { PeerCaret, PeerSelection, together } from '../../collab/cursors'
 import { usePlaces } from '../../collab/session'
 import { itemsHtml } from '../paint'
@@ -23,13 +24,27 @@ const KEEP = 3
 
 export const WORD_CLIPBOARD = 'application/x-workspace-word'
 
+/** First page index whose bottom reaches past `y` (O(log P)). */
+function firstPageAtOrAfter(tops: readonly number[], sizes: readonly [number, number][], zoom: number, y: number): number {
+  let lo = 0
+  let hi = sizes.length
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1
+    if (tops[mid] + sizes[mid][1] * zoom <= y) lo = mid + 1
+    else hi = mid
+  }
+  return lo
+}
+
 /** The 0-based page with the largest visible vertical slice in `[top, bottom]`. */
 export function visiblePageIndex(tops: readonly number[], sizes: readonly [number, number][], zoom: number, top: number, bottom: number): number {
   if (!sizes.length) return 0
+  const start = firstPageAtOrAfter(tops, sizes, zoom, top)
   let best = -1
   let bestVisible = 0
-  for (let i = 0; i < sizes.length; i++) {
+  for (let i = start; i < sizes.length; i++) {
     const pt = tops[i]
+    if (pt >= bottom) break
     const pb = pt + sizes[i][1] * zoom
     const visible = Math.min(bottom, pb) - Math.max(top, pt)
     if (visible > bestVisible + 1 || (best < 0 && visible > 0)) {
@@ -39,18 +54,12 @@ export function visiblePageIndex(tops: readonly number[], sizes: readonly [numbe
   }
   if (best >= 0) return best
   const mid = (top + bottom) / 2
-  let nearest = 0
-  let nearestDist = Infinity
-  for (let i = 0; i < sizes.length; i++) {
-    const pt = tops[i]
-    const pb = pt + sizes[i][1] * zoom
-    const dist = mid < pt ? pt - mid : mid > pb ? mid - pb : 0
-    if (dist < nearestDist) {
-      nearest = i
-      nearestDist = dist
-    }
-  }
-  return nearest
+  const k = firstPageAtOrAfter(tops, sizes, zoom, mid)
+  if (k === 0) return 0
+  if (k >= sizes.length) return sizes.length - 1
+  const prevDist = Math.max(0, mid - (tops[k - 1] + sizes[k - 1][1] * zoom))
+  const curDist = Math.max(0, tops[k] - mid)
+  return prevDist <= curDist ? k - 1 : k
 }
 
 interface Props {
@@ -63,15 +72,19 @@ interface Props {
 export function Pages({ engine, zoom, scroller }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLTextAreaElement>(null)
-  const painted = useRef(new Map<number, number>())
-  const pageEls = useRef(new Map<number, HTMLDivElement>())
+  const caretRef = useRef<HTMLDivElement>(null)
+  const painted = useRef(new Map<number, string>())
+  const pageContentEls = useRef(new Map<number, HTMLDivElement>())
   const [, setTick] = useState(0)
+  const [overlayWin, setOverlayWin] = useState<[number, number]>([0, 16])
+  const overlayWinRef = useRef<[number, number]>([0, 16])
   const composing = useRef(false)
   const scrollAfter = useRef(false)
   /** The viewport's scroll position and height, read on scroll and resize (never right after a
    * DOM change, which would make the browser lay out every page at once). */
   const view = useRef({ top: 0, height: 0 })
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null)
+  const focusDim = useFocus(dimming)
 
   // Misspelled words get a wavy underline; right-clicking one offers corrections.
   useEffect(() => watchSpelling(engine), [engine])
@@ -79,16 +92,18 @@ export function Pages({ engine, zoom, scroller }: Props) {
   const places = usePlaces(engine)
 
   const sizes = engine.sizes
-  const tops: number[] = []
-  let y = TOP
-  let maxW = 0
-  for (const [w, h] of sizes) {
-    tops.push(y)
-    y += h * zoom + GAP
-    maxW = Math.max(maxW, w)
-  }
-  const height = y + 48
-  const width = maxW * zoom + SIDE * 2
+  const { tops, height, width } = useMemo(() => {
+    const t: number[] = new Array(sizes.length)
+    let y = TOP
+    let maxW = 0
+    for (let i = 0; i < sizes.length; i++) {
+      const [w, h] = sizes[i]
+      t[i] = y
+      y += h * zoom + GAP
+      if (w > maxW) maxW = w
+    }
+    return { tops: t, height: y + 48, width: maxW * zoom + SIDE * 2 }
+  }, [sizes, zoom])
   // Pages are centered in the mount's actual width, which can exceed its minimum width.
   // CSS keeps overlays aligned during window and panel resizing without a layout read.
   const pageX = (i: number, x: number) => `calc(50% + ${(x - sizes[i][0] / 2) * zoom}px)`
@@ -103,33 +118,39 @@ export function Pages({ engine, zoom, scroller }: Props) {
     if (viewHeight > 0 && sizes.length > 0) {
       engine.setVisiblePage(visiblePageIndex(tops, sizes, zoom, top, bottom) + 1)
     }
-    const sc = { clientHeight: viewHeight || 1200 }
+    const pad = (viewHeight || 1200) * 0.5
+    const startIdx = firstPageAtOrAfter(tops, sizes, zoom, top - pad)
     let first = -1
     let last = -1
-    for (let i = 0; i < sizes.length; i++) {
+    for (let i = startIdx; i < sizes.length; i++) {
       const pt = tops[i]
-      const pb = pt + sizes[i][1] * zoom
-      if (pb >= top - sc.clientHeight * 0.5 && pt <= bottom + sc.clientHeight * 0.5) {
-        if (first < 0) first = i
-        last = i
-      }
+      if (pt > bottom + pad) break
+      if (first < 0) first = i
+      last = i
     }
     if (first < 0) return
+    const sig = `${engine.revision}:${engine.latexVersion}`
     for (let i = first; i <= last; i++) {
-      const el = pageEls.current.get(i)?.querySelector<HTMLElement>('.docx-page-content')
+      const el = pageContentEls.current.get(i)
       const was = painted.current.get(i)
-      if (!el || was === engine.revision) continue
+      if (!el || was === sig) continue
       // A page already on screen is only sent again when its drawing changed.
-      const p = engine.paint(i, was === undefined || !el.firstChild)
+      const p = engine.paint(i, was === undefined || !el.firstChild || was.split(':')[1] !== String(engine.latexVersion))
       if (p) el.innerHTML = itemsHtml(p.items, engine.styles, engine.media.url)
-      painted.current.set(i, engine.revision)
+      painted.current.set(i, sig)
     }
     for (const [i] of painted.current) {
       if (i < first - KEEP || i > last + KEEP) {
-        const el = pageEls.current.get(i)?.querySelector<HTMLElement>('.docx-page-content')
+        const el = pageContentEls.current.get(i)
         if (el) el.innerHTML = ''
         painted.current.delete(i)
       }
+    }
+    const [ws, we] = overlayWinRef.current
+    if (first - KEEP < ws || last + KEEP > we) {
+      const next: [number, number] = [Math.max(0, first - KEEP * 2), last + KEEP * 2]
+      overlayWinRef.current = next
+      setOverlayWin(next)
     }
   }
 
@@ -149,15 +170,24 @@ export function Pages({ engine, zoom, scroller }: Props) {
       const r = mountRef.current!.getBoundingClientRect()
       return { x: r.left + (r.width - sizes[page][0] * zoom) / 2 + x * zoom, y: r.top + (tops[page] ?? 0) + y * zoom }
     }
+  }, [engine, sizes, tops, zoom])
+
+  useLayoutEffect(() => {
     // Pages that no longer exist drop out of the bookkeeping.
     for (const [i] of painted.current) if (i >= sizes.length) painted.current.delete(i)
     draw()
+  }, [engine.revision, engine.latexVersion, sizes, tops, zoom])
+
+  useLayoutEffect(() => {
     placeInput()
+    if (caretRef.current && caretRef.current.getAnimations) {
+      for (const anim of caretRef.current.getAnimations()) anim.currentTime = 0
+    }
     if (scrollAfter.current) {
       scrollAfter.current = false
       revealCaret()
     }
-  })
+  }, [engine.tick, sizes, tops, zoom])
 
   // Listeners are added once and call the latest render's functions through these refs, so
   // a keystroke doesn't tear down and re-add them (and ResizeObserver's first call doesn't
@@ -202,13 +232,14 @@ export function Pages({ engine, zoom, scroller }: Props) {
     const mount = mountRef.current!
     const r = mount.getBoundingClientRect()
     const my = clientY - r.top
-    let page = sizes.length - 1
-    for (let i = 0; i < sizes.length; i++) {
-      if (my < tops[i] + sizes[i][1] * zoom + GAP / 2) {
-        page = i
-        break
-      }
+    let lo = 0
+    let hi = sizes.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (my >= tops[mid] + sizes[mid][1] * zoom + GAP / 2) lo = mid + 1
+      else hi = mid
     }
+    const page = Math.max(0, lo)
     const left = (r.width - sizes[page][0] * zoom) / 2
     return { page, x: (clientX - r.left - left) / zoom, y: (my - tops[page]) / zoom }
   }
@@ -235,7 +266,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
     const top = (tops[page] ?? 0) + cy * zoom
     const bottom = top + h * zoom
     const { top: scrollTop, height } = view.current
-    const typewriter = !!document.querySelector('.app[data-typewriter]')
+    const typewriter = useFocus.getState().typewriter
     // Only scroll when the caret is out of view: setting the scroll position lays the page out.
     if (typewriter) {
       const want = top + h * zoom / 2 - height * 0.45
@@ -294,11 +325,17 @@ export function Pages({ engine, zoom, scroller }: Props) {
   const pointer = useRef({ zoom, pagePoint, run })
   pointer.current = { zoom, pagePoint, run }
   useEffect(() => {
-    const move = (e: MouseEvent) => {
+    let moveRaf = 0
+    let pendingMove: { clientX: number; clientY: number } | null = null
+    const flushMove = () => {
+      moveRaf = 0
+      const pt = pendingMove
+      pendingMove = null
+      if (!pt) return
       const { zoom, pagePoint, run } = pointer.current
       if (resize.current) {
         const r = resize.current
-        const dx = (e.clientX - r.startX) / zoom
+        const dx = (pt.clientX - r.startX) / zoom
         const grow = r.corner.includes('w') ? -dx : dx
         const w = Math.max(9525 * 8, r.w + grow * 9525)
         // A picture keeps its proportions as a corner is dragged.
@@ -309,18 +346,28 @@ export function Pages({ engine, zoom, scroller }: Props) {
         }
         return
       }
-      if (!drag.current || !(e.buttons & 1)) return
-      const at = pagePoint(e.clientX, e.clientY)
+      if (!drag.current) return
+      const at = pagePoint(pt.clientX, pt.clientY)
       run({ cmd: 'drag', page: at.page, x: at.x, y: at.y }, false)
       // Keep the pointer's end of the selection in view while dragging past the edge.
       const sc = scrollerRef.current()
       if (sc) {
         const r = sc.getBoundingClientRect()
-        if (e.clientY > r.bottom - 20) sc.scrollTop += 16
-        else if (e.clientY < r.top + 20) sc.scrollTop -= 16
+        if (pt.clientY > r.bottom - 20) sc.scrollTop += 16
+        else if (pt.clientY < r.top + 20) sc.scrollTop -= 16
       }
     }
+    const move = (e: MouseEvent) => {
+      if (!resize.current && (!drag.current || !(e.buttons & 1))) return
+      pendingMove = { clientX: e.clientX, clientY: e.clientY }
+      if (!moveRaf) moveRaf = requestAnimationFrame(flushMove)
+    }
     const up = (e: MouseEvent) => {
+      if (moveRaf) {
+        cancelAnimationFrame(moveRaf)
+        moveRaf = 0
+      }
+      pendingMove = null
       const { zoom, run } = pointer.current
       if (resize.current) {
         const r = resize.current
@@ -336,6 +383,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
     return () => {
+      if (moveRaf) cancelAnimationFrame(moveRaf)
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
@@ -501,7 +549,15 @@ export function Pages({ engine, zoom, scroller }: Props) {
   // Focus mode's dimming: every page veiled but for a band across the caret's paragraph (an empty
   // paragraph has no text boxes, so the caret's line). Shown by CSS only while dimming is on.
   const c = overlay.caret
-  const focusBoxes = overlay.paragraph?.length ? overlay.paragraph : c ? [[c[0], c[1], c[2], 1, c[3]] as const] : []
+  const [winStart, winEnd] = overlayWin
+  const focusBoxes = focusDim
+    ? overlay.paragraph?.length
+      ? overlay.paragraph
+      : c
+        ? [[c[0], c[1], c[2], 1, c[3]] as const]
+        : []
+    : []
+  const focusByPage = focusDim && focusBoxes.length ? new Map(focusBoxes.map((b) => [b[0], b])) : null
   // Everyone else's carets and selections; people whose carets are at one place share a marker.
   const remote = places.map((place) => ({ place, o: engine.remoteOverlay(place.at) }))
   const peerCarets = together(remote.flatMap(({ place, o }) => (o.caret && sizes[o.caret[0]] ? [{ place, key: o.caret.join(), item: o.caret }] : [])))
@@ -510,19 +566,22 @@ export function Pages({ engine, zoom, scroller }: Props) {
     <div className="docx-content-mount" ref={mountRef} style={{ height, minWidth: width }} onMouseDown={onMouseDown} onMouseOver={onMouseOver} onContextMenu={onContextMenu}>
       <div className="docx-pages">
         {sizes.map(([w, h], i) => (
-          <PageFrame key={i} index={i} width={w} height={h} top={tops[i]} zoom={zoom} els={pageEls.current} />
+          <PageFrame key={i} index={i} width={w} height={h} top={tops[i]} zoom={zoom} els={pageContentEls.current} />
         ))}
       </div>
       <div className="docx-overlay">
-        {sizes.map(([w, h], i) => {
-          const band = focusBoxes.find((b) => b[0] === i)
-          return (
-            <div key={`f${i}`} className={`wp-focus ${band ? '' : 'veiled'}`} style={place(i, 0, 0, w, h)}>
-              {band && <div className="wp-focus-band" style={{ top: (band[2] - 3) * zoom, height: (band[4] + 6) * zoom }} />}
-            </div>
-          )
-        })}
+        {focusDim &&
+          sizes.map(([w, h], i) => {
+            if (i < winStart || i > winEnd) return null
+            const band = focusByPage?.get(i)
+            return (
+              <div key={`f${i}`} className={`wp-focus ${band ? '' : 'veiled'}`} style={place(i, 0, 0, w, h)}>
+                {band && <div className="wp-focus-band" style={{ top: (band[2] - 3) * zoom, height: (band[4] + 6) * zoom }} />}
+              </div>
+            )
+          })}
         {overlay.marks?.map((m, k) => {
+          if (m[0] < winStart || m[0] > winEnd) return null
           const style = engine.markStyles[m[5]]
           if (!style) return null
           if (style.squiggle) return <div key={`m${k}`} className="wp-mark wp-squiggle" style={place(m[0], m[1], m[2], m[3], m[4])} />
@@ -532,13 +591,13 @@ export function Pages({ engine, zoom, scroller }: Props) {
         {/* A selected picture shows only its frame and handles, as in a presentation. Its line's
             selection band would reach above the picture by the line's spacing. */}
         {!overlay.image &&
-          overlay.rects.map((r, k) => <div key={k} className="wp-sel" style={place(r[0], r[1], r[2], r[3], r[4])} />)}
+          overlay.rects.map((r, k) => (r[0] >= winStart && r[0] <= winEnd ? <div key={k} className="wp-sel" style={place(r[0], r[1], r[2], r[3], r[4])} /> : null))}
         {remote.map(({ place: { peer }, o }) => o.rects.map((r, k) => <PeerSelection key={`${peer.client}:${k}`} peer={peer} style={place(r[0], r[1], r[2], r[3], r[4])} />))}
         {peerCarets.map(({ peers, moves, item: pc }) => (
           <PeerCaret key={peers[0].client} peers={peers} moves={moves} style={{ ...place(pc[0], pc[1], pc[2], 0, pc[3]), width: undefined }} />
         ))}
         {overlay.caret && !engine.state.hasSelection && !overlay.image && (
-          <div key={`c${engine.tick}`} className="wp-caret" style={{ ...place(overlay.caret[0], overlay.caret[1], overlay.caret[2], 0, overlay.caret[3]), width: undefined }} />
+          <div ref={caretRef} className="wp-caret" style={{ ...place(overlay.caret[0], overlay.caret[1], overlay.caret[2], 0, overlay.caret[3]), width: undefined }} />
         )}
       </div>
       {overlay.image && sizes[overlay.image[0]] && (
@@ -587,14 +646,16 @@ const PageFrame = memo(function PageFrame({ index, width, height, top, zoom, els
     <div
       className="docx-page"
       data-page-index={index}
-      ref={(el) => {
-        if (el) els.set(index, el)
-        else els.delete(index)
-      }}
       style={{ top, width: width * zoom, height: height * zoom, left: '50%', marginLeft: -(width * zoom) / 2 }}
     >
       <div className="docx-page-scale" style={{ width, height, transform: `scale(${zoom})` }}>
-        <div className="docx-page-content" />
+        <div
+          className="docx-page-content"
+          ref={(el) => {
+            if (el) els.set(index, el)
+            else els.delete(index)
+          }}
+        />
       </div>
     </div>
   )

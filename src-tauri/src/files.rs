@@ -19,17 +19,48 @@ pub fn read_file(path: String) -> Result<Response, String> {
         .map_err(|e| format!("Couldn't open “{}”: {e}", display_name(&path)))
 }
 
+struct HistoryJob {
+    root: PathBuf,
+    path: PathBuf,
+    bytes: Vec<u8>,
+    hash: String,
+    label: Option<String>,
+    disk: Option<crate::history::Stamp>,
+}
+
+fn history_worker() -> &'static std::sync::mpsc::SyncSender<HistoryJob> {
+    static TX: LazyLock<std::sync::mpsc::SyncSender<HistoryJob>> = LazyLock::new(|| {
+        let (tx, rx) = std::sync::mpsc::sync_channel::<HistoryJob>(8);
+        let _ = std::thread::Builder::new()
+            .name("writan-history".into())
+            .spawn(move || {
+                while let Ok(job) = rx.recv() {
+                    if let Err(e) = crate::history::record_with_hash(
+                        &job.root, &job.path, &job.bytes, job.hash, job.label, job.disk,
+                    ) {
+                        eprintln!("version history: {e}");
+                    }
+                }
+            });
+        tx
+    });
+    &TX
+}
+
 /// Receives raw bytes as the request body and the destination path in the
 /// percent-encoded `x-path` header. Writes atomically: a crash or full disk
-/// mid-save leaves the original file untouched.
+/// mid-save leaves the original file untouched. Returns the saved file's
+/// hex SHA-256 digest.
 ///
+/// With `x-expected-sha256`, verifies the existing on-disk file first and
+/// fails with `__WRITAN_CONFLICT__` if it changed externally.
 /// With an `x-history` header the save is also kept in version history (see history.rs),
 /// named by the percent-encoded `x-history-label` if there is one.
 #[tauri::command(async)]
 pub fn write_file<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     request: Request<'_>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok());
     let encoded = header("x-path").ok_or("Missing destination path")?;
     let path = PathBuf::from(percent_decode(encoded)?);
@@ -49,8 +80,16 @@ pub fn write_file<R: tauri::Runtime>(
                 )
             }
         })?;
-        return Ok(());
+        return Ok(crate::history::sha256_hex(bytes));
     }
+    if let Some(expected) = header("x-expected-sha256") {
+        let matches = crate::history::sha256_file(&path)
+            .is_ok_and(|actual| actual.eq_ignore_ascii_case(expected));
+        if !matches {
+            return Err("__WRITAN_CONFLICT__".into());
+        }
+    }
+    let digest = crate::history::sha256_hex(bytes);
     let history = header("x-history").and_then(|_| crate::history::history_root(&app));
     let label = header("x-history-label").map(percent_decode).transpose()?;
     if let Some(root) = &history {
@@ -65,15 +104,24 @@ pub fn write_file<R: tauri::Runtime>(
     })?;
     if let Some(root) = history {
         let disk = crate::history::stamp(&path);
-        // Off the save's path: hashing and copying a big file shouldn't hold up the next edit.
-        let bytes = bytes.clone();
-        std::thread::spawn(move || {
-            if let Err(e) = crate::history::record(&root, &path, &bytes, label, disk) {
-                eprintln!("version history: {e}");
-            }
+        // Bounded FIFO worker keeps saves responsive while capping queued buffers.
+        let _ = history_worker().send(HistoryJob {
+            root,
+            path,
+            bytes: bytes.clone(),
+            hash: digest.clone(),
+            label,
+            disk,
         });
     }
-    Ok(())
+    Ok(digest)
+}
+
+/// Lets the frontend verify at runtime that `write_file` enforces `x-expected-sha256`
+/// (browser stress tests mock `__TAURI_INTERNALS__` without implementing CAS headers).
+#[tauri::command]
+pub fn write_file_supports_cas() -> bool {
+    true
 }
 
 /// Downloads a small public resource (a video's thumbnail image) for embedding in a

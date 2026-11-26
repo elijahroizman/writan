@@ -5,7 +5,7 @@
 import type { PdfAnnotationObject, PdfInkAnnoObject } from '@embedpdf/models'
 import { PdfAnnotationSubtype } from '@embedpdf/models'
 import type { CSSProperties } from 'react'
-import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { Annot, Box, PageInfo, TextRun } from '../engine/protocol'
 import type { DocStore } from '../engine/store'
 import { wordPart } from '../ocr'
@@ -25,8 +25,10 @@ const TEXT_SIZE = 10
 
 let measureCtx: CanvasRenderingContext2D | null = null
 function textWidth(text: string) {
-  measureCtx ??= document.createElement('canvas').getContext('2d')!
-  measureCtx.font = '100px sans-serif'
+  if (!measureCtx) {
+    measureCtx = document.createElement('canvas').getContext('2d')!
+    measureCtx.font = '100px sans-serif'
+  }
   return measureCtx.measureText(text).width / 100
 }
 
@@ -38,6 +40,10 @@ export const TextLayer = memo(function TextLayer({ store, index, page, recognize
   const [runs, setRuns] = useState<TextRun[] | null>(null)
   const indexRef = useRef(index)
   indexRef.current = index
+  const ocrRev = useSyncExternalStore(
+    (cb) => store.subscribeKey(page.key, cb),
+    () => store.ocrRev(page.key),
+  )
   useEffect(() => {
     let live = true
     store
@@ -47,7 +53,7 @@ export const TextLayer = memo(function TextLayer({ store, index, page, recognize
     return () => {
       live = false
     }
-  }, [store, page.key, page.rotation, recognized])
+  }, [store, page.key, page.rotation, recognized, ocrRev])
 
   const children = useMemo(() => {
     if (!runs) return null
@@ -120,6 +126,7 @@ function dragSelect(e: React.MouseEvent<HTMLElement>) {
   extend()
   // Near or past the edge of the view, the pages scroll and the selection follows.
   let frame = 0
+  let moveFrame = 0
   const scroll = () => {
     frame = 0
     if (!scroller) return
@@ -135,11 +142,19 @@ function dragSelect(e: React.MouseEvent<HTMLElement>) {
   }
   const move = (ev: MouseEvent) => {
     last = { x: ev.clientX, y: ev.clientY }
-    extend()
+    moveFrame ||= requestAnimationFrame(() => {
+      moveFrame = 0
+      extend()
+    })
     frame ||= requestAnimationFrame(scroll)
   }
   const up = () => {
     cancelAnimationFrame(frame)
+    if (moveFrame) {
+      cancelAnimationFrame(moveFrame)
+      moveFrame = 0
+      extend()
+    }
     window.removeEventListener('mousemove', move)
     window.removeEventListener('mouseup', up)
     window.removeEventListener('blur', up)
@@ -348,6 +363,10 @@ export const AnnotationLayer = memo(function AnnotationLayer({
   const layerRef = useRef<HTMLDivElement>(null)
   const indexRef = useRef(index)
   indexRef.current = index
+  const liveRev = useSyncExternalStore(
+    (cb) => store.subscribeKey(page.key, cb),
+    () => store.rev(page.key),
+  )
 
   useEffect(() => {
     let live = true
@@ -358,7 +377,7 @@ export const AnnotationLayer = memo(function AnnotationLayer({
     return () => {
       live = false
     }
-  }, [store, page.key, page.rotation, rev])
+  }, [store, page.key, page.rotation, rev, liveRev])
 
   // Highlights sit on text, so a plain click (not a drag that selects text) picks them.
   useEffect(() => {

@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::io::Cursor;
 
@@ -16,10 +17,29 @@ pub fn images_to_pdf(
     media: &HashMap<String, Vec<u8>>,
     fonts: &HashMap<String, Vec<u8>>,
 ) -> Result<Vec<u8>, String> {
+    images_to_pdf_with(pages, media, fonts)
+}
+
+pub fn images_to_pdf_slices(
+    pages: &[ImagePdfPageInput],
+    media: &HashMap<&str, &[u8]>,
+    fonts: &HashMap<&str, &[u8]>,
+) -> Result<Vec<u8>, String> {
+    images_to_pdf_with(pages, media, fonts)
+}
+
+fn images_to_pdf_with<KM: Borrow<str>, VM: AsRef<[u8]>, KF: Borrow<str> + Ord, VF: AsRef<[u8]>>(
+    pages: &[ImagePdfPageInput],
+    media: &HashMap<KM, VM>,
+    fonts: &HashMap<KF, VF>,
+) -> Result<Vec<u8>, String> {
     let mut engine = Engine::new(media, fonts);
     for page in pages {
         let mut drawing = PageDrawing::new(page.width_pt, page.height_pt)?;
-        let bytes = media.get(&page.media_key).ok_or_else(|| format!("Missing image: {}", page.media_key))?;
+        let bytes = media
+            .iter()
+            .find_map(|(k, v)| (k.borrow() == page.media_key).then(|| v.as_ref()))
+            .ok_or_else(|| format!("Missing image: {}", page.media_key))?;
         let mime = page.mime.split(';').next().unwrap_or("").trim();
         let valid_mime = match mime {
             "image/jpeg" | "image/jpg" => bytes.starts_with(&[0xff, 0xd8]),

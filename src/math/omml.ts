@@ -4,7 +4,7 @@ import { AllPackages } from 'mathjax-full/js/input/tex/AllPackages.js'
 import { liteAdaptor } from 'mathjax-full/js/adaptors/liteAdaptor.js'
 import { RegisterHTMLHandler } from 'mathjax-full/js/handlers/html.js'
 import { STATE } from 'mathjax-full/js/core/MathItem.js'
-import { normalizeHexColor, type LatexMathSpec } from './latexMath'
+import { normalizeHexColor, type LatexMathSpec } from './latexTag'
 
 export const NS_M = 'http://schemas.openxmlformats.org/officeDocument/2006/math'
 export const NS_W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main'

@@ -6,25 +6,29 @@ import { loadEngine } from './load'
 
 export const BASE_FONTS = ['"Carlito"', '"Caladea"', '"Liberation Sans"', '"Liberation Serif"']
 
+const yieldStep = () => new Promise<void>((r) => globalThis.setTimeout(r, 0))
+
 export async function preloadEngine() {
   const engine = await loadEngine()
+  await yieldStep()
   await preloadFonts(BASE_FONTS)
+  await yieldStep()
   // A small document through reading, layout, drawing, typing and saving: the browser compiles
   // WebAssembly functions the first time they run, so the first real document doesn't pay for it.
   const doc = new engine.WordDoc(new Uint8Array(), host)
-  doc.layout()
-  doc.command(JSON.stringify({ cmd: 'insertText', text: 'Warm up the engine.' }))
-  doc.command(JSON.stringify({ cmd: 'enter' }))
-  doc.layout()
-  doc.paint(0, true)
-  doc.overlay()
-  doc.state()
-  // Saved and opened again, so saving a document read from a file (the lossless path) is warm too.
-  const opened = new engine.WordDoc(doc.save(), host)
-  doc.free()
-  opened.layout()
-  opened.command(JSON.stringify({ cmd: 'insertText', text: 'Again.' }))
-  opened.layout()
-  opened.save()
-  opened.free()
+  try {
+    doc.layout()
+    await yieldStep()
+    doc.command(JSON.stringify({ cmd: 'insertText', text: 'Warm up the engine.' }))
+    doc.command(JSON.stringify({ cmd: 'enter' }))
+    doc.layout()
+    await yieldStep()
+    doc.paint(0, true)
+    doc.overlay()
+    doc.state()
+    await yieldStep()
+    doc.save()
+  } finally {
+    doc.free()
+  }
 }

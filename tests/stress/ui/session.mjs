@@ -2,8 +2,8 @@
 // the quit handler the way a crash does. localStorage and IndexedDB persist across the reload;
 // writes stay in the fake native bridge's memory, which the reload clears.
 // ENGINE=webkit node tests/stress/ui/session.mjs
-import { resolve } from 'node:path'
-import { launch, start, open, tabs, check, done } from './harness.mjs'
+import { join, resolve } from 'node:path'
+import { launch, start, open, tabs, check, done, TMP } from './harness.mjs'
 const path = resolve(import.meta.dirname, '../samples/S1-text-utf16le-bom.txt')
 const { browser, page, logs } = await launch({ init: () => {
   localStorage.setItem('workspace.settings', JSON.stringify({ version: 2, autosave: { enabled: false, delay: 3, kinds: {} } }))
@@ -132,7 +132,7 @@ try {
   await answer('Don’t Save')
   await page.waitForFunction(() => window.__fake.destroyed)
   await waitStored((d) => d.length === 0, 'quitting after Don’t Save drops the kept copy')
-  await page.screenshot({ path: `/tmp/writan-stress/session-${process.env.ENGINE ?? 'chromium'}.png` })
+  await page.screenshot({ path: join(TMP, `session-${process.env.ENGINE ?? 'chromium'}.png`) })
 } finally {
   await done(browser, logs)
 }

@@ -70,10 +70,11 @@ import {
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { create } from 'zustand'
 import { commandAvailable, runCommand } from '../App'
+import { usePaletteSourceRev } from '../lib/folderFiles'
 import { KINDS } from '../lib/kinds'
-import { basename, dirname, tildify } from '../lib/platform'
+import { dirname, tildify } from '../lib/platform'
+import { usePalette, sourceItems, type PaletteItem, type Picker } from '../state/modals'
 import { enabledKinds, usePlugins } from '../state/plugins'
 import type { SettingsPage } from '../state/settings'
 import { useSettings } from '../state/settings'
@@ -82,27 +83,15 @@ import { SHORTCUTS, keysFor } from '../state/shortcuts'
 import { getEditor, HOME_TAB_ID, useWorkspace } from '../state/workspace'
 import { orbBackground } from '../lib/themes'
 import { allThemes, useAppearance } from '../state/appearance'
+import { recentItems } from './paletteItems'
 import { Kbd, KindIcon, Modal } from './ui'
+
+export { recentItems, sourceItems, usePalette, type PaletteItem, type Picker }
 
 /**
  * ⌘K: one box to find anything. Type to search commands, open tabs and recent files; start
  * with “>” for commands only. Arrows and return pick, esc closes.
  */
-export const usePalette = create<{
-  open: boolean
-  query: string
-  /** Picking one thing (split view's other document) instead of searching everything. */
-  picker: Picker | null
-  setOpen(open: boolean, query?: string): void
-  pick(picker: Picker): void
-}>((set) => ({
-  open: false,
-  query: '',
-  picker: null,
-  setOpen: (open, query = '') => set({ open, query, picker: null }),
-  pick: (picker) => set({ open: true, query: '', picker }),
-}))
-
 /** Change theme…: every theme, the one in use first. Picking one uses it for light and dark. */
 export function openThemePicker() {
   usePalette.getState().pick({
@@ -123,28 +112,6 @@ export function openThemePicker() {
       }))
     },
   })
-}
-
-export interface Picker {
-  placeholder: string
-  items(): PaletteItem[]
-}
-
-export interface PaletteItem {
-  id: string
-  label: string
-  /** Shown faintly after the label: a folder, a hint. */
-  detail?: string
-  group: 'Tabs' | 'Recent' | 'Folder' | 'Open' | 'Commands'
-  /** The file it opens, for a recent or folder file. */
-  path?: string
-  icon?: ReactNode
-  keys?: string
-  /** More words that should find it (“dark” finds Switch between light and dark). */
-  keywords?: string
-  /** Shown but can't be picked: a command that needs an open document, found from Home. */
-  disabled?: boolean
-  run(): void | Promise<void>
 }
 
 /** Each command's icon. Commands without one get a plain prompt arrow, which reads the same on every system. */
@@ -334,32 +301,7 @@ function tabItems(): PaletteItem[] {
   return items.filter((i) => i.id !== `tab:${ws.activeId}`)
 }
 
-export function recentItems(): PaletteItem[] {
-  const ws = useWorkspace.getState()
-  const open = new Set(ws.tabs.map((t) => t.path))
-  return ws.recents
-    .filter((r) => !open.has(r.path))
-    .map((r) => ({
-      id: `recent:${r.path}`,
-      label: basename(r.path),
-      detail: tildify(dirname(r.path)),
-      group: 'Recent' as const,
-      path: r.path,
-      icon: KINDS[r.kind] ? <KindIcon kind={r.kind} /> : <FileText size={14} />,
-      run: () => ws.openPaths([r.path]),
-    }))
-}
-
-/** Extra items other parts of the app add (a folder's files). Read each time the palette opens. */
-const sources: (() => PaletteItem[])[] = []
-export const sourceItems = () => sources.flatMap((s) => s())
-export function addPaletteSource(source: () => PaletteItem[]) {
-  sources.push(source)
-  return () => {
-    const i = sources.indexOf(source)
-    if (i !== -1) sources.splice(i, 1)
-  }
-}
+// recentItems, sourceItems and addPaletteSource live in paletteItems.tsx / state/modals.ts.
 
 const BOUNDARY = /[\s\-_./:(]/
 
@@ -380,6 +322,11 @@ export function fuzzy(query: string, text: string): { score: number; at: number[
     return { score: 1000 - sub + (wordStart ? 200 : 0) - t.length * 0.1, at: Array.from({ length: q.length }, (_, i) => sub + i) }
   }
   const chars = q.replace(/ /g, '')
+  // O(N) subsequence fast-reject before recursive word-boundary matching.
+  for (let qi = 0, ti = -1; qi < chars.length; qi++) {
+    ti = t.indexOf(chars[qi], ti + 1)
+    if (ti === -1) return null
+  }
   const wordStart = (i: number) => i === 0 || BOUNDARY.test(t[i - 1])
   const failed = new Set<number>()
   // The earliest placement that follows the rules, backing up when a greedy pick leads nowhere.
@@ -441,8 +388,9 @@ export function CommandPalette() {
   const list = useRef<HTMLDivElement>(null)
   const close = () => usePalette.getState().setOpen(false)
 
-  // Gathered once per opening: what's open and possible doesn't change while you type.
-  const all = useMemo(() => (picker ? picker.items() : [...tabItems(), ...recentItems(), ...sourceItems(), ...commandItems()]), [picker])
+  const sourceRev = usePaletteSourceRev((s) => s.rev)
+  // Gathered once per opening (and refreshed if lazy folder walk finishes while open).
+  const all = useMemo(() => (picker ? picker.items() : [...tabItems(), ...recentItems(), ...sourceItems(), ...commandItems()]), [picker, sourceRev])
 
   const onlyCommands = !picker && query.startsWith('>')
   const q = (onlyCommands ? query.slice(1) : query).trim()
@@ -490,21 +438,25 @@ export function CommandPalette() {
     requestAnimationFrame(() => void item.run())
   }
 
+  const keyStateRef = useRef({ shown, index, pick })
+  keyStateRef.current = { shown, index, pick }
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const { shown: s, index: idx, pick: doPick } = keyStateRef.current
       if (e.key === 'Escape') close()
-      else if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) setIndex((i) => Math.min(shown.length - 1, i + 1))
+      else if (e.key === 'ArrowDown' || (e.ctrlKey && e.key === 'n')) setIndex((i) => Math.min(s.length - 1, i + 1))
       else if (e.key === 'ArrowUp' || (e.ctrlKey && e.key === 'p')) setIndex((i) => Math.max(0, i - 1))
-      else if (e.key === 'PageDown') setIndex((i) => Math.min(shown.length - 1, i + 8))
+      else if (e.key === 'PageDown') setIndex((i) => Math.min(s.length - 1, i + 8))
       else if (e.key === 'PageUp') setIndex((i) => Math.max(0, i - 8))
-      else if (e.key === 'Enter') pick(shown[index]?.item)
+      else if (e.key === 'Enter') doPick(s[idx]?.item)
       else return
       e.preventDefault()
       e.stopPropagation()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  })
+  }, [])
 
   return (
     <Modal placement="top" dim="light" layer="picker" onClose={close}>
@@ -538,7 +490,7 @@ export function CommandPalette() {
                   onMouseMove={() => i !== index && setIndex(i)}
                   onClick={() => pick(item)}
                 >
-                  <span className="palette-icon">{item.icon ?? GROUP_ICON[item.group]}</span>
+                  <span className="palette-icon">{item.icon ?? (item.kind && KINDS[item.kind] ? <KindIcon kind={item.kind} /> : GROUP_ICON[item.group])}</span>
                   <span className="palette-label">
                     <Highlight text={item.label} at={at} />
                   </span>

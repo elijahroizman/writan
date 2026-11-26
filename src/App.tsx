@@ -1,19 +1,26 @@
 import { Component, lazy, memo, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import type { ComponentType, ErrorInfo, ReactNode } from 'react'
-import type { PaletteItem } from './components/CommandPalette'
-import { CommandPalette, openThemePicker, recentItems, sourceItems, usePalette } from './components/CommandPalette'
+import type { PaletteItem } from './state/modals'
+import {
+  showJoinDialog,
+  showSharePanel,
+  showVersionHistory,
+  sourceItems,
+  useConvertDialog,
+  useNewFile,
+  usePalette,
+  useSharePanel,
+  useThemeEditor,
+  useVersionHistory,
+} from './state/modals'
 import { KindIcon } from './components/ui'
 import { FocusMode } from './components/FocusMode'
-import { Explorer, startFolderPalette } from './components/Explorer'
-import { ThemeEditorHost } from './components/ThemeEditor'
 import { Home } from './components/Home'
-import { showVersionHistory, useVersionHistory, VersionHistory } from './components/VersionHistory'
-import { NewFilePicker, useNewFile } from './components/NewFile'
-import { ConvertModal, useConvertDialog } from './components/ConvertDialog'
-import { canExportMarkdown, canIncludeInPdfBundle, convertAndDeliver, copyTabAsMarkdown, targetsForKind, usesOcr } from './lib/convert'
-import { TexInstall, TexRemove } from './components/TexInstall'
+import { recentItems } from './components/paletteItems'
+import { canShare } from './components/ShareButton'
+import { startFolderPalette } from './lib/folderFiles'
+import { canExportMarkdown, canIncludeInPdfBundle, targetsForKind, usesOcr } from './lib/convertMeta'
 import { Dialogs } from './components/Dialogs'
-import { canShare, JoinDialog, showJoinDialog, showSharePanel, useSharePanel } from './components/Share'
 import { TitleBar } from './components/TitleBar'
 import { CenterState } from './components/ui'
 import type { DocKind } from './lib/kinds'
@@ -21,7 +28,6 @@ import { kindFromPath } from './lib/kinds'
 import * as platform from './lib/platform'
 import { flushAutosave, startAutosave } from './lib/autosave'
 import { resetNative } from './collab/transport'
-import { followAiSettings } from './collab/agents/bridge'
 import { Arrivals } from './collab/Arrivals'
 import { useAi } from './state/ai'
 import { discardRecovery, resumeRecovery, startRecovery } from './lib/recovery'
@@ -35,7 +41,17 @@ import { useTex } from './state/tex'
 import type { Scope } from './state/shortcuts'
 import { engineKeysOf, keysFor, keysFromEvent, movedBuiltIn, shortcutFor, syncMenu } from './state/shortcuts'
 import type { DocTab } from './state/workspace'
-import { collabHooks, getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWoken, useWorkspace } from './state/workspace'
+import { collabHooks, ensureTabLoaded, getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWoken, useWorkspace } from './state/workspace'
+
+const CommandPalette = lazy(() => import('./components/CommandPalette').then((m) => ({ default: m.CommandPalette })))
+const Explorer = lazy(() => import('./components/Explorer').then((m) => ({ default: m.Explorer })))
+const ThemeEditorHost = lazy(() => import('./components/ThemeEditor').then((m) => ({ default: m.ThemeEditorHost })))
+const VersionHistory = lazy(() => import('./components/VersionHistory').then((m) => ({ default: m.VersionHistory })))
+const NewFilePicker = lazy(() => import('./components/NewFile').then((m) => ({ default: m.NewFilePicker })))
+const ConvertModal = lazy(() => import('./components/ConvertDialog').then((m) => ({ default: m.ConvertModal })))
+const TexInstall = lazy(() => import('./components/TexInstall').then((m) => ({ default: m.TexInstall })))
+const TexRemove = lazy(() => import('./components/TexInstall').then((m) => ({ default: m.TexRemove })))
+const JoinDialog = lazy(() => import('./components/Share').then((m) => ({ default: m.JoinDialog })))
 
 export interface EditorProps {
   tab: DocTab
@@ -85,13 +101,18 @@ const OFFICE_KINDS: ReadonlySet<string> = new Set(['docx', 'pptx', 'xlsx', 'csv'
  */
 function preloadOfficeEditors() {
   const idle = (f: () => void) => (typeof window.requestIdleCallback === 'function' ? window.requestIdleCallback(f, { timeout: 3000 }) : globalThis.setTimeout(f, 1500))
+  const yieldStep = () => new Promise<void>((r) => globalThis.setTimeout(r, 0))
   idle(() => {
-    for (const kind of ['docx', 'pptx', 'xlsx']) void loadEditor(kind).catch(() => {})
-    // An office document on screen has loaded and compiled the engine. Warming it up again would
-    // only hold up that document's first edits.
-    const { tabs, activeId } = useWorkspace.getState()
-    if (tabs.some((t) => t.id === activeId && OFFICE_KINDS.has(t.kind))) return
-    void import('./engine/preload').then((m) => m.preloadEngine()).catch(() => {})
+    void (async () => {
+      await Promise.all(['docx', 'pptx', 'xlsx'].map((kind) => loadEditor(kind).catch(() => {})))
+      await yieldStep()
+      // An office document on screen has loaded and compiled the engine. Warming it up again would
+      // only hold up that document's first edits.
+      const { tabs, activeId } = useWorkspace.getState()
+      if (tabs.some((t) => t.id === activeId && OFFICE_KINDS.has(t.kind))) return
+      const m = await import('./engine/preload').catch(() => null)
+      await m?.preloadEngine().catch(() => {})
+    })()
   })
 }
 
@@ -133,6 +154,9 @@ const EditorSlot = memo(function EditorSlot({ tab, active, pane }: EditorProps &
   const woken = useWoken((s) => !!s[tab.id])
   const [shown, setShown] = useState(active || visible || woken)
   if ((active || visible || woken) && !shown) setShown(true)
+  useEffect(() => {
+    if (shown && tab.deferred) void ensureTabLoaded(tab.id)
+  }, [shown, tab.deferred, tab.id])
   return (
     <div
       className="view"
@@ -144,13 +168,16 @@ const EditorSlot = memo(function EditorSlot({ tab, active, pane }: EditorProps &
       onPointerDownCapture={visible ? () => useWorkspace.getState().activate(tab.id) : undefined}
       onFocusCapture={visible ? () => useWorkspace.getState().activate(tab.id) : undefined}
     >
-      {shown && (
-        <EditorBoundary key={tab.loadId} name={tab.title}>
-          <Suspense fallback={<CenterState spinner />}>
-            <Editor key={tab.loadId} tab={tab} active={active} visible={visible} />
-          </Suspense>
-        </EditorBoundary>
-      )}
+      {shown &&
+        (tab.deferred ? (
+          <CenterState spinner />
+        ) : (
+          <EditorBoundary key={tab.loadId} name={tab.title}>
+            <Suspense fallback={<CenterState spinner />}>
+              <Editor key={tab.loadId} tab={tab} active={active} visible={visible} />
+            </Suspense>
+          </EditorBoundary>
+        ))}
     </div>
   )
 })
@@ -166,21 +193,64 @@ function SplitDivider() {
       onPointerDown={(e) => {
         e.preventDefault()
         const el = e.currentTarget
-        const box = el.parentElement!.getBoundingClientRect()
+        const views = el.parentElement!
+        const box = views.getBoundingClientRect()
         el.setPointerCapture(e.pointerId)
         el.classList.add('dragging')
-        const move = (ev: PointerEvent) => useWorkspace.getState().setSplitRatio((ev.clientX - box.left) / box.width)
+        let liveRatio = useWorkspace.getState().splitRatio
+        let raf = 0
+        const paint = () => {
+          raf = 0
+          const pct = `${liveRatio * 100}%`
+          views.style.setProperty('--split', pct)
+          el.style.left = pct
+        }
+        const move = (ev: PointerEvent) => {
+          liveRatio = Math.max(0.2, Math.min(0.8, (ev.clientX - box.left) / box.width))
+          if (!raf) raf = requestAnimationFrame(paint)
+        }
         const up = () => {
+          if (raf) {
+            cancelAnimationFrame(raf)
+            paint()
+          }
           el.classList.remove('dragging')
           el.removeEventListener('pointermove', move)
           el.removeEventListener('pointerup', up)
+          el.removeEventListener('pointercancel', up)
+          useWorkspace.getState().setSplitRatio(liveRatio)
         }
         el.addEventListener('pointermove', move)
         el.addEventListener('pointerup', up)
+        el.addEventListener('pointercancel', up)
       }}
     />
   )
 }
+
+const EditorViews = memo(function EditorViews() {
+  const tabs = useWorkspace((s) => s.tabs)
+  const activeId = useWorkspace((s) => s.activeId)
+  const split = useWorkspace((s) => s.split)
+  const splitRatio = useWorkspace((s) => s.splitRatio)
+
+  // Keep the session snapshot current.
+  useEffect(() => {
+    if (!sessionFrozen) persistSession()
+  }, [tabs, activeId])
+
+  return (
+    <div className="views" data-split={split ? '' : undefined} style={split ? ({ '--split': `${splitRatio * 100}%` } as React.CSSProperties) : undefined}>
+      <div className="view" data-active={activeId === HOME_TAB_ID} inert={activeId !== HOME_TAB_ID}>
+        <Home />
+      </div>
+      {tabs.map((tab) => (
+        <EditorSlot key={tab.id} tab={tab} active={tab.id === activeId} pane={split?.[0] === tab.id ? 'left' : split?.[1] === tab.id ? 'right' : undefined} />
+      ))}
+      {split && <SplitDivider />}
+    </div>
+  )
+})
 
 /**
  * ⇧⌘\: pick the Word document or PDF to show beside this one; again to go back to one pane.
@@ -296,6 +366,7 @@ export async function runCommand(id: string) {
       break
     case 'copy-markdown': {
       try {
+        const { copyTabAsMarkdown } = await import('./lib/convert')
         const md = await copyTabAsMarkdown()
         if (md === null) await platform.showMessage('Open a Word, PowerPoint, Excel, CSV, PDF, or text document to copy as Markdown.', 'Copy as Markdown')
       } catch (err) {
@@ -307,12 +378,17 @@ export async function runCommand(id: string) {
       // A picture's Markdown needs OCR, which runs in the Convert dialog where it can be cancelled.
       const active = ws.tabs.find((t) => t.id === ws.activeId)
       if (active && usesOcr(active.kind, 'md')) useConvertDialog.getState().openConvert(active.id, 'md')
-      else await convertAndDeliver(undefined, 'md', 'open')
+      else {
+        const { convertAndDeliver } = await import('./lib/convert')
+        await convertAndDeliver(undefined, 'md', 'open')
+      }
       break
     }
-    case 'export-pdf':
+    case 'export-pdf': {
+      const { convertAndDeliver } = await import('./lib/convert')
       await convertAndDeliver(undefined, 'pdf', 'open')
       break
+    }
     case 'bundle-pdf':
       useConvertDialog.getState().openBundle()
       break
@@ -412,7 +488,7 @@ export async function runCommand(id: string) {
       ws.setTheme(ws.theme === 'dark' ? 'light' : 'dark')
       break
     case 'change-theme':
-      openThemePicker()
+      void import('./components/CommandPalette').then((m) => m.openThemePicker())
       break
     case 'next-tab':
       ws.activateOffset(1)
@@ -537,10 +613,6 @@ export function editorHandles(command: string) {
 }
 
 export default function App() {
-  const tabs = useWorkspace((s) => s.tabs)
-  const activeId = useWorkspace((s) => s.activeId)
-  const split = useWorkspace((s) => s.split)
-  const splitRatio = useWorkspace((s) => s.splitRatio)
   const dropHover = useWorkspace((s) => s.dropHover)
   const settingsOpen = useSettings((s) => s.open)
   const setupOpen = useSetup((s) => s.open)
@@ -548,6 +620,8 @@ export default function App() {
   const convertOpen = useConvertDialog((s) => s.open)
   const paletteOpen = usePalette((s) => s.open)
   const historyOpen = useVersionHistory((s) => !!s.tabId)
+  const themeEditorOpen = useThemeEditor((s) => !!s.session)
+  const shareJoining = useSharePanel((s) => s.joining)
   const texOffer = useTex((s) => s.offer)
   const texRemoval = useTex((s) => !!s.removal)
   const focus = useFocus((s) => s.on)
@@ -598,7 +672,11 @@ export default function App() {
     const stopUpdateChecks = startUpdateChecks()
     void resetNative()
     // AI agents connect through Writan's MCP server when Settings › AI lets them.
-    const stopAgents = followAiSettings(useAi)
+    let disposed = false
+    let stopAgents: (() => void) | undefined
+    void import('./collab/agents/bridge').then((m) => {
+      if (!disposed) stopAgents = m.followAiSettings(useAi)
+    })
     const stopAutosave = startAutosave()
     const stopRecovery = startRecovery()
     const stopFolderPalette = startFolderPalette()
@@ -607,21 +685,17 @@ export default function App() {
     const pruneTimer = window.setInterval(pruneRecents, 3_600_000)
     const stopPruneOnChange = useSettings.subscribe((s, prev) => s.recentDays !== prev.recentDays && pruneRecents())
     return () => {
+      disposed = true
       window.clearInterval(pruneTimer)
       stopPruneOnChange()
       stopUpdateChecks()
-      stopAgents()
+      stopAgents?.()
       stopAutosave()
       stopRecovery()
       stopFolderPalette()
       unlisteners.forEach((u) => void u.then((fn) => fn()))
     }
   }, [])
-
-  // Keep the session snapshot current.
-  useEffect(() => {
-    if (!sessionFrozen) persistSession()
-  }, [tabs, activeId])
 
   // Keyboard: ⌘1–⌘9 everywhere; app shortcuts the Mac menu bar would handle, on Windows and in a
   // browser; and editor shortcuts (see state/shortcuts.ts, which Settings can change).
@@ -710,36 +784,64 @@ export default function App() {
     <div className="app" data-focus={focus || undefined} data-focus-dim={dim || undefined} data-typewriter={typewriter || undefined}>
       <TitleBar />
       <div className="app-body">
-        {explorer && <Explorer />}
-        <div className="views" data-split={split ? '' : undefined} style={split ? ({ '--split': `${splitRatio * 100}%` } as React.CSSProperties) : undefined}>
-          <div className="view" data-active={activeId === HOME_TAB_ID} inert={activeId !== HOME_TAB_ID}>
-            <Home />
-          </div>
-          {tabs.map((tab) => (
-            <EditorSlot key={tab.id} tab={tab} active={tab.id === activeId} pane={split?.[0] === tab.id ? 'left' : split?.[1] === tab.id ? 'right' : undefined} />
-          ))}
-          {split && <SplitDivider />}
-        </div>
+        {explorer && (
+          <Suspense fallback={null}>
+            <Explorer />
+          </Suspense>
+        )}
+        <EditorViews />
       </div>
       {settingsOpen && (
         <Suspense fallback={null}>
           <SettingsPanel />
         </Suspense>
       )}
-      {newFileOpen && <NewFilePicker />}
-      {convertOpen && <ConvertModal />}
-      {paletteOpen && <CommandPalette />}
-      <ThemeEditorHost />
-      {historyOpen && <VersionHistory />}
+      {newFileOpen && (
+        <Suspense fallback={null}>
+          <NewFilePicker />
+        </Suspense>
+      )}
+      {convertOpen && (
+        <Suspense fallback={null}>
+          <ConvertModal />
+        </Suspense>
+      )}
+      {paletteOpen && (
+        <Suspense fallback={null}>
+          <CommandPalette />
+        </Suspense>
+      )}
+      {themeEditorOpen && (
+        <Suspense fallback={null}>
+          <ThemeEditorHost />
+        </Suspense>
+      )}
+      {historyOpen && (
+        <Suspense fallback={null}>
+          <VersionHistory />
+        </Suspense>
+      )}
       {setupOpen && (
         <Suspense fallback={null}>
           <SetupScreen />
         </Suspense>
       )}
-      {texOffer && <TexInstall />}
-      {texRemoval && <TexRemove />}
+      {texOffer && (
+        <Suspense fallback={null}>
+          <TexInstall />
+        </Suspense>
+      )}
+      {texRemoval && (
+        <Suspense fallback={null}>
+          <TexRemove />
+        </Suspense>
+      )}
       <FocusMode />
-      <JoinDialog />
+      {shareJoining && (
+        <Suspense fallback={null}>
+          <JoinDialog />
+        </Suspense>
+      )}
       <Arrivals />
       <Dialogs />
       {dropHover && (

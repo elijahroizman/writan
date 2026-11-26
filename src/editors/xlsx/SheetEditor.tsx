@@ -101,7 +101,11 @@ export default function SheetEditor({ tab, active }: EditorProps) {
       .catch((e) => { if (live) setError(String(e?.message ?? e)) })
     return () => {
       live = false
-      opened?.dispose()
+      if (opened) {
+        const w = window as unknown as Record<string, unknown>
+        if (w.__sheets === opened) delete w.__sheets
+        opened.dispose()
+      }
     }
   }, [tab.bytes, tab.kind])
   if (error) {

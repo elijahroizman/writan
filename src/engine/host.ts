@@ -22,13 +22,22 @@ function normalLineHeight(font: string) {
 }
 const requested = new Set<string>()
 const listeners = new Set<() => void>()
+const usableCache = new Map<string, string>()
 let notifyTimer = 0
 
 /** Invalid document font names must not throw through a borrowed WASM document. */
 function usableFont(font: string) {
-  if (CSS.supports('font', font)) return font
-  const size = parseFloat(font.replace(/^(italic |bold )*/, ''))
-  return `${Number.isFinite(size) && size > 0 ? size : 16}px sans-serif`
+  const cached = usableCache.get(font)
+  if (cached !== undefined) return cached
+  let resolved: string
+  if (CSS.supports('font', font)) {
+    resolved = font
+  } else {
+    const size = parseFloat(font.replace(/^(italic |bold )*/, ''))
+    resolved = `${Number.isFinite(size) && size > 0 ? size : 16}px sans-serif`
+  }
+  usableCache.set(font, resolved)
+  return resolved
 }
 
 function requestFont(font: string): Promise<FontFace[]> {

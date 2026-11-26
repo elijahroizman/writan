@@ -6,7 +6,8 @@ import { host, onFontsChanged, preloadFonts } from '../host'
 import { expectKind, loadEngine } from '../load'
 import { BASE_FONTS } from '../preload'
 import { MediaCache, StyleSheet } from '../paint'
-import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
+import { LATEX_MATH_PREFIX } from '../../math/latexTag'
+import { renderLatexTagLazy } from '../../math/lazyLatex'
 import type { WordDoc } from '../wasm/office_wasm'
 
 export interface WordState {
@@ -133,6 +134,7 @@ export class WordEngine {
   markStyles: Record<string, { color: string; activeColor?: string; activeId?: string; squiggle?: boolean }> = { search: { color: 'rgba(255, 210, 63, 0.55)' } }
   /** The 1-based page most visible in the viewport (updated by the page view on scroll). */
   visiblePage = 1
+  latexVersion = 0
   private listeners = new Set<() => void>()
   private visiblePageListeners = new Set<() => void>()
   private revisionList: { revision: number; list: Revision[] } | null = null
@@ -144,7 +146,12 @@ export class WordEngine {
     this.styles = new StyleSheet(`w${++sheets}s`)
     this.media = new MediaCache((id) => {
       if (id.startsWith(LATEX_MATH_PREFIX)) {
-        return renderLatexTagToSvgBytes(id)
+        return renderLatexTagLazy(id, () => {
+          if (this.disposed) return
+          this.latexVersion++
+          this.tick++
+          for (const f of this.listeners) f()
+        })
       }
       const bytes = this.doc.media(id)
       return bytes ? { bytes, type: this.doc.mediaType(id) ?? 'image/png' } : null

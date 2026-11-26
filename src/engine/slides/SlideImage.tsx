@@ -6,14 +6,31 @@ import { memo, useEffect, useRef, useState } from 'react'
 import type { SlidesEngine } from './engine'
 import './slides.css'
 
+const visibleCallbacks = new WeakMap<Element, (v: boolean) => void>()
+let sharedObserver: IntersectionObserver | null = null
+
+function getObserver(): IntersectionObserver {
+  return (sharedObserver ??= new IntersectionObserver(
+    (entries) => {
+      for (const entry of entries) visibleCallbacks.get(entry.target)?.(entry.isIntersecting)
+    },
+    { rootMargin: '600px 0px' },
+  ))
+}
+
 export const SlideImage = memo(function SlideImage({ engine, index, revision, width, lazy = true }: { engine: SlidesEngine; index: number; revision: number; width: number; lazy?: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(!lazy)
   useEffect(() => {
     if (!lazy) return
-    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting), { rootMargin: '600px 0px' })
-    observer.observe(ref.current!)
-    return () => observer.disconnect()
+    const el = ref.current!
+    visibleCallbacks.set(el, setVisible)
+    const observer = getObserver()
+    observer.observe(el)
+    return () => {
+      observer.unobserve(el)
+      visibleCallbacks.delete(el)
+    }
   }, [lazy])
   const scale = width / engine.width
   return (

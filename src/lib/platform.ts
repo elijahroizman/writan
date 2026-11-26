@@ -94,23 +94,42 @@ export async function readFile(path: string): Promise<Uint8Array> {
   return data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data)
 }
 
+let casWriteSupported: boolean | null = null
+
+export async function supportsCasWrite(): Promise<boolean> {
+  if (!isTauri) return false
+  if (casWriteSupported !== null) return casWriteSupported
+  try {
+    const { invoke } = await core()
+    casWriteSupported = (await invoke<unknown>('write_file_supports_cas')) === true
+  } catch {
+    casWriteSupported = false
+  }
+  return casWriteSupported
+}
+
 /**
  * Save bytes to a file. `history` also keeps this version in the file's version history, named
- * `label` if given (see src-tauri/src/history.rs).
+ * `label` if given (see src-tauri/src/history.rs). Returns the SHA-256 hex digest when saved in Tauri.
  */
-export async function writeFile(path: string, bytes: Uint8Array, opts: { history?: boolean; label?: string; noClobber?: boolean } = {}): Promise<void> {
+export async function writeFile(
+  path: string,
+  bytes: Uint8Array,
+  opts: { history?: boolean; label?: string; noClobber?: boolean; expectedSha256?: string } = {},
+): Promise<string | undefined> {
   if (!isTauri) {
     if (opts.history) browserHistory(path, bytes, opts.label)
     browserFiles.set(path, bytes)
     download(basename(path), bytes)
-    return
+    return undefined
   }
   const { invoke } = await core()
   const headers: Record<string, string> = { 'x-path': encodeURIComponent(path) }
   if (opts.noClobber) headers['x-no-clobber'] = '1'
+  if (opts.expectedSha256) headers['x-expected-sha256'] = opts.expectedSha256
   if (opts.history) headers['x-history'] = '1'
   if (opts.history && opts.label?.trim()) headers['x-history-label'] = encodeURIComponent(opts.label.trim())
-  await invoke('write_file', bytes, { headers })
+  return await invoke<string>('write_file', bytes, { headers })
 }
 
 // ── Version history

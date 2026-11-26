@@ -4,14 +4,15 @@
 // write_file with x-history adds one, newest first.
 import assert from 'node:assert/strict'
 import { mkdirSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import JSZip from 'jszip'
-import { launch, start, open, done } from './harness.mjs'
+import { launch, start, open, done, TMP } from './harness.mjs'
 
-const dir = '/tmp/writan-stress/history'
+const dir = join(TMP, 'history')
 mkdirSync(dir, { recursive: true })
-const NOTES = `${dir}/Notes.txt`
-const FRESH = `${dir}/Fresh.md`
+const NOTES = join(dir, 'Notes.txt')
+const FRESH = join(dir, 'Fresh.md')
 const tour = (name) => fileURLToPath(new URL(`../../../scripts/tour/${name}`, import.meta.url))
 const PDF = tour('Lease.pdf')
 const DOCX = tour('Library Update.docx')
@@ -20,12 +21,12 @@ const PPTX = tour('Spring Launch.pptx')
 const drafts = ['Plan\n\nWe open in May.\n', 'Plan\n\nWe open in June.\n', 'Plan\n\nWe open in June.\n\nBring snacks.\n']
 writeFileSync(NOTES, drafts.at(-1))
 writeFileSync(FRESH, 'Nothing saved yet.\n')
-const README = `${dir}/Readme.md`
+const README = join(dir, 'Readme.md')
 writeFileSync(README, '# Opening day\n\nDoors open at **nine**. See [the map](https://example.com/map) and [the café](#café).\n\n' + 'More.\n\n'.repeat(200) + '## Café\n\nUpstairs.\n')
 // Windows-1252, as older Windows files are.
-const OLD = `${dir}/Old.txt`
+const OLD = join(dir, 'Old.txt')
 writeFileSync(OLD, Buffer.from('Caf\xe9 menu\n', 'latin1'))
-const LETTER = `${dir}/Letter.pdf`
+const LETTER = join(dir, 'Letter.pdf')
 
 /** A one-page PDF that says `text`. */
 function pdf(text) {
@@ -122,7 +123,7 @@ function fakeHistory(seed) {
         return list.map((v) => ({ ...v.version }))
       case 'history_read':
         if (hit().bytes) return hit().bytes.slice().buffer
-        return (await fetch('/__fs' + encodeURI(args.path))).arrayBuffer()
+        return (await fetch(window.__fake.fsUrl(args.path))).arrayBuffer()
       case 'history_label':
         window.__history.labels.push(args.label)
         hit().version.label = args.label || undefined

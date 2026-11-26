@@ -6,15 +6,15 @@ mod ocr_layer;
 mod svg_path;
 mod writer;
 
-pub use image_pdf::images_to_pdf;
+pub use image_pdf::{images_to_pdf, images_to_pdf_slices};
 pub use model::*;
-pub use ocr_layer::{inject_ocr_text_layer, inspect_pdf};
-pub use writer::render_document_to_pdf;
+pub use ocr_layer::{inject_ocr_text_layer, inject_ocr_text_layer_slices, inspect_pdf};
+pub use writer::{render_document_to_pdf, render_document_to_pdf_slices};
 
 use std::collections::HashMap;
 use std::io::Write;
 
-pub fn unpack_blobs(mut buf: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> {
+pub fn unpack_blob_slices(mut buf: &[u8]) -> Result<HashMap<&str, &[u8]>, String> {
     fn read_len(buf: &mut &[u8]) -> Result<usize, String> {
         let (len, rest) = buf.split_at_checked(4).ok_or("Truncated blob pack length")?;
         *buf = rest;
@@ -34,7 +34,7 @@ pub fn unpack_blobs(mut buf: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> 
     for _ in 0..count {
         let key = std::str::from_utf8(read_bytes(&mut buf)?).map_err(|_| "Invalid UTF-8 blob key")?;
         let bytes = read_bytes(&mut buf)?;
-        if blobs.insert(key.to_owned(), bytes.to_vec()).is_some() {
+        if blobs.insert(key, bytes).is_some() {
             return Err(format!("Duplicate blob key {key}"));
         }
     }
@@ -42,6 +42,10 @@ pub fn unpack_blobs(mut buf: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> 
         return Err("Trailing data in blob pack".into());
     }
     Ok(blobs)
+}
+
+pub fn unpack_blobs(buf: &[u8]) -> Result<HashMap<String, Vec<u8>>, String> {
+    Ok(unpack_blob_slices(buf)?.into_iter().map(|(k, v)| (k.to_owned(), v.to_vec())).collect())
 }
 
 fn flate(bytes: &[u8]) -> Result<Vec<u8>, String> {

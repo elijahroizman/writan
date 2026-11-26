@@ -300,7 +300,10 @@ function Viewport({ className, children }: { className?: string; children: React
   useLayoutEffect(() => {
     const el = viewport.current
     if (!el) return
-    const update = () => zoom.resize(el.clientWidth, Math.max(...(engine?.sizes.map((s) => s[0]) ?? [794])))
+    const update = () => {
+      if (el.clientWidth === 0) return
+      zoom.resize(el.clientWidth, Math.max(...(engine?.sizes.map((s) => s[0]) ?? [794])))
+    }
     update()
     const ro = new ResizeObserver(update)
     ro.observe(el)

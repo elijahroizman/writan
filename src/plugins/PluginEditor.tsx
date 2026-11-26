@@ -4,11 +4,11 @@ import { Button, CenterState } from '../components/ui'
 import type { ViewMode } from '../components/ViewSwitch'
 import { initialView, nextView, ViewSwitch } from '../components/ViewSwitch'
 import { FindBar, Workbench } from '../components/Workbench'
-import { recognizeImage, saveOcrCopy } from '../lib/convert'
 import { KINDS } from '../lib/kinds'
 import { getPackMeta } from '../lib/ocr/catalog'
 import { useOcrPacks } from '../lib/ocr/packs'
 import { isTauri, openExternal, saveBytesAs, shortcut, showError } from '../lib/platform'
+import { schedulePrintCleanup } from '../lib/print'
 import { installSettled, pluginBaseUrl } from '../state/plugins'
 import { useSettings } from '../state/settings'
 import { forgetTexBuild, texService, texTestHook } from '../state/tex'
@@ -23,11 +23,12 @@ function imageOcrService(title: () => string): ImageOcrService {
   return {
     selectedLanguages: () => useOcrPacks.getState().selectedLangs.map((code) => getPackMeta(code)?.name ?? code),
     async recognize({ bytes, mime }, { signal, onProgress }) {
-      const result = await recognizeImage(bytes, mime, signal, onProgress)
-      const [{ ocrResultsToPlainText, ocrResultsToMarkdown, ocrResultsToDocx }, { pageText, searchPageText }] = await Promise.all([
+      const [{ recognizeImage, saveOcrCopy }, { ocrResultsToPlainText, ocrResultsToMarkdown, ocrResultsToDocx }, { pageText, searchPageText }] = await Promise.all([
+        import('../lib/convert'),
         import('../lib/ocr/toDocx'),
         import('../editors/pdf/ocr'),
       ])
+      const result = await recognizeImage(bytes, mime, signal, onProgress)
       signal?.throwIfAborted()
       const pages = [result.page]
       const { widthPx: width, heightPx: height } = result.page
@@ -170,6 +171,7 @@ export default function PluginEditor({ tab, active }: EditorProps) {
             page.className = 'print-page'
             page.appendChild(content)
             root.replaceChildren(page)
+            schedulePrintCleanup()
             window.print()
           },
         })

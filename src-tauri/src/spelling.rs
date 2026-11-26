@@ -124,16 +124,46 @@ mod mac {
 // ---- Windows: the system spell checker (ISpellChecker), in the user's language.
 
 #[cfg(windows)]
+type WinJob = Box<dyn FnOnce(Option<&mut win::Win>) + Send>;
+
+#[cfg(windows)]
+fn win_worker() -> &'static std::sync::mpsc::Sender<WinJob> {
+    static TX: std::sync::LazyLock<std::sync::mpsc::Sender<WinJob>> =
+        std::sync::LazyLock::new(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<WinJob>();
+            let _ = std::thread::Builder::new()
+                .name("writan-spell".into())
+                .spawn(move || {
+                    // Keep the COM MTA apartment and ISpellChecker alive on one dedicated thread.
+                    let mut speller = win::Win::new();
+                    while let Ok(job) = rx.recv() {
+                        job(speller.as_mut());
+                    }
+                });
+            tx
+        });
+    &TX
+}
+
+#[cfg(windows)]
 async fn run<R: Runtime, T: Send + Default + 'static>(
     _app: AppHandle<R>,
     f: impl FnOnce(&mut dyn Speller) -> T + Send + 'static,
 ) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(move || match win::Win::new() {
-        Some(mut s) => f(&mut s),
-        None => T::default(),
-    })
-    .await
-    .map_err(|e| e.to_string())
+    let (res_tx, res_rx) = std::sync::mpsc::sync_channel(1);
+    let sent = win_worker().send(Box::new(move |speller| {
+        let value = match speller {
+            Some(s) => f(s),
+            None => T::default(),
+        };
+        let _ = res_tx.send(value);
+    }));
+    if sent.is_err() {
+        return Ok(T::default());
+    }
+    tauri::async_runtime::spawn_blocking(move || res_rx.recv().unwrap_or_default())
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Ordered BCP-47 language tags to try with Windows' `ISpellCheckerFactory`.

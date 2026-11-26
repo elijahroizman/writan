@@ -3,7 +3,8 @@
 // jump to unrelated lines, and the Highlight tool highlights just the line dragged over.
 import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
-import { launch, start, open, done } from './harness.mjs'
+import { join } from 'node:path'
+import { launch, start, open, done, TMP } from './harness.mjs'
 
 const LINES = [
   [700, 'Alpha bravo charlie delta echo foxtrot golf hotel'],
@@ -35,7 +36,7 @@ function pdf() {
   return Buffer.from(out, 'latin1')
 }
 
-const file = '/tmp/writan-stress/text-select.pdf'
+const file = join(TMP, 'text-select.pdf')
 const { browser, page, logs } = await launch({ viewport: { width: 1400, height: 1100 } })
 try {
   writeFileSync(file, pdf())
@@ -91,7 +92,7 @@ try {
   await drag({ x: box[1].left - 20, y: box[1].mid }, { x: box[1].right + 20, y: box[1].mid + 3 })
   await page.waitForFunction(() => window.__workspace.useWorkspace.getState().tabs[0].dirty)
   assert.equal(await selected(), '', 'the selection is dropped after highlighting')
-  const saved = '/tmp/writan-stress/text-select-saved.pdf'
+  const saved = join(TMP, 'text-select-saved.pdf')
   await page.evaluate(async (to) => {
     if (!(await window.__workspace.useWorkspace.getState().save(undefined, { to, quiet: true }))) throw new Error('not saved')
   }, saved)

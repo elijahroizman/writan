@@ -1,8 +1,8 @@
 // Documents must never run script or steer the app's web view; links open only http(s) and mailto.
 // node tests/stress/ui/security.mjs   (ENGINE=webkit for WebKit)
-import { copyFileSync, mkdirSync } from 'node:fs'
-import { resolve } from 'node:path'
-import { launch, start, open, tabs, check, done } from './harness.mjs'
+import { readFileSync } from 'node:fs'
+import { join, resolve } from 'node:path'
+import { launch, start, open, tabs, check, done, TMP } from './harness.mjs'
 
 const S = resolve(import.meta.dirname, '../samples')
 const { browser, page, logs } = await launch({
@@ -40,7 +40,7 @@ async function activeView() {
 }
 
 // ── Word
-await open(page, `${S}/S1-docx-evil-links.docx`)
+await open(page, join(S, 'S1-docx-evil-links.docx'))
 await page.waitForSelector('.view[data-active=true] .ln[data-link]', { timeout: 20000 })
 const links = await page.locator('.view[data-active=true] .ln[data-link]').all()
 for (const l of links) {
@@ -53,20 +53,22 @@ check('docx: only http(s)/mailto links reach the opener', o.every(allowed), JSON
 check('docx: the https link still opens', o.includes('https://example.com/ok'))
 
 // ── Word with an SVG picture
-await open(page, `${S}/S1-docx-svg-image.docx`)
+await open(page, join(S, 'S1-docx-svg-image.docx'))
 await page.waitForTimeout(2500)
 
 // ── File named with HTML
-// (Made here: Windows can't check out a file named like this.)
-mkdirSync('/tmp/writan-stress', { recursive: true })
-const evilName = '/tmp/writan-stress/S1-name-<img src=x onerror=alert(1)>.docx'
-copyFileSync(`${S}/S1-docx-evil-links.docx`, evilName)
+// (Injected into fake bridge: Windows NTFS forbids < and > in real file names.)
+const evilName = join(TMP, 'S1-name-<img src=x onerror=alert(1)>.docx')
+const evilB64 = readFileSync(join(S, 'S1-docx-evil-links.docx')).toString('base64')
+await page.evaluate(([p, b64]) => {
+  window.__fake.files.set(p, Uint8Array.from(atob(b64), (c) => c.charCodeAt(0)))
+}, [evilName, evilB64])
 await open(page, evilName)
 await page.waitForTimeout(1500)
 check('html in a file name shows as text', (await page.locator('.tab img[src=x]').count()) === 0)
 
 // ── PowerPoint: present and click each linked box
-await open(page, `${S}/S1-pptx-evil-links.pptx`)
+await open(page, join(S, 'S1-pptx-evil-links.pptx'))
 await page.waitForFunction(() => window.__slides, null, { timeout: 20000 })
 await page.waitForTimeout(1500)
 await page.evaluate(() => { const w = window.__workspace; w.getEditor(w.useWorkspace.getState().activeId).actions['pptx.present-start']() })
@@ -91,14 +93,14 @@ if (presenting) {
 } else check('pptx present mode opened', false)
 
 // ── Excel and CSV with HTML in cells, sheet names and comments
-await open(page, `${S}/S1-xlsx-html-cells.xlsx`)
+await open(page, join(S, 'S1-xlsx-html-cells.xlsx'))
 await page.waitForTimeout(2500)
 check('xlsx: no injected <img>', (await page.locator('img[src=x]').count()) === 0)
-await open(page, `${S}/S1-csv-html-cells.csv`)
+await open(page, join(S, 'S1-csv-html-cells.csv'))
 await page.waitForTimeout(1500)
 
 // ── PDF links, bookmarks and JavaScript actions
-await open(page, `${S}/S1-pdf-evil-links.pdf`)
+await open(page, join(S, 'S1-pdf-evil-links.pdf'))
 await page.waitForTimeout(4000)
 const pdfLinks = await page.locator('.view[data-active=true] [data-annot] a, .view[data-active=true] .pdf-link, .view[data-active=true] a[href]').all()
 for (const l of pdfLinks) {
@@ -110,7 +112,7 @@ o = await opened()
 check('pdf: only http(s)/mailto links reach the opener', o.every(allowed), JSON.stringify(o))
 
 // ── Markdown
-await open(page, `${S}/S1-markdown-xss.md`)
+await open(page, join(S, 'S1-markdown-xss.md'))
 await page.waitForSelector('.view[data-active=true] .md-body', { timeout: 15000 })
 await page.waitForTimeout(800)
 const body = page.locator('.view[data-active=true] .md-body')

@@ -109,7 +109,10 @@ export function Grid({
 
   useLayoutEffect(() => {
     const el = scroller.current!
-    const measure = () => setView({ left: el.scrollLeft, top: el.scrollTop, w: el.clientWidth, h: el.clientHeight })
+    const measure = () => {
+      if (el.clientWidth === 0 || el.clientHeight === 0) return
+      setView({ left: el.scrollLeft, top: el.scrollTop, w: el.clientWidth, h: el.clientHeight })
+    }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
@@ -126,12 +129,12 @@ export function Grid({
     }
   }, [])
 
-  // The block of cells in view, with a margin around it.
-  const r0 = Math.max(0, g.rowAt(view.top / z) - MARGIN_ROWS)
-  const r1 = Math.min(g.info.rows, g.rowAt((view.top + view.h) / z) + MARGIN_ROWS)
-  const c0 = Math.max(0, g.colAt(view.left / z) - MARGIN_COLS)
-  const c1 = Math.min(g.info.cols, g.colAt((view.left + view.w) / z) + MARGIN_COLS)
-  // Draw again only when the block moves past what's drawn, or the sheet changes.
+  // The visible cell bounds in view.
+  const r0 = Math.max(0, g.rowAt(view.top / z))
+  const r1 = Math.min(g.info.rows, g.rowAt((view.top + view.h) / z))
+  const c0 = Math.max(0, g.colAt(view.left / z))
+  const c1 = Math.min(g.info.cols, g.colAt((view.left + view.w) / z))
+  // Draw again only when the viewport moves past what's drawn, or the sheet/revision changes.
   useLayoutEffect(() => {
     const el = cellsRef.current
     if (!el) return
@@ -139,7 +142,7 @@ export function Grid({
     const block = drawn.current as (null | { key: string; r0: number; r1: number; c0: number; c1: number })
     const inside = block && block.key === key && r0 >= block.r0 && r1 <= block.r1 && c0 >= block.c0 && c1 <= block.c1
     if (inside) return
-    // Draw a little more than needed, so small scrolls reuse it.
+    // Pad once around the viewport so small scrolls reuse the painted DOM block.
     const br0 = Math.max(0, r0 - MARGIN_ROWS)
     const br1 = Math.min(g.info.rows, r1 + MARGIN_ROWS)
     const bc0 = Math.max(0, c0 - MARGIN_COLS)
@@ -244,18 +247,33 @@ export function Grid({
     select([e.shiftKey ? st.anchor[0] : r, 0], [r, g.info.cols - 1])
     drag.current = { kind: 'rows', from: [r, 0] }
   }
+  const dragCtxRef = useRef<{ z: number; sheet: number; g: typeof g; cellAt: typeof cellAt; select: typeof select; onPoint: typeof onPoint }>({
+    z,
+    sheet,
+    g,
+    cellAt,
+    select,
+    onPoint,
+  })
+  dragCtxRef.current = { z, sheet, g, cellAt, select, onPoint }
   useEffect(() => {
-    const move = (e: MouseEvent) => {
+    let raf = 0
+    let lastCell: [number, number] | null = null
+    let lastEvent: MouseEvent | null = null
+    const flushDrag = () => {
+      raf = 0
+      const e = lastEvent
       const d = drag.current
-      if (!d) return
+      if (!e || !d) return
+      const { z: curZ, g: curG, cellAt: curCellAt, select: curSelect, onPoint: curOnPoint } = dragCtxRef.current
       if (d.kind === 'resizeCol' || d.kind === 'resizeRow') {
-        const delta = ((d.kind === 'resizeCol' ? e.clientX : e.clientY) - d.start) / z
+        const delta = ((d.kind === 'resizeCol' ? e.clientX : e.clientY) - d.start) / curZ
         setResize({ kind: d.kind === 'resizeCol' ? 'col' : 'row', index: d.index, size: Math.max(4, d.size + delta) })
         return
       }
       if (d.kind === 'chart') {
-        const dx = (e.clientX - d.x) / z
-        const dy = (e.clientY - d.y) / z
+        const dx = (e.clientX - d.x) / curZ
+        const dy = (e.clientY - d.y) / curZ
         const b = { ...d.box }
         if (d.handle === 'move') {
           b.x = Math.max(0, b.x + dx)
@@ -279,30 +297,47 @@ export function Grid({
         return
       }
       if (d.kind === 'point') {
-        onPoint?.(d.from, cellAt(e))
+        const at = curCellAt(e)
+        if (lastCell && lastCell[0] === at[0] && lastCell[1] === at[1]) return
+        lastCell = at
+        curOnPoint?.(d.from, at)
         return
       }
       if (d.kind !== 'cells' && d.kind !== 'cols' && d.kind !== 'rows') return
-      const at = cellAt(e)
-      if (d.kind === 'cells') select(d.from, at)
-      else if (d.kind === 'cols') select([0, d.from[1]], [g.info.rows - 1, at[1]])
-      else select([d.from[0], 0], [at[0], g.info.cols - 1])
+      const at = curCellAt(e)
+      if (lastCell && lastCell[0] === at[0] && lastCell[1] === at[1]) return
+      lastCell = at
+      if (d.kind === 'cells') curSelect(d.from, at)
+      else if (d.kind === 'cols') curSelect([0, d.from[1]], [curG.info.rows - 1, at[1]])
+      else curSelect([d.from[0], 0], [at[0], curG.info.cols - 1])
+    }
+    const move = (e: MouseEvent) => {
+      if (!drag.current) return
+      lastEvent = e
+      if (!raf) raf = requestAnimationFrame(flushDrag)
     }
     const up = () => {
+      if (raf) {
+        cancelAnimationFrame(raf)
+        flushDrag()
+      }
+      lastCell = null
+      lastEvent = null
       const d = drag.current
       drag.current = null
+      const { sheet: curSheet } = dragCtxRef.current
       if (d?.kind === 'chart') {
         const b = chartBox.current
         chartBox.current = null
         if (b && (b.x !== d.box.x || b.y !== d.box.y || b.w !== d.box.w || b.h !== d.box.h)) {
-          engine.run({ cmd: 'moveChart', sheet, index: d.index, x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) })
+          engine.run({ cmd: 'moveChart', sheet: curSheet, index: d.index, x: Math.round(b.x), y: Math.round(b.y), w: Math.round(b.w), h: Math.round(b.h) })
         }
         setChartDrag(null)
         return
       }
       if (d && (d.kind === 'resizeCol' || d.kind === 'resizeRow')) {
         setResize((r) => {
-          if (r) engine.run(r.kind === 'col' ? { cmd: 'columnWidth', sheet, col: r.index, px: Math.round(r.size) } : { cmd: 'rowHeight', sheet, row: r.index, px: Math.round(r.size) })
+          if (r) engine.run(r.kind === 'col' ? { cmd: 'columnWidth', sheet: curSheet, col: r.index, px: Math.round(r.size) } : { cmd: 'rowHeight', sheet: curSheet, row: r.index, px: Math.round(r.size) })
           return null
         })
       }
@@ -310,10 +345,11 @@ export function Grid({
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
     return () => {
+      if (raf) cancelAnimationFrame(raf)
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
-  })
+  }, [engine])
 
   // ── Keyboard (while not editing a cell)
   const endCutGesture = () => {
