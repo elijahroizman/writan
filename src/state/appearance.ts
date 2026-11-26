@@ -3,7 +3,7 @@
 // The appearance itself (light, dark, or the system's) is `theme` in the workspace store.
 
 import { create } from 'zustand'
-import { isTauri, isWindows, listen } from '../lib/platform'
+import { isTauri, isWindows, joinPath, listen } from '../lib/platform'
 import { applyThemeCss } from '../lib/themeCss'
 import type { Appearance, RoleColors, ThemeDef } from '../lib/themes'
 import { DEFAULT_THEME_ID, isColor, isHex, isThemeId, parseThemeFile, PRESET_THEMES, ROLE_KEYS, THEME_CSS_MAX_LENGTH, themeVars } from '../lib/themes'
@@ -164,6 +164,19 @@ export async function publishTheme(id: string, file: object): Promise<string> {
   await refreshPublished()
   return path
 }
+
+/** Deletes a published theme's file and background from the themes folder, and reads the folder again. */
+export async function unpublishTheme(id: string): Promise<void> {
+  const { invoke } = await import('@tauri-apps/api/core')
+  await invoke('theme_delete', { id })
+  const { light, dark, use } = useAppearance.getState()
+  if (light === id) use(DEFAULT_THEME_ID, 'light')
+  if (dark === id) use(DEFAULT_THEME_ID, 'dark')
+  await refreshPublished()
+}
+
+/** Where a published theme's file is. */
+export const publishedThemePath = (dir: string, id: string) => joinPath(dir, `${id}.json`)
 
 // ── Putting it on the page
 
