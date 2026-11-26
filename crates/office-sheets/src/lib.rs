@@ -477,6 +477,7 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
         deep: None,
         extents: vec![Default::default(); sheets.len()],
         lookup_caches: HashMap::new(),
+        lookup_seen: HashSet::new(),
         lookup_entries: 0,
     };
     book.work_out_keys(&keys);
@@ -495,6 +496,7 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
         book.done = circular.iter().map(|&k| (k, V::Num(0.0))).collect();
         book.reads.clear();
         book.lookup_caches.clear();
+        book.lookup_seen.clear();
         book.lookup_entries = 0;
         book.work_out_keys(&keys);
     }
@@ -621,7 +623,10 @@ struct Workbook<'a> {
     /// Each sheet's last used row and column, once asked for.
     extents: Vec<std::cell::OnceCell<Option<(u32, u32)>>>,
     lookup_caches: HashMap<(usize, u32, u32, u32, bool), LookupIndex>,
-    /// Cells indexed across `lookup_caches`, held under [`MAX_LOOKUP_ENTRIES`].
+    /// Exact ranges already scanned once. A large range is indexed when asked about again, so a
+    /// moving range filled down a sheet does not leave thousands of overlapping indexes behind.
+    lookup_seen: HashSet<(usize, u32, u32, u32, bool)>,
+    /// Keys and dependencies indexed across `lookup_caches`, held under [`MAX_LOOKUP_ENTRIES`].
     lookup_entries: usize,
 }
 
@@ -787,31 +792,98 @@ impl Book for Workbook<'_> {
         let (cache_key, len) =
             if horizontal { ((si, c0, c1, r0, true), (c1 - c0 + 1) as usize) } else { ((si, r0, r1, c0, false), (r1 - r0 + 1) as usize) };
         if !self.lookup_caches.contains_key(&cache_key) {
-            let mut map = HashMap::with_capacity(len.min(4096));
+            let mut map = HashMap::new();
             let mut deps = Vec::new();
             let mut hit_working = false;
-            for i in 0..len {
-                let (rr, cc) = if horizontal { (r0, c0 + i as u32) } else { (r0 + i as u32, c0) };
-                if self.working.contains(&(si, rr, cc)) {
-                    hit_working = true;
+            // Sheets are sparse, so even a full column is scanned through its stored cells. Blank
+            // slots all have the same lookup key; only the first can ever be found, as `or_insert`
+            // keeps the earliest match.
+            let mut first_empty = None;
+            let mut next_position = 0usize;
+            let mut note_position = |position: usize, filled: bool| {
+                if first_empty.is_none() && position > next_position {
+                    first_empty = Some(next_position);
                 }
-                if self.formulas.contains_key(&(si, rr, cc)) {
-                    deps.push((si, rr, cc));
+                if filled {
+                    next_position = position + 1;
+                } else if first_empty.is_none() && position == next_position {
+                    first_empty = Some(position);
                 }
-                let v = self.value(si, rr, cc);
-                if let Some(item_key) = LookupKey::from_v(&v) {
-                    map.entry(item_key).or_insert(i);
+            };
+            if horizontal {
+                let row_index = self.sheets[si].rows.binary_search_by_key(&r0, |row| row.index);
+                if let Ok(ri) = row_index {
+                    let cell_len = self.sheets[si].rows[ri].cells.len();
+                    let mut ci = self.sheets[si].rows[ri].cells.partition_point(|cell| cell.col < c0);
+                    while ci < cell_len {
+                        let cc = self.sheets[si].rows[ri].cells[ci].col;
+                        if cc > c1 {
+                            break;
+                        }
+                        let i = (cc - c0) as usize;
+                        note_position(i, true);
+                        if self.working.contains(&(si, r0, cc)) {
+                            hit_working = true;
+                        }
+                        if self.formulas.contains_key(&(si, r0, cc)) {
+                            deps.push((si, r0, cc));
+                        }
+                        let v = self.value(si, r0, cc);
+                        if let Some(item_key) = LookupKey::from_v(&v) {
+                            map.entry(item_key).or_insert(i);
+                        }
+                        ci += 1;
+                    }
                 }
+            } else {
+                let row_len = self.sheets[si].rows.len();
+                let mut ri = self.sheets[si].rows.partition_point(|row| row.index < r0);
+                while ri < row_len {
+                    let rr = self.sheets[si].rows[ri].index;
+                    if rr > r1 {
+                        break;
+                    }
+                    let i = (rr - r0) as usize;
+                    let filled = self.sheets[si].rows[ri].cells.binary_search_by_key(&c0, |cell| cell.col).is_ok();
+                    note_position(i, filled);
+                    if filled {
+                        if self.working.contains(&(si, rr, c0)) {
+                            hit_working = true;
+                        }
+                        if self.formulas.contains_key(&(si, rr, c0)) {
+                            deps.push((si, rr, c0));
+                        }
+                        let v = self.value(si, rr, c0);
+                        if let Some(item_key) = LookupKey::from_v(&v) {
+                            map.entry(item_key).or_insert(i);
+                        }
+                    }
+                    ri += 1;
+                }
+            }
+            if first_empty.is_none() && next_position < len {
+                first_empty = Some(next_position);
+            }
+            if let Some(i) = first_empty {
+                map.entry(LookupKey::Empty).or_insert(i);
             }
             // A cell still being worked out, or one past the depth limit (answered Empty for now,
             // worked out properly on the retry), would leave a wrong index behind: use it once.
-            // Ranges that shift row by row (`B2:B$10001` filled down) are each indexed once and
-            // add up to the square of the sheet: past the budget, an index is used and dropped.
-            if hit_working || self.deep.is_some() || self.lookup_entries + len > MAX_LOOKUP_ENTRIES {
+            if hit_working || self.deep.is_some() {
                 return Some(Ok(map.get(&lk).copied()));
             }
-            self.lookup_entries += len;
-            self.lookup_caches.insert(cache_key, LookupIndex { map, deps });
+            let entries = map.len() + deps.len();
+            let repeated = !self.lookup_seen.insert(cache_key);
+            let fits = entries <= MAX_LOOKUP_ENTRIES.saturating_sub(self.lookup_entries);
+            // Small indexes are cheap enough to keep at once. A large one is kept when its exact
+            // range comes back: repeated full-column lookups still hit, while moving ranges filled
+            // down a sheet scan sparsely instead of accumulating overlapping copies.
+            if (entries <= 4096 || repeated) && fits {
+                self.lookup_entries += entries;
+                self.lookup_caches.insert(cache_key, LookupIndex { map, deps });
+            } else {
+                return Some(Ok(map.get(&lk).copied()));
+            }
         }
         let index = &self.lookup_caches[&cache_key];
         if !index.deps.is_empty() {
