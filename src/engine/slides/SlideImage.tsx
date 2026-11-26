@@ -2,7 +2,7 @@
 // thumbnails, the slideshow, transition previews and printing all use it. Lazy ones are drawn
 // only when near the screen.
 
-import { memo, useEffect, useRef, useState } from 'react'
+import { memo, useEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { SlidesEngine } from './engine'
 import './slides.css'
 
@@ -21,6 +21,8 @@ function getObserver(): IntersectionObserver {
 export const SlideImage = memo(function SlideImage({ engine, index, revision, width, lazy = true }: { engine: SlidesEngine; index: number; revision: number; width: number; lazy?: boolean }) {
   const ref = useRef<HTMLDivElement>(null)
   const [visible, setVisible] = useState(!lazy)
+  // Memoized by revision, so it hears separately that equations became drawable.
+  useSyncExternalStore(engine.subscribe, () => engine.latexVersion)
   useEffect(() => {
     if (!lazy) return
     const el = ref.current!

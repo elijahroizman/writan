@@ -181,7 +181,8 @@ function WordPage({ engine, index, w, h, scale }: { engine: WordEngine; index: n
     if (!near || !content.current) return
     const p = engine.paint(index, true)
     if (p) content.current.innerHTML = itemsHtml(p.items, engine.styles, engine.media.url)
-  }, [near, engine, index])
+    // latexVersion: equations draw once MathJax has loaded, after the first paint.
+  }, [near, engine, index, engine.latexVersion])
   return (
     <div ref={box} className="vp-page" style={{ width: w * scale, height: h * scale }}>
       <div ref={content} className="docx-page-content" style={{ inset: 'auto', left: 0, top: 0, width: w, height: h, zoom: scale }} />

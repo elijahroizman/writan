@@ -380,9 +380,10 @@ export function Pages({ engine, zoom, scroller }: Props) {
       if (!moveRaf) moveRaf = requestAnimationFrame(flushMove)
     }
     const up = (e: MouseEvent) => {
+      // A release before the next frame still ends the selection where the pointer last was.
       if (moveRaf) {
         cancelAnimationFrame(moveRaf)
-        moveRaf = 0
+        flushMove()
       }
       pendingMove = null
       const { zoom, run } = pointer.current

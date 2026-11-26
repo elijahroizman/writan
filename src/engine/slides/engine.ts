@@ -195,6 +195,10 @@ export class SlidesEngine {
   private stopFonts: () => void
   private disposed = false
 
+  private themeChoice = 0
+  /** Goes up when MathJax arrives, so slides drawn without their equations draw again. */
+  latexVersion = 0
+
   private constructor(doc: SlidesDoc) {
     this.doc = doc
     this.styles = new StyleSheet(`p${++sheets}s`)
@@ -203,6 +207,7 @@ export class SlidesEngine {
         return renderLazyLatexTag(id, () => {
           if (this.disposed) return
           this.drawn.clear()
+          this.latexVersion++
           this.tick++
           for (const f of this.listeners) f()
         })
@@ -260,6 +265,8 @@ export class SlidesEngine {
   }
 
   applyTheme(name: string): boolean | Promise<boolean> {
+    // The last choice wins: a theme still downloading doesn't apply after a later pick.
+    const choice = ++this.themeChoice
     if (name === 'Default') {
       return this.run<boolean>({ cmd: 'applyTheme', name })
     }
@@ -270,7 +277,7 @@ export class SlidesEngine {
       return applied
     }
     return fetchThemeBytes(name).then((bytes) => {
-      if (this.disposed) return false
+      if (this.disposed || choice !== this.themeChoice) return false
       const applied = this.doc.applyThemeBytes(name, bytes)
       this.refresh()
       return applied

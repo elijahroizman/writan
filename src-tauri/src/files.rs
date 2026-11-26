@@ -83,10 +83,20 @@ pub fn write_file<R: tauri::Runtime>(
         return Ok(crate::history::sha256_hex(bytes));
     }
     if let Some(expected) = header("x-expected-sha256") {
-        let matches = crate::history::sha256_file(&path)
-            .is_ok_and(|actual| actual.eq_ignore_ascii_case(expected));
-        if !matches {
-            return Err("__WRITAN_CONFLICT__".into());
+        // A file that changed or went away is a conflict the app asks about. One that can't be
+        // read stops the save: Writan can't tell what it would replace.
+        match crate::history::sha256_file(&path) {
+            Ok(actual) if actual.eq_ignore_ascii_case(expected) => {}
+            Ok(_) => return Err("__WRITAN_CONFLICT__".into()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err("__WRITAN_CONFLICT__".into())
+            }
+            Err(e) => {
+                return Err(format!(
+                    "Couldn't check “{}” before saving: {e}",
+                    display_name(&path.to_string_lossy())
+                ))
+            }
         }
     }
     let digest = crate::history::sha256_hex(bytes);
