@@ -113,18 +113,21 @@ impl SlidesView {
             .ok_or_else(|| Error::MissingPart("theme layout".into()))?
             .part
             .clone();
-        let mut fallback_count = 0;
+        let donor_layout_count = layouts.len();
+        let mut fallbacks = HashMap::new();
         for slide in &before.slides {
             let Some(old) = before.templates.iter().find(|t| Some(t.part.as_str()) == slide.layout.as_deref()) else { continue };
             if old.name.is_empty()
-                || layouts.iter().any(|l| l.name.eq_ignore_ascii_case(&old.name))
+                || layouts[..donor_layout_count].iter().any(|l| l.name.eq_ignore_ascii_case(&old.name))
                 || default && matches!(old.name.as_str(), "Title Slide" | "Title and Content")
+                || fallbacks.contains_key(&old.part)
             {
                 continue;
             }
-            fallback_count += 1;
             let old_master = before.templates.iter().find(|t| Some(t.part.as_str()) == old.master.as_deref());
+            let fallback_count = fallbacks.len() + 1;
             let part = format!("{folder}/fallbackLayout{fallback_count}.xml");
+            fallbacks.insert(old.part.clone(), layouts.len());
             layouts.push(add_fallback_layout(package, &master.part, &blank, &part, old, old_master)?);
         }
         for (slide, original) in after.slides.iter_mut().zip(&before.slides) {
@@ -133,6 +136,7 @@ impl SlidesView {
             let layout = plain
                 .as_ref()
                 .and_then(|(name, _)| layouts.iter().find(|l| l.name == *name))
+                .or_else(|| old.and_then(|old| fallbacks.get(&old.part).map(|&index| &layouts[index])))
                 .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.name.eq_ignore_ascii_case(&old.name))))
                 .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.layout_type == old.layout_type)))
                 .unwrap_or_else(|| layouts.iter().find(|l| l.part == blank).unwrap());
@@ -451,5 +455,50 @@ mod tests {
         assert!(view.apply_theme("Graphite").unwrap());
         assert_eq!(names(&view), before);
         assert_eq!(content(&view), original);
+    }
+
+    #[test]
+    fn distinct_layouts_with_the_same_missing_name_keep_their_geometry() {
+        let mut pkg = Package::read(THEMES[0].1).unwrap();
+        let main = pkg.main_part().unwrap();
+        let master = &pkg.related(&main, kind::SLIDE_MASTER).unwrap()[0].1;
+        for (_, part) in pkg.related(master, kind::SLIDE_LAYOUT).unwrap() {
+            let mut xml = pkg.xml(&part).unwrap();
+            let c = xml.root.child_mut(ns::P, "cSld").unwrap();
+            if matches!(c.attr("name"), Some("Quote" | "Closing")) {
+                if c.attr("name") == Some("Closing") {
+                    let title = c.child_mut(ns::P, "spTree").unwrap().child_mut(ns::P, "sp").unwrap();
+                    title
+                        .child_or_insert(ns::P, "spPr")
+                        .child_or_insert(ns::A, "xfrm")
+                        .child_or_insert(ns::A, "off")
+                        .set_attr("", "x", "1000000");
+                }
+                c.set_attr("", "name", "Shared custom name");
+                pkg.put_xml(&part, &xml, types::PPTX_LAYOUT);
+            }
+        }
+        let mut view = SlidesView::open(&pkg.to_bytes().unwrap()).unwrap();
+        let positions: Vec<_> = view
+            .slides()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slide)| {
+                let layout = crate::template(&view.doc, slide.layout.as_deref())?;
+                (layout.name == "Shared custom name").then_some(index)
+            })
+            .collect();
+        assert_eq!(positions.len(), 2);
+        let geometry = |view: &SlidesView, index: usize| {
+            let slide = &view.slides()[index];
+            slide.frames.iter().map(|frame| crate::resolve(&view.doc, slide, frame).xfrm).collect::<Vec<_>>()
+        };
+        let original: Vec<_> = positions.iter().map(|&i| geometry(&view, i)).collect();
+        assert_ne!(original[0], original[1]);
+        view.apply_theme("Default").unwrap();
+        let view = SlidesView::open(&view.save().unwrap()).unwrap();
+        let [a, b] = [view.slides()[positions[0]].layout.as_deref(), view.slides()[positions[1]].layout.as_deref()];
+        assert_ne!(a, b);
+        assert_eq!(positions.iter().map(|&i| geometry(&view, i)).collect::<Vec<_>>(), original);
     }
 }
