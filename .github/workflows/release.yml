@@ -32,6 +32,11 @@ on:
 permissions:
   contents: write
 
+# A tag and a manual publish can target the same draft from different refs.
+concurrency:
+  group: writan-release-${{ (github.event_name == 'push' || inputs.publish) && 'publish' || github.run_id }}
+  queue: max
+
 jobs:
   prepare:
     name: Prepare release
