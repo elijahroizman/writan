@@ -55,6 +55,7 @@ enum Cmd {
     MoveSlide { from: usize, to: usize },
     ToggleHidden { indexes: Vec<usize> },
     ApplyLayout { layout: String },
+    ApplyTheme { name: String },
     Notes { index: usize, text: String },
     Transition { indexes: Vec<usize>, transition: Option<office_slides::Transition> },
     BeginEdit { id: u32, x: Option<f64>, y: Option<f64> },
@@ -144,7 +145,13 @@ impl SlidesDoc {
             .iter()
             .map(|slot| (*slot, format!("#{}", theme.scheme_color(slot).unwrap_or(office_core::drawing::Rgb::BLACK).hex())))
             .collect();
-        json(&serde_json::json!({ "heading": theme.fonts.major.latin, "body": theme.fonts.minor.latin, "colors": colors }))
+        json(
+            &serde_json::json!({ "name": theme.name, "heading": theme.fonts.major.latin, "body": theme.fonts.minor.latin, "colors": colors }),
+        )
+    }
+
+    pub fn themes(&self) -> String {
+        json(&SlidesView::theme_names())
     }
 
     pub fn layouts(&self) -> String {
@@ -454,6 +461,7 @@ impl SlidesDoc {
                 v.apply_layout(&layout);
                 null
             }
+            Cmd::ApplyTheme { name } => serde_json::json!(v.apply_theme(&name).map_err(err)?),
             Cmd::Notes { index, text } => {
                 v.set_notes(index, &text);
                 null

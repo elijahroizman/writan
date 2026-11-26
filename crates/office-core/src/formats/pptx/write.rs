@@ -605,9 +605,7 @@ fn root(local: &str) -> Element {
 }
 
 fn new_slide() -> Element {
-    root("sld")
-        .with_child(Element::new(ns::P, "cSld").with_child(new_tree()))
-        .with_child(Element::new(ns::P, "clrMapOvr").with_child(Element::new(ns::A, "masterClrMapping")))
+    root("sld").with_child(Element::new(ns::P, "cSld").with_child(new_tree()))
 }
 
 /// Text defaults: `level` sizes for each of the nine outline levels.

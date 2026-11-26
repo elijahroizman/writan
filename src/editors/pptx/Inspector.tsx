@@ -13,6 +13,7 @@ import {
   ArrowUpToLine,
   Bold,
   BringToFront,
+  ChevronDown,
   Circle,
   Copy,
   Crop,
@@ -50,6 +51,7 @@ import {
 } from 'lucide-react'
 import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
+import { useCollab } from '../../collab/session'
 import { InspectorHeader } from '../../components/Workbench'
 import type { MenuEntry } from '../../components/ui'
 import * as platform from '../../lib/platform'
@@ -90,6 +92,7 @@ const SWATCHES = ['FFFFFF', '000000', '6B6B70', '4F8CFF', 'FF8A3D', 'F2555A', '3
 
 export function Inspector({
   deck,
+  tabId,
   onInsertImage,
   onInsertTable,
   onInsertVideo,
@@ -107,6 +110,7 @@ export function Inspector({
   onEditMathModal,
 }: {
   deck: Deck
+  tabId: string
   onInsertImage: () => void
   onInsertTable: (rows: number, cols: number) => void
   onInsertVideo: (url: string) => Promise<boolean>
@@ -127,6 +131,9 @@ export function Inspector({
 }) {
   const { engine, slides, activeIndex, selectedSlides } = deck
   const [shapeMenu, setShapeMenu] = useState<{ x: number; y: number } | null>(null)
+  const [themeMenu, setThemeMenu] = useState<{ x: number; y: number; opener: HTMLButtonElement } | null>(null)
+  const [themeError, setThemeError] = useState(false)
+  const shared = useCollab((s) => Boolean(s[tabId]))
   const [videoOpen, setVideoOpen] = useState(false)
   const [tableOpen, setTableOpen] = useState(false)
   const el = deck.selectedElement
@@ -185,6 +192,38 @@ export function Inspector({
             }}
           />
         )}
+      </Section>
+
+      <Section title="Design">
+        <Button
+          block
+          aria-haspopup="menu"
+          aria-expanded={!!themeMenu}
+          disabled={shared}
+          title={shared ? 'Themes can’t be changed while sharing' : undefined}
+          onClick={(e) => {
+            const r = e.currentTarget.getBoundingClientRect()
+            setThemeMenu({ x: r.right, y: r.bottom + 4, opener: e.currentTarget })
+          }}
+        >
+          Theme <ChevronDown size={14} />
+        </Button>
+        {themeMenu && (
+          <PopoverMenu
+            anchor={{ ...themeMenu, align: 'end' }}
+            opener={themeMenu.opener}
+            items={engine.themes.map((name) => ({ label: name, onSelect: () => {
+              try {
+                engine.run({ cmd: 'applyTheme', name })
+                setThemeError(false)
+              } catch {
+                setThemeError(true)
+              }
+            } }))}
+            onClose={() => setThemeMenu(null)}
+          />
+        )}
+        {themeError && <p role="alert">Couldn’t apply the theme.</p>}
       </Section>
 
       <Section title="Linked Excel" collapsible defaultOpen={excelLinks.links.length > 0 || !!el?.linkTag}>

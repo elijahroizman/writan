@@ -7,6 +7,7 @@ mod art;
 mod chart;
 mod collab;
 mod commands;
+mod design;
 mod draw;
 mod elements;
 mod table_style;
@@ -63,6 +64,10 @@ pub enum SStep {
         index: usize,
         before: Vec<Paragraph>,
         after: Vec<Paragraph>,
+    },
+    Design {
+        before: Box<design::Design>,
+        after: Box<design::Design>,
     },
 }
 
@@ -131,8 +136,8 @@ impl SlidesView {
     pub fn blank() -> SlidesView {
         let mut doc = Document::new(Kind::Slides);
         let size = SlideSize::default();
-        let title = Slide { frames: templates::plain_title(1.0, 1.0), ..Default::default() };
-        let content = Slide { frames: templates::plain_content(1.0, 1.0), ..Default::default() };
+        let title = templates::initial_slide("title", templates::plain_title(1.0, 1.0));
+        let content = templates::initial_slide("titleAndContent", templates::plain_content(1.0, 1.0));
         doc.body = Body::Slides { size, slides: vec![title, content] };
         let bytes = Compiler::new().with_layer(Decks).write(&doc, Kind::Slides).expect("a new deck writes");
         SlidesView::open(&bytes).expect("a new deck reads")

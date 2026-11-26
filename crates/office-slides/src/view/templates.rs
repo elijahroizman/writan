@@ -16,6 +16,49 @@ const RIGHT: f64 = MARGIN + HALF + 320_000.0;
 
 type Rect = (f64, f64, f64, f64);
 
+const STARTER_EXT: &str = "{FA914283-6ABE-4CDC-A300-93169E1ED82F}";
+const STARTER_NS: &str = "https://writan.com/ns/slides";
+
+fn mark_starter(root: &mut Element, starter: &str) {
+    root.child_or_insert(ns::P, "extLst").push(
+        Element::new(ns::P, "ext")
+            .with_attr("", "uri", STARTER_EXT)
+            .with_child(Element::new(STARTER_NS, "starter").with_attr("", "template", starter)),
+    );
+}
+
+pub(super) fn starter_kind(slide: &Slide) -> Option<&str> {
+    slide
+        .origin
+        .get()?
+        .child(ns::P, "extLst")?
+        .children_named(ns::P, "ext")
+        .find(|ext| ext.attr("uri") == Some(STARTER_EXT))?
+        .child(STARTER_NS, "starter")?
+        .attr("template")
+}
+
+pub(super) fn clear_starter(slide: &mut Slide) {
+    if starter_kind(slide).is_none() {
+        return;
+    }
+    let mut root = slide.origin.get().unwrap().clone();
+    let extensions = root.child_mut(ns::P, "extLst").unwrap();
+    extensions.children.retain(
+        |node| !matches!(node, office_core::xml::Node::Element(ext) if ext.is(ns::P, "ext") && ext.attr("uri") == Some(STARTER_EXT)),
+    );
+    if extensions.elements().next().is_none() {
+        root.remove_children(ns::P, "extLst");
+    }
+    slide.origin = Origin::new(root);
+}
+
+pub(super) fn initial_slide(starter: &str, frames: Vec<Frame>) -> Slide {
+    let mut root = Element::new(ns::P, "sld").with_child(Element::new(ns::P, "cSld"));
+    mark_starter(&mut root, starter);
+    Slide { frames, origin: Origin::new(root), ..Default::default() }
+}
+
 struct Builder {
     sx: f64,
     sy: f64,
@@ -111,6 +154,22 @@ impl Builder {
         heading.truncate(1);
         self.frames.extend(heading);
     }
+
+    fn columns(&mut self, comparison: bool, ink: impl Fn(&str) -> &'static str) {
+        self.title();
+        if comparison {
+            for (x, side, option, accent, text) in [
+                (MARGIN, "Left", "Option A", "accent1", "First content area"),
+                (RIGHT, "Right", "Option B", "accent2", "Second content area"),
+            ] {
+                self.panel((x, 1_720_000.0, HALF, 700_000.0), &format!("{side} Header"), option, accent, 18.0, ink(accent), true);
+                self.panel((x, 2_540_000.0, HALF, 3_580_000.0), &format!("{side} Body"), text, "bg2", 16.0, "tx2", false);
+            }
+        } else {
+            self.panel((MARGIN, 1_720_000.0, HALF, 4_400_000.0), "Left Content", "First content area", "bg2", 16.0, "tx2", false);
+            self.panel((RIGHT, 1_720_000.0, HALF, 4_400_000.0), "Right Content", "Second content area", "bg2", 16.0, "tx2", false);
+        }
+    }
 }
 
 /// A text box for the plain slides, `x`, `y`, `w` and `h` in inches on a 16:9 slide, scaled by
@@ -179,6 +238,12 @@ fn luminance(c: office_core::drawing::Rgb) -> f64 {
 }
 
 impl SlidesView {
+    pub(super) fn column_starter(&self, scale: (f64, f64), at: usize, comparison: bool) -> Vec<Frame> {
+        let mut b = Builder { sx: scale.0, sy: scale.1, frames: Vec::new() };
+        b.columns(comparison, |accent| self.ink_on(at, accent));
+        b.frames
+    }
+
     /// The theme's light or dark color, whichever reads better on `fill` (white on a dark
     /// accent, near-black on a yellow one), as the slide at `at` shows them.
     fn ink_on(&self, at: usize, fill: &str) -> &'static str {
@@ -237,29 +302,7 @@ impl SlidesView {
                     "t",
                 );
             }
-            "twoContent" => {
-                b.title();
-                b.panel((MARGIN, 1_720_000.0, HALF, 4_400_000.0), "Left Content", "First content area", "bg2", 16.0, "tx2", false);
-                b.panel((RIGHT, 1_720_000.0, HALF, 4_400_000.0), "Right Content", "Second content area", "bg2", 16.0, "tx2", false);
-            }
-            "comparison" => {
-                b.title();
-                for (x, side, option, accent, text) in [
-                    (MARGIN, "Left", "Option A", "accent1", "First content area"),
-                    (RIGHT, "Right", "Option B", "accent2", "Second content area"),
-                ] {
-                    b.panel(
-                        (x, 1_720_000.0, HALF, 700_000.0),
-                        &format!("{side} Header"),
-                        option,
-                        accent,
-                        18.0,
-                        self.ink_on(after, accent),
-                        true,
-                    );
-                    b.panel((x, 2_540_000.0, HALF, 3_580_000.0), &format!("{side} Body"), text, "bg2", 16.0, "tx2", false);
-                }
-            }
+            "twoContent" | "comparison" => b.columns(template == "comparison", |accent| self.ink_on(after, accent)),
             "titleOnly" => b.title(),
             "quote" => {
                 b.text((MARGIN, 1_100_000.0, 1_600_000.0, 1_500_000.0), "Quote Mark", "“", 96.0, "accent1", true, Align::Left, "t");
@@ -314,9 +357,11 @@ impl SlidesView {
         let layout = crate::layout(&self.doc, "blank").or_else(|| crate::layouts(&self.doc).first().copied()).map(|l| l.part.clone());
         let part = Some(crate::free_part_in(&self.doc, &[], self.new_part_seed().as_deref()));
         let to = after.saturating_add(1).min(self.slides().len());
-        let origin = Element::new(ns::P, "sld").with_child(Element::new(ns::P, "cSld").with_child(Element::new(ns::P, "bg").with_child(
-            Element::new(ns::P, "bgPr").with_child(Element::new(ns::A, "solidFill").with_child(Color::scheme("bg1").to_drawingml())),
-        )));
+        let mut origin =
+            Element::new(ns::P, "sld").with_child(Element::new(ns::P, "cSld").with_child(Element::new(ns::P, "bg").with_child(
+                Element::new(ns::P, "bgPr").with_child(Element::new(ns::A, "solidFill").with_child(Color::scheme("bg1").to_drawingml())),
+            )));
+        mark_starter(&mut origin, template);
         self.change_deck(|slides| {
             slides.insert(to, Slide { frames: b.frames, part, layout, origin: Origin::new(origin), ..Default::default() })
         });

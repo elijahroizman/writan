@@ -13,13 +13,15 @@
 pub mod templates;
 pub mod view;
 
+use std::collections::HashSet;
+
 use office_core::drawing::{Color, Rgba, Theme, Xfrm};
 use office_core::formats::common::{PartCtx, PartRels};
 use office_core::formats::dml::{read_paragraph, write_paragraph};
 use office_core::model::{
     Body, Document, Frame, FrameContent, Inline, Kind, Origin, ParaProps, Paragraph, Placeholder as Ph, RunProps, Slide, TextBody,
 };
-use office_core::opc::{rels::kind, Package};
+use office_core::opc::{content_types::types, rels::kind, Package};
 use office_core::xml::{ns, Element, Node, XmlDoc};
 use office_core::{Layer, Result};
 use serde::{Deserialize, Serialize};
@@ -44,6 +46,7 @@ pub struct Ppt {
 const NOTES_SLIDE: &str = "application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml";
 const NOTES_MASTER: &str = "application/vnd.openxmlformats-officedocument.presentationml.notesMaster+xml";
 const P14: &str = "http://schemas.microsoft.com/office/powerpoint/2010/main";
+const DESIGN_DIR: &str = "ppt/writan-design/";
 
 impl Layer for Decks {
     fn name(&self) -> &'static str {
@@ -100,8 +103,38 @@ impl Layer for Decks {
             }
             write_notes(pkg, part, paragraphs)?;
         }
+        let main = pkg.main_part()?;
+        if pkg.related(&main, kind::SLIDE_MASTER)?.iter().any(|(_, part)| part.to_ascii_lowercase().starts_with(DESIGN_DIR)) {
+            prune_orphaned_design_parts(pkg)?;
+        }
         Ok(())
     }
+}
+
+fn prune_orphaned_design_parts(pkg: &mut Package) -> Result<()> {
+    let mut seen = HashSet::from([String::new()]);
+    let mut remaining = vec![String::new()];
+    while let Some(part) = remaining.pop() {
+        for rel in &pkg.rels(&part)?.0 {
+            if let Some(target) = pkg.target(&part, rel).filter(|target| pkg.has(target)) {
+                if seen.insert(target.to_ascii_lowercase()) {
+                    remaining.push(target);
+                }
+            }
+        }
+    }
+    let orphaned: Vec<String> = pkg
+        .part_names()
+        .filter(|part| {
+            !seen.contains(&part.to_ascii_lowercase())
+                && matches!(pkg.content_type(part), Some(types::PPTX_MASTER | types::PPTX_LAYOUT | types::THEME))
+        })
+        .map(str::to_string)
+        .collect();
+    for part in orphaned {
+        pkg.remove(&part);
+    }
+    Ok(())
 }
 
 /// The layer's data on a presentation, if it was read with the layer.

@@ -158,7 +158,7 @@ impl TextPatch {
 impl SlidesView {
     // ---- recording changes ----
 
-    fn record(&mut self, steps: Vec<SStep>, before: Sel, kind: Option<&'static str>) {
+    pub(crate) fn record(&mut self, steps: Vec<SStep>, before: Sel, kind: Option<&'static str>) {
         let after = self.sel.clone();
         self.shared_made(&steps);
         self.history.record(steps, before, after, kind);
@@ -242,6 +242,7 @@ impl SlidesView {
                 crate::set_notes_in(&mut self.doc, *index, if undo { before.clone() } else { after.clone() }, seed.as_deref());
                 self.touch(*index);
             }
+            SStep::Design { before, after } => self.put_design(if undo { before } else { after }),
         }
     }
 
@@ -387,7 +388,12 @@ impl SlidesView {
     pub fn apply_layout(&mut self, layout: &str) {
         let active = self.sel.active;
         let l = layout.to_string();
-        self.change_slide(active, None, |s| s.layout = Some(l));
+        self.change_slide(active, None, |s| {
+            if s.layout.as_deref() != Some(layout) {
+                super::templates::clear_starter(s);
+                s.layout = Some(l);
+            }
+        });
     }
 
     pub fn set_notes(&mut self, index: usize, text_: &str) {
