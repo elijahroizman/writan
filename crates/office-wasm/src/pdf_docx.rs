@@ -1413,11 +1413,20 @@ fn join_lines(content: &mut [Inline], next: &Piece, words: &Vocabulary) {
     // The text so far, across its runs, to find the whole word that ends the line.
     let line_end: String = content.iter().map(|i| if let Inline::Text(r) = i { r.text.as_str() } else { "" }).collect::<String>();
     let line_end = line_end.trim_end();
-    let Some(Inline::Text(run)) = content.iter_mut().rev().find(|i| matches!(i, Inline::Text(_))) else { return };
-    let trimmed = run.text.trim_end().len();
-    run.text.truncate(trimmed);
-    let before = run.text.chars().rev().nth(1);
-    let last = run.text.chars().next_back();
+    // Trailing spaces go, from the last runs back to the one the line's text ends in.
+    for inline in content.iter_mut().rev() {
+        if let Inline::Text(r) = inline {
+            let trimmed = r.text.trim_end().len();
+            r.text.truncate(trimmed);
+            if !r.text.is_empty() {
+                break;
+            }
+        }
+    }
+    let Some(Inline::Text(run)) = content.iter_mut().rev().find(|i| matches!(i, Inline::Text(r) if !r.text.is_empty())) else { return };
+    // Read across runs: a hyphen may be a run of its own.
+    let before = line_end.chars().rev().nth(1);
+    let last = line_end.chars().next_back();
     if last == Some('-') && before.is_some_and(char::is_alphabetic) && next_first.is_some_and(char::is_lowercase) {
         // A hyphen at the end of a line either breaks a word (`recon-` `struction`) or belongs to
         // it (`well-` `known`). It goes only when the document has the word without it.
@@ -1890,11 +1899,14 @@ mod tests {
             frag(72.0, 128.0, 200.0, 11.0, vec![span("She resign", 11.0), italic("ed")]),
             text(72.0, 156.0, 468.0, "A bold re-"),
             frag(72.0, 170.0, 300.0, 11.0, vec![span("work", 11.0), italic("ing of it.")]),
+            frag(72.0, 226.0, 468.0, 11.0, vec![span("Then a bold re", 11.0), italic("-")]),
+            text(72.0, 240.0, 300.0, "working of the plan."),
             text(72.0, 198.0, 300.0, "The reworking is done."),
         ])]);
         let all = texts(&split);
         assert!(all[0].starts_with("The design was re-sign of"), "{all:?}");
         assert!(all.iter().any(|t| t == "A bold reworking of it."), "{all:?}");
+        assert!(all.iter().any(|t| t == "Then a bold reworking of the plan."), "{all:?}");
         assert_eq!(texts(&doc)[0], "This paragraph about the well-known state-of-the-art methods and their reconstruction goes on.");
     }
 

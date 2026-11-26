@@ -7,7 +7,7 @@ import { PdfiumNative } from '@embedpdf/engines/pdfium'
 import type { PdfAnnotationObject, PdfDocumentObject, PdfPageObject, PdfBookmarkObject, PdfLinkTarget, PdfWidgetAnnoObject, Rect } from '@embedpdf/models'
 import { AppearanceMode, PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfActionType, PdfAnnotationFlags, PdfAnnotationSubtype, PdfPageFlattenFlag, PdfPageFlattenResult, PdfZoomMode } from '@embedpdf/models'
 import { init } from '@embedpdf/pdfium'
-import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, GrayBitmap, LayoutPicture, LayoutSpan, Method, OpenResult, OutlineItem, PageInfo, PageLayout, PageTextStats, Request, Response, TextRun } from './protocol'
+import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, GrayBitmap, LayoutFragment, LayoutPicture, LayoutSpan, Method, OpenResult, OutlineItem, PageInfo, PageLayout, PageTextStats, Request, Response, TextRun } from './protocol'
 
 type Module = Awaited<ReturnType<typeof init>>
 
@@ -643,6 +643,20 @@ function mergeBoxes<T extends { box: Box }>(items: T[], pad: number, join: (a: T
   return out
 }
 
+/** Whether text lies in a grid: two rows or more of two cells or more, whose columns line up. */
+function isGrid(cells: LayoutFragment[]): boolean {
+  const rows: LayoutFragment[][] = []
+  for (const cell of [...cells].sort((a, b) => a.baseline - b.baseline)) {
+    const row = rows.find((r) => Math.abs(r[0].baseline - cell.baseline) < cell.size * 0.5)
+    if (row) row.push(cell)
+    else rows.push([cell])
+  }
+  const full = rows.filter((r) => r.length >= 2)
+  const lined = (a: LayoutFragment[], b: LayoutFragment[]) =>
+    a.filter((x) => b.some((y) => Math.abs(x.x - y.x) < 2 || Math.abs(x.x + x.w - (y.x + y.w)) < 2)).length >= 2
+  return full.some((a, i) => full.slice(i + 1).some((b) => lined(a, b)))
+}
+
 /** Most pixels a picture is drawn with: about 24 MB of RGBA. */
 const MAX_PICTURE_PIXELS = 6_000_000
 
@@ -875,13 +889,10 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
     ).filter((f) => {
       const area = f.box.w * f.box.h
       const drawn = f.count >= 3 || (f.count >= 1 && area >= 5000) || f.blocks >= 3
-      // A ruled grid with words in its cells is a table, kept as text, not a chart (a bar chart's
-      // value labels sit inside its bars too, but it has no grid).
+      // Words in rows and columns inside shaded blocks are a table's cells, kept as text, not a
+      // chart (a bar chart's value labels sit at the heights of its bars, not in rows).
       const within = (b: Box) => b.x + b.w / 2 >= f.box.x && b.x + b.w / 2 <= f.box.x + f.box.w && b.y + b.h / 2 >= f.box.y && b.y + b.h / 2 <= f.box.y + f.box.h
-      const words = fragments.filter(within).length
-      const across = rules.filter((r) => within(r) && r.w >= f.box.w * 0.6).length
-      const down = rules.filter((r) => within(r) && r.h >= f.box.h * 0.4).length
-      const table = f.count === 0 && words >= 4 && across >= 3 && down >= 2
+      const table = f.count === 0 && isGrid(fragments.filter(within))
       return area >= 2500 && area <= pageArea * 0.6 && drawn && !table && textIn(f.box) < area * 0.15
     })
     // A chart's tick labels and captions sit just outside its lines: short text close by is part of it.
