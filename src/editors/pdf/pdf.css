@@ -56,9 +56,22 @@
   -webkit-user-select: text;
 }
 
-.text-layer span {
+.text-layer span,
+.text-layer br {
   position: absolute;
+  z-index: 1;
   transform-origin: 0 0;
+}
+
+/* Covers the gaps between lines while text is selected, so they don't select the rest of the page. */
+.text-layer-end {
+  position: absolute;
+  inset: 100% 0 0;
+  cursor: default;
+}
+
+.text-layer.selecting .text-layer-end {
+  top: 0;
 }
 
 /* Only the text itself shows as selected, not the gaps WebKit would fill between lines. */

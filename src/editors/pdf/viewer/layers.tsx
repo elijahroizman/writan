@@ -56,7 +56,17 @@ export const TextLayer = memo(function TextLayer({ store, index, page, recognize
     runs.forEach((run, i) => {
       if (prev) {
         const sameLine = !run.vertical && !prev.vertical && Math.abs(run.box.y + run.box.h / 2 - (prev.box.y + prev.box.h / 2)) < prev.box.h / 2
-        out.push(sameLine ? ' ' : <br key={`b${i}`} />)
+        // Separators are positioned like the runs: left in the page's flow, they stack up as an
+        // invisible column of lines at its top left, which the pointer then selects through.
+        out.push(
+          sameLine ? (
+            <span key={`g${i}`} style={{ left: `calc(var(--u) * ${prev.box.x + prev.box.w}px)`, top: `calc(var(--u) * ${prev.box.y}px)` }}>
+              {' '}
+            </span>
+          ) : (
+            <br key={`b${i}`} />
+          ),
+        )
       }
       prev = run
       const { x, y, w, h } = run.box
@@ -78,12 +88,94 @@ export const TextLayer = memo(function TextLayer({ store, index, page, recognize
     return out
   }, [runs])
 
+  const layerRef = useRef<HTMLDivElement>(null)
+  useEffect(() => trackSelection(layerRef.current!), [])
+
   return (
-    <div className="text-layer" data-key={page.key}>
+    <div ref={layerRef} className="text-layer" data-key={page.key}>
       {children}
     </div>
   )
 })
+
+// With the pointer over a gap between lines, the browser extends a selection to wherever the
+// gap falls in the document: the end of the page, so it flickers between that and the text under
+// the pointer. Each layer gets an empty block that covers it while text is selected, and is moved
+// next to the end of the selection being dragged, so a gap selects up to there. (pdf.js does the
+// same with its `endOfContent`.) It lives outside React, which never sees it move.
+const layerEnds = new Map<HTMLElement, HTMLElement>()
+let stopListening: (() => void) | null = null
+
+function trackSelection(layer: HTMLElement) {
+  const end = document.createElement('div')
+  end.className = 'text-layer-end'
+  layer.append(end)
+  layerEnds.set(layer, end)
+  stopListening ??= listenForSelection()
+  return () => {
+    end.remove()
+    layerEnds.delete(layer)
+    if (!layerEnds.size) {
+      stopListening?.()
+      stopListening = null
+    }
+  }
+}
+
+function resetEnd(end: HTMLElement, layer: HTMLElement) {
+  if (end.parentNode !== layer || end.nextSibling) layer.append(end)
+  layer.classList.remove('selecting')
+}
+
+function listenForSelection() {
+  const controller = new AbortController()
+  const { signal } = controller
+  const resetAll = () => layerEnds.forEach(resetEnd)
+  let pointerDown = false
+  let prevRange: Range | null = null
+  document.addEventListener('pointerdown', () => (pointerDown = true), { signal })
+  document.addEventListener('pointerup', () => ((pointerDown = false), resetAll()), { signal })
+  window.addEventListener('blur', () => ((pointerDown = false), resetAll()), { signal })
+  document.addEventListener('keyup', () => pointerDown || resetAll(), { signal })
+  document.addEventListener(
+    'selectionchange',
+    () => {
+      const sel = document.getSelection()
+      if (!sel?.rangeCount) {
+        prevRange = null
+        return resetAll()
+      }
+      for (const [layer, end] of layerEnds) {
+        let active = false
+        for (let i = 0; i < sel.rangeCount && !active; i++) active = sel.getRangeAt(i).intersectsNode(layer)
+        if (active) layer.classList.add('selecting')
+        else resetEnd(end, layer)
+      }
+      const range = sel.getRangeAt(0)
+      // Dragging moves one end of the selection: put the block just past it.
+      const movingStart =
+        !!prevRange &&
+        (range.compareBoundaryPoints(Range.END_TO_END, prevRange) === 0 || range.compareBoundaryPoints(Range.START_TO_END, prevRange) === 0)
+      prevRange = range.cloneRange()
+      const container = movingStart ? range.startContainer : range.endContainer
+      const offset = movingStart ? range.startOffset : range.endOffset
+      let anchor: Node | null = container
+      if (container instanceof HTMLElement && container.classList.contains('text-layer')) {
+        anchor = container.childNodes[movingStart ? offset : offset - 1] ?? null
+      } else if (container.nodeType === Node.TEXT_NODE && container.parentElement?.matches('.text-layer > span')) {
+        anchor = container.parentElement
+        if (!movingStart && offset === 0) anchor = anchor.previousSibling
+      }
+      const layer = anchor?.parentElement
+      const end = layer && layerEnds.get(layer)
+      if (!anchor || !end || anchor === end) return
+      const before = movingStart ? anchor : anchor.nextSibling
+      if (before !== end && end.nextSibling !== before) layer.insertBefore(end, before)
+    },
+    { signal },
+  )
+  return () => controller.abort()
+}
 
 /**
  * Drops a text selection that reaches into the pages (or `within`). Clicks that a tool handles
