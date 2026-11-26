@@ -273,6 +273,16 @@ jobs:
           verify_pack heb 11f9e43ab227f786352a50f75c94c2e9906f1baba86d93276da19da7ce0904db
           verify_pack ara e3206d3dc87fd50c24a0fb9f01838615911d25168f4e64415244b67d2bb3e729
       - run: npm run test:browser
+      # The fixed large-document/sheet corpus runs in the same production build. Timing budgets are
+      # deliberately loose enough not to flap on a shared runner; the startup byte budget is the
+      # tight regression signal for preload/bundle weight.
+      - name: Performance corpus
+        run: npm run perf
+        env:
+          PERF_BUDGET_STARTUP_BYTES: "600000"
+          PERF_BUDGET_OPEN_MS: "8000"
+          PERF_BUDGET_PAINT_MS: "8000"
+          PERF_BUDGET_KEY_MS: "30"
       - name: Run offline OCR accuracy checks
         run: |
           npx vite preview --host 127.0.0.1 --port 4173 --strictPort >/tmp/vite-ocr-preview.log 2>&1 &
