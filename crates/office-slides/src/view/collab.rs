@@ -22,6 +22,7 @@ impl SStep {
             SStep::Slide { index, before, after } => SStep::Slide { index: *index, before: after.clone(), after: before.clone() },
             SStep::Deck { before, after } => SStep::Deck { before: after.clone(), after: before.clone() },
             SStep::Notes { index, before, after } => SStep::Notes { index: *index, before: after.clone(), after: before.clone() },
+            SStep::Design { before, after } => SStep::Design { before: after.clone(), after: before.clone() },
         }
     }
 }
@@ -196,6 +197,7 @@ impl Shared for SlidesView {
                 "before": fingerprint(before),
                 "after": send_content(before, after),
             }),
+            SStep::Design { .. } => Value::Null,
         }
     }
 

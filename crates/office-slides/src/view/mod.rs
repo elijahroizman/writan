@@ -7,6 +7,7 @@ mod art;
 mod chart;
 mod collab;
 mod commands;
+mod design;
 mod draw;
 mod elements;
 mod table_style;
@@ -63,6 +64,10 @@ pub enum SStep {
         index: usize,
         before: Vec<Paragraph>,
         after: Vec<Paragraph>,
+    },
+    Design {
+        before: Box<design::Design>,
+        after: Box<design::Design>,
     },
 }
 

@@ -143,7 +143,8 @@ export class SlidesEngine {
   height = 720
   slides: SlideInfo[] = []
   layouts: LayoutInfo[] = []
-  theme: { heading: string; body: string; colors: Record<string, string> }
+  theme: { name: string; heading: string; body: string; colors: Record<string, string> }
+  readonly themes: string[]
   state: DeckState = { active: 0, frames: [], editing: null, canUndo: false, canRedo: false, dirty: false, boxes: [], text: null, restack: [] }
   /** The active slide's frames. */
   elements: Element[] = []
@@ -153,6 +154,8 @@ export class SlidesEngine {
   /** The JSON the slides and elements were last parsed from: unchanged ones keep their objects. */
   private slidesJson = ''
   private elementsJson = ''
+  private layoutsJson = ''
+  private themeJson = ''
   private drawn = new Map<string, { revision: number; html: string }>()
   private listeners = new Set<() => void>()
   private stopFonts: () => void
@@ -171,8 +174,9 @@ export class SlidesEngine {
     const size = JSON.parse(doc.size()) as { width: number; height: number }
     this.width = size.width
     this.height = size.height
-    this.layouts = JSON.parse(doc.layouts())
-    this.theme = JSON.parse(doc.theme())
+    this.themeJson = doc.theme()
+    this.theme = JSON.parse(this.themeJson)
+    this.themes = JSON.parse(doc.themes())
     this.stopFonts = onFontsChanged(() => {
       if (this.disposed) return
       this.styles.remeasure()
@@ -211,6 +215,16 @@ export class SlidesEngine {
 
   refresh() {
     if (this.disposed) return
+    const theme = this.doc.theme()
+    if (theme !== this.themeJson) {
+      this.themeJson = theme
+      this.theme = JSON.parse(theme)
+    }
+    const layouts = this.doc.layouts()
+    if (layouts !== this.layoutsJson) {
+      this.layoutsJson = layouts
+      this.layouts = JSON.parse(layouts)
+    }
     const slides = this.doc.slides()
     if (slides !== this.slidesJson) {
       this.slidesJson = slides
