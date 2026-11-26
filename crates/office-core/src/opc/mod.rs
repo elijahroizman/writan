@@ -49,7 +49,7 @@ struct Part {
     name: String,
     /// Entry in the source zip, while the part is unchanged.
     entry: Option<usize>,
-    data: Arc<OnceLock<Arc<[u8]>>>,
+    data: Arc<OnceLock<Vec<u8>>>,
     /// The bytes parsed, once something asks for them shared (see [`Package::xml_shared`]).
     parsed: Arc<OnceLock<Arc<XmlDoc>>>,
 }
@@ -189,7 +189,7 @@ impl Package {
     pub fn part_arc(&self, name: &str) -> Result<Arc<[u8]>> {
         let part = &self.parts[self.find(name).ok_or_else(|| Error::MissingPart(name.into()))?];
         if let Some(data) = part.data.get() {
-            return Ok(data.clone());
+            return Ok(Arc::from(&data[..]));
         }
         let entry = part.entry.expect("a part without bytes comes from the source zip");
         Ok(Arc::from(self.decompress(entry, MAX_SIZE)?))
@@ -211,7 +211,7 @@ impl Package {
         }
         let entry = part.entry.expect("a part without bytes comes from the source zip");
         let data = self.decompress(entry, limit)?;
-        Ok(part.data.get_or_init(|| Arc::from(data)))
+        Ok(part.data.get_or_init(|| data))
     }
 
     /// A part, parsed.
@@ -277,7 +277,7 @@ impl Package {
     /// Adds or replaces a part.
     pub fn put(&mut self, name: &str, data: Vec<u8>, media_type: &str) {
         let name = name.trim_start_matches('/');
-        let data = Arc::new(OnceLock::from(Arc::from(data)));
+        let data = Arc::new(OnceLock::from(data));
         match self.find(name) {
             Some(i) => {
                 let part = &mut self.parts[i];
@@ -304,7 +304,7 @@ impl Package {
     pub fn replace(&mut self, name: &str, data: Vec<u8>) -> Result<()> {
         let i = self.find(name).ok_or_else(|| Error::MissingPart(name.into()))?;
         self.parts[i].entry = None;
-        self.parts[i].data = Arc::new(OnceLock::from(Arc::from(data)));
+        self.parts[i].data = Arc::new(OnceLock::from(data));
         self.parts[i].parsed = Arc::default();
         Ok(())
     }
