@@ -187,9 +187,13 @@ function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
       (mid(all[b]) >= all[a].top && mid(all[b]) <= all[a].bottom))
   const rowAt = (y: number) => {
     const hits = all.flatMap((r, i) => (dyOf(r, y) ? [] : [i]))
+    // Only the shortest runs there bring their lines along: a drop cap beside the line would bring
+    // the lines under it too.
+    const least = Math.min(...hits.map((h) => all[h].height))
+    const from = hits.filter((h) => all[h].height <= least * 1.5)
     let row = -1
     for (let i = 0; i < all.length; i++) {
-      if (hits.some((h) => h === i || sameLine(h, i)) && (row < 0 || dxOf(all[i]) < dxOf(all[row]))) row = i
+      if ((hits.includes(i) || from.some((h) => sameLine(h, i))) && (row < 0 || dxOf(all[i]) < dxOf(all[row]))) row = i
     }
     return row
   }
