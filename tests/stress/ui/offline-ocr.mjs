@@ -730,6 +730,21 @@ async function verifyImageFind(page, real) {
     assert.equal(await recognitions(), before + 1, 'The picture is read once')
     const [bar, tools] = await Promise.all(['.find-bar', '.img-toolbar'].map(s => page.locator(s).boundingBox()))
     assert(bar.y >= tools.y + tools.height || bar.x >= tools.x + tools.width, 'Find is clear of the toolbar: ' + JSON.stringify({ bar, tools }))
+    // The ⋯ menu and the recognized-text panel open over it.
+    const onTop = selector => page.evaluate(selector => {
+      const el = document.querySelector(selector)
+      const r = el.getBoundingClientRect()
+      return el.contains(document.elementFromPoint(r.left + r.width / 2, r.top + 4))
+    }, selector)
+    await page.getByRole('button', { name: 'More' }).click()
+    assert(await onTop('.img-menu-item'), 'The menu is over Find')
+    await page.getByRole('button', { name: 'Show Recognized Text' }).click()
+    await page.locator('.img-ocr-panel textarea').waitFor({ timeout: 60_000 })
+    assert(await onTop('.img-ocr-panel h3'), 'The panel is over Find')
+    await page.locator('.img-ocr-panel').getByRole('button', { name: 'Close' }).click()
+    await find.focus()
+    // The panel reads the picture as it is, marks and all, for its exports; Find keeps its own reading.
+    const read = await recognitions()
     assert(await highlighted() > 50, 'The match is highlighted on the picture')
     if (process.env.IMAGE_FIND_SHOT) await page.locator('.img-viewer:visible').screenshot({ path: process.env.IMAGE_FIND_SHOT })
 
@@ -755,13 +770,13 @@ async function verifyImageFind(page, real) {
     assert.match(await count(), /^1 of \d+$/)
     await find.fill('Quick Brown')
     await waitCount(/^1 of 1$/)
-    assert.equal(await recognitions(), before + 1, 'A mark does not read the picture again')
+    assert.equal(await recognitions(), read, 'A mark does not read the picture again')
 
     // A turn moves them: it's read again and found again.
     await page.getByRole('button', { name: 'Turn right' }).click()
     await page.waitForFunction(({ real, want }) => (real
       ? window.ocrWorkerMessages.filter(m => m.kind === 'recognize').length
-      : window.ocrCalls) === want, { real, want: before + 2 }, { timeout: 60_000 })
+      : window.ocrCalls) === want, { real, want: read + 1 }, { timeout: 60_000 })
     await waitCount(/^1 of 1$/)
     assert(await highlighted() > 50, 'The match is highlighted after the turn')
 
