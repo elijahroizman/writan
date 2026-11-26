@@ -3,7 +3,7 @@
 # See docs/internals/office-compiler.md.
 [workspace]
 resolver = "2"
-members = ["office-core", "office-engine", "office-pdf", "office-pdf-wasm", "office-sheets", "office-slides", "office-wasm", "office-word"]
+members = ["office-core", "office-engine", "office-pdf", "office-pdf-wasm", "office-ppt-wasm", "office-sheets", "office-slides", "office-wasm", "office-word"]
 
 [workspace.package]
 edition = "2021"

@@ -18,7 +18,6 @@ use office_word::{ListKind, Words};
 use wasm_bindgen::prelude::*;
 
 use crate::err;
-use crate::slides::{is_compound_file, legacy_ppt_to_pptx};
 
 /// Converts a document (`docx`, `pptx`, `ppt`, `xlsx`, `xlsm`, `csv`, `tsv`, `md`, `txt`) into
 /// `target` (`docx`, `pptx`, `xlsx`, `csv`, `md`, `txt`).
@@ -53,12 +52,7 @@ fn open_document(bytes: &[u8], name: &str) -> office_core::Result<Document> {
         return Ok(plain_text_to_word(&text));
     }
     let comp = compiler();
-    let mut doc = if is_compound_file(bytes) {
-        let pptx = legacy_ppt_to_pptx(bytes)?;
-        comp.read(&pptx, Some("presentation.pptx"))?
-    } else {
-        comp.read(bytes, Some(name))?
-    };
+    let mut doc = comp.read(bytes, Some(name))?;
     if doc.kind == Kind::Sheets {
         recalculate_missing_formulas(&mut doc);
     }
