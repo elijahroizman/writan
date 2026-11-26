@@ -16,6 +16,7 @@ try {
     bridge.invoke = async (cmd, ...args) => {
       if (cmd === 'plugin:updater|check') {
         window.feedChecks++
+        if (window.feedChecks === 1) await new Promise((resolve) => { window.finishLaunchCheck = resolve })
         if (!window.feedAvailable) throw 'Could not fetch a valid release JSON'
         return { rid: 41, version: '9.0.0', body: 'Update notes' }
       }
@@ -26,14 +27,16 @@ try {
       return invoke(cmd, ...args)
     }
   })
-  // Let the launch check fail before opening the panel; opening it manually retries.
+  // Open the panel during the launch check, then leave it untouched as the feed recovers.
   await page.clock.fastForward(10_000)
-  await page.waitForFunction(() => window.feedChecks === 1)
-  await page.getByRole('button', { name: 'Check for updates', exact: true }).click()
+  await page.getByRole('button', { name: 'Checking…', exact: true }).click()
+  await page.waitForFunction(() => !!window.finishLaunchCheck)
+  await page.evaluate(() => window.finishLaunchCheck())
   await page.getByText("Couldn't check for an update.", { exact: true }).waitFor()
-  assert.equal(await page.evaluate(() => window.feedChecks), 2)
 
-  // A retry with the feed still offline backs off; the next one succeeds without a click.
+  await page.clock.fastForward(5_000)
+  await page.waitForFunction(() => window.feedChecks === 2)
+  await page.getByRole('button', { name: 'Try again' }).waitFor()
   await page.clock.fastForward(30_000)
   await page.waitForFunction(() => window.feedChecks === 3)
   await page.getByRole('button', { name: 'Try again' }).waitFor()
