@@ -11,6 +11,7 @@ const LINES = [
   [652, 'Short line.'],
   [628, 'Quebec romeo sierra tango uniform victor whiskey'],
   [560, 'Xray yankee zulu one two three four five six'],
+  [490, 'Hi'],
 ]
 
 function pdf() {
@@ -75,6 +76,10 @@ try {
   got = await drag({ x: across(3, 0.3), y: box[3].mid }, { x: across(3, 0.8), y: box[3].bottom + 12 })
   assert.ok(got.length > 5 && LINES[3][1].includes(got), `a drag into the space between paragraphs selected ${JSON.stringify(got)}`)
 
+  // From beside a short line with text only some lines away: that line, not the other one.
+  got = await drag({ x: box[5].right + 120, y: box[5].mid }, { x: box[5].left - 5, y: box[5].mid })
+  assert.equal(got, LINES[5][1], 'a drag from beside a lone short line')
+
   // A double-click still picks a word.
   await page.mouse.dblclick(across(0, 0.15), box[0].mid)
   assert.equal((await selected()).trim(), 'bravo', 'double-click selects a word')
@@ -108,12 +113,15 @@ try {
   const zoomOut = page.getByRole('button', { name: /zoom out/i }).first()
   for (let i = 0; i < 25; i++) await zoomOut.click()
   await page.waitForTimeout(300)
-  const tiny = await page.evaluate(() => {
-    const r = document.querySelectorAll('.text-layer span[data-run]')[2].getBoundingClientRect()
-    return { left: r.left, right: r.right, mid: (r.top + r.bottom) / 2 }
-  })
-  got = await drag({ x: tiny.left - 5, y: tiny.mid }, { x: tiny.right + 5, y: tiny.mid })
-  assert.equal(got, LINES[2][1], 'a whole line at the smallest zoom')
+  // "Hi" is narrower than it is tall there, and still a line of text, not a column of letters.
+  for (const i of [2, 5]) {
+    const tiny = await page.evaluate((i) => {
+      const r = document.querySelectorAll('.text-layer span[data-run]')[i].getBoundingClientRect()
+      return { left: r.left, right: r.right, mid: (r.top + r.bottom) / 2 }
+    }, i)
+    got = await drag({ x: tiny.left - 5, y: tiny.mid }, { x: tiny.right + 5, y: tiny.mid })
+    assert.equal(got, LINES[i][1], 'a whole line at the smallest zoom')
+  }
   console.log('PASS  PDF text selection follows the pointer, and highlights it')
 } finally {
   await done(browser, logs)

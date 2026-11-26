@@ -70,7 +70,7 @@ export const TextLayer = memo(function TextLayer({ store, index, page, recognize
         ? { left: `calc(var(--u) * ${x + w}px)`, top: `calc(var(--u) * ${y}px)`, transform: `rotate(90deg) scale(${stretch}, ${size})` }
         : { left: `calc(var(--u) * ${x}px)`, top: `calc(var(--u) * ${y}px)`, transform: `scale(${stretch}, ${size})` }
       out.push(
-        <span key={i} data-run={i} style={style}>
+        <span key={i} data-run={i} data-vertical={run.vertical || undefined} style={style}>
           {run.text}
         </span>,
       )
@@ -171,45 +171,40 @@ function layerAt(pages: Element, x: number, y: number): HTMLElement | null {
  */
 function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
   let inside: { span: HTMLElement; area: number } | null = null
-  let row: { span: HTMLElement; r: DOMRect; d: number } | null = null
-  let near: { span: HTMLElement; r: DOMRect; d: number; over: boolean } | null = null
+  let row: { span: HTMLElement; i: number; d: number } | null = null
+  let near: { span: HTMLElement; i: number; d: number; over: boolean } | null = null
   const all: DOMRect[] = []
   for (const span of layer.querySelectorAll<HTMLElement>('span[data-run]')) {
     const r = span.getBoundingClientRect()
-    all.push(r)
+    const i = all.push(r) - 1
     const dx = Math.max(r.left - x, 0, x - r.right)
     const dy = Math.max(r.top - y, 0, y - r.bottom)
     // Overlapping runs (letters drawn twice, a ligature split in two): the smaller one.
     if (!dx && !dy) {
       if (!inside || r.width * r.height < inside.area) inside = { span, area: r.width * r.height }
     } else if (!dy) {
-      if (!row || dx < row.d) row = { span, r, d: dx }
+      if (!row || dx < row.d) row = { span, i, d: dx }
     }
     const d = Math.hypot(dx, dy)
-    if (!near || d < near.d) near = { span, r, d, over: !dx }
+    if (!near || d < near.d) near = { span, i, d, over: !dx }
   }
-  // Whether text on the rows around the point spans the space between it and a run beside it on
-  // its row. Text in the same column does (word gaps don't line up from row to row); a gutter
-  // between columns is empty on every row.
-  const bridged = (r: DOMRect) => {
-    const [from, to] = x > r.right ? [r.right, x] : [x, r.left]
-    const slack = r.height * 0.3
-    const cover = all.filter((o) => o !== r && o.bottom > y - 3 * r.height && o.top < y + 3 * r.height && o.right > from && o.left < to).sort((a, b) => a.left - b.left)
-    let at = from
-    for (const o of cover) {
-      if (o.left > at + slack) return false
-      at = Math.max(at, o.right)
-    }
-    return at >= to - slack
+  // Whether two runs are in one column: every run between them in reading order is between them
+  // on the page too. Between a line and one in the next column come the rest of the first column.
+  const sameColumn = (a: number, b: number) => {
+    const [i, j] = a < b ? [a, b] : [b, a]
+    const top = Math.min(all[i].top, all[j].top) - all[i].height
+    const bottom = Math.max(all[i].bottom, all[j].bottom) + all[i].height
+    for (let k = i + 1; k < j; k++) if (all[k].top < top || all[k].bottom > bottom) return false
+    return true
   }
-  const span = inside?.span ?? (row && (!near?.over || bridged(row.r)) ? row.span : near?.span)
+  const span = inside?.span ?? (row && (!near?.over || sameColumn(row.i, near.i)) ? row.span : near?.span)
   const text = span?.firstChild
   if (!span || !text) return null
   // Within the run's length, the browser's own hit test (moved onto the run's line) handles
   // right-to-left and mixed text. It can land in an overlapping run, so it's only taken when it
   // stays in this one. Before or past the run, the offset is its start or end.
   const r = span.getBoundingClientRect()
-  const vertical = r.height > r.width && (text.textContent?.length ?? 0) > 1
+  const vertical = span.dataset.vertical !== undefined
   const px = Math.min(Math.max(x, r.left + 0.5), r.right - 0.5)
   const py = Math.min(Math.max(y, r.top + 0.5), r.bottom - 0.5)
   const hit = (vertical ? y >= r.top && y <= r.bottom : x >= r.left && x <= r.right) ? caretFromPoint(px, py) : null
