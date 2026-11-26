@@ -92,9 +92,9 @@ async function startAssets() {
       if (pack) {
         packRequests.push(pathname)
         let bytes
-        if (pack[1] === 'corrupt' && pack[2] === 'eng') {
+        if (pack[1] === 'corrupt' && pack[2] === 'heb') {
           // Match the catalog's length so verification must reach the SHA-256 comparison.
-          bytes = Buffer.alloc(4113088, 0xa5)
+          bytes = Buffer.alloc(961404, 0xa5)
         } else if (pack[1] === 'packs') {
           bytes = await readFile(path.join(tessdataDir, pack[2] + '.traineddata'))
         }
@@ -253,8 +253,11 @@ export async function makeScans(page, fixtures) {
   }, fixtures)
 }
 
-// A PDF with real JPEG XObjects and an optional digital first page or synthetic signature field.
-function scanPdf(scans, { digital = '', signed = false } = {}) {
+// A PDF with real JPEG XObjects and an optional digital first page, blank pages, a line of real
+// text over each scan (as library copies have), scans drawn in a unit-square form XObject on pages
+// whose box starts at 100, 100 (`wrapped`), a small copy beside a page-sized drawing in a form
+// scaled 2× (`art`), drawn in four strips through a form (`strips`), or a synthetic signature field.
+export function scanPdf(scans, { digital = '', blank = 0, footer = '', wrapped = false, art = false, strips = false, signed = false } = {}) {
   const objects = [null, null]
   const add = object => objects.push(object)
   const stream = (dict, content) => {
@@ -262,17 +265,39 @@ function scanPdf(scans, { digital = '', signed = false } = {}) {
     return Buffer.concat([Buffer.from(`<< ${dict} /Length ${bytes.length} >>\nstream\n`), bytes, Buffer.from('\nendstream')])
   }
   const pages = []
+  const font = digital || footer ? add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>') : 0
   if (digital) {
-    const font = add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>')
     const body = add(stream('', `BT /F1 24 Tf 50 500 Td (${digital}) Tj ET`))
     pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 612] /Resources << /Font << /F1 ${font} 0 R >> >> /Contents ${body} 0 R >>`))
   }
+  for (let i = 0; i < blank; i++) pages.push(add('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>'))
   for (const { jpeg, width, height } of scans) {
     const image = add(stream(`/Type /XObject /Subtype /Image /Width ${width} /Height ${height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode`, jpeg))
     const w = width * 0.75
     const h = height * 0.75
-    const body = add(stream('', `q ${w} 0 0 ${h} 0 0 cm /Scan Do Q`))
-    pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Scan ${image} 0 R >> >> /Contents ${body} 0 R >>`))
+    const text = footer ? ` BT /F1 9 Tf 20 12 Td (${footer}) Tj ET` : ''
+    const fonts = footer ? ` /Font << /F1 ${font} 0 R >>` : ''
+    if (strips) {
+      const bands = [0, 0.25, 0.5, 0.75].map(y => `q 1 0 0 0.25 0 ${y} cm /Scan Do Q`).join(' ')
+      const form = add(stream(`/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Scan ${image} 0 R >> >>`, bands))
+      const body = add(stream('', `q ${w} 0 0 ${h} 0 0 cm /Fm Do Q`))
+      pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Fm ${form} 0 R >> >> /Contents ${body} 0 R >>`))
+      continue
+    }
+    if (art) {
+      const form = add(stream(`/Type /XObject /Subtype /Form /BBox [0 0 300 300] /Resources << /XObject << /Scan ${image} 0 R >> >>`, '0 0 300 300 re f q 10 0 0 10 5 5 cm /Scan Do Q'))
+      const body = add(stream('', 'q 2 0 0 2 0 0 cm /Fm Do Q'))
+      pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 600] /Resources << /XObject << /Fm ${form} 0 R >> >> /Contents ${body} 0 R >>`))
+      continue
+    }
+    if (wrapped) {
+      const form = add(stream(`/Type /XObject /Subtype /Form /BBox [0 0 1 1] /Resources << /XObject << /Scan ${image} 0 R >> >>`, '/Scan Do'))
+      const body = add(stream('', `q ${w} 0 0 ${h} 100 100 cm /Fm Do Q`))
+      pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [100 100 ${100 + w} ${100 + h}] /Resources << /XObject << /Fm ${form} 0 R >> >> /Contents ${body} 0 R >>`))
+      continue
+    }
+    const body = add(stream('', `q ${w} 0 0 ${h} 0 0 cm /Scan Do Q${text}`))
+    pages.push(add(`<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${w} ${h}] /Resources << /XObject << /Scan ${image} 0 R >>${fonts} >> /Contents ${body} 0 R >>`))
   }
   let form = ''
   if (signed) {
@@ -356,10 +381,10 @@ async function verifyTampering(page, assets) {
       try { await fn() } catch (error) { return error.message }
     }
     window.__ocrPackBaseUrl = url + '/corrupt'
-    const downloadError = await failure(() => packs.downloadPack('eng'))
-    const missingError = await failure(() => packs.ensurePacks(['eng']))
+    const downloadError = await failure(() => packs.downloadPack('heb'))
+    const missingError = await failure(() => packs.ensurePacks(['heb']))
     const { installed } = await packs.refreshPacks()
-    const { size } = catalog.getPackMeta('eng')
+    const { size } = catalog.getPackMeta('heb')
     const db = await new Promise((resolve, reject) => {
       const request = indexedDB.open('writan-ocr-packs', 1)
       request.onsuccess = () => resolve(request.result)
@@ -373,24 +398,25 @@ async function verifyTampering(page, assets) {
     })
     try {
       // Also verify the read-time digest check independently of download validation.
-      await write(store => store.put(new ArrayBuffer(size), 'eng'))
-      const cachedError = await failure(() => packs.ensurePacks(['eng']))
+      await write(store => store.put(new ArrayBuffer(size), 'heb'))
+      const cachedError = await failure(() => packs.ensurePacks(['heb']))
       return { downloadError, missingError, installed, cachedError }
     } finally {
-      await write(store => store.delete('eng'))
+      await write(store => store.delete('heb'))
       db.close()
       window.__ocrPackBaseUrl = url + '/packs'
     }
   }, assets.url)
   assert.match(result.downloadError, /failed verification/i)
   assert.match(result.missingError, /download.*first/i)
-  assert.deepEqual(result.installed, [])
+  // English ships with the app.
+  assert.deepEqual(result.installed.map(pack => [pack.code, !!pack.builtIn]), [['eng', true]])
   assert.match(result.cachedError, /damaged/i)
-  assert.deepEqual(assets.packRequests, ['/corrupt/eng.traineddata'])
-  console.log('PASS  Same-length SHA-256 tampering rejected on download and IndexedDB read')
+  assert.deepEqual(assets.packRequests, ['/corrupt/heb.traineddata'])
+  console.log('PASS  Same-length SHA-256 tampering rejected on download and IndexedDB read; English is built in')
 }
 
-async function setFakeEngine(page, enabled) {
+export async function setFakeEngine(page, enabled) {
   await page.evaluate(({ enabled, phrase }) => {
     if (!enabled) {
       delete window.__ocrFakeEngine
@@ -547,86 +573,99 @@ async function verifySearchablePdf(page, scan) {
   console.log('PASS  Hybrid OCR skips digital page zero and recognizes scanned page one')
 }
 
-async function verifySelectedPagesUi(page, scan, real) {
-  const parserCheck = await page.evaluate(() => {
-    const { parsePageSelection, formatPageSelection } = window.ocrApi.pdfOcr
-    return {
-      validList: parsePageSelection('2, 5', 5),
-      validRange: parsePageSelection('1-3, 5', 5),
-      validDedup: parsePageSelection('5, 2, 2, 2–4', 5),
-      formatted: formatPageSelection([0, 1, 2, 4]),
-      formattedPair: formatPageSelection([4, 1]),
-      empty: parsePageSelection('   ', 5),
-      zero: parsePageSelection('0', 5),
-      over: parsePageSelection('6', 5),
-      reversed: parsePageSelection('4-2', 5),
-      alpha: parsePageSelection('1-a', 5),
-      huge: parsePageSelection('1-999999999', 5),
-    }
+async function verifyAutomaticRecognition(page, scan, real) {
+  // A digital page, a blank page, a plain scan, and a scan with a line of real text at the bottom.
+  const footer = 'Downloaded from the archive on 2 March 2024 for private study only'
+  const pdf = scanPdf([scan], { digital: 'Existing digital text on page one', blank: 1 })
+  const withFooter = scanPdf([scan, scan], { footer })
+  const calls = await page.evaluate(() => {
+    window.ocrCalls = 0
+    const fake = window.__ocrFakeEngine
+    if (fake) window.__ocrFakeEngine = (...args) => (window.ocrCalls++, fake(...args))
+    return window.ocrCalls
   })
-  assert.deepEqual(parserCheck.validList, { indices: [1, 4], error: null })
-  assert.deepEqual(parserCheck.validRange, { indices: [0, 1, 2, 4], error: null })
-  assert.deepEqual(parserCheck.validDedup, { indices: [1, 2, 3, 4], error: null })
-  assert.equal(parserCheck.formatted, '1-3, 5')
-  assert.equal(parserCheck.formattedPair, '2, 5')
-  for (const invalid of [parserCheck.empty, parserCheck.zero, parserCheck.over, parserCheck.reversed, parserCheck.alpha, parserCheck.huge]) {
-    assert(invalid.error && invalid.indices.length === 0, JSON.stringify(invalid))
-  }
-
-  const fivePagePdf = scanPdf([scan, scan, scan, scan, scan])
-  const tabId = await page.evaluate((encoded) => {
-    return window.__workspace.useWorkspace.getState().openUnsaved(Uint8Array.fromBase64(encoded), 'five-scans.pdf')
-  }, base64(fivePagePdf))
-  assert.ok(tabId)
-  try {
-    await page.locator('[data-testid="pdf-ocr-button"]').click()
-    const panel = page.locator('[data-testid="pdf-ocr-panel"]')
-    await panel.waitFor()
-    await panel.locator('select').selectOption('selected')
-    const input = panel.locator('[data-testid="pdf-ocr-page-range"]')
-    await input.waitFor()
-    const runBtn = panel.getByRole('button', { name: 'Run OCR', exact: true })
-
-    await input.fill('0, 9')
-    assert.equal(await runBtn.isDisabled(), true, 'Invalid page range must disable Run OCR')
-    assert.match(await panel.locator('[role="alert"]').textContent(), /out of range/i)
-
-    await input.fill('2, 5')
-    assert.equal(await runBtn.isDisabled(), false, 'Valid page range "2, 5" should enable Run OCR')
-    assert.match(await panel.locator('.pdf-ocr-range .muted').textContent(), /2 pages selected \(of 5\)/i)
-
-    if (real) {
-      await runBtn.click()
-      await page.waitForFunction(() => {
-        const el = document.querySelector('[data-testid="pdf-ocr-panel"] [role="status"]')
-        return !!el && /Recognized 2/.test(el.textContent ?? '')
-      })
-      await panel.getByRole('button', { name: 'Open searchable copy', exact: true }).click()
-      await page.waitForFunction(() => {
-        const s = window.__workspace.useWorkspace.getState()
-        const active = s.tabs.find((t) => t.id === s.activeId)
-        return active?.kind === 'pdf' && active.title.includes('(OCR)') && !!active.bytes?.length
-      })
-      const copyBase64 = await page.evaluate(() => {
-        const s = window.__workspace.useWorkspace.getState()
-        return s.tabs.find((t) => t.id === s.activeId).bytes.toBase64()
-      })
-      const extracted = await page.evaluate(readPdf, { base64: copyBase64, query: 'quick brown fox' })
-      assert.equal(extracted.length, 5, 'Searchable copy should preserve all 5 pages')
-      for (const recognizedIndex of [1, 4]) {
-        assert(normalize(extracted[recognizedIndex].text).includes(english[0]), `Page ${recognizedIndex + 1} missing OCR text`)
-        assert(extracted[recognizedIndex].hits.length > 0, `Page ${recognizedIndex + 1} missing search hits`)
+  assert.equal(calls, 0)
+  // How much of each page is picture, as the scan check measures it.
+  const coverage = await page.evaluate(async encoded => {
+    const engine = await window.ocrApi.PdfEngine.create()
+    try {
+      const out = []
+      for (const bytes of encoded) {
+        const { pages } = await engine.call('open', [Uint8Array.fromBase64(bytes).buffer, ''])
+        out.push((await engine.call('pageTextStats', [pages[0].key])).imageCoverage)
       }
-      for (const untouchedIndex of [0, 2, 3]) {
-        assert.equal(extracted[untouchedIndex].text.trim(), '', `Untouched page ${untouchedIndex + 1} should remain textless`)
-      }
+      return out
+    } finally {
+      engine.destroy()
     }
-    console.log('PASS  PDF editor Selected pages… UI validates page ranges and OCRs selected subset (2, 5) into one searchable copy')
-  } finally {
-    await page.evaluate(async () => {
-      const { tabs, closeTab } = window.__workspace.useWorkspace.getState()
-      for (const tab of [...tabs].reverse()) await closeTab(tab.id)
+  }, [scanPdf([scan]), scanPdf([scan], { wrapped: true }), scanPdf([scan], { art: true }), scanPdf([scan], { strips: true })].map(base64))
+  assert(coverage[0] >= 0.5 && coverage[1] >= 0.5 && coverage[3] >= 0.5, 'A scan, also through a scaled form on a moved page box or in strips, is mostly picture: ' + coverage)
+  assert(coverage[2] < 0.01, 'A small picture beside a drawing is not: ' + coverage[2])
+  const recognizedLayers = () => page.evaluate(() =>
+    [...document.querySelectorAll('.text-layer')].filter(layer => /quick/i.test(layer.textContent ?? '')).length)
+  const closeAll = () => page.evaluate(async () => {
+    const { tabs, closeTab } = window.__workspace.useWorkspace.getState()
+    for (const tab of [...tabs].reverse()) await closeTab(tab.id)
+  })
+  const open = async (bytes, name) => {
+    const tabId = await page.evaluate(({ encoded, name }) =>
+      window.__workspace.useWorkspace.getState().openUnsaved(Uint8Array.fromBase64(encoded), name), { encoded: base64(bytes), name })
+    assert.ok(tabId)
+    return tabId
+  }
+  try {
+    // Nothing to ask: the scan's words land in the page's text layer on their own.
+    await open(pdf, 'mixed.pdf')
+    const pageNumber = page.getByRole('textbox', { name: 'Page number' }).locator('visible=true')
+    await pageNumber.fill('3')
+    await pageNumber.press('Enter')
+    await page.waitForFunction(() => [...document.querySelectorAll('.text-layer')].some(layer => /quick/i.test(layer.textContent ?? '')), null, { timeout: 60_000 })
+    assert.equal(await recognizedLayers(), 1, 'Only the scanned page gets recognized text')
+    if (!real) assert.equal(await page.evaluate(() => window.ocrCalls), 1, 'The digital and blank pages are not recognized')
+    assert.equal(await page.locator('[data-testid="pdf-ocr-banner"], [data-testid="pdf-ocr-panel"]').count(), 0, 'No banner or dialog')
+
+    // A scan drawn through a scaled form XObject, on a page whose box doesn't start at 0, 0.
+    await closeAll()
+    await open(scanPdf([scan], { wrapped: true }), 'wrapped.pdf')
+    await page.waitForFunction(() => [...document.querySelectorAll('.text-layer')].some(layer => /quick/i.test(layer.textContent ?? '')), null, { timeout: 30_000 })
+
+    await open(withFooter, 'library-copy.pdf')
+    await page.waitForFunction(() => [...document.querySelectorAll('.text-layer')].filter(layer => /Downloaded from/.test(layer.textContent ?? '') && /quick/i.test(layer.textContent ?? '')).length === 2, null, { timeout: 60_000 })
+    // The footer follows the page's words, so a selection dragged into it takes only what it crosses.
+      const footers = await page.evaluate(() => [...document.querySelectorAll('.text-layer')].map(layer => layer.textContent ?? '').filter(text => /Downloaded from/.test(text)))
+    assert(footers.length >= 2 && footers.every(text => /(?:dog|lunch)\.?\s*Downloaded from/.test(text)), 'Footer text comes after the recognized words: ' + JSON.stringify(footers))
+    await page.waitForFunction(() => !/Reading scans/.test(document.body.innerText), null, { timeout: 60_000 })
+
+    // ⌘F / Ctrl+F finds the recognized words like any other text.
+    await page.locator('.pdf-container:visible').focus()
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+F' : 'Control+F')
+    const find = page.getByRole('textbox', { name: 'Find' })
+    await find.waitFor()
+    await find.fill('Quick Brown')
+    await page.waitForFunction(() => /^1 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''), null, { timeout: 30_000 })
+    assert.equal(await page.locator('.search-hit').count() >= 2, true, 'Matches are highlighted on both scans')
+    // Enter goes to the next match and Shift+Enter back.
+    await find.press('Enter')
+    await page.waitForFunction(() => /^2 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''))
+    await find.press('Shift+Enter')
+    await page.waitForFunction(() => /^1 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''))
+    // The scan's line of real text is found once, not again from its picture.
+    await find.fill('private study')
+    await page.waitForFunction(() => /^1 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''), null, { timeout: 30_000 })
+    await find.fill('Quick Brown')
+    await page.waitForFunction(() => /^1 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''))
+    if (process.env.OCR_SHOT) await page.locator('.workbench:visible').screenshot({ path: process.env.OCR_SHOT })
+
+    const state = await page.evaluate(() => {
+      const s = window.__workspace.useWorkspace.getState()
+      const tab = s.tabs.find((t) => t.id === s.activeId)
+      return { dirty: tab.dirty, bytes: tab.bytes.toBase64() }
     })
+    assert.equal(state.dirty, false, 'Recognizing text leaves the document unchanged')
+    assert.equal(state.bytes, base64(withFooter))
+    console.log('PASS  Scanned pages are recognized automatically, found with ⌘F, and the file is left unchanged')
+  } finally {
+    await closeAll()
   }
 }
 
@@ -794,7 +833,7 @@ async function verifyOfflineReuse({ page, context, assets, requests }) {
   console.log('PASS  New OCR worker reuses IndexedDB after pack server shutdown, then recognizes fully disconnected with zero requests')
 }
 
-async function getScan(page, name) {
+export async function getScan(page, name) {
   const scan = await page.evaluate(name => {
     const { jpeg, width, height } = window.ocrScans[name]
     return { jpeg: jpeg.toBase64(), width, height }
@@ -826,7 +865,7 @@ async function main() {
     })
     const scan = await getScan(page, 'english')
     await verifySearchablePdf(page, scan)
-    await verifySelectedPagesUi(page, scan, real)
+    await verifyAutomaticRecognition(page, scan, real)
     await verifyPdfProtection(page, scan)
     await verifyReconstruction(page)
     await verifyImageAndRtl(page, real)

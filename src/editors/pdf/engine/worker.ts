@@ -298,9 +298,84 @@ function statsForIndex(index: number): PageTextStats {
         nonWhitespaceCount++
       }
     }
-    return { index, charCount: count, nonWhitespaceCount }
+    // A page full of text isn't a scan to read (if it is one, it already has its text).
+    const imageCoverage = nonWhitespaceCount < 1500 ? pictureCoverage(pc.pagePtr) : 0
+    // Scans often carry a little real text (a page number, a "downloaded from" line): measure how
+    // much of the page it takes up, which only matters on a page that is mostly a picture.
+    const textCoverage = imageCoverage >= 0.3 && nonWhitespaceCount >= 10 ? textArea(tp, count, pc.pagePtr) : 0
+    return { index, charCount: count, nonWhitespaceCount, imageCoverage, textCoverage }
   } finally {
     pc.release()
+  }
+}
+
+/** Share of the page (0–1) covered by the boxes of its characters. */
+function textArea(tp: number, count: number, pagePtr: number): number {
+  const width = mod.FPDF_GetPageWidthF(pagePtr)
+  const height = mod.FPDF_GetPageHeightF(pagePtr)
+  if (!(width > 0 && height > 0)) return 0
+  const box = scratch(32)
+  let area = 0
+  try {
+    for (let i = 0; i < count; i++) {
+      if (!mod.FPDFText_GetCharBox(tp, i, box, box + 8, box + 16, box + 24)) continue
+      const w = getD(box + 8) - getD(box)
+      const h = getD(box + 24) - getD(box + 16)
+      if (w > 0 && h > 0) area += w * h
+    }
+  } finally {
+    free(box)
+  }
+  return Math.min(1, area / (width * height))
+}
+
+type Matrix = [number, number, number, number, number, number]
+
+/** `outer` after `inner`: maps what `inner` maps from to where `outer` maps to. */
+const compose = ([a, b, c, d, e, f]: Matrix, [p, q, r, s, t, u]: Matrix): Matrix => [a * p + c * q, b * p + d * q, a * r + c * s, b * r + d * s, a * t + c * u + e, b * t + d * u + f]
+
+/**
+ * Share of the page (0–1) under pictures, adding them up, as scanners may draw a page in strips.
+ * Objects inside a form XObject report bounds in the form's own space, so they're carried to the
+ * page through each form's matrix.
+ */
+function pictureCoverage(pagePtr: number): number {
+  const page = scratch(24)
+  const rect = scratch(16)
+  try {
+    // The visible page, in the same space as the page's objects (its origin needn't be 0, 0).
+    if (!mod.FPDF_GetPageBoundingBox(pagePtr, page)) return 0
+    const [a, b, c, d] = [getF(page), getF(page + 4), getF(page + 8), getF(page + 12)]
+    const [x0, x1, y0, y1] = [Math.min(a, c), Math.max(a, c), Math.min(b, d), Math.max(b, d)]
+    const area = (x1 - x0) * (y1 - y0)
+    if (!(area > 0)) return 0
+    let covered = 0
+    const visit = (obj: number, toPage: Matrix, depth: number) => {
+      const type = mod.FPDFPageObj_GetType(obj)
+      if (type === 5 /* FPDF_PAGEOBJ_FORM */ && depth < 4) {
+        if (!mod.FPDFPageObj_GetMatrix(obj, page)) return
+        const form: Matrix = [0, 4, 8, 12, 16, 20].map((o) => getF(page + o)) as Matrix
+        const inner = compose(toPage, form)
+        const n = mod.FPDFFormObj_CountObjects(obj)
+        for (let i = 0; i < n && covered < 0.5; i++) visit(mod.FPDFFormObj_GetObject(obj, i), inner, depth + 1)
+        return
+      }
+      // left, bottom, right, top
+      if (type !== 3 /* FPDF_PAGEOBJ_IMAGE */ || !mod.FPDFPageObj_GetBounds(obj, rect, rect + 4, rect + 8, rect + 12)) return
+      const [l, bt, r, t] = [getF(rect), getF(rect + 4), getF(rect + 8), getF(rect + 12)]
+      const [ma, mb, mc, md, me, mf] = toPage
+      const xs = [l * ma + bt * mc + me, r * ma + bt * mc + me, l * ma + t * mc + me, r * ma + t * mc + me]
+      const ys = [l * mb + bt * md + mf, r * mb + bt * md + mf, l * mb + t * md + mf, r * mb + t * md + mf]
+      const w = Math.min(Math.max(...xs), x1) - Math.max(Math.min(...xs), x0)
+      const h = Math.min(Math.max(...ys), y1) - Math.max(Math.min(...ys), y0)
+      if (w > 0 && h > 0) covered += (w * h) / area
+    }
+    const n = mod.FPDFPage_CountObjects(pagePtr)
+    for (let i = 0; i < n && covered < 0.5; i++) visit(mod.FPDFPage_GetObject(pagePtr, i), [1, 0, 0, 1, 0, 0], 0)
+    return Math.min(1, covered)
+  } finally {
+    free(page)
+    free(rect)
   }
 }
 

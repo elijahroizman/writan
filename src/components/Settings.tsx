@@ -177,13 +177,13 @@ function OfflineOcr() {
   }
 
   return (
-    <section data-testid="settings-ocr-packs" aria-label="Offline OCR">
+    <section data-testid="settings-ocr-packs" aria-label="Text in scanned PDFs">
       <SettingsRow
-        label="Offline OCR"
-        hint="Recognition runs entirely on this device without external network requests. Language packs download on demand from a pinned upstream version and are verified with SHA-256."
+        label="Text in scanned PDFs"
+        hint="Writan reads the text of scanned pages on this device, so you can find, select and copy it. Choose the languages your scans are in. English is built in; other languages download once when chosen."
         column
       >
-        <span className="muted">{formatOcrBytes(totalBytes)} cached. Select the languages Writan should use by default.</span>
+        {totalBytes > 0 && <span className="muted">{formatOcrBytes(totalBytes)} of languages downloaded.</span>}
       </SettingsRow>
       {errors.inventory && <p role="alert">{errors.inventory}</p>}
       {OCR_PACK_CATALOG.map((pack) => {
@@ -195,19 +195,25 @@ function OfflineOcr() {
           <SettingsRow
             key={pack.code}
             label={<Checkbox checked={selected} disabled={selected && selectedLangs.length === 1} label={pack.name}
-              onChange={(on) => setSelectedLangs(on ? [...selectedLangs, pack.code] : selectedLangs.filter((code) => code !== pack.code))} />}
+              onChange={(on) => {
+                setSelectedLangs(on ? [...selectedLangs, pack.code] : selectedLangs.filter((code) => code !== pack.code))
+                // A chosen language is downloaded right away, so scans can use it offline.
+                if (on && action === 'download') void updatePack(pack.code, 'download')
+              }} />}
             hint={
               <>
-                <bdi>{pack.nativeName}</bdi> · {pack.code} · {formatOcrBytes(pack.size)}
-                {cached?.sha256Verified && <strong> · Installed</strong>}
+                <bdi>{pack.nativeName}</bdi>
+                {cached?.builtIn ? ' · Built in' : <> · {formatOcrBytes(pack.size)}{cached?.sha256Verified && ' · Downloaded'}</>}
                 {download && <><br /><progress aria-label={`Downloading ${pack.name}`} value={download.received} max={download.total} /> {formatOcrBytes(download.received)} downloaded</>}
                 {errors[pack.code] && <><br /><span role="alert">{errors[pack.code]}</span></>}
               </>
             }
           >
-            <Button aria-label={`${action} ${pack.name} pack`} disabled={removing[pack.code]} onClick={() => void updatePack(pack.code, action)}>
-              {action === 'download' ? 'Download' : action === 'cancel' ? 'Cancel' : 'Remove'}
-            </Button>
+            {!cached?.builtIn && (
+              <Button aria-label={`${action} ${pack.name} pack`} disabled={removing[pack.code]} onClick={() => void updatePack(pack.code, action)}>
+                {action === 'download' ? 'Download' : action === 'cancel' ? 'Cancel' : 'Remove'}
+              </Button>
+            )}
           </SettingsRow>
         )
       })}
