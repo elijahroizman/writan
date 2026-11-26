@@ -147,18 +147,26 @@ export async function convertTab(tab: DocTab, target: ConvertFormat, options: Co
   if (tab.kind === 'pdf' && target === 'docx') {
     // Only the pages are read: a Word copy leaves the PDF, and any signature on it, as it was.
     const pdfBytes = await readTabBytes(tab)
-    const { useOcrPacks } = await import('./ocr/packs')
-    const langs = useOcrPacks.getState().selectedLangs
-    await prepareOcrPacks(langs, signal, onProgress)
-    const { ocrPdfDocument } = await import('./ocr/pdfOcr')
-    const result = await ocrPdfDocument({
-      pdfBytes, langs, signal, skipPagesWithText: false, searchable: false, password: getEditor(tab.id)?.getPassword?.() ?? '',
-      onProgress: (progress) => onProgress?.(pdfOcrStatus(progress)),
+    const { pdfToDocx } = await import('./pdfToDocx')
+    const bytes = await pdfToDocx({
+      pdfBytes,
+      password: getEditor(tab.id)?.getPassword?.() ?? '',
+      title: tab.title,
+      signal,
+      onProgress,
+      recognize: async (engine, pagesInfo, pageIndices) => {
+        const { useOcrPacks } = await import('./ocr/packs')
+        const langs = useOcrPacks.getState().selectedLangs
+        await prepareOcrPacks(langs, signal, onProgress)
+        const { ocrPdfDocument } = await import('./ocr/pdfOcr')
+        const result = await ocrPdfDocument({
+          pdfBytes, langs, signal, engine, pagesInfo, pageIndices, skipPagesWithText: false, searchable: false,
+          onProgress: (progress) => onProgress?.(pdfOcrStatus(progress)),
+        })
+        return result.pages
+      },
     })
-    signal?.throwIfAborted()
-    onProgress?.('Building Word document…')
-    const { ocrResultsToDocx } = await import('./ocr/toDocx')
-    return { bytes: await ocrResultsToDocx(result.pages, tab.title), name }
+    return { bytes, name }
   }
   if (target === 'pdf') {
     const bytes = await tabToPdf(tab)

@@ -26,6 +26,7 @@ const scripts = [
   'tests/stress/ui/offline-ocr.mjs',
   'tests/stress/ui/pdf-select-drag-down.mjs',
   'tests/stress/ui/pdf-text-select.mjs',
+  'tests/stress/ui/pdf-to-word.mjs',
   'tests/stress/ui/pdf-vector-export.mjs',
   'tests/stress/ui/reload.mjs',
   'tests/stress/ui/row-header-menu.mjs',

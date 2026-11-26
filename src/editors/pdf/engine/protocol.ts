@@ -116,6 +116,56 @@ export interface PageTextStats {
   textCoverage: number
 }
 
+/** A run of characters in one format, for rebuilding the page as a Word document. */
+export interface LayoutSpan {
+  text: string
+  /** Left edge and width (display points); the baseline's y. */
+  x: number
+  w: number
+  baseline: number
+  size: number
+  font?: string
+  bold: boolean
+  italic: boolean
+  /** `RRGGBB`. */
+  color?: string
+  link?: string
+}
+
+/** Characters that sit together on one baseline: a word, a line, or a line's part between two wide gaps. */
+export interface LayoutFragment {
+  x: number
+  y: number
+  w: number
+  h: number
+  baseline: number
+  size: number
+  rtl: boolean
+  spans: LayoutSpan[]
+}
+
+/** A picture on the page, drawn on its own, or a drawing (chart, diagram) taken with its labels. */
+export interface LayoutPicture {
+  box: Box
+  width: number
+  height: number
+  /** RGBA pixels. */
+  data: ArrayBuffer
+  figure: boolean
+}
+
+export interface PageLayout {
+  width: number
+  height: number
+  fragments: LayoutFragment[]
+  pictures: LayoutPicture[]
+  /** Thin lines: underlines and table borders. */
+  rules: Box[]
+  /** Characters that are drawn invisibly, as the text layer on a scan is. */
+  invisibleChars: number
+  visibleChars: number
+}
+
 /** Methods take a page's `key` (see PageInfo), except where they take a position in the document. */
 export interface Api {
   open(bytes: ArrayBuffer, password: string): OpenResult
@@ -129,6 +179,12 @@ export interface Api {
   documentTextStats(): PageTextStats[]
   /** Tight boxes around characters [start, start + count). */
   textBoxes(key: number, start: number, count: number): Box[]
+  /**
+   * The page's text with its formatting, pictures and lines, for converting it to Word. With
+   * `pictures`, it draws each picture, which changes what the page shows until it's opened
+   * again: only call it on a document opened for the conversion.
+   */
+  layout(key: number, pictures: boolean): PageLayout
   annotations(key: number): Annot[]
   createAnnotation(key: number, annot: PdfAnnotationObject, image: ArrayBuffer | null): string
   updateAnnotation(key: number, annot: PdfAnnotationObject): void
