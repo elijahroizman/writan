@@ -286,3 +286,40 @@ fn exact_lookup_scans_sparsely_and_indexes_only_ranges_worth_keeping() {
     assert_eq!(book.exact_lookup(Some("sparse"), 0, 1_048_575, 0, 0, false, &V::Empty), Some(Ok(Some(0))));
     assert_eq!(book.exact_lookup(Some("sparse"), 5, 5, 0, 16_383, true, &V::Num(7.0)), Some(Ok(Some(5))));
 }
+
+#[test]
+fn an_untouched_blank_before_a_stored_one_is_the_first_blank() {
+    use office_core::model::{Sheet, SheetCell, SheetRow};
+    // B2 is a stored blank (formatted, no value). A2 and B1 were never touched.
+    let mut sheet = Sheet::new("S");
+    sheet.rows.push(SheetRow {
+        index: 1,
+        cells: vec![SheetCell { col: 1, value: Value::Empty, ..Default::default() }],
+        ..Default::default()
+    });
+    let sheets = vec![sheet];
+    let formulas = HashMap::new();
+    let tables = Vec::new();
+    let mut book = Workbook {
+        sheets: &sheets,
+        tables: &tables,
+        names: &[],
+        date_system: DateSystem::default(),
+        now: None,
+        formulas: &formulas,
+        done: HashMap::new(),
+        working: HashSet::new(),
+        path: Vec::new(),
+        reads: HashMap::new(),
+        current: vec![0],
+        deep: None,
+        extents: vec![Default::default(); 1],
+        lookup_caches: HashMap::new(),
+        lookup_seen: HashSet::new(),
+        lookup_entries: 0,
+    };
+    // Down B1:B2, the untouched B1 is the first blank.
+    assert_eq!(book.exact_lookup(None, 0, 1, 1, 1, false, &V::Empty), Some(Ok(Some(0))));
+    // Across A2:B2, the untouched A2 is.
+    assert_eq!(book.exact_lookup(None, 1, 1, 0, 1, true, &V::Empty), Some(Ok(Some(0))));
+}

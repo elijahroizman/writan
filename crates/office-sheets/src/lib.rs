@@ -864,8 +864,10 @@ impl Book for Workbook<'_> {
             if first_empty.is_none() && next_position < len {
                 first_empty = Some(next_position);
             }
+            // A stored blank (a formatted cell with no value) may already be in the map from the
+            // scan; an untouched blank before it is the first match.
             if let Some(i) = first_empty {
-                map.entry(LookupKey::Empty).or_insert(i);
+                map.entry(LookupKey::Empty).and_modify(|at| *at = (*at).min(i)).or_insert(i);
             }
             // A cell still being worked out, or one past the depth limit (answered Empty for now,
             // worked out properly on the retry), would leave a wrong index behind: use it once.
