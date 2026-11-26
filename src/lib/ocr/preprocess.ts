@@ -132,10 +132,10 @@ export function rotateQuarter(image: GrayImage, rotation: OcrRotation): GrayImag
   const src = image.pixels
   const pixels = new Uint8Array(outWidth * outHeight)
   if (rotation === 90) {
+    // Output (x, y) reads source (y, height - 1 - x): a transpose, flipped.
     for (let y = 0; y < outHeight; y++) {
-      const sy = Math.floor(height - (y + 0.5)) * width
       const dstRow = y * outWidth
-      for (let x = 0; x < outWidth; x++) pixels[dstRow + x] = src[sy + x]
+      for (let x = 0; x < outWidth; x++) pixels[dstRow + x] = src[(height - 1 - x) * width + y]
     }
   } else if (rotation === 180) {
     for (let y = 0; y < outHeight; y++) {

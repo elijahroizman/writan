@@ -477,6 +477,7 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
         deep: None,
         extents: vec![Default::default(); sheets.len()],
         lookup_caches: HashMap::new(),
+        lookup_entries: 0,
     };
     book.work_out_keys(&keys);
     // A formula is in a circular reference when, through the formulas it reads, it comes back
@@ -494,6 +495,7 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
         book.done = circular.iter().map(|&k| (k, V::Num(0.0))).collect();
         book.reads.clear();
         book.lookup_caches.clear();
+        book.lookup_entries = 0;
         book.work_out_keys(&keys);
     }
     let results = keys.iter().map(|k| (*k, book.done.get(k).map(V::to_value).unwrap_or(Value::Number(0.0)))).collect();
@@ -619,11 +621,16 @@ struct Workbook<'a> {
     /// Each sheet's last used row and column, once asked for.
     extents: Vec<std::cell::OnceCell<Option<(u32, u32)>>>,
     lookup_caches: HashMap<(usize, u32, u32, u32, bool), LookupIndex>,
+    /// Cells indexed across `lookup_caches`, held under [`MAX_LOOKUP_ENTRIES`].
+    lookup_entries: usize,
 }
 
 /// How many formulas deep one is worked out before [`Workbook::deep`] takes over. Each level
 /// is a few stack frames, and a test thread or a browser has a small stack.
 const MAX_DEPTH: usize = 200;
+
+/// How many cells the exact-lookup indexes of one pass may hold together.
+const MAX_LOOKUP_ENTRIES: usize = 1_000_000;
 
 impl Workbook<'_> {
     fn sheet_index(&self, name: Option<&str>) -> Option<usize> {
@@ -798,9 +805,12 @@ impl Book for Workbook<'_> {
             }
             // A cell still being worked out, or one past the depth limit (answered Empty for now,
             // worked out properly on the retry), would leave a wrong index behind: use it once.
-            if hit_working || self.deep.is_some() {
+            // Ranges that shift row by row (`B2:B$10001` filled down) are each indexed once and
+            // add up to the square of the sheet: past the budget, an index is used and dropped.
+            if hit_working || self.deep.is_some() || self.lookup_entries + len > MAX_LOOKUP_ENTRIES {
                 return Some(Ok(map.get(&lk).copied()));
             }
+            self.lookup_entries += len;
             self.lookup_caches.insert(cache_key, LookupIndex { map, deps });
         }
         let index = &self.lookup_caches[&cache_key];

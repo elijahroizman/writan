@@ -1546,3 +1546,35 @@ fn marks_inside_a_character_are_dropped() {
     v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), inside_dash), Pos::new(Path::top(0), end))]);
     assert!(v.overlay(&mut FixedMeasurer::default()).marks.is_empty());
 }
+
+#[test]
+fn a_list_item_added_in_the_middle_renumbers_the_ones_after_it() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&["one"])).unwrap();
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 3)));
+    v.list(Some(crate::ListKind::Numbers));
+    for text in ["two", "three"] {
+        v.enter();
+        v.insert_text(text);
+    }
+    v.layout(&mut host);
+    v.paint(&mut host, 0);
+    // A new item after "one": "two" and "three" move down and must draw as 3. and 4.
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 3)));
+    v.enter();
+    v.insert_text("new");
+    v.layout(&mut host);
+    fn all(items: &[Item], out: &mut Vec<String>) {
+        for i in items {
+            match i {
+                Item::Text { text, .. } => out.push(text.clone()),
+                Item::Group { items, .. } => all(items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut drawn = Vec::new();
+    all(&v.paint(&mut host, 0).items, &mut drawn);
+    let labels: Vec<&str> = drawn.iter().map(String::as_str).filter(|t| t.ends_with('.') && t.len() <= 3).collect();
+    assert_eq!(labels, ["1.", "2.", "3.", "4."], "{drawn:?}");
+}

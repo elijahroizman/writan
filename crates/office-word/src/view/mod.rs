@@ -1068,15 +1068,17 @@ fn relayout(
         let near_edit = i + 1 == from || i == end;
         let oi = old_index.and_then(|oi| usize::try_from(oi - old_first as i64).ok());
         let mut candidate = if !near_edit { oi.and_then(|oi| old_blocks.get_mut(oi).and_then(Option::take)) } else { None };
+        // Moved into place first, then compared: a list label is looked up by the block's path.
         let kept = candidate
             .take()
-            .filter(|b| (i < from || i >= end) && (i >= end && delta != 0 || b.path().0.first() == Some(&i)) && same_labels(b, labels, &[]))
+            .filter(|_| i < from || i >= end)
             .map(|mut b| {
                 if i >= end && delta != 0 {
                     b.shift(delta);
                 }
                 b
-            });
+            })
+            .filter(|b| b.path().0.first() == Some(&i) && same_labels(b, labels, &[]));
         // If `!near_edit && delta == 0` didn't take `candidate` only when it failed labels, or if in `from..end`:
         // Re-grab old box at matching block index `k` when `delta == 0` so we can compare break geometry.
         let b = match kept {
