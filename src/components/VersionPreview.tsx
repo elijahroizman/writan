@@ -156,6 +156,7 @@ function useWidth() {
 const SIDE = 32
 
 function WordPages({ engine }: { engine: WordEngine }) {
+  useSyncExternalStore(engine.subscribe, engine.getTick)
   const [ref, width] = useWidth()
   const widest = Math.max(1, ...engine.sizes.map(([w]) => w))
   const scale = Math.min(1, Math.max(0.2, (width - SIDE * 2) / widest))
@@ -189,6 +190,7 @@ function WordPage({ engine, index, w, h, scale }: { engine: WordEngine; index: n
 }
 
 function Slides({ engine }: { engine: SlidesEngine }) {
+  useSyncExternalStore(engine.subscribe, engine.getTick)
   const [ref, width] = useWidth()
   const slideWidth = Math.max(160, Math.min(960, width - SIDE * 2))
   return (

@@ -47,6 +47,7 @@ const LatexMathModal = lazy(() => import('../../math/LatexMathModal').then((m) =
 
 import type { LatexMathSpec } from '../../math/latexTag'
 import { encodeLatexTag, parseLatexTag } from '../../math/latexTag'
+import { itemsContainLatex, loadLatexMath } from '../../math/lazyLatex'
 import type { Restack } from './arrange'
 import { Inspector } from './Inspector'
 import { NotesPane } from './Notes'
@@ -727,6 +728,9 @@ async function loadImage(file: File, deck: { width: number; height: number }) {
 
 /** Render every visible slide into the print root at landscape page size, then print. */
 async function printSlides(engine: SlidesEngine) {
+  // SlideImage renders straight to HTML, so MathJax must already be loaded before that first
+  // render; unlike the editor, this print root does not subscribe and redraw when it arrives.
+  if (engine.slides.some((s, i) => !s.hidden && itemsContainLatex(engine.paintItems(i)))) await loadLatexMath()
   const root = document.getElementById('print-root')!
   root.innerHTML = '<style>@page { size: landscape; margin: 0.4in; }</style>'
   const host = document.createElement('div')

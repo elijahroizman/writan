@@ -1,3 +1,5 @@
+import type { PaintItem } from '../engine/paint'
+import { LATEX_MATH_PREFIX } from './latexTag'
 import type { renderLatexTagToSvgBytes as renderTag } from './latexMath'
 
 type MathModule = typeof import('./latexMath')
@@ -22,4 +24,9 @@ export function renderLazyLatexTag(tag: string, ready: () => void): ReturnType<t
   if (loaded) return loaded.renderLatexTagToSvgBytes(tag)
   void loadLatexMath().then(ready)
   return null
+}
+
+/** Whether a display list contains editable LaTeX, including inside groups. */
+export function itemsContainLatex(items: readonly PaintItem[]): boolean {
+  return items.some((item) => (item.t === 'image' && item.media.startsWith(LATEX_MATH_PREFIX)) || (item.t === 'group' && itemsContainLatex(item.items)))
 }

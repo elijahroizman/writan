@@ -55,6 +55,7 @@ const LatexMathModal = lazy(() => import('../../math/LatexMathModal').then((m) =
 import { MathInspectorSection } from '../../math/MathInspectorSection'
 import type { LatexMathSpec } from '../../math/latexTag'
 import { encodeLatexTag, normalizeHexColor, parseLatexTag } from '../../math/latexTag'
+import { itemsContainLatex, loadLatexMath } from '../../math/lazyLatex'
 import { itemsHtml } from '../../engine/paint'
 import {
   DocxEditor,
@@ -1171,6 +1172,8 @@ async function printPages(editor: WordEngine | null) {
   root.appendChild(style)
   for (let i = 0; i < sizes.length; i++) {
     const p = editor.paint(i, true)!
+    // Printing cannot redraw after MathJax arrives: wait before the equation's object URL is made.
+    if (itemsContainLatex(p.items)) await loadLatexMath()
     const wrap = document.createElement('div')
     wrap.className = 'print-page docx-print-page'
     const page = document.createElement('div')
