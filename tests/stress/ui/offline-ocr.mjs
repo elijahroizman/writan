@@ -644,6 +644,11 @@ async function verifyAutomaticRecognition(page, scan, real) {
     await find.fill('Quick Brown')
     await page.waitForFunction(() => /^1 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''), null, { timeout: 30_000 })
     assert.equal(await page.locator('.search-hit').count() >= 2, true, 'Matches are highlighted on both scans')
+    // Enter goes to the next match and Shift+Enter back.
+    await find.press('Enter')
+    await page.waitForFunction(() => /^2 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''))
+    await find.press('Shift+Enter')
+    await page.waitForFunction(() => /^1 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''))
     // The scan's line of real text is found once, not again from its picture.
     await find.fill('private study')
     await page.waitForFunction(() => /^1 of 2$/.test(document.querySelector('.find-bar .count')?.textContent ?? ''), null, { timeout: 30_000 })

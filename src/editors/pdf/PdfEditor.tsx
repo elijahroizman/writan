@@ -113,7 +113,8 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const [sideTab, setSideTab] = useState<'pages' | 'outline'>('pages')
   const [findOpen, setFindOpen] = useState(false)
   const [find, setFind] = useState<FindState | null>(null)
-  const [findIndex, setFindIndex] = useState(0)
+  /** The current match: its page and its number there, so it stays put as matches arrive. */
+  const [findAt, setFindAt] = useState<{ key: number; n: number } | null>(null)
   const [menu, setMenu] = useState<{ x: number; y: number; index: number } | null>(null)
   const [selected, setSelected] = useState<{ key: number; id: string } | null>(null)
   const [ink, setInk] = useState<{ key: number; strokes: Stroke[]; committing?: boolean } | null>(null)
@@ -746,23 +747,9 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const findJob = useRef<AbortController | null>(null)
   /** The search in progress: its query and the hits it has collected so far. */
   const findRun = useRef<FindRun | null>(null)
-  /** What's shown: matches in order and the current one (kept up to date below). */
-  const findAt = useRef<{ matchList: [number, number][]; findIndex: number }>({ matchList: [], findIndex: -1 })
-  /**
-   * Show the matches `run` has collected. Matches can arrive for pages before the current one (the
-   * search wraps around; scanned pages are read later), so its position is counted again and it
-   * stays the same match. A page's own matches come first, then any recognized on it.
-   */
+  /** Show the matches `run` has collected (a page's own come first, then any recognized on it). */
   const showFound = (run: FindRun) => {
-    const s = storeRef.current
-    if (findRun.current !== run || !s) return
-    const { matchList: list, findIndex: at } = findAt.current
-    const current = list[at]
-    setFind({ query: run.query, hits: new Map(run.hits), done: run.done })
-    if (!current) return
-    let n = current[1]
-    for (let i = 0; i < current[0]; i++) n += run.hits.get(s.pages[i]?.key)?.length ?? 0
-    setFindIndex(n)
+    if (findRun.current === run) setFind({ query: run.query, hits: new Map(run.hits), done: run.done })
   }
   const runFind = useCallback(
     (query: string) => {
@@ -779,7 +766,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
       const run: FindRun = { query, hits, searched: new Set(), done: false }
       findRun.current = run
       setFind({ query, hits, done: false })
-      setFindIndex(-1)
+      setFindAt(null)
       const order = s.pages.map((_, i) => (i + page) % s.pages.length)
       let lastFlush = performance.now()
       void (async () => {
@@ -821,14 +808,21 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     return list
   }, [find, pages])
 
+  /** The current match's place in the list; -1 before there is one. */
+  const findIndex = findAt ? matchList.findIndex(([i, n]) => pages[i]?.key === findAt.key && n === findAt.n) : -1
+  const selectMatch = (n: number) => {
+    const m = matchList[n]
+    if (m) setFindAt({ key: pages[m[0]].key, n: m[1] })
+  }
+
   // Jump to the first match at or after the current page as soon as there is one.
   useEffect(() => {
-    if (findIndex !== -1 || !matchList.length) return
+    if (findAt || !matchList.length) return
     const first = Math.max(0, matchList.findIndex(([i]) => i >= page))
-    setFindIndex(first)
+    selectMatch(first)
     revealMatch(first)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [matchList, findIndex])
+  }, [matchList, findAt])
 
   const revealMatch = (n: number) => {
     const m = matchList[n]
@@ -839,11 +833,9 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const stepMatch = (dir: 1 | -1) => {
     if (!matchList.length) return
     const n = (Math.max(0, findIndex) + dir + matchList.length) % matchList.length
-    setFindIndex(n)
+    selectMatch(n)
     revealMatch(n)
   }
-
-  findAt.current = { matchList, findIndex }
 
   // A scanned page whose text was just recognized adds its matches to the search that's open.
   const recognizedPage = useCallback((p: PageInfo) => {
