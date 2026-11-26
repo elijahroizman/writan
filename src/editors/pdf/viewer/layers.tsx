@@ -178,13 +178,18 @@ function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
   // The run nearest the point along the line through `y`. A run there that pokes out of its line
   // (a superscript, a tall bracket) brings the rest of that line with it.
   const mid = (r: DOMRect) => (r.top + r.bottom) / 2
-  // A run as tall as several lines (a rotated label) brings none of them.
-  const pokesOut = (h: DOMRect, r: DOMRect) => h.height <= r.height && mid(h) >= r.top && mid(h) <= r.bottom
+  // A vertical run (a rotated label) spans several lines and brings none of them.
+  const verticalRun = spans.map((span) => span.dataset.vertical !== undefined)
+  const sameLine = (a: number, b: number) =>
+    !verticalRun[a] &&
+    !verticalRun[b] &&
+    ((mid(all[a]) >= all[b].top && mid(all[a]) <= all[b].bottom) ||
+      (mid(all[b]) >= all[a].top && mid(all[b]) <= all[a].bottom))
   const rowAt = (y: number) => {
-    const hits = all.filter((r) => !dyOf(r, y))
+    const hits = all.flatMap((r, i) => (dyOf(r, y) ? [] : [i]))
     let row = -1
     for (let i = 0; i < all.length; i++) {
-      if (hits.some((h) => h === all[i] || pokesOut(h, all[i])) && (row < 0 || dxOf(all[i]) < dxOf(all[row]))) row = i
+      if (hits.some((h) => h === i || sameLine(h, i)) && (row < 0 || dxOf(all[i]) < dxOf(all[row]))) row = i
     }
     return row
   }
