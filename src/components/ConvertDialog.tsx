@@ -21,7 +21,9 @@ interface ConvertModalState {
   open: boolean
   mode: ConvertModalMode
   tabId: string | null
-  openConvert(tabId?: string | null): void
+  /** The format selected when the dialog opens. */
+  format: ConvertFormat | null
+  openConvert(tabId?: string | null, format?: ConvertFormat): void
   openBundle(): void
   close(): void
 }
@@ -30,9 +32,10 @@ export const useConvertDialog = create<ConvertModalState>((set) => ({
   open: false,
   mode: 'convert',
   tabId: null,
-  openConvert: (tabId = null) => set({ open: true, mode: 'convert', tabId }),
-  openBundle: () => set({ open: true, mode: 'bundle', tabId: null }),
-  close: () => set({ open: false, tabId: null }),
+  format: null,
+  openConvert: (tabId = null, format) => set({ open: true, mode: 'convert', tabId, format: format ?? null }),
+  openBundle: () => set({ open: true, mode: 'bundle', tabId: null, format: null }),
+  close: () => set({ open: false, tabId: null, format: null }),
 }))
 
 export function ConvertModal() {
@@ -49,7 +52,7 @@ function ConvertFileDialog() {
   const tab = useMemo(() => tabs.find((t) => t.id === (requestedId ?? activeId)) ?? null, [tabs, requestedId, activeId])
   const targets = useMemo(() => (tab ? targetsForKind(tab.kind) : []), [tab])
 
-  const [index, setIndex] = useState(0)
+  const [index, setIndex] = useState(() => Math.max(0, targets.findIndex((t) => t.format === useConvertDialog.getState().format)))
   const [delivery, setDelivery] = useState<'open' | 'save'>('open')
   const [busy, setBusy] = useState<string | null>(null)
   const [ocrRunning, setOcrRunning] = useState(false)

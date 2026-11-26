@@ -306,7 +306,7 @@ export async function runCommand(id: string) {
     case 'export-markdown': {
       // A picture's Markdown needs OCR, which runs in the Convert dialog where it can be cancelled.
       const active = ws.tabs.find((t) => t.id === ws.activeId)
-      if (active && usesOcr(active.kind, 'md')) useConvertDialog.getState().openConvert(active.id)
+      if (active && usesOcr(active.kind, 'md')) useConvertDialog.getState().openConvert(active.id, 'md')
       else await convertAndDeliver(undefined, 'md', 'open')
       break
     }
