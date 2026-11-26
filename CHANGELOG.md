@@ -2,6 +2,26 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.18.0 — 2026-11-27
+
+### Faster
+- Workbooks with many lookups (`VLOOKUP`, `HLOOKUP`, `MATCH`) and `COUNTIF`-style formulas calculate much faster. In a test workbook, editing a formula went from 1.8 seconds to a tenth of a second, and opening it from 3.6 seconds to under 0.2.
+- Long Word documents show their first page in half the time, and typing in a 500-page document does far less work per keystroke.
+- A 500-page PDF opens almost three times as fast.
+- Scrolling a 50,000-row sheet runs at 60 frames a second.
+- If you mostly write Markdown, Writan starts faster and loads a fraction of what it did, because the Word, Excel and PowerPoint engines load only when you open one of those files. Tabs from your last session read their file when you first switch to them.
+- Converting large files to and from Office formats no longer freezes the window.
+
+### PDF text selection
+- Selecting text in a PDF starts where you press and follows the pointer. Before, pressing between two lines, in the margin or beside a short line could select text paragraphs away, and that text was what got highlighted.
+- Dragging down a page no longer makes the selection shrink back or jump ahead next to tables, formulas and superscripts.
+- Dragging past the edge of the window scrolls, and the selection carries on across pages. Shift-click extends a selection, also over an existing highlight.
+- Words with "fi" and "ffi" copy as one word instead of "f ive".
+- Scanned pages work the same way.
+
+### Thanks
+- Much of the speed work is by Yoav Hanuka.
+
 ## 0.17.1 — 2026-11-26
 
 ### Images
