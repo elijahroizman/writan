@@ -1012,11 +1012,11 @@ fn relayout_in_place(
     if from != u32::MAX && from <= sec_end && end >= first {
         let lo = from.saturating_sub(1).max(first) - first;
         let hi = end.min(sec_end.saturating_sub(1)) - first;
-        for k in lo as usize..=hi as usize {
+        for (k, block) in slice.iter().enumerate().take(hi as usize + 1).skip(lo as usize) {
             let i = first + k as u32;
-            let new_box = flow::layout_block(ctx, cache, r, &slice[k], Path::top(i), width);
+            let new_box = flow::layout_block(ctx, cache, r, block, Path::top(i), width);
             let prev = &mut old.flow.blocks[k];
-            if same_breaks && !para_matches_geometry(prev, &new_box, &slice[k]) {
+            if same_breaks && !para_matches_geometry(prev, &new_box, block) {
                 same_breaks = false;
             }
             *prev = new_box;

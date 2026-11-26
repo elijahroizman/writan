@@ -151,9 +151,11 @@ export function Pages({ engine, zoom, scroller }: Props) {
         painted.current.delete(i)
       }
     }
+    // The window of mounted frames and overlays moves only when the kept pages leave it, so
+    // scrolling within it doesn't re-render. Clamped, or near either end it would always "move".
     const [ws, we] = overlayWinRef.current
-    if (first - KEEP < ws || last + KEEP > we) {
-      const next: [number, number] = [Math.max(0, first - KEEP * 2), last + KEEP * 2]
+    if (Math.max(0, first - KEEP) < ws || Math.min(sizes.length - 1, last + KEEP) > we) {
+      const next: [number, number] = [Math.max(0, first - KEEP * 2), Math.min(sizes.length - 1, last + KEEP * 2)]
       overlayWinRef.current = next
       setOverlayWin(next)
     }
