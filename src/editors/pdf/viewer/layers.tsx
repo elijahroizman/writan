@@ -178,12 +178,13 @@ function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
   // The run nearest the point along the line through `y`. A run there that pokes out of its line
   // (a superscript, a tall bracket) brings the rest of that line with it.
   const mid = (r: DOMRect) => (r.top + r.bottom) / 2
-  const sameLine = (a: DOMRect, b: DOMRect) => (mid(a) >= b.top && mid(a) <= b.bottom) || (mid(b) >= a.top && mid(b) <= a.bottom)
+  // A run as tall as several lines (a rotated label) brings none of them.
+  const pokesOut = (h: DOMRect, r: DOMRect) => h.height <= r.height && mid(h) >= r.top && mid(h) <= r.bottom
   const rowAt = (y: number) => {
     const hits = all.filter((r) => !dyOf(r, y))
     let row = -1
     for (let i = 0; i < all.length; i++) {
-      if (hits.some((h) => h === all[i] || sameLine(h, all[i])) && (row < 0 || dxOf(all[i]) < dxOf(all[row]))) row = i
+      if (hits.some((h) => h === all[i] || pokesOut(h, all[i])) && (row < 0 || dxOf(all[i]) < dxOf(all[row]))) row = i
     }
     return row
   }
@@ -207,11 +208,13 @@ function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
     return true
   }
   // Between lines, the point belongs to the line just above or below it, not to a longer line
-  // further away whose end is nearer: it moves onto the nearest line first.
+  // further away whose end is nearer: it moves onto the nearest line first, if that's in the same
+  // column as the nearest run.
   let row = rowAt(y)
   if (row < 0 && lineNear >= 0) {
     const r = all[lineNear]
     row = rowAt(y < r.top ? r.top + 0.5 : r.bottom - 0.5)
+    if (row >= 0 && near >= 0 && !sameColumn(row, near)) row = near
   }
   const index = inside >= 0 ? inside : row >= 0 && (near < 0 || dxOf(all[near]) > 0 || sameColumn(row, near)) ? row : near
   const span = spans[index] as HTMLElement | undefined
