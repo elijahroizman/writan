@@ -167,26 +167,45 @@ function layerAt(pages: Element, x: number, y: number): HTMLElement | null {
 
 /**
  * The place in `layer`'s text nearest a point: in the run under it; else in the nearest run on
- * the same line, unless the point is over another column's text; else in the nearest run.
+ * the same line, unless the point is over another column's text; else, between lines, in the
+ * nearest run on the line nearest it vertically.
  */
 function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
-  let inside: { span: HTMLElement; area: number } | null = null
-  let row: { span: HTMLElement; i: number; d: number } | null = null
-  let near: { span: HTMLElement; i: number; d: number; over: boolean } | null = null
-  const all: DOMRect[] = []
-  for (const span of layer.querySelectorAll<HTMLElement>('span[data-run]')) {
-    const r = span.getBoundingClientRect()
-    const i = all.push(r) - 1
-    const dx = Math.max(r.left - x, 0, x - r.right)
-    const dy = Math.max(r.top - y, 0, y - r.bottom)
-    // Overlapping runs (letters drawn twice, a ligature split in two): the smaller one.
-    if (!dx && !dy) {
-      if (!inside || r.width * r.height < inside.area) inside = { span, area: r.width * r.height }
-    } else if (!dy) {
-      if (!row || dx < row.d) row = { span, i, d: dx }
+  const spans = [...layer.querySelectorAll<HTMLElement>('span[data-run]')]
+  const all = spans.map((span) => span.getBoundingClientRect())
+  const dxOf = (r: DOMRect) => Math.max(r.left - x, 0, x - r.right)
+  const dyOf = (r: DOMRect, y: number) => Math.max(r.top - y, 0, y - r.bottom)
+  // The run nearest the point along the line through `y`. A run there that pokes out of its line
+  // (a superscript, a tall bracket) brings the rest of that line with it.
+  const mid = (r: DOMRect) => (r.top + r.bottom) / 2
+  // A vertical run (a rotated label) spans several lines and brings none of them.
+  const verticalRun = spans.map((span) => span.dataset.vertical !== undefined)
+  const sameLine = (a: number, b: number) =>
+    !verticalRun[a] &&
+    !verticalRun[b] &&
+    ((mid(all[a]) >= all[b].top && mid(all[a]) <= all[b].bottom) ||
+      (mid(all[b]) >= all[a].top && mid(all[b]) <= all[a].bottom))
+  const rowAt = (y: number) => {
+    const hits = all.flatMap((r, i) => (dyOf(r, y) ? [] : [i]))
+    // Only the shortest runs there bring their lines along: a drop cap beside the line would bring
+    // the lines under it too.
+    const least = Math.min(...hits.map((h) => all[h].height))
+    const from = hits.filter((h) => all[h].height <= least * 1.5)
+    let row = -1
+    for (let i = 0; i < all.length; i++) {
+      if ((hits.includes(i) || from.some((h) => sameLine(h, i))) && (row < 0 || dxOf(all[i]) < dxOf(all[row]))) row = i
     }
-    const d = Math.hypot(dx, dy)
-    if (!near || d < near.d) near = { span, i, d, over: !dx }
+    return row
+  }
+  let inside = -1
+  let near = -1
+  let lineNear = -1
+  for (let i = 0; i < all.length; i++) {
+    const r = all[i]
+    // Overlapping runs (letters drawn twice, a ligature split in two): the smaller one.
+    if (!dxOf(r) && !dyOf(r, y) && (inside < 0 || r.width * r.height < all[inside].width * all[inside].height)) inside = i
+    if (near < 0 || Math.hypot(dxOf(r), dyOf(r, y)) < Math.hypot(dxOf(all[near]), dyOf(all[near], y))) near = i
+    if (lineNear < 0 || dyOf(r, y) < dyOf(all[lineNear], y) || (dyOf(r, y) === dyOf(all[lineNear], y) && dxOf(r) < dxOf(all[lineNear]))) lineNear = i
   }
   // Whether two runs are in one column: every run between them in reading order is between them
   // on the page too. Between a line and one in the next column come the rest of the first column.
@@ -197,7 +216,17 @@ function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
     for (let k = i + 1; k < j; k++) if (all[k].top < top || all[k].bottom > bottom) return false
     return true
   }
-  const span = inside?.span ?? (row && (!near?.over || sameColumn(row.i, near.i)) ? row.span : near?.span)
+  // Between lines, the point belongs to the line just above or below it, not to a longer line
+  // further away whose end is nearer: it moves onto the nearest line first, if that's in the same
+  // column as the nearest run.
+  let row = rowAt(y)
+  if (row < 0 && lineNear >= 0) {
+    const r = all[lineNear]
+    row = rowAt(y < r.top ? r.top + 0.5 : r.bottom - 0.5)
+    if (row >= 0 && near >= 0 && !sameColumn(row, near)) row = near
+  }
+  const index = inside >= 0 ? inside : row >= 0 && (near < 0 || dxOf(all[near]) > 0 || sameColumn(row, near)) ? row : near
+  const span = spans[index] as HTMLElement | undefined
   const text = span?.firstChild
   if (!span || !text) return null
   // Within the run's length, the browser's own hit test (moved onto the run's line) handles
