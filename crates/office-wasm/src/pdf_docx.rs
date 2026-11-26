@@ -44,9 +44,6 @@ struct PageIn {
     /// Thin horizontal and vertical lines drawn on the page: underlines and table borders.
     #[serde(default)]
     rules: Vec<BBox>,
-    /// The page is a picture whose text was recognized (or carries an invisible OCR layer).
-    #[serde(default)]
-    scanned: bool,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +57,9 @@ struct FragmentIn {
     size: f64,
     #[serde(default)]
     rtl: bool,
+    /// Read off a picture: recognized, or a scan's invisible text layer.
+    #[serde(default)]
+    ocr: bool,
     spans: Vec<SpanIn>,
 }
 
@@ -127,6 +127,8 @@ struct Piece {
     /// Where the text after a separate list marker or label starts (its left edge, or right
     /// edge in right-to-left text).
     text_at: Option<f64>,
+    /// Read off a picture (see [`FragmentIn::ocr`]).
+    ocr: bool,
     /// The left and right edges of the column the piece sits in.
     col: (f64, f64),
     /// Tab stops the text jumps to (page positions; `true` for one that aligns text on its right).
@@ -289,14 +291,21 @@ fn write_document(input: Input, media: &[u8]) -> office_core::Result<Vec<u8>> {
             if b.w < 2.0 || b.h < 2.0 || picture.offset.saturating_add(picture.length) > media.len() || picture.length == 0 {
                 continue;
             }
-            // A scan behind its recognized text, or a page-sized background behind the words.
-            let covered: usize = pieces.iter().filter(|p| inside(b, p.b.x + p.b.w / 2.0, p.b.y + p.b.h / 2.0)).map(Piece::chars).sum();
-            if b.w * b.h > area * 0.5 && (page.scanned || (covered > 20 && covered * 2 > text_chars)) {
-                continue;
+            let within = |p: &Piece| inside(b, p.b.x + p.b.w / 2.0, p.b.y + p.b.h / 2.0);
+            // Recognized words over a picture: the picture is the scan they were read from when
+            // they cover much of it, and a photo with some words in it otherwise.
+            let read: f64 = pieces.iter().filter(|p| p.ocr && within(p)).map(|p| p.b.w * p.b.h).sum();
+            if read > 0.0 {
+                let page_sized = b.w * b.h >= area * 0.7;
+                if read >= b.w * b.h * if page_sized { 0.02 } else { 0.08 } {
+                    continue;
+                }
+                pieces.retain(|p| !(p.ocr && within(p)));
             }
-            // A picture on a scan: the words read off it are part of the picture.
-            if page.scanned {
-                pieces.retain(|p| !inside(b, p.b.x + p.b.w / 2.0, p.b.y + p.b.h / 2.0));
+            // A page-sized background behind a page of text.
+            let covered: usize = pieces.iter().filter(|p| within(p)).map(Piece::chars).sum();
+            if b.w * b.h > area * 0.5 && covered > 200 && covered * 2 > text_chars {
+                continue;
             }
             pictures.push(pictures_in.len());
             pictures_in.push(picture);
@@ -415,6 +424,7 @@ fn piece_from(fragment: FragmentIn, page: usize, rules: &[BBox]) -> Option<Piece
     }
     let size = if fragment.size.is_finite() && fragment.size > 0.5 { fragment.size } else { fragment.h.max(1.0) * 0.8 };
     let rtl = fragment.rtl || first_strong_rtl(&text) == Some(true);
+    let ocr = fragment.ocr;
     Some(Piece {
         b: BBox { x: fragment.x, y: fragment.y, w: fragment.w, h: fragment.h },
         baseline: fragment.baseline,
@@ -422,6 +432,7 @@ fn piece_from(fragment: FragmentIn, page: usize, rules: &[BBox]) -> Option<Piece
         rtl,
         spans,
         text_at: None,
+        ocr,
         col: (0.0, 0.0),
         tabs: Vec::new(),
         page,
@@ -523,18 +534,20 @@ impl Geometry {
                 bottom = bottom.min(page.height - b.bottom());
             }
         }
-        let clamp = |v: f64, max: f64| if v == f64::MAX { 72.0 } else { v.clamp(18.0, max) };
-        let mut left = clamp(left, width * 0.35);
-        let mut right = clamp(right, width * 0.35);
-        if width - left - right < 144.0 {
-            left = 36.0;
-            right = 36.0;
+        // Margins of at least 18 points (less on a label-sized page), leaving room for text.
+        let (least_x, least_y) = (18.0f64.min(width * 0.1), 18.0f64.min(height * 0.1));
+        let fit = |v: f64, least: f64, most: f64| if v == f64::MAX { 72.0f64.min(most) } else { v.min(most).max(least) };
+        let mut left = fit(left, least_x, width * 0.35);
+        let mut right = fit(right, least_x, width * 0.35);
+        if width - left - right < 144.0f64.min(width * 0.6) {
+            left = least_x;
+            right = least_x;
         }
-        let top = clamp(top, height * 0.3);
-        // Some room below the last line, in case the fonts on this computer set the text a
-        // little longer than the PDF's.
-        // and no deeper than the top margin where the text simply stops short of the page's foot.
-        let bottom = if bottom == f64::MAX { 72.0 } else { (bottom - 24.0).clamp(18.0, top.max(72.0)) };
+        let top = fit(top, least_y, height * 0.3);
+        // Some room below the last line, in case the fonts on this computer set the text a little
+        // longer than the PDF's, and no deeper than the top margin where the text simply stops
+        // short of the page's foot.
+        let bottom = if bottom == f64::MAX { top } else { fit(bottom - 24.0, least_y, top.max(72.0).min(height * 0.3)) };
         Geometry { width, height, left, right, top, bottom }
     }
 
@@ -1372,11 +1385,16 @@ fn join_lines(content: &mut [Inline], next: &Piece) {
     run.text.truncate(trimmed);
     let before = run.text.chars().rev().nth(1);
     let last = run.text.chars().next_back();
-    if last == Some('-') && before.is_some_and(char::is_alphabetic) && next_first.is_some_and(char::is_lowercase) {
+    // A word broken at the end of the line goes back together; one that already has a hyphen
+    // (`state-of-the-` `art`) was hyphenated anyway, so it keeps it.
+    let word = run.text.rsplit(char::is_whitespace).next().unwrap_or("");
+    let compound = word.trim_end_matches('-').contains('-');
+    if last == Some('-') && !compound && before.is_some_and(char::is_alphabetic) && next_first.is_some_and(char::is_lowercase) {
         run.text.pop();
     } else if last.is_some_and(is_cjk) && next_first.is_some_and(is_cjk) {
     } else if last == Some('\u{AD}') {
         run.text.pop();
+    } else if last == Some('-') && compound {
     } else {
         run.text.push(' ');
     }
@@ -1698,17 +1716,22 @@ mod tests {
                 "fragments": [text(72.0, 100.0, 468.0, "Above, a line of text from margin to margin"), text(72.0, 400.0, 100.0, "Below")],
                 "pictures": [{ "x": 206, "y": 150, "w": 200, "h": 150, "offset": 0, "length": png.len(), "contentType": "image/png" }],
             }, {
-                "width": 612, "height": 792, "scanned": true,
-                "fragments": [text(72.0, 100.0, 100.0, "Recognized")],
+                "width": 612, "height": 792,
+                "fragments": (0..12).map(|i| {
+                    let mut line = text(72.0, 100.0 + i as f64 * 14.0, 468.0, "Recognized words in a line of a scanned page that reaches the margin");
+                    line["ocr"] = json!(true);
+                    line
+                }).collect::<Vec<_>>(),
                 "pictures": [{ "x": 0, "y": 0, "w": 612, "h": 792, "offset": 0, "length": png.len(), "contentType": "image/png" }],
             }]
         });
         let doc = convert_with(input, png);
         let paragraphs = office_word::paragraphs(&doc);
-        assert_eq!(paragraphs.len(), 4);
         assert!(matches!(paragraphs[1].content[0], Inline::Image(ref i) if i.width == Emu::from_points(200.0)));
         assert_eq!(paragraphs[1].props.align, Some(Align::Center));
-        assert_eq!(texts(&doc), ["Above, a line of text from margin to margin", "", "Below", "Recognized"]);
+        let all = texts(&doc);
+        assert_eq!(all[..3], ["Above, a line of text from margin to margin", "", "Below"]);
+        assert!(all[3].starts_with("Recognized words in a line"), "{all:?}");
         assert_eq!(doc.media.len(), 1);
     }
 
@@ -1776,6 +1799,56 @@ mod tests {
             page(vec![heading(2), text(72.0, 200.0, 100.0, "Body two.")]),
         ]);
         assert_eq!(texts(&doc), ["Section 1: Part", "Body one.", "Section 2: Part", "Body two."]);
+    }
+
+    #[test]
+    fn a_photo_keeps_its_picture_and_a_scan_keeps_its_words() {
+        let png = b"\x89PNG\r\n\x1a\nfake";
+        let word = |x: f64, y: f64, t: &str| {
+            let mut w = text(x, y, 60.0, t);
+            w["ocr"] = json!(true);
+            w
+        };
+        let mut fragments = vec![text(72.0, 80.0, 468.0, "A page with a photo of an advert and a scan of a letter beside it")];
+        // A photo with two words in it.
+        fragments.extend([word(100.0, 200.0, "HEINZ"), word(100.0, 230.0, "KETCHUP")]);
+        // A scan, covering 40% of the page, full of recognized words.
+        for i in 0..20 {
+            fragments.push(word(330.0, 160.0 + i as f64 * 14.0, "Dear"));
+            fragments.push(word(394.0, 160.0 + i as f64 * 14.0, "reader"));
+            fragments.push(word(458.0, 160.0 + i as f64 * 14.0, "letter"));
+        }
+        let picture =
+            |x: f64, w: f64| json!({ "x": x, "y": 140, "w": w, "h": 400, "offset": 0, "length": png.len(), "contentType": "image/png" });
+        let doc = convert_with(
+            json!({ "pages": [{ "width": 612, "height": 792, "fragments": fragments, "pictures": [picture(80.0, 200.0), picture(320.0, 230.0)] }] }),
+            png,
+        );
+        let all = texts(&doc).join("|");
+        assert_eq!(doc.media.len(), 1, "the photo stays, the scan goes: {all}");
+        assert!(!all.contains("HEINZ"), "{all}");
+        assert!(all.contains("Dear reader letter"), "{all}");
+    }
+
+    #[test]
+    fn keeps_hyphenated_words_and_joins_broken_ones() {
+        let doc = convert(vec![page(vec![
+            text(72.0, 100.0, 468.0, "This paragraph about the state-of-the-"),
+            text(72.0, 114.0, 468.0, "art methods and their recon-"),
+            text(72.0, 128.0, 200.0, "struction goes on."),
+        ])]);
+        assert_eq!(texts(&doc), ["This paragraph about the state-of-the-art methods and their reconstruction goes on."]);
+    }
+
+    #[test]
+    fn label_sized_pages_get_margins_that_fit() {
+        let doc = convert_with(
+            json!({ "pages": [{ "width": 50, "height": 80, "fragments": [frag(4.0, 20.0, 40.0, 6.0, vec![span("Label", 6.0)])] }] }),
+            &[],
+        );
+        let section = &office_word::sections(&doc)[0];
+        assert!(section.text_width().0 > 0);
+        assert!(section.margin_top.points() + section.margin_bottom.points() < 80.0);
     }
 
     #[test]

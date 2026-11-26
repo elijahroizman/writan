@@ -15,6 +15,15 @@ struct OcrDocumentInput {
     #[serde(default)]
     title: Option<String>,
     pages: Vec<OcrPageResult>,
+    /// The page the document is set on, in points: a scanned PDF's own.
+    #[serde(default)]
+    page: Option<PageSize>,
+}
+
+#[derive(Deserialize)]
+struct PageSize {
+    width: f64,
+    height: f64,
 }
 
 #[derive(Deserialize)]
@@ -165,6 +174,21 @@ fn write_document(input: OcrDocumentInput) -> office_core::Result<Vec<u8>> {
         blocks.push(Block::Paragraph(Paragraph::default()));
     }
     document.body = Body::Flow { blocks };
+    if let Some(page) = input.page.filter(|p| p.width > 0.0 && p.height > 0.0) {
+        let pt = Emu::from_points;
+        let (x, y) = (pt(72f64.min(page.width * 0.1)), pt(72f64.min(page.height * 0.1)));
+        let section = office_word::Section {
+            page_width: pt(page.width),
+            page_height: pt(page.height),
+            landscape: page.width > page.height,
+            margin_top: y,
+            margin_bottom: y,
+            margin_left: x,
+            margin_right: x,
+            ..Default::default()
+        };
+        office_word::set_section(&mut document, 0, &section);
+    }
 
     let compiler = Compiler::new().with_layer(Words);
     if lists.is_empty() {
@@ -795,6 +819,15 @@ mod tests {
         let doc = round_trip(vec![fallback, page(1, vec![]), rotated]);
         assert_eq!(texts(&doc), ["First", "Second", "\u{c}", "Another page"]);
         assert!(matches!(office_word::paragraphs(&doc)[2].content[0], Inline::Break { kind: BreakKind::Page, .. }));
+    }
+
+    #[test]
+    fn sets_the_page_it_is_given() {
+        let input = json!({ "pages": [page(0, vec![])], "page": { "width": 842, "height": 595 } });
+        let bytes = ocr_document_to_docx(&input.to_string()).unwrap();
+        let doc = Compiler::new().with_layer(Words).read(&bytes, Some("ocr.docx")).unwrap();
+        let section = &office_word::sections(&doc)[0];
+        assert_eq!((section.page_width, section.page_height, section.landscape), (Emu::from_points(842.0), Emu::from_points(595.0), true));
     }
 
     #[test]

@@ -661,8 +661,9 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
     const fragments: PageLayout['fragments'] = []
     let invisibleChars = 0
     let visibleChars = 0
-    // Text reads upright on screen when its angle on the page matches the page's own turn.
-    const upright = (p.rotation * Math.PI) / 2
+    // Text reads upright on screen when it's turned back against the page's own turn (PDFium
+    // measures the character's angle the other way round from the page's /Rotate).
+    const upright = (-p.rotation * Math.PI) / 2
     type Building = { x0: number; y0: number; x1: number; y1: number; baseline: number; size: number; rtl: boolean; spans: LayoutSpan[]; lastLeft: number; lastRight: number; key: string }
     let frag: Building | null = null
     let pendingSpace = false
@@ -683,9 +684,9 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
         pendingSpace = true
         continue
       }
-      // PDFium reports a hyphen that ends a line as 2; it marks a word broken across lines.
+      // PDFium reports a hyphen that ends a line as 2: a word broken across lines, or a hyphenated one.
       if (code === 0xfffe || code === 0xfffd || code === 0xfeff || (code < 0x20 && code !== 2) || (code >= 0x7f && code < 0xa0)) continue
-      const ch = code === 2 ? '\u00AD' : String.fromCodePoint(code)
+      const ch = code === 2 ? '-' : String.fromCodePoint(code)
       if (/\s/.test(ch)) {
         pendingSpace = true
         continue
@@ -787,7 +788,7 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
     // Lines, pictures and drawings.
     const rules: Box[] = []
     const images: { box: Box; scale: number }[] = []
-    const shapes: Box[] = []
+    const shapes: { box: Box; curved: boolean; parts: number }[] = []
     const others: number[] = []
     const pageBox = { x: 0, y: 0, w: p.size.width, h: p.size.height }
     const seg = scratch(8)
@@ -833,20 +834,24 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
       const n = mod.FPDFPath_CountSegments(obj)
       let curved = false
       let slanted = false
+      let parts = 0
       let px: number | null = null
       let py = 0
       for (let i = 0; i < n && !(curved && slanted); i++) {
         const s = mod.FPDFPath_GetPathSegment(obj, i)
         const kind = mod.FPDFPathSegment_GetType(s)
         if (kind === 1) curved = true
+        if (kind === 2) parts++
         if (!mod.FPDFPathSegment_GetPoint(s, rect, rect + 4)) continue
         const [x, y] = [getF(rect), getF(rect + 4)]
         if (kind === 0 && px !== null && Math.abs(x - px) > 0.5 && Math.abs(y - py) > 0.5) slanted = true
         px = x
         py = y
       }
-      if (curved || slanted) shapes.push(box)
-      else if (stroked && n <= 6 && box.w > 4 && box.h > 4) {
+      if (curved || slanted) shapes.push({ box, curved: true, parts: 1 })
+      // Coloured blocks: a chart's bars, often in one path (or a table's shading, which has its text inside).
+      else if (filled && box.w > 2.5 && box.h > 2.5) shapes.push({ box, curved: false, parts: Math.max(1, parts) })
+      if (!curved && !slanted && stroked && n <= 6 && box.w > 4 && box.h > 4) {
         rules.push({ x: box.x, y: box.y, w: box.w, h: 0.5 }, { x: box.x, y: box.y + box.h - 0.5, w: box.w, h: 0.5 })
         rules.push({ x: box.x, y: box.y, w: 0.5, h: box.h }, { x: box.x + box.w - 0.5, y: box.y, w: 0.5, h: box.h })
       }
@@ -865,13 +870,22 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
         return inside ? sum + f.spans.reduce((n, s) => n + s.text.length, 0) * f.size * f.size * 0.5 : sum
       }, 0)
     let figures = mergeBoxes(
-      shapes.map((box) => ({ box, count: 1 })),
+      // Lines join a chart's bars to its axes; on their own they make no drawing.
+      [...shapes.map(({ box, curved, parts }) => ({ box, count: curved ? 1 : 0, blocks: curved ? 0 : parts })), ...rules.map((box) => ({ box, count: 0, blocks: 0 }))],
       8,
-      (a, b) => ({ box: unionBox(a.box, b.box), count: a.count + b.count }),
+      (a, b) => ({ box: unionBox(a.box, b.box), count: a.count + b.count, blocks: a.blocks + b.blocks }),
     ).filter((f) => {
       const area = f.box.w * f.box.h
-      return area >= 2500 && area <= pageArea * 0.6 && (f.count >= 3 || area >= 5000) && textIn(f.box) < area * 0.15
+      const drawn = f.count >= 3 || (f.count >= 1 && area >= 5000) || f.blocks >= 3
+      return area >= 2500 && area <= pageArea * 0.6 && drawn && textIn(f.box) < area * 0.15
     })
+    // A chart's tick labels and captions sit just outside its lines: short text close by is part of it.
+    for (const f of figures) {
+      for (const t of fragments) {
+        const text = t.spans.reduce((all, sp) => all + sp.text, '').trim()
+        if (text.length <= 24 && overlaps(f.box, t, Math.max(6, t.size * 2))) f.box = unionBox(f.box, t)
+      }
+    }
     // Pictures drawn in strips, or overlapping, are one picture; one inside a drawing is part of it.
     let pictures = mergeBoxes(images, 1, (a, b) => ({ box: unionBox(a.box, b.box), scale: Math.max(a.scale, b.scale) }))
     pictures = pictures.filter((pic) => {
@@ -880,7 +894,7 @@ async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
       figures[figure] = { ...figures[figure], box: unionBox(figures[figure].box, pic.box) }
       return false
     })
-    figures = mergeBoxes(figures, 0, (a, b) => ({ box: unionBox(a.box, b.box), count: a.count + b.count }))
+    figures = mergeBoxes(figures, 0, (a, b) => ({ box: unionBox(a.box, b.box), count: a.count + b.count, blocks: a.blocks + b.blocks }))
 
     const out: LayoutPicture[] = []
     if (withPictures) {

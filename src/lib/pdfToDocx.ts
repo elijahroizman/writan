@@ -30,13 +30,15 @@ interface PictureOut {
   figure: boolean
 }
 
+/** `ocr`: read off a picture (recognized, or a scan's invisible text layer). */
+type FragmentOut = PageLayout['fragments'][number] & { ocr?: boolean }
+
 interface PageOut {
   width: number
   height: number
-  fragments: PageLayout['fragments']
+  fragments: FragmentOut[]
   rules: PageLayout['rules']
   pictures: PictureOut[]
-  scanned: boolean
 }
 
 export async function pdfToDocx(opts: PdfToDocxOptions): Promise<Uint8Array> {
@@ -57,7 +59,7 @@ export async function pdfToDocx(opts: PdfToDocxOptions): Promise<Uint8Array> {
       signal?.throwIfAborted()
       onProgress?.('Building Word document…')
       const { ocrResultsToDocx } = await import('./ocr/toDocx')
-      return await ocrResultsToDocx(results, opts.title)
+      return await ocrResultsToDocx(results, opts.title, { width: pages[0].width, height: pages[0].height })
     }
 
     const out: PageOut[] = []
@@ -75,9 +77,10 @@ export async function pdfToDocx(opts: PdfToDocxOptions): Promise<Uint8Array> {
         media.push(encoded.bytes)
         offset += encoded.bytes.length
       }
-      // A scan with a text layer (an OCR'd PDF): its invisible text is the text.
+      // A scan with a text layer (an OCR'd PDF): its invisible text is the text read off the scan.
       const textLayer = layout.invisibleChars > 20 && layout.invisibleChars > layout.visibleChars
-      out.push({ width: layout.width, height: layout.height, fragments: layout.fragments, rules: layout.rules, pictures, scanned: textLayer })
+      const fragments = textLayer ? layout.fragments.map((f) => ({ ...f, ocr: true })) : layout.fragments
+      out.push({ width: layout.width, height: layout.height, fragments, rules: layout.rules, pictures })
     }
 
     if (scans.length && opts.recognize) {
@@ -85,8 +88,10 @@ export async function pdfToDocx(opts: PdfToDocxOptions): Promise<Uint8Array> {
       for (const result of results) {
         const page = out[result.pageIndex]
         if (!page) continue
-        page.fragments = ocrFragments(result, page.width, page.height)
-        page.scanned = true
+        // The page's own text stays; recognized words fill in where it has none.
+        const own = page.fragments
+        const free = (f: FragmentOut) => !own.some((o) => f.x + f.w / 2 >= o.x && f.x + f.w / 2 <= o.x + o.w && f.y + f.h / 2 >= o.y && f.y + f.h / 2 <= o.y + o.h)
+        page.fragments = [...own, ...ocrFragments(result, page.width, page.height).filter(free)]
       }
     }
     signal?.throwIfAborted()
@@ -98,20 +103,18 @@ export async function pdfToDocx(opts: PdfToDocxOptions): Promise<Uint8Array> {
       blob.set(bytes, at)
       at += bytes.length
     }
-    const json = JSON.stringify({ title: opts.title, pages: out })
-    if (import.meta.env.VITE_TEST_HOOKS) (window as { __pdfLayout?: string }).__pdfLayout = json
     const wasm = await loadEngine()
-    return wasm.pdfToDocx(json, blob)
+    return wasm.pdfToDocx(JSON.stringify({ title: opts.title, pages: out }), blob)
   } finally {
     engine.destroy()
   }
 }
 
 /** Recognized words as layout fragments, one per word, in points. */
-function ocrFragments(result: OcrPageResult, widthPt: number, heightPt: number): PageLayout['fragments'] {
+function ocrFragments(result: OcrPageResult, widthPt: number, heightPt: number): FragmentOut[] {
   const sx = result.widthPx > 0 ? widthPt / result.widthPx : 0.75
   const sy = result.heightPx > 0 ? heightPt / result.heightPx : 0.75
-  const fragments: PageLayout['fragments'] = []
+  const fragments: FragmentOut[] = []
   if (result.detectedRotation !== 0) {
     // Words on a turned scan are boxed on the picture as it lies; stack its lines instead.
     let y = 72
@@ -120,7 +123,7 @@ function ocrFragments(result: OcrPageResult, widthPt: number, heightPt: number):
         const text = line.text.trim()
         if (!text) continue
         y += 14
-        fragments.push({ x: 72, y: y - 9, w: widthPt - 144, h: 12, baseline: y, size: 11, rtl: line.rtl, spans: [{ text, x: 72, w: widthPt - 144, baseline: y, size: 11, bold: false, italic: false }] })
+        fragments.push({ x: 72, y: y - 9, w: widthPt - 144, h: 12, baseline: y, size: 11, rtl: line.rtl, ocr: true, spans: [{ text, x: 72, w: widthPt - 144, baseline: y, size: 11, bold: false, italic: false }] })
       }
       y += 10
     }
@@ -137,7 +140,7 @@ function ocrFragments(result: OcrPageResult, widthPt: number, heightPt: number):
       const h = word.bbox.h * sy
       const baseline = (word.baseline ?? line.baseline ?? word.bbox.y + word.bbox.h) * sy
       const size = Math.max(4, Math.min(72, word.fontSizePx > 0 ? word.fontSizePx * sy : lineHeight / 1.2))
-      fragments.push({ x, y, w, h, baseline, size, rtl: word.rtl, spans: [{ text, x, w, baseline, size, bold: false, italic: false }] })
+      fragments.push({ x, y, w, h, baseline, size, rtl: word.rtl, ocr: true, spans: [{ text, x, w, baseline, size, bold: false, italic: false }] })
     }
   }
   return fragments

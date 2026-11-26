@@ -52,6 +52,8 @@ export interface OcrPageResult {
 export interface OcrDocumentInput {
   title?: string
   pages: OcrPageResult[]
+  /** The page to set the document on, in points. */
+  page?: { width: number; height: number }
 }
 
 export interface OcrPageInput {
