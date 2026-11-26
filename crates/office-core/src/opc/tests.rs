@@ -35,6 +35,30 @@ fn builds_writes_and_reads_back() {
 }
 
 #[test]
+fn shared_part_bytes_do_not_stay_in_the_package() {
+    let pkg = Package::read(&sample().to_bytes().unwrap()).unwrap();
+    let name = "word/media/image1.png";
+    let first = pkg.part_arc(name).unwrap();
+    let index = pkg.find(name).unwrap();
+    assert!(pkg.parts[index].data.get().is_none(), "reading shared bytes must not inflate the part into the package");
+
+    let second = pkg.part_arc(name).unwrap();
+    assert_eq!(&*first, &*second);
+    assert!(!Arc::ptr_eq(&first, &second), "unchanged source bytes are decompressed for each caller, then dropped");
+
+    assert_eq!(pkg.part(name).unwrap(), &*first);
+    assert!(pkg.parts[index].data.get().is_some(), "the borrowing read keeps its historic cache");
+}
+
+#[test]
+fn shared_package_bytes_are_not_copied() {
+    let bytes: Arc<[u8]> = Arc::from(sample().to_bytes().unwrap());
+    let pkg = Package::read_arc(bytes.clone()).unwrap();
+    assert!(Arc::strong_count(&bytes) > 1, "the package keeps the shared bytes themselves");
+    assert_eq!(pkg.part("word/media/image1.png").unwrap(), &[0x89, b'P', b'N', b'G', 1, 2, 3]);
+}
+
+#[test]
 fn unchanged_round_trip_is_byte_identical() {
     let first = sample().to_bytes().unwrap();
     let second = Package::read(&first).unwrap().to_bytes().unwrap();

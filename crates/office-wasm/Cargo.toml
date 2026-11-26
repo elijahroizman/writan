@@ -15,6 +15,7 @@ office-word.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 wasm-bindgen = "=0.2.129"
+js-sys = { version = "=0.3.106", default-features = false }
 office-slides.workspace = true
 office-sheets.workspace = true
 office_oxide.workspace = true

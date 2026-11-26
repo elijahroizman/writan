@@ -190,7 +190,12 @@ impl SheetsView {
 
     /// Opens a workbook or CSV file with a known clock serial, avoiding duplicate open-time passes.
     pub fn open_with_now(bytes: &[u8], name: &str, now: Option<f64>) -> office_core::Result<SheetsView> {
-        let mut doc = Compiler::new().with_layer(Sheets).read(bytes, Some(name))?;
+        Self::open_with_now_arc(std::sync::Arc::from(bytes), name, now)
+    }
+
+    /// Opens a workbook whose bytes are already shared, without copying its zip again.
+    pub fn open_with_now_arc(bytes: std::sync::Arc<[u8]>, name: &str, now: Option<f64>) -> office_core::Result<SheetsView> {
+        let mut doc = Compiler::new().with_layer(Sheets).read_arc(bytes, Some(name))?;
         let kind = doc.kind;
         if !matches!(kind, Kind::Sheets | Kind::Csv) {
             return Err(office_core::Error::Invalid(format!("this is {}, not an Excel workbook", kind.described())));

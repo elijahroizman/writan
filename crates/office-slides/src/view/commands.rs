@@ -723,7 +723,7 @@ impl SlidesView {
             .map(|id| {
                 let bytes = self.media(&id)?;
                 let content_type = self.media_type(&id)?;
-                Some((id, ClipboardMedia { content_type, bytes }))
+                Some((id, ClipboardMedia { content_type, bytes: bytes.to_vec() }))
             })
             .collect();
         let Some(media) = media else { return "[]".into() };

@@ -138,9 +138,14 @@ impl SheetsView {
     }
 
     /// A picture's bytes and media type, by part name.
-    pub fn media(&self, part: &str) -> Option<(&[u8], Option<&str>)> {
+    pub fn media(&self, part: &str) -> Option<(std::sync::Arc<[u8]>, Option<&str>)> {
         let pkg = self.doc.package.as_ref()?;
-        Some((pkg.part(part).ok()?, pkg.content_type(part)))
+        Some((pkg.part_arc(part).ok()?, pkg.content_type(part)))
+    }
+
+    /// A picture's media type, without inflating its bytes.
+    pub fn media_type(&self, part: &str) -> Option<&str> {
+        self.doc.package.as_ref()?.content_type(part)
     }
 
     /// A sheet's charts as the app draws them.

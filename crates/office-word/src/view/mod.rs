@@ -262,7 +262,12 @@ pub struct Overlay {
 impl WordView {
     /// Opens a Word file.
     pub fn open(bytes: &[u8]) -> office_core::Result<WordView> {
-        let doc = Compiler::new().with_layer(Words).read(bytes, Some("document.docx"))?;
+        Self::open_arc(std::sync::Arc::from(bytes))
+    }
+
+    /// Opens a Word file whose bytes are already shared, without copying its zip again.
+    pub fn open_arc(bytes: std::sync::Arc<[u8]>) -> office_core::Result<WordView> {
+        let doc = Compiler::new().with_layer(Words).read_arc(bytes, Some("document.docx"))?;
         // The bytes say what they are, whatever the file's name: a workbook named .docx isn't a flow.
         if doc.kind != office_core::Kind::Word {
             return Err(office_core::Error::Invalid(format!("this is {}, not a Word document", doc.kind.described())));

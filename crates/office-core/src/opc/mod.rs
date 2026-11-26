@@ -49,7 +49,7 @@ struct Part {
     name: String,
     /// Entry in the source zip, while the part is unchanged.
     entry: Option<usize>,
-    data: Arc<OnceLock<Vec<u8>>>,
+    data: Arc<OnceLock<Arc<[u8]>>>,
     /// The bytes parsed, once something asks for them shared (see [`Package::xml_shared`]).
     parsed: Arc<OnceLock<Arc<XmlDoc>>>,
 }
@@ -67,9 +67,13 @@ impl Package {
     }
 
     pub fn read(bytes: &[u8]) -> Result<Package> {
+        Self::read_arc(Arc::from(bytes))
+    }
+
+    /// Reads a package whose bytes are already shared, without copying them again.
+    pub fn read_arc(data: Arc<[u8]>) -> Result<Package> {
         #[cfg(test)]
         READS.with(|n| n.set(n.get() + 1));
-        let data: Arc<[u8]> = Arc::from(bytes);
         let mut archive = ZipArchive::new(Cursor::new(data))?;
         let mut parts: Vec<Part> = Vec::new();
         let mut index = HashMap::new();
@@ -179,6 +183,18 @@ impl Package {
         self.part_with_limit(name, MAX_SIZE)
     }
 
+    /// A part's bytes in shared ownership. Unlike [`Package::part`], an unchanged part is
+    /// decompressed for the caller without keeping that inflated copy in the package: large
+    /// pictures are read once for the screen, while saving copies their still-compressed source.
+    pub fn part_arc(&self, name: &str) -> Result<Arc<[u8]>> {
+        let part = &self.parts[self.find(name).ok_or_else(|| Error::MissingPart(name.into()))?];
+        if let Some(data) = part.data.get() {
+            return Ok(data.clone());
+        }
+        let entry = part.entry.expect("a part without bytes comes from the source zip");
+        Ok(Arc::from(self.decompress(entry, MAX_SIZE)?))
+    }
+
     /// XML source bytes, bounded before decompression. Used by streaming readers as well
     /// as the tree parser, so a large sheet cannot bypass the XML allocation limit.
     pub fn xml_bytes(&self, name: &str) -> Result<&[u8]> {
@@ -195,7 +211,7 @@ impl Package {
         }
         let entry = part.entry.expect("a part without bytes comes from the source zip");
         let data = self.decompress(entry, limit)?;
-        Ok(part.data.get_or_init(|| data))
+        Ok(part.data.get_or_init(|| Arc::from(data)))
     }
 
     /// A part, parsed.
@@ -261,7 +277,7 @@ impl Package {
     /// Adds or replaces a part.
     pub fn put(&mut self, name: &str, data: Vec<u8>, media_type: &str) {
         let name = name.trim_start_matches('/');
-        let data = Arc::new(OnceLock::from(data));
+        let data = Arc::new(OnceLock::from(Arc::from(data)));
         match self.find(name) {
             Some(i) => {
                 let part = &mut self.parts[i];
@@ -288,7 +304,7 @@ impl Package {
     pub fn replace(&mut self, name: &str, data: Vec<u8>) -> Result<()> {
         let i = self.find(name).ok_or_else(|| Error::MissingPart(name.into()))?;
         self.parts[i].entry = None;
-        self.parts[i].data = Arc::new(OnceLock::from(data));
+        self.parts[i].data = Arc::new(OnceLock::from(Arc::from(data)));
         self.parts[i].parsed = Arc::default();
         Ok(())
     }

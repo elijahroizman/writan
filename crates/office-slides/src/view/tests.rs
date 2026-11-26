@@ -512,7 +512,7 @@ fn clipboard_pictures_transfer_to_an_independent_deck() {
     let reopened = SlidesView::open(&target.save().unwrap()).unwrap();
     let ids = picture_ids(&reopened.slides()[0].frames);
     assert_eq!(ids.len(), 1);
-    assert_eq!(reopened.media(ids[0]).unwrap(), CLIPBOARD_PNG);
+    assert_eq!(&*reopened.media(ids[0]).unwrap(), CLIPBOARD_PNG);
     assert_eq!(reopened.media_type(ids[0]).as_deref(), Some("image/png"));
 }
 
@@ -570,7 +570,7 @@ fn clipboard_pictures_remap_conflicts_and_nested_groups() {
                 (ids[3], source_svg.as_slice(), "image/svg+xml"),
                 (ids[4], CLIPBOARD_PNG, "image/png"),
             ] {
-                assert_eq!(reopened.media(id).unwrap(), bytes);
+                assert_eq!(&*reopened.media(id).unwrap(), bytes);
                 assert_eq!(reopened.media_type(id).as_deref(), Some(content_type));
             }
         }

@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use office_engine::pos::{Path, Pos, Selection};
 
 use crate::word::byte_offset;
-use crate::{err, json, Host, JsMeasurer};
+use crate::{byte_array, err, json, shared_bytes, Host, JsMeasurer};
 
 #[wasm_bindgen]
 pub struct SlidesDoc {
@@ -93,12 +93,12 @@ struct TextPatchIn {
     align: Option<String>,
 }
 
-fn open_view(bytes: &[u8]) -> office_core::Result<SlidesView> {
-    if is_compound_file(bytes) {
-        let pptx = legacy_ppt_to_pptx(bytes)?;
-        SlidesView::open(&pptx)
+fn open_view(bytes: std::sync::Arc<[u8]>) -> office_core::Result<SlidesView> {
+    if is_compound_file(&bytes) {
+        let pptx = legacy_ppt_to_pptx(&bytes)?;
+        SlidesView::open_arc(std::sync::Arc::from(pptx))
     } else {
-        SlidesView::open(bytes)
+        SlidesView::open_arc(bytes)
     }
 }
 
@@ -123,7 +123,8 @@ pub(crate) fn legacy_ppt_to_pptx(bytes: &[u8]) -> office_core::Result<Vec<u8>> {
 impl SlidesDoc {
     /// Opens a PowerPoint file, or makes a new deck when `bytes` is empty.
     #[wasm_bindgen(constructor)]
-    pub fn new(bytes: &[u8], host: Host) -> Result<SlidesDoc, JsError> {
+    pub fn new(bytes: js_sys::Uint8Array, host: Host) -> Result<SlidesDoc, JsError> {
+        let bytes = shared_bytes(&bytes);
         let view = if bytes.is_empty() { SlidesView::blank() } else { open_view(bytes).map_err(err)? };
         Ok(SlidesDoc { view, host, matches: Vec::new(), query: String::new() })
     }
@@ -616,8 +617,8 @@ impl SlidesDoc {
         self.view.save().map_err(err)
     }
 
-    pub fn media(&self, id: &str) -> Option<Vec<u8>> {
-        self.view.media(id)
+    pub fn media(&self, id: &str) -> Option<js_sys::Uint8Array> {
+        self.view.media(id).map(|b| byte_array(&b))
     }
 
     #[wasm_bindgen(js_name = mediaType)]
@@ -722,7 +723,7 @@ mod tests {
         let ppt = minimal_ppt("Legacy slide");
         let pptx = legacy_ppt_to_pptx(&ppt).unwrap();
         assert!(pptx.starts_with(b"PK"));
-        let mut view = open_view(&ppt).unwrap();
+        let mut view = open_view(std::sync::Arc::from(ppt)).unwrap();
         assert_eq!(view.slide_infos().len(), 1);
         let saved = view.save().unwrap();
         assert!(saved.starts_with(b"PK"));

@@ -6,7 +6,7 @@ use office_word::{ListKind, StoryKind};
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::{err, json, Host, JsMeasurer};
+use crate::{byte_array, err, json, shared_bytes, Host, JsMeasurer};
 
 #[wasm_bindgen]
 pub struct WordDoc {
@@ -234,8 +234,9 @@ fn utf16_offset(text: &str, bytes: u32) -> u32 {
 impl WordDoc {
     /// Opens a Word file, or makes a new A4 document when `bytes` is empty.
     #[wasm_bindgen(constructor)]
-    pub fn new(bytes: &[u8], host: Host) -> Result<WordDoc, JsError> {
-        let view = if bytes.is_empty() { WordView::blank() } else { WordView::open(bytes).map_err(err)? };
+    pub fn new(bytes: js_sys::Uint8Array, host: Host) -> Result<WordDoc, JsError> {
+        let bytes = shared_bytes(&bytes);
+        let view = if bytes.is_empty() { WordView::blank() } else { WordView::open_arc(bytes).map_err(err)? };
         Ok(WordDoc { view, host, matches: Vec::new(), drawn: Default::default(), progressive: false })
     }
 
@@ -862,9 +863,10 @@ impl WordDoc {
     }
 
     /// A picture's bytes, by media id.
-    pub fn media(&self, id: &str) -> Option<Vec<u8>> {
+    pub fn media(&self, id: &str) -> Option<js_sys::Uint8Array> {
         // Pictures read into the model are media; floating ones are drawn straight from their part.
-        self.view.doc.media_bytes(id).ok().map(|b| b.to_vec()).or_else(|| self.view.doc.package.as_ref()?.part(id).ok().map(<[u8]>::to_vec))
+        let bytes = self.view.doc.media_bytes(id).ok().or_else(|| self.view.doc.package.as_ref()?.part_arc(id).ok())?;
+        Some(byte_array(&bytes))
     }
 
     /// A picture's media type.

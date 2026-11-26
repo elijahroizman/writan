@@ -64,6 +64,24 @@ pub(crate) fn err(e: impl std::fmt::Display) -> JsError {
     JsError::new(&e.to_string())
 }
 
+/// Copies bytes straight into the JavaScript array handed back, without first making another
+/// full-size Rust vector inside WebAssembly memory.
+pub(crate) fn byte_array(bytes: &[u8]) -> js_sys::Uint8Array {
+    let out = js_sys::Uint8Array::new_with_length(bytes.len() as u32);
+    out.copy_from(bytes);
+    out
+}
+
+/// Copies JavaScript bytes once into shared Rust memory. Taking the array itself, rather than a
+/// borrowed slice, avoids wasm-bindgen first copying it into temporary WebAssembly memory: that
+/// temporary peak never comes down, because WebAssembly memory does not shrink.
+pub(crate) fn shared_bytes(bytes: &js_sys::Uint8Array) -> std::sync::Arc<[u8]> {
+    let mut data = std::sync::Arc::new_uninit_slice(bytes.length() as usize);
+    bytes.copy_to_uninit(std::sync::Arc::get_mut(&mut data).expect("a new Arc is unique"));
+    // SAFETY: `copy_to_uninit` panics on a length mismatch and otherwise writes every byte.
+    unsafe { data.assume_init() }
+}
+
 /// What kind of document some bytes are: `word`, `slides`, `sheets` or `csv`.
 #[wasm_bindgen]
 pub fn detect(bytes: &[u8], name: &str) -> Option<String> {
