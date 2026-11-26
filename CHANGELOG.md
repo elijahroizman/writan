@@ -2,6 +2,17 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.17.0 — 2026-11-26
+
+### Slides
+- Nine themes for presentations: Harbor, Summit, Grove, Copper, Graphite, Meridian, Standard, Gallery and Dune. Pick one from **Design › Theme** in the inspector. Every slide keeps its content and moves to the theme's layout of the same name, and **Default** switches back to the plain design. One undo puts it back.
+- **New presentation** still starts with the plain two-slide deck.
+- Themes can't be changed while a deck is shared live.
+
+### Updates
+- If checking for an update fails, Writan tries again by itself after 5 seconds, 30 seconds and 2 minutes, so a short network hiccup no longer leaves "Couldn't check for an update" up until the next check hours later.
+- A new version is announced to installed copies only once every download for it is ready. Before, a Mac or PC that checked in the first minutes of a release could miss it.
+
 ## 0.16.1 — 2026-11-26
 
 ### Scanned PDFs
