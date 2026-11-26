@@ -109,6 +109,9 @@ export default function PluginEditor({ tab, active }: EditorProps) {
   const [ready, setReady] = useState(false)
   const [view, setView] = useState<ViewMode>(() => initialView(!!tab.bytes))
   const [findOpen, setFindOpen] = useState(false)
+  const findOpenNow = useRef(false)
+  findOpenNow.current = findOpen
+  const [findFocus, setFindFocus] = useState(0)
   const [found, setFound] = useState<SearchResult | null>(null)
   const findQuery = useRef('')
   const theme = useWorkspace((s) => s.theme)
@@ -208,6 +211,8 @@ export default function PluginEditor({ tab, active }: EditorProps) {
       markSaved: it.markSaved && (() => it.markSaved!()),
       find: it.search
         ? () => {
+            setFindFocus((n) => n + 1)
+            if (findOpenNow.current) return
             setFindOpen(true)
             // The bar comes back with its last query: show its matches again (and let a picture start reading).
             setFound(it.search!(findQuery.current, 0))
@@ -263,6 +268,7 @@ export default function PluginEditor({ tab, active }: EditorProps) {
         }}
         onNext={() => search(1)}
         onPrev={() => search(-1)}
+        focusRequest={findFocus}
         count={found && !found.pending ? found.count : null}
         current={found && !found.pending ? Math.max(0, found.current) : null}
       />

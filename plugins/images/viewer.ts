@@ -615,8 +615,6 @@ export function mountViewer(element: HTMLElement, context: PluginEditorContext):
         if (revision !== started) throw new Error('The picture changed. Recognize the text again.')
         ocrResult = result
         ocrLangs = langs
-        // Find can use it too, unless it's already reading.
-        if (!findJob) useFindText({ geometry: geometry(), langs, result })
       }
       ocrText.value = ocrResult.text
       if (searchable) {

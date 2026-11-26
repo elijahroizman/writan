@@ -3093,6 +3093,11 @@ button.section-title:hover {
   display: grid;
 }
 
+/* Under a plugin's own toolbar along the top (the Images viewer's), which it would cover in a narrow window. */
+.plugin-editor .find-bar {
+  top: 58px;
+}
+
 .plugin-group h4 {
   margin: 18px 0 4px;
   font-size: 11.5px;

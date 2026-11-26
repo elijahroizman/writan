@@ -710,6 +710,9 @@ async function verifyImageFind(page, real) {
     window.__workspace.useWorkspace.getState().openUnsaved(Uint8Array.fromBase64(encoded), 'notes.jpg'),
   await page.evaluate(() => window.ocrScans.english.jpeg.toBase64()))
   assert.ok(tabId)
+  // A narrow window: Find mustn't cover the picture's toolbar.
+  const viewport = page.viewportSize()
+  await page.setViewportSize({ width: 800, height: viewport.height })
   try {
     await page.locator('.img-viewer canvas.img-picture').waitFor({ timeout: 30_000 })
     assert.equal(await page.getByRole('button', { name: /Recognize Text/ }).count(), 0, 'No OCR button on the toolbar')
@@ -725,6 +728,8 @@ async function verifyImageFind(page, real) {
     await find.fill('Quick Brown')
     await waitCount(/^1 of 1$/)
     assert.equal(await recognitions(), before + 1, 'The picture is read once')
+    const [bar, tools] = await Promise.all(['.find-bar', '.img-toolbar'].map(s => page.locator(s).boundingBox()))
+    assert(bar.y >= tools.y + tools.height || bar.x >= tools.x + tools.width, 'Find is clear of the toolbar: ' + JSON.stringify({ bar, tools }))
     assert(await highlighted() > 50, 'The match is highlighted on the picture')
     if (process.env.IMAGE_FIND_SHOT) await page.locator('.img-viewer:visible').screenshot({ path: process.env.IMAGE_FIND_SHOT })
 
@@ -744,6 +749,10 @@ async function verifyImageFind(page, real) {
     await page.mouse.down()
     await page.mouse.move(box.x + box.width * 0.5, box.y + box.height * 0.65, { steps: 5 })
     await page.mouse.up()
+    // ⌘F with the bar open goes back to it, keeping the match.
+    await page.keyboard.press(process.platform === 'darwin' ? 'Meta+F' : 'Control+F')
+    await page.waitForFunction(() => document.activeElement?.getAttribute('aria-label') === 'Find')
+    assert.match(await count(), /^1 of \d+$/)
     await find.fill('Quick Brown')
     await waitCount(/^1 of 1$/)
     assert.equal(await recognitions(), before + 1, 'A mark does not read the picture again')
@@ -762,6 +771,7 @@ async function verifyImageFind(page, real) {
     assert.equal(await highlighted(), 0, 'No highlights once Find closes')
     console.log('PASS  ⌘F in a picture reads its text once and highlights the matches, again after a turn')
   } finally {
+    await page.setViewportSize(viewport)
     await page.evaluate(async () => {
       const { tabs, closeTab, markDirty } = window.__workspace.useWorkspace.getState()
       // The marks made above aren't worth asking about.
