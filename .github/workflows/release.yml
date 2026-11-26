@@ -113,6 +113,14 @@ jobs:
     env:
       PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
     steps:
+      # Rerunning a matrix job can reuse prepare's old output after the release went live.
+      - name: Check the draft before retrying uploads
+        if: github.run_attempt > 1 && env.PUBLISH == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
+        run: gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .draft | grep -Fx true
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
