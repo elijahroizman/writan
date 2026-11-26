@@ -58,6 +58,7 @@ jobs:
               - 'public/**'
               - 'tests/stress/ui/**'
               - 'tests/stress/native/**'
+              - 'tests/stress/perf/**'
               - 'tests/stress/samples/**'
               - 'index.html'
               - 'package.json'
