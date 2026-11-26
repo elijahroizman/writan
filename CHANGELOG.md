@@ -2,6 +2,36 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.16.0 — 2026-11-26
+
+### PDF export
+- Word documents, presentations and workbooks export as real PDFs instead of pictures of pages. Text can be selected, searched and copied, links work, and the files are much smaller: a one-page Word document went from 65 KB to 27 KB.
+- Fonts are embedded, so the PDF looks the same everywhere. Hebrew and Arabic come out in the right order, and equations and Excel charts stay sharp at any zoom.
+- Text in scripts the PDF fonts don't cover, like Chinese, Japanese, Korean, Thai, Hindi or emoji, is drawn as it shows on screen and can still be searched.
+- A workbook that runs over several pages finds each row on the page that shows it.
+
+### Recognize text (OCR)
+- Writan can read the text in scanned PDFs and pictures, on your computer. Nothing is sent anywhere. Pick the languages in **Settings › General › Offline OCR**. Each one is a small download, once.
+- When a PDF looks scanned, a banner offers to recognize its text. Choose the current page, the scanned pages, some pages or all of them, and get a searchable copy. The original file isn't changed.
+- A signed PDF asks first, because the searchable copy can't keep the signature.
+- **Convert file…** turns a scanned PDF into a Word document, and a picture into Word, Markdown or plain text.
+- In a picture, **Recognize Text (OCR)** shows the text to copy, or saves it as Word or a searchable PDF.
+- **File › Recognize Text (OCR)…**, or ⌥⌘O on a Mac and Ctrl+Alt+O on Windows and Linux.
+
+### Pictures
+- Writan opens WebP pictures, and can be the default app for them. To mark one up, open a JPEG copy.
+- A photo converted to PDF stays photo-sized.
+
+### AI agents
+- Each Word paragraph has a short id, like `#k3f9x2`, that stays the same while others add or delete paragraphs. Agents use it instead of paragraph numbers, so a note like "Claiming #h4k2m1" still means the same paragraph later. In the chat, an id is a link to its paragraph.
+- A chat message that names a paragraph shows under it when an agent reads the document, so review notes stay with their paragraph after their agent leaves.
+- An agent that joins later sees who wrote what before it came, including people and agents who have left.
+- Agents hear when another agent comes into the document or leaves, and can ask for only what changed since they last read.
+- An agent won't replace a paragraph someone else changed after it last read it.
+
+### Thanks
+- Vector PDF export, offline OCR and WebP support are by Yoav Hanuka.
+
 ## 0.15.3 — 2026-11-25
 
 ### AI agents
