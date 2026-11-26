@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use office_core::drawing::Theme;
+use office_core::drawing::{Color, Theme};
 use office_core::model::{Body, Frame, FrameContent, Origin, Placeholder, RunProps, Slide, SlideSize};
 use office_core::opc::{content_types::types, names, rels::kind, Package};
 use office_core::xml::{ns, Element};
@@ -115,6 +115,9 @@ impl SlidesView {
             .part
             .clone();
         let donor_layout_count = layouts.len();
+        let legacy_frames = (!default).then(|| {
+            templates::plain_title(scale.0, scale.1).into_iter().chain(templates::plain_content(scale.0, scale.1)).collect::<Vec<_>>()
+        });
         let mut fallbacks = HashMap::new();
         for slide in &before.slides {
             let Some(old) = before.templates.iter().find(|t| Some(t.part.as_str()) == slide.layout.as_deref()) else { continue };
@@ -164,6 +167,11 @@ impl SlidesView {
                 slide.origin = Origin::new(origin);
             }
             for (frame, previous) in slide.frames.iter_mut().zip(&original.frames) {
+                if plain.is_none() && previous.placeholder.is_none() {
+                    if let Some(references) = &legacy_frames {
+                        inherit_legacy_ink(frame, references);
+                    }
+                }
                 let plain_frame = plain.as_ref().and_then(|plain| {
                     plain
                         .frames
@@ -279,6 +287,32 @@ fn plain_frames(view: &SlidesView, slide: &Slide, at: usize, (sx, sy): (f64, f64
         _ => templates::plain_content(sx, sy),
     };
     Some(PlainStarter { name, frames })
+}
+
+fn inherit_legacy_ink(frame: &mut Frame, references: &[Frame]) {
+    let legacy: Vec<_> = references
+        .iter()
+        .filter(|reference| frame.id == reference.id && frame.name == reference.name)
+        .filter_map(|reference| reference.paragraphs()[0].runs().next().map(|r| &r.props))
+        .collect();
+    if legacy.is_empty() {
+        return;
+    }
+    let FrameContent::Shape { text: Some(body), .. } = &mut frame.content else { return };
+    let role = if frame.name == "Title" { "tx1" } else { "tx2" };
+    let inherit = |props: &mut RunProps| {
+        if legacy.iter().any(|stock| props.font == stock.font && props.size == stock.size && props.color == stock.color) {
+            props.color = Some(Color::scheme(role));
+        }
+    };
+    for paragraph in &mut body.paragraphs {
+        for run in paragraph.runs_mut() {
+            inherit(&mut run.props);
+        }
+        if let Some(mark) = &mut paragraph.mark {
+            inherit(mark);
+        }
+    }
 }
 
 fn inherit_plain_frame(frame: &mut Frame, plain: &Frame) {
@@ -545,6 +579,34 @@ mod tests {
         assert_ne!(original, templates::plain_content(1.0, 1.0)[0].shape.xfrm);
         view.apply_theme("Default").unwrap();
         assert_eq!(heading(&SlidesView::open(&view.save().unwrap()).unwrap()), original);
+    }
+
+    #[test]
+    fn legacy_starter_ink_follows_the_dark_theme_without_remapping_the_slide() {
+        use office_core::drawing::Rgb;
+
+        let mut view = SlidesView::blank();
+        for slide in view.slides_mut() {
+            templates::clear_starter(slide);
+        }
+        let FrameContent::Shape { text: Some(body), .. } = &mut view.slides_mut()[1].frames[1].content else { panic!("starter bullets") };
+        body.paragraphs[1].runs_mut().next().unwrap().props.color = Some(Color::rgb(Rgb(255, 90, 40)));
+        let mut view = SlidesView::open(&view.save().unwrap()).unwrap();
+        let original = content(&view);
+        view.apply_theme("Graphite").unwrap();
+        assert_eq!(content(&view), original);
+        let expected = [[Rgb(255, 255, 255), Rgb(209, 215, 222)], [Rgb(255, 255, 255), Rgb(209, 215, 222)]];
+        for (slide, inks) in view.slides().iter().zip(expected) {
+            for (frame, ink) in slide.frames.iter().zip(inks) {
+                assert!(frame.placeholder.is_none());
+                let resolved = crate::resolve(&view.doc, slide, frame);
+                let color = resolved.paragraphs[0].1[0].color.as_ref().unwrap();
+                assert_eq!(crate::color(&view.doc, slide, color).rgb, ink);
+            }
+        }
+        let slide = &view.slides()[1];
+        let resolved = crate::resolve(&view.doc, slide, &slide.frames[1]);
+        assert_eq!(crate::color(&view.doc, slide, resolved.paragraphs[1].1[0].color.as_ref().unwrap()).rgb, Rgb(255, 90, 40));
     }
 
     #[test]
