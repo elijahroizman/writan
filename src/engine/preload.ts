@@ -32,3 +32,12 @@ export async function preloadEngine() {
     doc.free()
   }
 }
+
+/**
+ * Starts what opening an Office document waits for (the engine's WebAssembly, the base fonts) at
+ * the same moment as its editor's code, rather than after it. Both are shared and loaded once.
+ */
+export function startOfficeOpen() {
+  void loadEngine().catch(() => {})
+  void preloadFonts(BASE_FONTS)
+}

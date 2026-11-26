@@ -81,23 +81,25 @@ const EDITOR_LOADERS: Record<string, () => Promise<EditorModule>> = {
   csv: () => import('./editors/xlsx/SheetEditor'),
 }
 const loadedEditors: Record<string, ComponentType<EditorProps>> = {}
-const loadEditor = (kind: string) =>
-  EDITOR_LOADERS[kind]().then((m) => {
+const OFFICE_KINDS: ReadonlySet<string> = new Set(['docx', 'pptx', 'xlsx', 'csv'])
+const loadEditor = (kind: string) => {
+  // An Office editor needs the engine and fonts next: fetch them alongside its code.
+  if (OFFICE_KINDS.has(kind)) void import('./engine/preload').then((m) => m.startOfficeOpen()).catch(() => {})
+  return EDITOR_LOADERS[kind]().then((m) => {
     loadedEditors[kind] = m.default
     return m
   })
+}
 const BUILT_IN_EDITORS: Record<string, React.LazyExoticComponent<ComponentType<EditorProps>>> = Object.fromEntries(
   Object.keys(EDITOR_LOADERS).map((kind) => [kind, lazy(() => loadEditor(kind))]),
 )
 const PluginEditor = lazy(() => import('./plugins/PluginEditor'))
 const editorFor = (kind: DocKind): ComponentType<EditorProps> => loadedEditors[kind] ?? BUILT_IN_EDITORS[kind] ?? PluginEditor
 
-const OFFICE_KINDS: ReadonlySet<string> = new Set(['docx', 'pptx', 'xlsx', 'csv'])
-
 /**
  * Warms the office editors and engine the session is likely to need, once the app is idle.
- * Recent and open office files are the predictor; a Markdown-only session does not compile the
- * 8 MB engine in the background. Called after the startup opens so it doesn't compete with them.
+ * Recent and open office files are the predictor; a session whose files are all Markdown or text
+ * does not compile the 8 MB engine in the background. A new install, with no files, warms it. Called after the startup opens so it doesn't compete with them.
  */
 function preloadOfficeEditors() {
   const idle = (f: () => void) => (typeof window.requestIdleCallback === 'function' ? window.requestIdleCallback(f, { timeout: 3000 }) : globalThis.setTimeout(f, 1500))
@@ -112,6 +114,8 @@ function preloadOfficeEditors() {
       const kind = kindFromPath(recent.path)
       if (kind && OFFICE_KINDS.has(kind)) likely.add(kind === 'csv' ? 'xlsx' : kind)
     }
+    // Nothing to go on (a new install): warm them all, since a first file is most often Office.
+    if (!tabs.length && !recents.length) for (const kind of ['docx', 'pptx', 'xlsx']) likely.add(kind)
     if (!likely.size) return
     void (async () => {
       await Promise.all(['docx', 'pptx', 'xlsx'].filter((kind) => likely.has(kind)).map((kind) => loadEditor(kind).catch(() => {})))

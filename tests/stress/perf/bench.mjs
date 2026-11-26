@@ -13,7 +13,16 @@ const budget = (name, value, env) => {
   if (limit && value > limit) failures.push(`${name} ${Math.round(value)}ms over ${limit}ms`)
 }
 
-const { browser, page, logs } = await launch({ tauri: true, init: () => localStorage.setItem('workspace.engineTiming', '1') })
+// The startup budget is for a session whose files are all Markdown: it must not load the Office
+// engine. (A new install with no files at all warms it, expecting an Office file first.)
+const init =
+  type === 'startup'
+    ? () => {
+        localStorage.setItem('workspace.engineTiming', '1')
+        localStorage.setItem('workspace.recents', JSON.stringify([{ path: '/notes/Ideas.md', kind: 'md', openedAt: Date.now() }]))
+      }
+    : () => localStorage.setItem('workspace.engineTiming', '1')
+const { browser, page, logs } = await launch({ tauri: true, init })
 const infos = []
 page.on('console', (m) => {
   if (m.type() === 'info' && m.text().startsWith('[engine]')) infos.push(m.text())
