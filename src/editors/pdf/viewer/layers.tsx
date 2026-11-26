@@ -79,11 +79,146 @@ export const TextLayer = memo(function TextLayer({ store, index, page, recognize
   }, [runs])
 
   return (
-    <div className="text-layer" data-key={page.key}>
+    <div className="text-layer" data-key={page.key} onMouseDown={dragSelect}>
       {children}
     </div>
   )
 })
+
+// ── Selecting text with the mouse
+
+type Caret = { node: Node; offset: number }
+
+/**
+ * Selects text by pressing and dragging. The browser's own selection over this layer jumps
+ * whenever the pointer is between lines or beside them: it places the caret by the layer's
+ * invisible line breaks, which are stacked at the top of the page, not by where the text is. Here
+ * each end goes to the text nearest the pointer instead. Double and triple clicks stay the
+ * browser's (a word, a line).
+ */
+function dragSelect(e: React.MouseEvent<HTMLElement>) {
+  if (e.button !== 0 || e.detail > 1 || e.metaKey || e.ctrlKey || e.altKey) return
+  const pages = e.currentTarget.closest('.pdf-pages')
+  const sel = window.getSelection()
+  if (!pages || !sel) return
+  const scroller = pages.closest<HTMLElement>('.pdf-container')
+  const at = (x: number, y: number) => {
+    const layer = layerAt(pages, x, y)
+    return layer ? caretIn(layer, x, y) : null
+  }
+  // Shift-click extends the selection already on the pages.
+  const start: Caret | null = e.shiftKey && sel.anchorNode && pages.contains(sel.anchorNode) ? { node: sel.anchorNode, offset: sel.anchorOffset } : at(e.clientX, e.clientY)
+  if (!start) return
+  e.preventDefault()
+  scroller?.focus({ preventScroll: true })
+  let last = { x: e.clientX, y: e.clientY }
+  let end = start
+  const extend = () => {
+    end = at(last.x, last.y) ?? end
+    sel.setBaseAndExtent(start.node, start.offset, end.node, end.offset)
+  }
+  extend()
+  // Near or past the edge of the view, the pages scroll and the selection follows.
+  let frame = 0
+  const scroll = () => {
+    frame = 0
+    if (!scroller) return
+    const r = scroller.getBoundingClientRect()
+    const edge = 16
+    const speed = (p: number, lo: number, hi: number) => (p < lo + edge ? Math.max(-40, p - lo - edge) : p > hi - edge ? Math.min(40, p - hi + edge) : 0)
+    const dx = speed(last.x, r.left, r.right)
+    const dy = speed(last.y, r.top, r.bottom)
+    if (!dx && !dy) return
+    scroller.scrollBy(dx / 2, dy / 2)
+    extend()
+    frame = requestAnimationFrame(scroll)
+  }
+  const move = (ev: MouseEvent) => {
+    last = { x: ev.clientX, y: ev.clientY }
+    extend()
+    frame ||= requestAnimationFrame(scroll)
+  }
+  const up = () => {
+    cancelAnimationFrame(frame)
+    window.removeEventListener('mousemove', move)
+    window.removeEventListener('mouseup', up)
+    window.removeEventListener('blur', up)
+  }
+  window.addEventListener('mousemove', move)
+  window.addEventListener('mouseup', up)
+  window.addEventListener('blur', up)
+}
+
+/** The text layer of the page under (or else nearest) a point, if its text has loaded. */
+function layerAt(pages: Element, x: number, y: number): HTMLElement | null {
+  let best: HTMLElement | null = null
+  let bestDist = Infinity
+  for (const page of pages.querySelectorAll<HTMLElement>('.page')) {
+    const r = page.getBoundingClientRect()
+    const d = Math.max(r.top - y, 0, y - r.bottom) * 4 + Math.max(r.left - x, 0, x - r.right)
+    if (d < bestDist) {
+      bestDist = d
+      best = page
+    }
+  }
+  const layer = best?.querySelector<HTMLElement>('.text-layer')
+  return layer?.querySelector('span[data-run]') ? layer : null
+}
+
+/**
+ * The place in `layer`'s text nearest a point: in the run under it; else in the nearest run on
+ * the same line, unless the point is over another column's text; else in the nearest run.
+ */
+function caretIn(layer: HTMLElement, x: number, y: number): Caret | null {
+  let inside: { span: HTMLElement; area: number } | null = null
+  let row: { span: HTMLElement; r: DOMRect; d: number } | null = null
+  let near: { span: HTMLElement; r: DOMRect; d: number; over: boolean } | null = null
+  for (const span of layer.querySelectorAll<HTMLElement>('span[data-run]')) {
+    const r = span.getBoundingClientRect()
+    const dx = Math.max(r.left - x, 0, x - r.right)
+    const dy = Math.max(r.top - y, 0, y - r.bottom)
+    // Overlapping runs (letters drawn twice, a ligature split in two): the smaller one.
+    if (!dx && !dy) {
+      if (!inside || r.width * r.height < inside.area) inside = { span, area: r.width * r.height }
+    } else if (!dy) {
+      if (!row || dx < row.d) row = { span, r, d: dx }
+    }
+    const d = Math.hypot(dx, dy)
+    if (!near || d < near.d) near = { span, r, d, over: !dx }
+  }
+  const differentColumn = (a: DOMRect, b: DOMRect) => a.right < b.left || b.right < a.left
+  const span = inside?.span ?? (row && !(near?.over && differentColumn(row.r, near.r)) ? row.span : near?.span)
+  const text = span?.firstChild
+  return text ? { node: text, offset: offsetIn(text, x, y) } : null
+}
+
+/** How many of a run's characters come before a point, along the direction its text runs. */
+function offsetIn(text: Node, x: number, y: number) {
+  const length = text.textContent?.length ?? 0
+  const range = document.createRange()
+  const centers: number[] = []
+  const units: number[] = []
+  const rects: DOMRect[] = []
+  for (let i = 0; i < length; ) {
+    const code = text.textContent!.charCodeAt(i)
+    const n = code >= 0xd800 && code < 0xdc00 && i + 1 < length ? 2 : 1
+    range.setStart(text, i)
+    range.setEnd(text, i + n)
+    rects.push(range.getBoundingClientRect())
+    units.push(n)
+    i += n
+  }
+  if (!rects.length) return 0
+  const first = rects[0]
+  const lastRect = rects[rects.length - 1]
+  const vertical = rects.length > 1 && Math.abs(lastRect.top - first.top) > Math.abs(lastRect.left - first.left)
+  const sign = (vertical ? lastRect.top - first.top : lastRect.left - first.left) < 0 ? -1 : 1
+  for (const r of rects) centers.push(sign * (vertical ? r.top + r.height / 2 : r.left + r.width / 2))
+  const p = sign * (vertical ? y : x)
+  let offset = 0
+  for (let i = 0; i < centers.length && centers[i] < p; i++) offset += units[i]
+  return offset
+}
 
 /**
  * Drops a text selection that reaches into the pages (or `within`). Clicks that a tool handles

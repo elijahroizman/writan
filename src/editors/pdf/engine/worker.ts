@@ -192,7 +192,7 @@ function text(key: number): TextRun[] {
     const count = mod.FPDFText_CountChars(tp)
     const rect = scratch(16)
     const runs: TextRun[] = []
-    let run: { text: string; map: number[]; x0: number; y0: number; x1: number; y1: number; lastX: number; vertical: boolean; rtl: boolean } | null = null
+    let run: { text: string; map: number[]; x0: number; y0: number; x1: number; y1: number; lastX: number; lastLeft: number; vertical: boolean; rtl: boolean } | null = null
     const flush = () => {
       if (run && run.text.trim()) {
         runs.push({
@@ -242,7 +242,9 @@ function text(key: number): TextRun[] {
           ? Math.abs(box.x + box.w / 2 - (run.x0 + run.x1) / 2) < h * 0.5 && box.y >= run.y1 - h
           : run.rtl
             ? !/[A-Za-z0-9]/.test(ch) && midY > run.y0 && midY < run.y1 && box.x + box.w <= run.lastX + h * 0.5 && run.x0 - (box.x + box.w) < h * 3
-            : midY > run.y0 && midY < run.y1 && box.x >= run.lastX - h * 0.5 && box.x - run.x1 < h * 3
+            : // The letters of a ligature (fi, ffi) each get the whole ligature's box, so the next one
+              // starts where the last one did.
+              midY > run.y0 && midY < run.y1 && (box.x >= run.lastX - h * 0.5 || box.x >= run.lastLeft - h * 0.05) && box.x - run.x1 < h * 3
         if (!sameLine) {
           // A single character can't tell us the direction yet; a second one straight below makes it vertical,
           // and a short non-LTR prefix moving leftward makes it right-to-left.
@@ -266,7 +268,7 @@ function text(key: number): TextRun[] {
           run.map.push(i)
         }
       }
-      if (!run) run = { text: '', map: [], x0: box.x, y0: box.y, x1: box.x + box.w, y1: box.y + box.h, lastX: box.x, vertical: false, rtl: false }
+      if (!run) run = { text: '', map: [], x0: box.x, y0: box.y, x1: box.x + box.w, y1: box.y + box.h, lastX: box.x, lastLeft: box.x, vertical: false, rtl: false }
       run.text += ch
       // One entry per UTF-16 unit, so characters outside the BMP take two.
       for (let u = 0; u < ch.length; u++) run.map.push(i)
@@ -275,6 +277,7 @@ function text(key: number): TextRun[] {
       run.x1 = Math.max(run.x1, box.x + box.w)
       run.y1 = Math.max(run.y1, box.y + box.h)
       run.lastX = run.rtl ? box.x : box.x + box.w
+      run.lastLeft = box.x
     }
     flush()
     free(rect)
