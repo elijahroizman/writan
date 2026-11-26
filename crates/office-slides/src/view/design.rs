@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use office_core::drawing::{Color, Theme};
+use office_core::drawing::{Color, Fill, Theme};
 use office_core::model::{Body, Frame, FrameContent, Origin, Placeholder, RunProps, Slide, SlideSize};
 use office_core::opc::{content_types::types, names, rels::kind, Package};
 use office_core::xml::{ns, Element};
@@ -290,6 +290,9 @@ fn plain_frames(view: &SlidesView, slide: &Slide, at: usize, (sx, sy): (f64, f64
 }
 
 fn inherit_legacy_ink(frame: &mut Frame, references: &[Frame]) {
+    if frame.shape.fill.as_ref().is_some_and(|fill| !matches!(fill, Fill::None)) {
+        return;
+    }
     let legacy: Vec<_> = references
         .iter()
         .filter(|reference| frame.id == reference.id && frame.name == reference.name)
@@ -607,6 +610,26 @@ mod tests {
         let slide = &view.slides()[1];
         let resolved = crate::resolve(&view.doc, slide, &slide.frames[1]);
         assert_eq!(crate::color(&view.doc, slide, resolved.paragraphs[1].1[0].color.as_ref().unwrap()).rgb, Rgb(255, 90, 40));
+    }
+
+    #[test]
+    fn filled_legacy_starter_title_keeps_its_original_ink() {
+        use office_core::drawing::Rgb;
+
+        let mut view = SlidesView::blank();
+        let slide = &mut view.slides_mut()[0];
+        templates::clear_starter(slide);
+        let fill = Fill::Solid { color: Color::rgb(Rgb(255, 255, 255)) };
+        slide.frames[0].shape.fill = Some(fill.clone());
+        let mut view = SlidesView::open(&view.save().unwrap()).unwrap();
+        view.apply_theme("Graphite").unwrap();
+        let view = SlidesView::open(&view.save().unwrap()).unwrap();
+        let slide = &view.slides()[0];
+        let title = &slide.frames[0];
+        assert_eq!(title.shape.fill, Some(fill));
+        let resolved = crate::resolve(&view.doc, slide, title);
+        let ink = resolved.paragraphs[0].1[0].color.as_ref().unwrap();
+        assert_eq!(crate::color(&view.doc, slide, ink).rgb, Rgb(17, 17, 17));
     }
 
     #[test]
