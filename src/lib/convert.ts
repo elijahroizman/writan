@@ -2,13 +2,13 @@
 // multiple open tabs into a single PDF.
 
 import type { TextRun } from '../editors/pdf/engine/protocol'
-import { loadEngine } from '../engine/load'
 import type { DocKind } from './kinds'
 import { KINDS } from './kinds'
 import * as platform from './platform'
 import type { PdfOcrProgress } from './ocr/pdfOcr'
 import type { DocTab } from '../state/workspace'
 import { getEditor, useWorkspace } from '../state/workspace'
+import { convertDocumentOffThread, markdownOffThread } from './convertClient'
 
 export type ConvertFormat = 'pdf' | 'md' | 'docx' | 'pptx' | 'xlsx' | 'csv' | 'txt'
 
@@ -173,8 +173,7 @@ export async function readTabBytes(tab: DocTab): Promise<Uint8Array> {
 export async function tabToMarkdown(tab: DocTab): Promise<string> {
   const bytes = await readTabBytes(tab)
   if (tab.kind === 'pdf') return await pdfToMarkdown(bytes, getEditor(tab.id)?.getPassword?.() ?? '')
-  const engine = await loadEngine()
-  return engine.toMarkdown(bytes, fileNameForTab(tab))
+  return markdownOffThread(bytes, fileNameForTab(tab))
 }
 
 /** Converts an open tab to `target` format bytes. */
@@ -220,8 +219,7 @@ export async function convertTab(tab: DocTab, target: ConvertFormat, options: Co
     const text = target === 'md' ? md : md.replace(/^## Page \d+\n\n/gm, '')
     return { bytes: new TextEncoder().encode(text), name }
   }
-  const engine = await loadEngine()
-  const out = engine.convertDocument(srcBytes, fileNameForTab(tab), target)
+  const out = await convertDocumentOffThread(srcBytes, fileNameForTab(tab), target, signal)
   return { bytes: new Uint8Array(out), name }
 }
 
@@ -281,8 +279,7 @@ export async function tabToPdf(tab: DocTab, title?: string): Promise<Uint8Array>
       return await sheetBytesToPdf(bytes, fileNameForTab(tab))
     case 'md':
     case 'txt': {
-      const engine = await loadEngine()
-      const docxBytes = new Uint8Array(engine.convertDocument(bytes, fileNameForTab(tab), 'docx'))
+      const docxBytes = await convertDocumentOffThread(bytes, fileNameForTab(tab), 'docx')
       return await docxBytesToPdf(docxBytes, docTitle)
     }
     case 'image':

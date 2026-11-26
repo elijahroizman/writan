@@ -37,7 +37,7 @@ import {
   Undo2,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { EditorProps } from '../../App'
 import type { Rect } from '../../components/CropOverlay'
 import { CropOverlay } from '../../components/CropOverlay'
@@ -50,10 +50,11 @@ import { LinkExcelModal } from '../../links/LinkExcelModal'
 import { LinkedExcelSection } from '../../links/LinkedExcelSection'
 import type { ExcelLink, ExcelLinksController, LinkedDocumentTarget } from '../../links/excelLinks'
 import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
-import { LatexMathModal } from '../../math/LatexMathModal'
+const LatexMathModal = lazy(() => import('../../math/LatexMathModal').then((m) => ({ default: m.LatexMathModal })))
+
 import { MathInspectorSection } from '../../math/MathInspectorSection'
-import type { LatexMathSpec } from '../../math/latexMath'
-import { encodeLatexTag, normalizeHexColor, parseLatexTag } from '../../math/latexMath'
+import type { LatexMathSpec } from '../../math/latexTag'
+import { encodeLatexTag, normalizeHexColor, parseLatexTag } from '../../math/latexTag'
 import { itemsHtml } from '../../engine/paint'
 import {
   DocxEditor,
@@ -352,8 +353,10 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
       {peek && <CommentPeek store={comments} id={peek.id} at={peek.at} />}
       {crop && <CropOverlay src={crop.src} frame={crop.frame} image={crop.image} onDone={endCrop} onCancel={() => endCrop()} />}
       <LinkExcelModal open={excelModalOpen} onClose={() => setExcelModalOpen(false)} controller={excelLinks} targetLabel="Word" />
-      <LatexMathModal
-        open={!!mathModal}
+      {mathModal && (
+        <Suspense fallback={null}>
+          <LatexMathModal
+            open
         mode={mathModal?.mode ?? 'insert'}
         targetLabel="Word"
         initialSpec={mathModal?.initialSpec ?? { latex: '', display: false, fontSizePt: 12, color: '#000000' }}
@@ -372,7 +375,9 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
           }
           ed.focus()
         }}
-      />
+          />
+        </Suspense>
+      )}
       <FindBar
         open={!!findOpen}
         replacing={findOpen === 'replace'}

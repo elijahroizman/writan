@@ -22,8 +22,10 @@ export interface DocTab {
   title: string
   /** Where the file lives on disk; null until an untitled document is saved. */
   path: string | null
-  /** Bytes to load into the editor; null means “start a blank document”. */
+  /** Bytes to load into the editor; null means “start a blank document” unless `deferred` is set. */
   bytes: Uint8Array | null
+  /** A restored file whose bytes have not been read yet; they load the first time the tab is shown. */
+  deferred?: boolean
   /** Bumped to make the editor reload `bytes` (revert, external reload). */
   loadId: number
   dirty: boolean
@@ -810,6 +812,47 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
   }
 })
 
+const hydrating = new Map<string, Promise<boolean>>()
+
+/**
+ * Reads a restored tab's file the first time anyone shows it. Inactive restored tabs therefore
+ * cost no disk reads, memory or digest work at launch; a file that disappeared is dropped when
+ * reached, just as a missing file is left out while restoring.
+ */
+export function ensureTabBytes(tabId: string): Promise<boolean> {
+  const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+  if (!tab?.deferred) return Promise.resolve(!!tab)
+  const pending = hydrating.get(tabId)
+  if (pending) return pending
+  const path = tab.path!
+  const title = tab.title
+  const job = (async () => {
+    try {
+      const bytes = await platform.readFile(path)
+      const now = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+      // Recovery may have supplied newer unsaved bytes while this read was in flight.
+      if (now?.deferred && now.path === path && !now.recovered) {
+        useWorkspace.setState({ tabs: useWorkspace.getState().tabs.map((t) => (t.id === tabId ? { ...t, bytes, deferred: false } : t)) })
+        await remember(tabId, bytes, false)
+      }
+      return true
+    } catch (err) {
+      if (!(await platform.pathExists(path))) useWorkspace.getState().removeRecent(path)
+      useWorkspace.setState((s) => ({
+        tabs: s.tabs.filter((t) => t.id !== tabId),
+        activeId: s.activeId === tabId ? HOME_TAB_ID : s.activeId,
+        split: s.split?.includes(tabId) ? null : s.split,
+      }))
+      await platform.showError(`“${title}” couldn't be opened.\n\n${String(err)}`)
+      return false
+    } finally {
+      hydrating.delete(tabId)
+    }
+  })()
+  hydrating.set(tabId, job)
+  return job
+}
+
 // While the mode is 'system', the app follows the system as it changes.
 if (typeof matchMedia !== 'undefined') {
   matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
@@ -902,13 +945,21 @@ async function reopen(session: Session) {
   const known = session.paths.filter((path) => kindFromPath(path))
   const found = await Promise.all(known.map((path) => platform.pathExists(path)))
   const existing = known.filter((_, i) => found[i])
-  const { openPaths } = useWorkspace.getState()
-  // Open in order without moving focus around, then focus the tab that was active.
-  useWorkspace.setState({ activeId: HOME_TAB_ID })
-  await openPaths(existing)
-  const state = useWorkspace.getState()
-  const active = state.tabs.find((t) => t.path === session.active)
-  useWorkspace.setState({ activeId: active?.id ?? HOME_TAB_ID })
+  // Restored tabs are shells first: their titles and order return immediately, but only the
+  // active document's bytes are read. The rest hydrate in EditorSlot the first time they show.
+  const seen = new Set<string>()
+  const tabs: DocTab[] = []
+  for (const path of existing) {
+    if (seen.has(path)) continue
+    seen.add(path)
+    const kind = kindFromPath(path)!
+    tabs.push({ id: newId(), kind, title: stripExtension(platform.basename(path)), path, bytes: null, deferred: true, loadId: 0, dirty: false })
+  }
+  useWorkspace.setState({ tabs, activeId: HOME_TAB_ID })
+  const active = tabs.find((t) => t.path === session.active)
+  if (!active) return
+  useWorkspace.setState({ activeId: active.id })
+  void ensureTabBytes(active.id)
 }
 
 /**
@@ -929,7 +980,7 @@ async function recover(session: Session) {
     const open = doc.path ? tabs.find((t) => t.path === doc.path && t.kind === doc.kind && !taken.has(t.id)) : undefined
     let tab: DocTab
     if (open) {
-      tab = { ...open, bytes: doc.bytes, loadId: open.loadId + 1, dirty: true, recovered: true }
+      tab = { ...open, bytes: doc.bytes, deferred: false, loadId: open.loadId + 1, dirty: true, recovered: true }
       tabs[tabs.indexOf(open)] = tab
     } else {
       const onDisk = !!doc.path && !doc.path.startsWith('browser:') && kindFromPath(doc.path) === doc.kind && (await platform.pathExists(doc.path).catch(() => false))

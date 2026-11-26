@@ -23,7 +23,7 @@ import {
   Undo2,
   Ungroup,
 } from 'lucide-react'
-import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import { createRoot } from 'react-dom/client'
 import type { EditorProps } from '../../App'
 import type { Rect } from '../../components/CropOverlay'
@@ -43,9 +43,10 @@ import { registerEditor, useWorkspace } from '../../state/workspace'
 import { LinkExcelModal } from '../../links/LinkExcelModal'
 import type { ExcelLink, LinkedDocumentTarget } from '../../links/excelLinks'
 import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
-import { LatexMathModal } from '../../math/LatexMathModal'
-import type { LatexMathSpec } from '../../math/latexMath'
-import { encodeLatexTag, parseLatexTag } from '../../math/latexMath'
+const LatexMathModal = lazy(() => import('../../math/LatexMathModal').then((m) => ({ default: m.LatexMathModal })))
+
+import type { LatexMathSpec } from '../../math/latexTag'
+import { encodeLatexTag, parseLatexTag } from '../../math/latexTag'
 import type { Restack } from './arrange'
 import { Inspector } from './Inspector'
 import { NotesPane } from './Notes'
@@ -671,8 +672,10 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
       {menu && <PopoverMenu anchor={menu} items={menu.items} onClose={() => setMenu(null)} />}
       {crop && <CropOverlay src={crop.src} frame={crop.frame} image={crop.image} onDone={endCrop} onCancel={() => endCrop()} />}
       <LinkExcelModal open={excelModalOpen} onClose={() => setExcelModalOpen(false)} controller={excelLinks} targetLabel="Slides" />
-      <LatexMathModal
-        open={!!mathModal}
+      {mathModal && (
+        <Suspense fallback={null}>
+          <LatexMathModal
+            open
         mode={mathModal?.mode ?? 'insert'}
         targetLabel="Slides"
         initialSpec={mathModal?.initialSpec ?? { latex: '', display: true, fontSizePt: 28, color: '#000000' }}
@@ -685,7 +688,9 @@ function DeckEditor({ tab, active, engine }: EditorProps & { engine: SlidesEngin
             engine.insertMath(tag, omml, linear, width, height)
           }
         }}
-      />
+          />
+        </Suspense>
+      )}
       {presenting !== null && (
         <PresentMode
           engine={engine}

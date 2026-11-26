@@ -6,7 +6,8 @@ import { host, onFontsChanged, preloadFonts } from '../host'
 import { expectKind, loadEngine } from '../load'
 import { BASE_FONTS } from '../preload'
 import { MediaCache, StyleSheet } from '../paint'
-import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
+import { LATEX_MATH_PREFIX } from '../../math/latexTag'
+import { renderLazyLatexTag } from '../../math/lazyLatex'
 import type { WordDoc } from '../wasm/office_wasm'
 
 export interface WordState {
@@ -138,19 +139,30 @@ export class WordEngine {
   private revisionList: { revision: number; list: Revision[] } | null = null
   private stopFonts: () => void
   private disposed = false
+  private progressive = false
+  private progressiveTimer: number | null = null
 
   private constructor(doc: WordDoc) {
     this.doc = doc
     this.styles = new StyleSheet(`w${++sheets}s`)
+    let latexInvalidated = false
     this.media = new MediaCache((id) => {
       if (id.startsWith(LATEX_MATH_PREFIX)) {
-        return renderLatexTagToSvgBytes(id)
+        return renderLazyLatexTag(id, () => {
+          if (this.disposed || latexInvalidated) return
+          latexInvalidated = true
+          // The first paint of a document containing equations is what pulls MathJax in. Once it
+          // arrives, invalidate the cached display lists so the now-renderable SVG is drawn.
+          this.doc.fontsChanged()
+          this.refresh(true)
+        })
       }
       const bytes = this.doc.media(id)
       return bytes ? { bytes, type: this.doc.mediaType(id) ?? 'image/png' } : null
     })
     this.stopFonts = onFontsChanged(() => {
       if (this.disposed) return
+      this.finishProgressive()
       this.styles.remeasure()
       this.doc.fontsChanged()
       this.refresh(true)
@@ -170,8 +182,10 @@ export class WordEngine {
     const fonts = (JSON.parse(doc.documentFonts()) as string[]).slice(0, 12).map((f) => `"${f.replace(/"/g, '')}"`)
     if (fonts.length) await preloadFonts(fonts)
     t('doc fonts')
+    const progressiveSizes = doc.startProgressive(100)
     const e = new WordEngine(doc)
-    e.refresh(true)
+    e.progressive = progressiveSizes !== 'null'
+    e.refresh(true, e.progressive ? progressiveSizes : undefined)
     t('layout')
     return e
   }
@@ -206,9 +220,24 @@ export class WordEngine {
 
   /** Runs a command; returns its result. */
   run<T = unknown>(cmd: Record<string, unknown> & { cmd: string }): T {
+    const overlayOnly = cmd.cmd === 'setMarks'
+    if (!overlayOnly) this.finishProgressive()
     const out = JSON.parse(this.doc.command(JSON.stringify(cmd))) as T
-    this.refresh()
+    if (overlayOnly && this.progressive) this.refreshOverlay()
+    else this.refresh()
     return out
+  }
+
+  /** Marks and caret geometry changed while the rest of the document is still being laid out. */
+  private refreshOverlay() {
+    if (this.disposed) return
+    this.overlay = JSON.parse(this.doc.overlay())
+    const state = JSON.parse(this.doc.state()) as WordState & { pages: number }
+    const page = this.overlay.caret?.[0] ?? this.overlay.image?.[0] ?? this.overlay.rects[0]?.[0] ?? this.state.page.current - 1
+    state.page = { current: Math.min(page, state.pages - 1) + 1, total: state.pages }
+    this.state = state
+    this.tick++
+    for (const f of this.listeners) f()
   }
 
   /** The body's tracked changes, in document order. */
@@ -223,10 +252,10 @@ export class WordEngine {
   }
 
   /** Brings layout, overlay and state up to date and tells subscribers. */
-  refresh(force = false) {
+  refresh(force = false, sizesOverride?: string) {
     if (this.disposed) return
     const before = this.revision
-    const sizes = this.doc.layout()
+    const sizes = sizesOverride ?? this.doc.layout()
     const revision = this.doc.revision()
     if (force || revision !== before) {
       this.sizes = JSON.parse(sizes)
@@ -246,6 +275,31 @@ export class WordEngine {
     this.tick++
     for (const f of this.listeners) f()
     this.collab?.changed()
+  }
+
+  /** Finishes laying out a large document whose first blocks opened progressively. */
+  finishProgressive() {
+    if (!this.progressive) return
+    this.progressive = false
+    if (this.progressiveTimer !== null) window.clearTimeout(this.progressiveTimer)
+    this.progressiveTimer = null
+    const sizes = this.doc.layoutComplete()
+    if (sizes !== 'null') this.refresh(true, sizes)
+  }
+
+  /** Lets the first progressive pages paint, then lays out the rest of the document. */
+  progressivePainted() {
+    if (!this.progressive || this.progressiveTimer !== null) return
+    this.scheduleProgressive()
+  }
+
+  private scheduleProgressive() {
+    // Give the partial pages a real chance to reach the screen before the rest of a large
+    // document takes the main thread again. An edit or close cancels this timer.
+    this.progressiveTimer = window.setTimeout(() => {
+      this.progressiveTimer = null
+      this.finishProgressive()
+    }, 400)
   }
 
   /** Draws a page: its items, with new paint styles added to the style sheet. `null` when it's
@@ -321,6 +375,7 @@ export class WordEngine {
 
   dispose() {
     this.disposed = true
+    if (this.progressiveTimer !== null) window.clearTimeout(this.progressiveTimer)
     this.stopFonts()
     this.styles.dispose()
     this.media.dispose()

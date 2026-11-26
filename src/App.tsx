@@ -7,9 +7,9 @@ import { FocusMode } from './components/FocusMode'
 import { Explorer, startFolderPalette } from './components/Explorer'
 import { ThemeEditorHost } from './components/ThemeEditor'
 import { Home } from './components/Home'
-import { showVersionHistory, useVersionHistory, VersionHistory } from './components/VersionHistory'
+import { showVersionHistory, useVersionHistory } from './components/versionHistoryState'
 import { NewFilePicker, useNewFile } from './components/NewFile'
-import { ConvertModal, useConvertDialog } from './components/ConvertDialog'
+import { useConvertDialog } from './components/convertDialogState'
 import { canExportMarkdown, canIncludeInPdfBundle, convertAndDeliver, copyTabAsMarkdown, targetsForKind, usesOcr } from './lib/convert'
 import { TexInstall, TexRemove } from './components/TexInstall'
 import { Dialogs } from './components/Dialogs'
@@ -21,7 +21,6 @@ import { kindFromPath } from './lib/kinds'
 import * as platform from './lib/platform'
 import { flushAutosave, startAutosave } from './lib/autosave'
 import { resetNative } from './collab/transport'
-import { followAiSettings } from './collab/agents/bridge'
 import { Arrivals } from './collab/Arrivals'
 import { useAi } from './state/ai'
 import { discardRecovery, resumeRecovery, startRecovery } from './lib/recovery'
@@ -35,7 +34,7 @@ import { useTex } from './state/tex'
 import type { Scope } from './state/shortcuts'
 import { engineKeysOf, keysFor, keysFromEvent, movedBuiltIn, shortcutFor, syncMenu } from './state/shortcuts'
 import type { DocTab } from './state/workspace'
-import { collabHooks, getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWoken, useWorkspace } from './state/workspace'
+import { collabHooks, ensureTabBytes, getEditor, HOME_TAB_ID, persistSession, pruneRecents, restoreSession, SPLIT_KINDS, useWoken, useWorkspace } from './state/workspace'
 
 export interface EditorProps {
   tab: DocTab
@@ -74,22 +73,33 @@ const BUILT_IN_EDITORS: Record<string, React.LazyExoticComponent<ComponentType<E
   Object.keys(EDITOR_LOADERS).map((kind) => [kind, lazy(() => loadEditor(kind))]),
 )
 const PluginEditor = lazy(() => import('./plugins/PluginEditor'))
+const ConvertModal = lazy(() => import('./components/ConvertDialog').then((m) => ({ default: m.ConvertModal })))
+const VersionHistory = lazy(() => import('./components/VersionHistory').then((m) => ({ default: m.VersionHistory })))
 const editorFor = (kind: DocKind): ComponentType<EditorProps> => loadedEditors[kind] ?? BUILT_IN_EDITORS[kind] ?? PluginEditor
 
 const OFFICE_KINDS: ReadonlySet<string> = new Set(['docx', 'pptx', 'xlsx', 'csv'])
 
 /**
- * Loads the office editors and their engine in the background, once the app is idle. Called
- * after the startup opens, so it doesn't compete with them (WebKit has no requestIdleCallback,
- * so there it's a fixed delay).
+ * Warms the office editors and engine the session is likely to need, once the app is idle.
+ * Recent and open office files are the predictor; a Markdown-only session does not compile the
+ * 8 MB engine in the background. Called after the startup opens so it doesn't compete with them.
  */
 function preloadOfficeEditors() {
   const idle = (f: () => void) => (typeof window.requestIdleCallback === 'function' ? window.requestIdleCallback(f, { timeout: 3000 }) : globalThis.setTimeout(f, 1500))
   idle(() => {
-    for (const kind of ['docx', 'pptx', 'xlsx']) void loadEditor(kind).catch(() => {})
+    const { tabs, activeId, recents } = useWorkspace.getState()
+    const likely = new Set<string>()
+    for (const tab of tabs) if (OFFICE_KINDS.has(tab.kind)) likely.add(tab.kind === 'csv' ? 'xlsx' : tab.kind)
+    // Someone whose session and recent files are all Markdown or plain text should not compile an
+    // 8 MB Office engine or decode its fonts in the background. Recent files are the predictor.
+    for (const recent of recents.slice(0, 12)) {
+      const kind = kindFromPath(recent.path)
+      if (kind && OFFICE_KINDS.has(kind)) likely.add(kind === 'csv' ? 'xlsx' : kind)
+    }
+    if (!likely.size) return
+    for (const kind of ['docx', 'pptx', 'xlsx']) if (likely.has(kind)) void loadEditor(kind).catch(() => {})
     // An office document on screen has loaded and compiled the engine. Warming it up again would
     // only hold up that document's first edits.
-    const { tabs, activeId } = useWorkspace.getState()
     if (tabs.some((t) => t.id === activeId && OFFICE_KINDS.has(t.kind))) return
     void import('./engine/preload').then((m) => m.preloadEngine()).catch(() => {})
   })
@@ -133,6 +143,9 @@ const EditorSlot = memo(function EditorSlot({ tab, active, pane }: EditorProps &
   const woken = useWoken((s) => !!s[tab.id])
   const [shown, setShown] = useState(active || visible || woken)
   if ((active || visible || woken) && !shown) setShown(true)
+  useEffect(() => {
+    if (shown && tab.deferred) void ensureTabBytes(tab.id)
+  }, [shown, tab.deferred, tab.id])
   return (
     <div
       className="view"
@@ -144,7 +157,8 @@ const EditorSlot = memo(function EditorSlot({ tab, active, pane }: EditorProps &
       onPointerDownCapture={visible ? () => useWorkspace.getState().activate(tab.id) : undefined}
       onFocusCapture={visible ? () => useWorkspace.getState().activate(tab.id) : undefined}
     >
-      {shown && (
+      {shown && tab.deferred && <CenterState spinner />}
+      {shown && !tab.deferred && (
         <EditorBoundary key={tab.loadId} name={tab.title}>
           <Suspense fallback={<CenterState spinner />}>
             <Editor key={tab.loadId} tab={tab} active={active} visible={visible} />
@@ -597,8 +611,13 @@ export default function App() {
     void syncMenu()
     const stopUpdateChecks = startUpdateChecks()
     void resetNative()
-    // AI agents connect through Writan's MCP server when Settings › AI lets them.
-    const stopAgents = followAiSettings(useAi)
+    // AI agents connect through Writan's MCP server when Settings › AI lets them. Their bridge
+    // is large and most launches never use it, so it loads after the shell is up.
+    let stopAgents = () => {}
+    let agentsStopped = false
+    void import('./collab/agents/bridge').then((m) => {
+      if (!agentsStopped) stopAgents = m.followAiSettings(useAi)
+    })
     const stopAutosave = startAutosave()
     const stopRecovery = startRecovery()
     const stopFolderPalette = startFolderPalette()
@@ -610,6 +629,7 @@ export default function App() {
       window.clearInterval(pruneTimer)
       stopPruneOnChange()
       stopUpdateChecks()
+      agentsStopped = true
       stopAgents()
       stopAutosave()
       stopRecovery()
@@ -727,10 +747,18 @@ export default function App() {
         </Suspense>
       )}
       {newFileOpen && <NewFilePicker />}
-      {convertOpen && <ConvertModal />}
+      {convertOpen && (
+        <Suspense fallback={null}>
+          <ConvertModal />
+        </Suspense>
+      )}
       {paletteOpen && <CommandPalette />}
       <ThemeEditorHost />
-      {historyOpen && <VersionHistory />}
+      {historyOpen && (
+        <Suspense fallback={null}>
+          <VersionHistory />
+        </Suspense>
+      )}
       {setupOpen && (
         <Suspense fallback={null}>
           <SetupScreen />

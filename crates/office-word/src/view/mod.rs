@@ -357,9 +357,37 @@ impl WordView {
 
     // ---- layout ----
 
+    /// How many top-level body blocks the document holds.
+    pub fn body_block_count(&self) -> usize {
+        match &self.doc.body {
+            Body::Flow { blocks } => blocks.len(),
+            _ => 0,
+        }
+    }
+
+    /// How many page sections the document declares.
+    pub fn section_count(&self) -> usize {
+        crate::sections(&self.doc).len()
+    }
+
     /// Lays the document out again where it changed.
     pub fn layout(&mut self, host: &mut dyn Measurer) {
-        if !self.stale {
+        self.layout_inner(host, None, false);
+    }
+
+    /// Lays only the first `max_blocks` top-level blocks. Progressive opening uses this for a
+    /// quick first paint; the result is temporary and `layout_full` replaces it.
+    pub fn layout_prefix(&mut self, host: &mut dyn Measurer, max_blocks: u32) {
+        self.layout_inner(host, Some(max_blocks), true);
+    }
+
+    /// Lays the whole document even though nothing since the last layout is marked dirty.
+    pub fn layout_full(&mut self, host: &mut dyn Measurer) {
+        self.layout_inner(host, None, true);
+    }
+
+    fn layout_inner(&mut self, host: &mut dyn Measurer, max_blocks: Option<u32>, force: bool) {
+        if !self.stale && !force {
             return;
         }
         self.stale = false;
@@ -411,8 +439,15 @@ impl WordView {
         let mut old_flows: Vec<Option<SectionFlow>> =
             if reusable { std::mem::take(&mut self.sections).into_iter().map(Some).collect() } else { Vec::new() };
         let mut flows = Vec::with_capacity(sections.len());
+        // Progressive opening is deliberately conservative: one flowing section whose tail can
+        // be appended without changes to earlier section starts. Anything more exotic lays out whole.
+        let prefix = max_blocks.filter(|_| sections.len() == 1);
         for (i, section) in sections.into_iter().enumerate() {
             let (first, last) = ranges[i];
+            let last = match prefix {
+                Some(max) if i == 0 => (first + max.saturating_sub(1)).min(last),
+                _ => last,
+            };
             let width = emu_px(section.text_width()).max(24.0);
             let slice = body.get(first as usize..=(last as usize).min(body.len().saturating_sub(1))).unwrap_or(&[]);
             let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };

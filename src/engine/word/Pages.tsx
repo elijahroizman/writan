@@ -10,6 +10,7 @@ import { isMac, openExternal, shortcut } from '../../lib/platform'
 import { spellingMenu } from '../../lib/spelling'
 import { PeerCaret, PeerSelection, together } from '../../collab/cursors'
 import { usePlaces } from '../../collab/session'
+import { dimming, useFocus } from '../../state/focus'
 import { itemsHtml } from '../paint'
 import type { WordEngine } from './engine'
 import { spellingAt, watchSpelling } from './spelling'
@@ -71,6 +72,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
   /** The viewport's scroll position and height, read on scroll and resize (never right after a
    * DOM change, which would make the browser lay out every page at once). */
   const view = useRef({ top: 0, height: 0 })
+  const [frameRange, setFrameRange] = useState<[number, number]>([0, 6])
   const [menu, setMenu] = useState<{ x: number; y: number; items: MenuEntry[] } | null>(null)
 
   // Misspelled words get a wavy underline; right-clicking one offers corrections.
@@ -115,15 +117,23 @@ export function Pages({ engine, zoom, scroller }: Props) {
       }
     }
     if (first < 0) return
+    const renderFirst = Math.max(0, first - KEEP)
+    const renderLast = Math.min(sizes.length - 1, last + KEEP)
+    setFrameRange((now) => (now[0] === renderFirst && now[1] === renderLast ? now : [renderFirst, renderLast]))
+    let paintedNow = false
     for (let i = first; i <= last; i++) {
       const el = pageEls.current.get(i)?.querySelector<HTMLElement>('.docx-page-content')
       const was = painted.current.get(i)
       if (!el || was === engine.revision) continue
       // A page already on screen is only sent again when its drawing changed.
       const p = engine.paint(i, was === undefined || !el.firstChild)
-      if (p) el.innerHTML = itemsHtml(p.items, engine.styles, engine.media.url)
+      if (p) {
+        el.innerHTML = itemsHtml(p.items, engine.styles, engine.media.url)
+        paintedNow = true
+      }
       painted.current.set(i, engine.revision)
     }
+    if (paintedNow) engine.progressivePainted()
     for (const [i] of painted.current) {
       if (i < first - KEEP || i > last + KEEP) {
         const el = pageEls.current.get(i)?.querySelector<HTMLElement>('.docx-page-content')
@@ -502,6 +512,7 @@ export function Pages({ engine, zoom, scroller }: Props) {
   // paragraph has no text boxes, so the caret's line). Shown by CSS only while dimming is on.
   const c = overlay.caret
   const focusBoxes = overlay.paragraph?.length ? overlay.paragraph : c ? [[c[0], c[1], c[2], 1, c[3]] as const] : []
+  const focusDimming = useFocus(dimming)
   // Everyone else's carets and selections; people whose carets are at one place share a marker.
   const remote = places.map((place) => ({ place, o: engine.remoteOverlay(place.at) }))
   const peerCarets = together(remote.flatMap(({ place, o }) => (o.caret && sizes[o.caret[0]] ? [{ place, key: o.caret.join(), item: o.caret }] : [])))
@@ -509,19 +520,21 @@ export function Pages({ engine, zoom, scroller }: Props) {
   return (
     <div className="docx-content-mount" ref={mountRef} style={{ height, minWidth: width }} onMouseDown={onMouseDown} onMouseOver={onMouseOver} onContextMenu={onContextMenu}>
       <div className="docx-pages">
-        {sizes.map(([w, h], i) => (
-          <PageFrame key={i} index={i} width={w} height={h} top={tops[i]} zoom={zoom} els={pageEls.current} />
-        ))}
+        {sizes.map(([w, h], i) =>
+          i < frameRange[0] || i > frameRange[1] ? null : <PageFrame key={i} index={i} width={w} height={h} top={tops[i]} zoom={zoom} els={pageEls.current} />,
+        )}
       </div>
       <div className="docx-overlay">
-        {sizes.map(([w, h], i) => {
-          const band = focusBoxes.find((b) => b[0] === i)
-          return (
-            <div key={`f${i}`} className={`wp-focus ${band ? '' : 'veiled'}`} style={place(i, 0, 0, w, h)}>
-              {band && <div className="wp-focus-band" style={{ top: (band[2] - 3) * zoom, height: (band[4] + 6) * zoom }} />}
-            </div>
-          )
-        })}
+        {focusDimming &&
+          sizes.map(([w, h], i) => {
+            const band = focusBoxes.find((b) => b[0] === i)
+            if (i < frameRange[0] || i > frameRange[1]) return null
+            return (
+              <div key={`f${i}`} className={`wp-focus ${band ? '' : 'veiled'}`} style={place(i, 0, 0, w, h)}>
+                {band && <div className="wp-focus-band" style={{ top: (band[2] - 3) * zoom, height: (band[4] + 6) * zoom }} />}
+              </div>
+            )
+          })}
         {overlay.marks?.map((m, k) => {
           const style = engine.markStyles[m[5]]
           if (!style) return null

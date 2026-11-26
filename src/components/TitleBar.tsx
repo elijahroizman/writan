@@ -10,11 +10,11 @@ import type { DocKind } from '../lib/kinds'
 import { pickSplit } from '../App'
 import { keeperOf, useCollab } from '../collab/session'
 import { canExportMarkdown, canIncludeInPdfBundle, copyTabAsMarkdown, targetsForKind } from '../lib/convert'
-import { useConvertDialog } from './ConvertDialog'
+import { useConvertDialog } from './convertDialogState'
 import { ChatButton } from './AgentChat'
 import { canShare, ShareButton, showSharePanel } from './Share'
 import { UpdateButton } from './UpdateButton'
-import { showVersionHistory } from './VersionHistory'
+import { showVersionHistory } from './versionHistoryState'
 import { IconButton, KindIcon, PopoverMenu } from './ui'
 
 export function TitleBar() {

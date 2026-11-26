@@ -7,7 +7,8 @@ import type { PaintItem } from '../paint'
 import { itemsHtml, MediaCache, StyleSheet } from '../paint'
 import { BASE_FONTS } from '../preload'
 import { preloadFonts } from '../host'
-import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
+import { LATEX_MATH_PREFIX } from '../../math/latexTag'
+import { renderLazyLatexTag } from '../../math/lazyLatex'
 import type { SlidesDoc } from '../wasm/office_wasm'
 
 export interface Transition {
@@ -164,9 +165,15 @@ export class SlidesEngine {
   private constructor(doc: SlidesDoc) {
     this.doc = doc
     this.styles = new StyleSheet(`p${++sheets}s`)
+    let latexInvalidated = false
     this.media = new MediaCache((id) => {
       if (id.startsWith(LATEX_MATH_PREFIX)) {
-        return renderLatexTagToSvgBytes(id)
+        return renderLazyLatexTag(id, () => {
+          if (this.disposed || latexInvalidated) return
+          latexInvalidated = true
+          this.doc.fontsChanged()
+          this.refresh()
+        })
       }
       const bytes = this.doc.media(id)
       return bytes ? { bytes, type: this.doc.mediaType(id) ?? 'image/png' } : null

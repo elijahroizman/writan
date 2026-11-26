@@ -1,4 +1,5 @@
-import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
+import { LATEX_MATH_PREFIX } from '../../math/latexTag'
+import { loadLatexMath } from '../../math/lazyLatex'
 import type { PaintItem, PaintStyle, StyleSheet } from '../../engine/paint'
 import type { ChartView, PictureView } from '../../engine/sheets/engine'
 import { packBlobs } from './blobs'
@@ -432,6 +433,7 @@ async function resolveMediaPack(
 ): Promise<{ pack: Uint8Array; hasSvg: boolean }> {
   const entries: Array<[string, Uint8Array]> = []
   let hasSvg = false
+  const latex = [...keys].some((id) => id.startsWith(LATEX_MATH_PREFIX)) ? await loadLatexMath() : null
   for (const id of keys) {
     const extra = extraEntries.get(id)
     if (extra) {
@@ -439,7 +441,7 @@ async function resolveMediaPack(
       continue
     }
     if (id.startsWith(LATEX_MATH_PREFIX)) {
-      const rendered = renderLatexTagToSvgBytes(id)
+      const rendered = latex?.renderLatexTagToSvgBytes(id)
       if (rendered) {
         hasSvg = true
         entries.push([id, rendered.bytes])

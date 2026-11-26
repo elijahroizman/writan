@@ -214,6 +214,21 @@ fn many_paragraphs_make_pages() {
 }
 
 #[test]
+fn progressive_prefix_expands_to_the_same_document() {
+    let mut host = FixedMeasurer::default();
+    let lines: Vec<String> = (0..200).map(|i| format!("Paragraph number {i}")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut v = WordView::open(&doc_bytes(&refs)).unwrap();
+    v.layout_prefix(&mut host, 100);
+    let prefix_pages = v.page_count();
+    assert!(prefix_pages > 0);
+    let first = format!("{:?}", v.paint(&mut host, 0).items);
+    v.layout_full(&mut host);
+    assert!(v.page_count() > prefix_pages, "prefix {prefix_pages}, full {}", v.page_count());
+    assert_eq!(first, format!("{:?}", v.paint(&mut host, 0).items), "the first settled page is unchanged");
+}
+
+#[test]
 fn typing_enter_undo_and_save() {
     let mut host = FixedMeasurer::default();
     let mut v = WordView::open(&doc_bytes(&["Hello"])).unwrap();

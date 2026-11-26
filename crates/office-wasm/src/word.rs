@@ -16,6 +16,8 @@ pub struct WordDoc {
     matches: Vec<(Path, u32, u32)>,
     /// A hash of each page as last drawn, so a page that didn't change isn't sent again.
     drawn: std::collections::HashMap<usize, u64>,
+    /// Only a prefix of a large document has been laid out for its first paint.
+    progressive: bool,
 }
 
 /// A paragraph for `insertParagraphs`: its text, and its style id if it has one of its own.
@@ -234,14 +236,56 @@ impl WordDoc {
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8], host: Host) -> Result<WordDoc, JsError> {
         let view = if bytes.is_empty() { WordView::blank() } else { WordView::open(bytes).map_err(err)? };
-        Ok(WordDoc { view, host, matches: Vec::new(), drawn: Default::default() })
+        Ok(WordDoc { view, host, matches: Vec::new(), drawn: Default::default(), progressive: false })
+    }
+
+    /// Finishes a progressive layout, if one is in progress.
+    fn complete_layout(&mut self) {
+        if !self.progressive {
+            return;
+        }
+        self.progressive = false;
+        let mut m = JsMeasurer(&self.host);
+        self.view.layout_full(&mut m);
     }
 
     /// Lays the document out and returns every page's size: `[[w, h], …]`.
     pub fn layout(&mut self) -> String {
+        // Asking for layout asks for the real thing: a progressive prefix is only a first-paint
+        // convenience, never a lesser answer a caller can accidentally keep.
+        self.complete_layout();
         let mut m = JsMeasurer(&self.host);
         self.view.layout(&mut m);
         json(&self.view.page_sizes())
+    }
+
+    /// Lays only the first blocks of a large single-section document and answers its temporary
+    /// page sizes. Answers `null` when progressive opening doesn't apply or adds nothing.
+    #[wasm_bindgen(js_name = startProgressive)]
+    pub fn start_progressive(&mut self, max_blocks: u32) -> String {
+        if self.progressive || self.view.section_count() != 1 || self.view.body_block_count() <= max_blocks as usize {
+            return "null".into();
+        }
+        let mut m = JsMeasurer(&self.host);
+        self.view.layout_prefix(&mut m, max_blocks);
+        self.progressive = true;
+        json(&self.view.page_sizes())
+    }
+
+    /// Replaces a progressive prefix with the whole document and answers its page sizes.
+    #[wasm_bindgen(js_name = layoutComplete)]
+    pub fn layout_complete(&mut self) -> String {
+        if !self.progressive {
+            return "null".into();
+        }
+        self.complete_layout();
+        json(&self.view.page_sizes())
+    }
+
+    /// Whether only a prefix of the document has been laid out.
+    #[wasm_bindgen(js_name = isProgressive)]
+    pub fn is_progressive(&self) -> bool {
+        self.progressive
     }
 
     /// Draws a page: `{ width, height, items, styles }`, where `styles` are paint styles the
@@ -491,6 +535,11 @@ impl WordDoc {
     /// Runs an editing command (JSON); returns its result as JSON (`null` for most).
     pub fn command(&mut self, cmd: &str) -> Result<String, JsError> {
         let cmd: Cmd = serde_json::from_str(cmd).map_err(err)?;
+        // Overlay-only marks do not move text and must not force a progressively opened
+        // document through a complete layout just to underline spelling or comments.
+        if !matches!(cmd, Cmd::SetMarks { .. }) {
+            self.complete_layout();
+        }
         let mut m = JsMeasurer(&self.host);
         let v = &mut self.view;
         let out = match cmd {

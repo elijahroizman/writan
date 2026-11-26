@@ -17,7 +17,8 @@
     "licenses": "node scripts/licenses.mjs",
     "plugin:new": "node scripts/new-plugin.mjs",
     "plugins": "npm run plugins:bundled && vite build --config plugins/latex/vite.config.ts",
-    "plugins:bundled": "vite build --config plugins/images/vite.config.ts"
+    "plugins:bundled": "vite build --config plugins/images/vite.config.ts",
+    "perf": "node scripts/perf.mjs"
   },
   "dependencies": {
     "@codemirror/commands": "^6.11.1",

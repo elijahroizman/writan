@@ -1,6 +1,6 @@
 import { Pencil, Sigma } from 'lucide-react'
 import { Button, Section } from '../components/ui'
-import { parseLatexTag } from './latexMath'
+import { parseLatexTag } from './latexTag'
 
 export function MathInspectorSection({ mathTag, onEdit }: { mathTag?: string; onEdit: () => void }) {
   const spec = parseLatexTag(mathTag)
