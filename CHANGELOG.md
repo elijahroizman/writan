@@ -2,6 +2,14 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.16.1 — 2026-11-26
+
+### Scanned PDFs
+- Scanned PDFs just work. Writan reads the text of scanned pages by itself, on your computer, starting with the page you're on, and **Find** (⌘F, or Ctrl+F on Windows and Linux) finds it like any other text. You can select, copy and highlight it too. The file isn't changed. There's no banner or dialog any more.
+- Scans with a line of real text, like a page number or a "downloaded from" footer on library copies, are now read. Before, they counted as text pages and were skipped.
+- PDFs that said "Encrypted PDFs are unsupported" when you recognized their text now work, and so does converting them to Word.
+- English is built in, so nothing downloads for English scans. Other languages are chosen in **Settings › General › Text in scanned PDFs** and download once.
+
 ## 0.16.0 — 2026-11-26
 
 ### PDF export
