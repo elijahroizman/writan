@@ -44,8 +44,10 @@ function enqueue(op: () => Promise<unknown>): Promise<void> {
 
 /** Tabs this run has copied into the store. Entries of other runs are only touched by recover(). */
 const stored = new Set<string>()
-/** Last editor content revision written to crash recovery, to avoid redundant re-serializations. */
-const revisions = new Map<string, number | string>()
+/** What each tab's last copy was of (editor revision, file, title, disk digest), so a backup of
+ * the same content to the same place isn't serialized again. Any of them changing (Save As,
+ * a save underneath) writes a new copy. */
+const revisions = new Map<string, string>()
 /** `asRecovered`: copy the tab's recovered bytes instead of asking its editor. */
 const timers = new Map<string, { timer: number; since: number; asRecovered: boolean }>()
 let started = false
@@ -88,7 +90,8 @@ async function store(tabId: string, asRecovered = false) {
   // Reading the bytes would cut short what the user is typing (a cell, a PDF form field).
   if (editor?.busy?.()) return schedule(tabId)
   const rev = editor?.getRevision?.()
-  if (rev !== undefined && stored.has(tabId) && revisions.get(tabId) === rev) return
+  const copyOf = rev === undefined ? null : JSON.stringify([rev, tab.path, tab.title, await diskDigest(tabId)])
+  if (copyOf !== null && stored.has(tabId) && revisions.get(tabId) === copyOf) return
   let bytes: Uint8Array | null
   try {
     // A recovered tab nobody has opened yet has no editor: its bytes are the document.
@@ -102,7 +105,7 @@ async function store(tabId: string, asRecovered = false) {
   if (!bytes || !now?.dirty || stopped()) return
   const doc: RecoveredDoc = { id: tabId, kind: now.kind, title: now.title, path: now.path, bytes, base, index: tabs.indexOf(now), savedAt: Date.now() }
   stored.add(tabId)
-  if (rev !== undefined) revisions.set(tabId, rev)
+  if (copyOf !== null) revisions.set(tabId, copyOf)
   await enqueue(() => withStore('readwrite', (s) => s.put(doc)))
 }
 

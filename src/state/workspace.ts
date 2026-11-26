@@ -112,8 +112,15 @@ export function ensureTabLoaded(tabId: string): Promise<void> {
     } catch (err) {
       // This read can lose a race with crash recovery, which already replaced the shell with the
       // newer unsaved document: a stale disk failure must not delete that tab.
-      if (!useWorkspace.getState().tabs.find((t) => t.id === tabId)?.deferred) return
-      if (!(await platform.pathExists(path))) useWorkspace.getState().removeRecent(path)
+      // Checked again after every await: recovery can adopt the tab at any of them.
+      const stillShell = () => {
+        const t = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+        return !!t?.deferred && !t.recovered && !t.dirty
+      }
+      if (!stillShell()) return
+      const missing = !(await platform.pathExists(path).catch(() => false))
+      if (!stillShell()) return
+      if (missing) useWorkspace.getState().removeRecent(path)
       disk.delete(tabId)
       useWorkspace.setState((s) => ({
         tabs: s.tabs.filter((t) => t.id !== tabId),

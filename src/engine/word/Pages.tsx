@@ -175,7 +175,16 @@ export function Pages({ engine, zoom, scroller }: Props) {
     engine.pagePoint = pagePoint
     engine.toClient = (page, x, y) => {
       const r = mountRef.current!.getBoundingClientRect()
-      return { x: r.left + (r.width - sizes[page][0] * zoom) / 2 + x * zoom, y: r.top + (tops[page] ?? 0) + y * zoom }
+      // The engine's sizes can be newer than this render's: a progressive open completes inside
+      // the command (find, go to) that then asks where its result is.
+      const now = engine.sizes
+      let top = tops[page]
+      if (now !== sizes) {
+        top = TOP
+        for (let i = 0; i < page && i < now.length; i++) top += now[i][1] * zoom + GAP
+      }
+      const w = now[page]?.[0] ?? sizes[page]?.[0] ?? 0
+      return { x: r.left + (r.width - w * zoom) / 2 + x * zoom, y: r.top + (top ?? 0) + y * zoom }
     }
   }, [engine, sizes, tops, zoom])
 

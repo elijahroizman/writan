@@ -167,8 +167,12 @@ export class WordEngine {
     })
   }
 
-  /** Opens a Word file, or a new document for `null`. */
-  static async open(bytes: Uint8Array | null): Promise<WordEngine> {
+  /**
+   * Opens a Word file, or a new document for `null`. `progressive`, for the editor only: a large
+   * document lays out its first blocks, paints them, and completes shortly after (see
+   * finishProgressive). Everyone else (export, version preview, agents) gets the whole layout.
+   */
+  static async open(bytes: Uint8Array | null, { progressive = false } = {}): Promise<WordEngine> {
     const t = timer()
     const engine = await loadEngine()
     expectKind(bytes, 'word')
@@ -180,7 +184,7 @@ export class WordEngine {
     const fonts = (JSON.parse(doc.documentFonts()) as string[]).slice(0, 12).map((f) => `"${f.replace(/"/g, '')}"`)
     if (fonts.length) await preloadFonts(fonts)
     t('doc fonts')
-    const progressiveSizes = doc.startProgressive(100)
+    const progressiveSizes = progressive ? doc.startProgressive(100) : 'null'
     const e = new WordEngine(doc)
     e.progressive = progressiveSizes !== 'null'
     e.refresh(true, e.progressive ? progressiveSizes : undefined)

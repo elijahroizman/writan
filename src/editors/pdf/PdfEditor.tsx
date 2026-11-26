@@ -221,12 +221,15 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const statsCacheRef = useRef(new Map<string, boolean>())
   const scannedKeysRef = useRef(new Set<number>())
   const ocrActiveRef = useRef(false)
+  /** Scanned pages a finished run couldn't read: not tried again until the languages change. */
+  const ocrGaveUpRef = useRef(new Set<number>())
   const [ocrKick, setOcrKick] = useState(0)
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null)
 
   useEffect(() => {
     statsCacheRef.current.clear()
     scannedKeysRef.current.clear()
+    ocrGaveUpRef.current.clear()
   }, [store])
 
   // Once per list of pages: check page stats outward in small chunks so rendering and search win.
@@ -429,11 +432,8 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     for (const f of files) {
       addPages(async () => {
         const at = indexOfKey(key) + 1
-        const buf =
-          f.bytes.byteOffset === 0 && f.bytes.byteLength === f.bytes.buffer.byteLength && f.bytes.buffer instanceof ArrayBuffer
-            ? f.bytes.buffer
-            : f.bytes.slice().buffer
-        const r = await call((s) => s.engine.call('insertPdf', [at, buf]))
+        // A fresh copy each time: the worker takes the buffer, and redo inserts the file again.
+        const r = await call((s) => s.engine.call('insertPdf', [at, f.bytes.slice().buffer]))
         return { pages: r.pages, at, count: r.count }
       })
     }
@@ -1053,6 +1053,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   useEffect(() => {
     if (store && readWith.current !== ocrLangs) {
       store.clearOcr()
+      ocrGaveUpRef.current.clear()
       // The open search loses the matches read with the old languages.
       if (findRun.current) runFind(findRun.current.query)
     }
@@ -1066,7 +1067,8 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
       ocrActiveRef.current = false
       return
     }
-    const todo = store.pages.filter((p) => scanned.has(p.key) && !store.ocrText(p))
+    const gaveUp = ocrGaveUpRef.current
+    const todo = store.pages.filter((p) => scanned.has(p.key) && !gaveUp.has(p.key) && !store.ocrText(p))
     if (!todo.length) {
       ocrActiveRef.current = false
       return
@@ -1080,7 +1082,10 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
       })
       .finally(() => {
         ocrActiveRef.current = false
-        if (!job.signal.aborted && store.pages.some((p) => scannedKeysRef.current.has(p.key) && !store.ocrText(p))) {
+        if (job.signal.aborted) return
+        // A run that ended without reading a page gave up on it (or couldn't start at all).
+        for (const p of todo) if (!store.ocrText(p)) gaveUp.add(p.key)
+        if (store.pages.some((p) => scannedKeysRef.current.has(p.key) && !gaveUp.has(p.key) && !store.ocrText(p))) {
           setOcrKick((k) => k + 1)
         }
       })
