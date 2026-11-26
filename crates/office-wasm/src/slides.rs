@@ -145,7 +145,9 @@ impl SlidesDoc {
             .iter()
             .map(|slot| (*slot, format!("#{}", theme.scheme_color(slot).unwrap_or(office_core::drawing::Rgb::BLACK).hex())))
             .collect();
-        json(&serde_json::json!({ "name": theme.name, "heading": theme.fonts.major.latin, "body": theme.fonts.minor.latin, "colors": colors }))
+        json(
+            &serde_json::json!({ "name": theme.name, "heading": theme.fonts.major.latin, "body": theme.fonts.minor.latin, "colors": colors }),
+        )
     }
 
     pub fn themes(&self) -> String {
