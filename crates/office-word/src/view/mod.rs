@@ -465,7 +465,9 @@ impl WordView {
         let mut old_flows: Vec<Option<SectionFlow>> =
             if reusable { std::mem::take(&mut self.sections).into_iter().map(Some).collect() } else { Vec::new() };
         let mut flows = Vec::with_capacity(sections.len());
-        let mut same_pagination = reusable && !self.pages.is_empty();
+        // Pages can be kept only when the edit was to body blocks whose breaks all came out the
+        // same. A header, footer or note edit marks nothing in the body, but moves it.
+        let mut same_pagination = reusable && !self.pages.is_empty() && matches!(dirty, Dirty::Blocks { .. });
         // Progressive opening is deliberately conservative: one flowing section whose tail can
         // be appended without changes to earlier section starts. Anything more exotic lays out whole.
         let prefix = max_blocks.filter(|_| sections.len() == 1);
@@ -1009,7 +1011,7 @@ fn relayout_in_place(
 ) -> (FlowLayout, bool) {
     let sec_end = first + slice.len() as u32;
     let mut same_breaks = true;
-    if from != u32::MAX && from <= sec_end && end >= first {
+    if !slice.is_empty() && from != u32::MAX && from <= sec_end && end >= first {
         let lo = from.saturating_sub(1).max(first) - first;
         let hi = end.min(sec_end.saturating_sub(1)) - first;
         for (k, block) in slice.iter().enumerate().take(hi as usize + 1).skip(lo as usize) {
@@ -1022,38 +1024,11 @@ fn relayout_in_place(
             *prev = new_box;
         }
     }
-    if same_breaks {
-        // Carry over the existing `y` offsets onto the replaced blocks (every preceding block's
-        // spacing and height matched, so every `y` is identical).
-        let mut y = 0.0;
-        let mut prev_after = 0.0;
-        if from != u32::MAX && from <= sec_end && end >= first {
-            let lo = (from.saturating_sub(1).max(first) - first) as usize;
-            let hi = (end.min(sec_end.saturating_sub(1)) - first) as usize;
-            if lo > 0 {
-                match &old.flow.blocks[lo - 1] {
-                    BlockBox::Para(p) => {
-                        y = p.y + p.layout.height;
-                        prev_after = p.spec.space_after;
-                    }
-                    BlockBox::Table(t) => y = t.y + t.height,
-                    BlockBox::Preview { y: py, flow, .. } => y = *py + flow.height,
-                    BlockBox::Empty { y: ey, .. } => y = *ey,
-                }
-            }
-            for block in &mut old.flow.blocks[lo..=hi] {
-                if let BlockBox::Para(p) = block {
-                    y += prev_after + p.spec.space_before;
-                    prev_after = p.spec.space_after;
-                    p.y = y;
-                    y += p.layout.height;
-                }
-            }
-        }
-        return (old.flow, true);
-    }
+    // The replaced blocks were laid out at the top; stacking puts every block back in place. It
+    // is arithmetic over the section's blocks, and the same stacking a full layout does (spacing
+    // carries across a block that isn't a paragraph).
     let height = flow::restack(&mut old.flow.blocks);
-    (FlowLayout { blocks: old.flow.blocks, height }, false)
+    (FlowLayout { blocks: old.flow.blocks, height }, same_breaks)
 }
 #[allow(clippy::too_many_arguments)]
 fn relayout(
@@ -1303,6 +1278,10 @@ fn paint_floating(ctx: &mut Ctx, doc: &Document, page: &Page, blocks: &[Block], 
         }
         let BlockBox::Para(pb) = b else { continue };
         let top = pb.y;
+        // Drawn on the page where its paragraph starts, not on every page the paragraph reaches.
+        if top < page.top - 0.01 {
+            continue;
+        }
         let Some(p) = pos::para(blocks, &pb.path) else { continue };
         for inline in &p.content {
             let Inline::Raw { xml } = inline else { continue };

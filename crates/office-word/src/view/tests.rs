@@ -1488,3 +1488,23 @@ fn double_click_math_image_beside_punctuation_keeps_math_tag() {
     assert_eq!(v.selection().ordered(), (Pos::new(Path::top(0), 1), Pos::new(Path::top(0), 4)));
     assert_eq!(v.state().math_tag.as_deref(), Some(tag.as_str()));
 }
+
+#[test]
+fn a_header_growing_moves_the_body_down() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&["body"])).unwrap();
+    v.layout(&mut host);
+    assert!(v.edit_header_footer(0, crate::StoryKind::Header));
+    v.insert_text("Header");
+    v.exit_header_footer();
+    v.layout(&mut host);
+    let before = v.pages[0].body_y;
+    assert!(v.edit_header_footer(0, crate::StoryKind::Header));
+    for _ in 0..12 {
+        v.enter();
+        v.insert_text("more header");
+    }
+    v.exit_header_footer();
+    v.layout(&mut host);
+    assert!(v.pages[0].body_y > before, "body_y stayed at {before}");
+}

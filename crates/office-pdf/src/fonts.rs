@@ -198,7 +198,8 @@ impl<'a> Fonts<'a> {
                 .filter(|name| name.name_id == ttf_parser::name_id::POST_SCRIPT_NAME)
                 .find_map(|name| name.to_string())
                 .unwrap_or_else(|| key.replace(':', "-"));
-            if let Some((family, variant)) = key.split_once(':') {
+            // The variant is the last part: a family name can itself hold a colon.
+            if let Some((family, variant)) = key.rsplit_once(':') {
                 by_pair.insert((family, variant), fonts.len());
             }
             fonts.push(Font { bytes, face, postscript_name, remapper: GlyphRemapper::new(), unicode: vec![BTreeMap::new()] });

@@ -127,8 +127,6 @@ pub struct SheetsView {
     pub(crate) grid_revision: u64,
     /// Conditional formatting rules cached per sheet until invalidated.
     pub(crate) cf_cache: HashMap<usize, crate::conditional::Rules>,
-    /// Persistent formula AST + dependency graph for incremental recalculation.
-    pub(crate) calc: crate::calc::CalcGraph,
     /// What NOW() and TODAY() give: a serial number.
     pub(crate) now: Option<f64>,
     pending_cut: Option<commands::PendingCut>,
@@ -218,8 +216,9 @@ impl SheetsView {
     }
 
     pub fn from_document_with_now(mut doc: Document, kind: Kind, now: Option<f64>) -> SheetsView {
-        let calc = crate::calc::CalcGraph::build(&doc);
-        let circular = crate::circular_with_graph(&doc, now, &calc);
+        // With the clock known at open (see set_now), the circular check and the formulas with no
+        // stored result are one pass, not one now and another when the clock arrives.
+        let circular = crate::circular_references(&doc, now);
         if now.is_some() {
             if let Body::Workbook { sheets } = &mut doc.body {
                 for &(s, c) in &circular {
@@ -229,9 +228,7 @@ impl SheetsView {
                     }
                 }
             }
-            if crate::has_uncached_formulas(&doc, &calc) {
-                crate::calculate_uncached(&mut doc, now);
-            }
+            crate::calculate_uncached(&mut doc, now);
         }
         SheetsView {
             doc,
@@ -247,7 +244,6 @@ impl SheetsView {
             revision: 1,
             grid_revision: 1,
             cf_cache: HashMap::new(),
-            calc,
             pending_cut: None,
             now,
             circular,
@@ -289,7 +285,7 @@ impl SheetsView {
         // A circular reference's cached result is whatever the app that saved it got to round
         // the loop, so it is 0 instead, before the formulas that read it are worked out.
         // Without the clock, NOW() would make some look circular.
-        self.circular = crate::circular_with_graph(&self.doc, self.now, &self.calc);
+        self.circular = crate::circular_references(&self.doc, self.now);
         let mut zeroed = false;
         if let Body::Workbook { sheets } = &mut self.doc.body {
             for &(s, c) in &self.circular {
@@ -300,11 +296,7 @@ impl SheetsView {
                 }
             }
         }
-        let worked_out = if crate::has_uncached_formulas(&self.doc, &self.calc) {
-            crate::calculate_uncached(&mut self.doc, self.now) > 0
-        } else {
-            false
-        };
+        let worked_out = crate::calculate_uncached(&mut self.doc, self.now) > 0;
         if worked_out || zeroed {
             self.changed(None);
         }
@@ -315,31 +307,9 @@ impl SheetsView {
         &self.circular
     }
 
-    pub(crate) fn rebuild_calc(&mut self) {
-        self.calc = crate::calc::CalcGraph::build(&self.doc);
-    }
-
     /// Works the formulas out again after a change.
     pub(crate) fn recalculate(&mut self) {
-        self.rebuild_calc();
-        let all: Vec<crate::CellKey> = self.calc.formula_keys.clone();
-        self.circular = crate::recalculate_incremental(&mut self.doc, self.now, &self.calc, &all, &[]);
-    }
-
-    pub(crate) fn recalculate_for_steps(&mut self, steps: &[CStep]) {
-        let mut roots: Vec<crate::CellKey> = Vec::new();
-        for step in steps {
-            let CStep::Cells { sheet, cells } = step else {
-                self.recalculate();
-                return;
-            };
-            let coords: Vec<CellRef> = cells.iter().map(|&(at, _, _)| at).collect();
-            self.calc.update_cells(&self.doc, *sheet, &coords);
-            for at in coords {
-                roots.push((*sheet, at.row, at.col));
-            }
-        }
-        self.circular = crate::recalculate_incremental(&mut self.doc, self.now, &self.calc, &roots, &self.circular);
+        self.circular = crate::recalculate_with_report(&mut self.doc, self.now).circular;
     }
 
     pub fn sheets(&self) -> &[Sheet] {

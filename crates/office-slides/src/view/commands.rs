@@ -181,9 +181,18 @@ impl SlidesView {
         self.record(vec![SStep::Slide { index, before: Box::new(before), after: Box::new(after) }], sel, kind);
     }
 
+    /// Before slides move: the slide showing an editing-only bullet draws without it. Its new
+    /// revision moves with it, where `sync_caret` would touch whichever slide took its index.
+    fn release_caret_bullet(&mut self) {
+        if let Some((slide, _, _)) = self.caret_shown.take() {
+            self.touch(slide);
+        }
+    }
+
     /// Changes the list of slides, maintaining per-slide revisions in lockstep (`on_revs`
     /// returns the earliest slide index from which dynamic `slidenum` fields shifted).
     pub(crate) fn change_deck_with_revs(&mut self, f: impl FnOnce(&mut Vec<Slide>, &mut Vec<u64>, &mut u64) -> Option<usize>) {
+        self.release_caret_bullet();
         let before = self.slides().to_vec();
         let sel = self.sel.clone();
         let mut revs = std::mem::take(&mut self.revisions);
@@ -299,6 +308,7 @@ impl SlidesView {
     /// Adds a slide after `after` on layout `layout` (a layout's part), or on the layout of the
     /// slide it follows. Becomes the active slide.
     pub fn add_slide(&mut self, after: usize, layout: Option<&str>) {
+        self.release_caret_bullet();
         let layout = layout
             .map(str::to_string)
             .or_else(|| self.slides().get(after).and_then(|s| s.layout.clone()))

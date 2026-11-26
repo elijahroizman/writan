@@ -1266,3 +1266,35 @@ fn overwriting_circular_formula_with_plain_value_clears_circular() {
     v.set_input(0, CellRef::new(0, 0), "5");
     assert!(v.circular().is_empty(), "circular list should clear when formula is replaced: {:?}", v.circular());
 }
+
+#[test]
+fn edits_recalculate_like_a_full_pass() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    let show = |v: &SheetsView, r: u32, c: u32| v.cell_info(0, CellRef::new(r, c)).display;
+    // A formula of a blank cell is blank to COUNTA, though its stored result is 0.
+    v.set_input(0, CellRef::new(0, 0), "=Z1");
+    v.set_input(0, CellRef::new(0, 1), "=COUNTA(A1)");
+    assert_eq!(show(&v, 0, 1), "0");
+    // A range made of two references (A1):(A3) depends on the cells between them.
+    v.set_input(0, CellRef::new(0, 5), "1");
+    v.set_input(0, CellRef::new(1, 5), "2");
+    v.set_input(0, CellRef::new(2, 5), "3");
+    v.set_input(0, CellRef::new(0, 6), "=SUM((F1):(F3))");
+    assert_eq!(show(&v, 0, 6), "6");
+    v.set_input(0, CellRef::new(1, 5), "20");
+    assert_eq!(show(&v, 0, 6), "24");
+}
+
+#[test]
+fn exact_lookup_through_a_chain_deeper_than_the_depth_limit() {
+    let mut v = SheetsView::blank(Kind::Sheets);
+    // B1 reads B2, which reads B3 … down to B301: deeper than one pass works out at once.
+    for r in 0..300 {
+        v.set_input(0, CellRef::new(r, 1), &format!("=B{}", r + 2));
+    }
+    v.set_input(0, CellRef::new(300, 1), "41");
+    v.set_input(0, CellRef::new(0, 0), "=MATCH(42,B1:B2,0)");
+    assert_eq!(v.cell_info(0, CellRef::new(0, 0)).display, "#N/A");
+    v.set_input(0, CellRef::new(300, 1), "42");
+    assert_eq!(v.cell_info(0, CellRef::new(0, 0)).display, "1");
+}

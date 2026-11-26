@@ -89,7 +89,8 @@ pub fn format(value: &Value, code: &str, system: DateSystem) -> Formatted {
             // The fourth section is for text, or a single section that has a place for it.
             let section = match parsed.len() {
                 4.. => Some(&parsed[3]),
-                1 if parsed[0].iter().any(|t| matches!(t, Token::Text)) => Some(&parsed[0]),
+                // An `@` anywhere in the section, as before the cache (quoted ones included).
+                1 if split_sections(code)[0].contains('@') => Some(&parsed[0]),
                 _ => None,
             };
             match section {

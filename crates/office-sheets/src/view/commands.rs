@@ -91,9 +91,9 @@ impl SheetsView {
         let recalculate = steps.iter().any(step_changes_values);
         let after = self.sel;
         self.shared_made(&steps);
-        self.history.record(steps.clone(), before, after, None);
+        self.history.record(steps, before, after, None);
         if recalculate {
-            self.recalculate_for_steps(&steps);
+            self.recalculate();
         }
     }
 
@@ -237,9 +237,9 @@ impl SheetsView {
             }
         }
         self.sel = e.before;
-        if e.steps.iter().any(step_changes_values) || !self.calc.volatiles.is_empty() {
-            self.recalculate_for_steps(&e.steps);
-        }
+        // Always worked out again: the history keeps cells with the results they had then, which a
+        // volatile formula (RAND, NOW) has since changed.
+        self.recalculate();
         self.changed(None);
         true
     }
@@ -257,9 +257,9 @@ impl SheetsView {
             }
         }
         self.sel = e.after;
-        if e.steps.iter().any(step_changes_values) || !self.calc.volatiles.is_empty() {
-            self.recalculate_for_steps(&e.steps);
-        }
+        // Always worked out again: the history keeps cells with the results they had then, which a
+        // volatile formula (RAND, NOW) has since changed.
+        self.recalculate();
         self.changed(None);
         true
     }
