@@ -1,10 +1,9 @@
 import { discardBitmap, PdfEngine, Priority } from '../../editors/pdf/engine/client'
-import type { Bitmap, PageInfo, PageTextStats } from '../../editors/pdf/engine/protocol'
+import type { Bitmap, PageInfo } from '../../editors/pdf/engine/protocol'
 import { pdfEngineClient, type PdfInspection } from '../pdf/client'
 import { decodeImageToRgba, exportImageToPdf, type OcrLayerInput } from '../pdf/exporter'
 import { loadFontsForOcrLayers } from '../pdf/fonts'
 import { OcrClient } from './client'
-export { formatPageSelection, parsePageSelection } from './pageRange'
 import type { OcrPageResult } from './types'
 
 export const SCANNED_CHAR_THRESHOLD = 10
@@ -111,17 +110,17 @@ export async function inspectPdfDocument(bytes: Uint8Array, signal?: AbortSignal
   return await pdfEngineClient.inspectPdf(bytes, signal)
 }
 
-export function countScannedPages(stats: PageTextStats[]): number[] {
-  return stats.filter((s) => s.nonWhitespaceCount < SCANNED_CHAR_THRESHOLD).map((s) => s.index)
-}
-
 export async function ocrPdfDocument(opts: PdfOcrOptions): Promise<PdfOcrResult> {
   const { pdfBytes, langs, signal, onProgress } = opts
   const skipPagesWithText = opts.skipPagesWithText !== false
   signal?.throwIfAborted?.()
 
+  const searchable = opts.searchable !== false
   onProgress?.({ done: 0, total: 1, pageIndex: 0, phase: 'inspecting' })
-  const inspection = await inspectPdfDocument(pdfBytes, signal)
+  // Only writing a searchable copy needs the file's structure; PDFium reads the pages of any PDF.
+  const inspection: PdfInspection = searchable
+    ? await inspectPdfDocument(pdfBytes, signal)
+    : { pageCount: 0, encrypted: false, hasDigitalSignature: false, signatureFields: [], hasForms: false, hasOutlines: false, annotationCount: 0 }
   if (inspection.encrypted) {
     throw new Error('Encrypted PDFs cannot be processed by OCR.')
   }
@@ -203,7 +202,7 @@ export async function ocrPdfDocument(opts: PdfOcrOptions): Promise<PdfOcrResult>
       layers.push(pageToOcrLayer(recognized, info.width, info.height))
     }
 
-    if (opts.searchable === false) return { searchablePdfBytes: pdfBytes, pages, skippedPages, recognizedPages: toProcess, inspection }
+    if (!searchable) return { searchablePdfBytes: pdfBytes, pages, skippedPages, recognizedPages: toProcess, inspection }
     onProgress?.({ done: toProcess.length, total: toProcess.length, pageIndex: toProcess[toProcess.length - 1], phase: 'injecting' })
     const fontPack = await loadFontsForOcrLayers(layers)
     const searchablePdfBytes = await pdfEngineClient.injectOcrTextLayer(pdfBytes, JSON.stringify(layers), fontPack, {

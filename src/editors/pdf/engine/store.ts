@@ -4,6 +4,7 @@
 
 import type { PdfEngine } from './client'
 import { isCancelled, Priority } from './client'
+import type { PageOcrText } from '../ocr'
 import type { Annot, Bitmap, PageInfo, TextRun } from './protocol'
 
 export const THUMB_WIDTH = 150
@@ -58,6 +59,8 @@ export class DocStore {
   private listeners = new Set<() => void>()
   private text = new Lru<Promise<TextRun[]>>(48)
   private annots = new Lru<Promise<Annot[]>>(48)
+  /** Text recognized on scanned pages, by `key:rotation`. Small, and slow to make again. */
+  private ocr = new Map<string, PageOcrText>()
   /** Thumbnails as small JPEGs, newest version per page. Cheap enough to keep many. */
   private thumbs = new Lru<Thumb>(4000, 48 * 1024 * 1024, (t) => URL.revokeObjectURL(t.url))
   private thumbJobs = new Map<string, Promise<Thumb | null>>()
@@ -83,6 +86,7 @@ export class DocStore {
     const same = pages.length === this.pages.length && pages.every((p, i) => p.key === this.pages[i].key && p.rotation === this.pages[i].rotation)
     if (!same) {
       this.text.clear()
+      this.ocr.clear()
       this.annots.clear()
       this.thumbs.clear()
       this.revs.clear()
@@ -93,6 +97,7 @@ export class DocStore {
   /** A different document now (a recompiled preview): drop every cache and redraw every page. */
   replaced(pages: PageInfo[]) {
     this.text.clear()
+    this.ocr.clear()
     this.annots.clear()
     this.thumbs.clear()
     // Revs only go up, so pages that keep their key still redraw.
@@ -113,12 +118,27 @@ export class DocStore {
     this.emit()
   }
 
+  /** Text recognized on a scanned page, as it's now turned. */
+  ocrText(page: PageInfo): PageOcrText | undefined {
+    return this.ocr.get(`${page.key}:${page.rotation}`)
+  }
+
+  setOcr(page: PageInfo, text: PageOcrText) {
+    const id = `${page.key}:${page.rotation}`
+    this.ocr.set(id, text)
+    this.text.delete(id)
+    this.pages = this.pages.slice()
+    this.emit()
+  }
+
+  /** The page's own text, then any recognized on it (scanned pages have little or none of their own). */
   getText(index: number): Promise<TextRun[]> {
     const page = this.pages[index]
     const id = `${page.key}:${page.rotation}`
     let hit = this.text.get(id)
     if (!hit) {
-      hit = this.engine.call('text', [page.key], { priority: Priority.text })
+      const ocr = this.ocr.get(id)
+      hit = this.engine.call('text', [page.key], { priority: Priority.text }).then((runs) => (ocr ? [...runs, ...ocr.runs] : runs))
       hit.catch(() => this.text.delete(id))
       this.text.set(id, hit)
     }
@@ -215,6 +235,7 @@ export class DocStore {
     this.destroyed = true
     this.thumbs.clear()
     this.text.clear()
+    this.ocr.clear()
     this.annots.clear()
     this.listeners.clear()
     this.engine.destroy()

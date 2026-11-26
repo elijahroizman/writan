@@ -72,6 +72,8 @@ export interface OcrInstalledPack {
   code: string
   size: number
   sha256Verified: boolean
+  /** Ships with the app and can't be removed. */
+  builtIn?: boolean
 }
 
 export interface OcrPackInventory {

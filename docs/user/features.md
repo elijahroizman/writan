@@ -39,11 +39,11 @@ Placing a signature puts a picture of it on the page. It isn't a cryptographic (
 
 Word documents, presentations, workbooks and Markdown notes export directly as crisp vector PDFs with selectable text, embedded fonts, vector equations and charts, and clickable web and `mailto:` links.
 
-When you open a PDF whose pages look like scanned images, a banner offers to run offline OCR right on your computer. You can choose which pages to scan (current page, scanned pages only, or all pages), skip pages that already have selectable text, and select any of 12 downloadable language packs in **Settings › General › Offline OCR** or directly in the OCR dialog. Language packs download once from a pinned release with SHA-256 verification and are stored locally for offline use; recognition itself never sends documents over the network.
+Scanned PDFs work like any other PDF. When a page is a picture of text, Writan reads it in the background, on your computer, starting with the page you're on. Then **Find** (⌘F, or Ctrl+F on Windows and Linux) finds its words, and you can select, copy and highlight them. While it reads, the bottom of the page list says how far it has got. The file isn't changed. A scan with a line or two of real text, like a page number or a "downloaded from" footer, is still read.
 
-OCR saves a separate copy and leaves the original file untouched. If a PDF carries a cryptographic digital signature, Writan asks for confirmation first and strips the signature from the separate searchable copy while leaving the signed original unchanged.
+English is built in. If your scans are in other languages, choose them in **Settings › General › Text in scanned PDFs**. Each one downloads once, from a pinned release checked with SHA-256, the first time you choose it. Your documents are never sent anywhere.
 
-You can also open PNG, JPEG, HEIC and WebP pictures in the Images viewer, copy recognized plain text or Markdown, convert PDFs or images into editable Word (`.docx`) documents via **Convert file…**, or save an image as a searchable PDF. Use **File › Recognize Text (OCR)…** or the command palette (`⌥⌘O` on a Mac, `Ctrl+Alt+O` on Windows and Linux).
+**Convert file…** turns a scanned PDF into a Word document. Pictures (PNG, JPEG, HEIC and WebP) open in the Images viewer, where **File › Recognize Text (OCR)…** (`⌥⌘O` on a Mac, `Ctrl+Alt+O` on Windows and Linux) shows their text to copy, or saves it as Word or a searchable PDF.
 
 ## Tabs
 

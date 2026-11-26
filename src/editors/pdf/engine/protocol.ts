@@ -57,6 +57,8 @@ export interface TextRun {
   box: Box
   /** Text runs downwards (vertical writing or a rotated line). */
   vertical?: boolean
+  /** One word recognized from the page's picture; `map` is empty because PDFium has no such characters. */
+  ocr?: boolean
 }
 
 export interface OutlineItem {
@@ -101,6 +103,10 @@ export interface PageTextStats {
   index: number
   charCount: number
   nonWhitespaceCount: number
+  /** Share of the page (0–1) under its largest picture. */
+  imageCoverage: number
+  /** Share of the page (0–1) covered by its characters; measured only on pages that are mostly a picture. */
+  textCoverage: number
 }
 
 /** Methods take a page's `key` (see PageInfo), except where they take a position in the document. */

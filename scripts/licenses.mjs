@@ -163,6 +163,12 @@ function adaptedCode() {
   ].map(([name, file, homepage]) => ({ group: 'App', name, version: 'adapted', license: 'MIT', homepage, files: [{ file, text: textId(readFileSync(join(root, 'assets', 'third-party', file), 'utf8').trim()) }] }))
 }
 
+/** Data files shipped with the app: the English text recognition model. */
+function bundledData() {
+  const file = 'tessdata_fast-LICENSE.txt'
+  return [{ group: 'App', name: 'Tesseract English language data (tessdata_fast)', version: 'bundled', license: 'Apache-2.0', homepage: 'https://github.com/tesseract-ocr/tessdata_fast', files: [{ file, text: textId(readFileSync(join(root, 'assets', 'third-party', file), 'utf8').trim()) }] }]
+}
+
 const byName = (a, b) => a.name.localeCompare(b.name) || a.version.localeCompare(b.version)
 const packages = [
   // libheif-js decodes HEIC in the Images viewer, which ships inside the app.
@@ -172,6 +178,7 @@ const packages = [
   ...cratePackages(join('crates', 'Cargo.toml'), 'Document engine (Rust/WASM)', ['--filter-platform', 'wasm32-unknown-unknown']).sort(byName),
   ...bundledFonts(),
   ...adaptedCode(),
+  ...bundledData(),
 ]
 writeFileSync(join(root, 'public', 'licenses.json'), JSON.stringify({ packages, texts: Object.fromEntries(texts) }))
 console.log(`licenses: ${packages.length} packages, ${texts.size} license texts`)

@@ -120,21 +120,6 @@ export function pdfOcrStatus(progress: PdfOcrProgress): string {
   return `Recognizing page ${pageIndex + 1} · ${done} / ${total} complete`
 }
 
-export async function inspectOcrSource(bytes: Uint8Array, signal?: AbortSignal) {
-  const { inspectPdfDocument } = await import('./ocr/pdfOcr')
-  const inspection = await inspectPdfDocument(bytes, signal)
-  if (inspection.encrypted) throw new Error('Encrypted PDFs cannot be processed by OCR.')
-  return inspection
-}
-
-/** Inspect the original before saving edited bytes, which may invalidate a signature. */
-export async function readPdfOcrSource(tab: DocTab, signal?: AbortSignal) {
-  const original = tab.dirty && tab.bytes ? await inspectOcrSource(tab.bytes, signal) : undefined
-  const bytes = await readTabBytes(tab)
-  const inspection = await inspectOcrSource(bytes, signal)
-  return { bytes, signed: inspection.hasDigitalSignature || !!original?.hasDigitalSignature }
-}
-
 export async function recognizeImage(bytes: Uint8Array, name: string, signal?: AbortSignal, status?: OcrStatus) {
   const { useOcrPacks } = await import('./ocr/packs')
   const langs = useOcrPacks.getState().selectedLangs
@@ -210,17 +195,14 @@ export async function convertTab(tab: DocTab, target: ConvertFormat, options: Co
     return { bytes: new TextEncoder().encode(text), name }
   }
   if (tab.kind === 'pdf' && target === 'docx') {
-    onProgress?.('Inspecting PDF…')
-    const { bytes: pdfBytes, signed } = await readPdfOcrSource(tab, signal)
-    if (signed && !await platform.confirmDialog('Creating an unsigned Word copy leaves the original signed PDF untouched.', {
-      title: 'Convert signed PDF?', okLabel: 'Create Word copy',
-    })) throw new DOMException('Conversion cancelled.', 'AbortError')
+    // Only the pages are read: a Word copy leaves the PDF, and any signature on it, as it was.
+    const pdfBytes = await readTabBytes(tab)
     const { useOcrPacks } = await import('./ocr/packs')
     const langs = useOcrPacks.getState().selectedLangs
     await prepareOcrPacks(langs, signal, onProgress)
     const { ocrPdfDocument } = await import('./ocr/pdfOcr')
     const result = await ocrPdfDocument({
-      pdfBytes, langs, signal, allowSigned: signed, skipPagesWithText: false, searchable: false,
+      pdfBytes, langs, signal, skipPagesWithText: false, searchable: false,
       onProgress: (progress) => onProgress?.(pdfOcrStatus(progress)),
     })
     signal?.throwIfAborted()

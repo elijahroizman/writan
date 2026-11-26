@@ -2,10 +2,28 @@ import { create } from 'zustand'
 import { isTauri } from '../platform'
 import { getPackMeta, OCR_PACK_CATALOG, TESSDATA_BASE_URL } from './catalog'
 import type { OcrPackInventory, OcrPackProgress } from './types'
+import englishUrl from './eng.traineddata?url'
 
 const LANGS_KEY = 'workspace.ocrLangs'
 const PACKS_STORE = 'packs'
 const core = () => import('@tauri-apps/api/core')
+
+/** Ships with the app, so English text is recognized without a download. */
+export const BUILT_IN_PACK = 'eng'
+
+/** Languages of the system's settings that have a pack, besides English. */
+const SYSTEM_PACKS: Record<string, string> = { he: 'heb', iw: 'heb', ar: 'ara', fr: 'fra', de: 'deu', es: 'spa', it: 'ita', pt: 'por', ru: 'rus', ja: 'jpn', ko: 'kor' }
+
+function systemLangs(): string[] {
+  const codes = [BUILT_IN_PACK]
+  for (const tag of typeof navigator === 'undefined' ? [] : navigator.languages ?? []) {
+    const lower = tag.toLowerCase()
+    // Only Simplified Chinese has a pack.
+    const code = lower === 'zh' || /^zh-(cn|sg|hans)/.test(lower) ? 'chi_sim' : SYSTEM_PACKS[lower.split('-')[0]]
+    if (code && !codes.includes(code)) codes.push(code)
+  }
+  return codes
+}
 
 export function normalizeOcrLangs(langs: readonly string[]): string[] {
   const unique = [...new Set(langs)]
@@ -19,9 +37,9 @@ function loadLangs(): string[] {
     const saved: unknown = JSON.parse(localStorage.getItem(LANGS_KEY) ?? 'null')
     if (Array.isArray(saved)) return normalizeOcrLangs(saved)
   } catch {
-    // Missing storage and obsolete selections both use English.
+    // Missing storage and obsolete selections both use the system's languages.
   }
-  return ['eng']
+  return systemLangs()
 }
 
 function requirePack(code: string) {
@@ -127,10 +145,12 @@ export async function refreshPacks(): Promise<OcrPackInventory> {
   const raw = isTauri
     ? await (await core()).invoke<OcrPackInventory | null>('ocr_list_packs')
     : await browserInventory()
-  const inventory: OcrPackInventory =
-    raw && Array.isArray(raw.installed) && typeof raw.totalBytes === 'number'
-      ? { installed: raw.installed, totalBytes: raw.totalBytes }
-      : { installed: [], totalBytes: 0 }
+  const downloaded = raw && Array.isArray(raw.installed) ? raw.installed.filter((pack) => pack.code !== BUILT_IN_PACK) : []
+  const builtIn = requirePack(BUILT_IN_PACK)
+  const inventory: OcrPackInventory = {
+    installed: [{ code: BUILT_IN_PACK, size: builtIn.size, sha256Verified: true, builtIn: true }, ...downloaded],
+    totalBytes: downloaded.reduce((sum, pack) => sum + pack.size, 0),
+  }
   if (sequence === refreshSequence) useOcrPacks.setState(inventory)
   return inventory
 }
@@ -138,6 +158,7 @@ export async function refreshPacks(): Promise<OcrPackInventory> {
 async function browserInventory(): Promise<OcrPackInventory> {
   const installed = []
   for (const { code } of OCR_PACK_CATALOG) {
+    if (code === BUILT_IN_PACK) continue
     const data = await packTransaction<ArrayBuffer | undefined>('readonly', (store) => store.get(code))
     if (data) installed.push({ code, size: data.byteLength, sha256Verified: await verified(code, data) })
   }
@@ -147,6 +168,7 @@ async function browserInventory(): Promise<OcrPackInventory> {
 export async function readPackBytes(code: string, signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>> {
   const pack = requirePack(code)
   signal?.throwIfAborted()
+  if (code === BUILT_IN_PACK) return await builtInBytes(signal)
   if (isTauri) {
     const { invoke } = await core()
     signal?.throwIfAborted()
@@ -160,6 +182,56 @@ export async function readPackBytes(code: string, signal?: AbortSignal): Promise
   signal?.throwIfAborted()
   if (!intact) throw new Error('The ' + pack.name + ' OCR pack is damaged. Download it again.')
   return new Uint8Array(data)
+}
+
+let builtIn: Promise<ArrayBuffer> | undefined
+
+async function builtInBytes(signal?: AbortSignal): Promise<Uint8Array<ArrayBuffer>> {
+  builtIn ??= fetch(englishUrl).then((response) => {
+    if (!response.ok) throw new Error('Couldn’t load the English text recognition data.')
+    return response.arrayBuffer()
+  })
+  builtIn.catch(() => (builtIn = undefined))
+  const data = await builtIn
+  signal?.throwIfAborted()
+  // The worker takes ownership of what it's given, so hand out a copy.
+  return new Uint8Array(data.slice(0))
+}
+
+/**
+ * The chosen languages that can be used now: packs that are missing are downloaded first, and
+ * ones that fail to download are left out. English is used when nothing else is available.
+ */
+export async function availableLangs(signal?: AbortSignal): Promise<string[]> {
+  const { selectedLangs } = useOcrPacks.getState()
+  const installed = new Set((await refreshPacks()).installed.filter((pack) => pack.sha256Verified).map((pack) => pack.code))
+  for (const code of selectedLangs) {
+    if (installed.has(code)) continue
+    signal?.throwIfAborted()
+    try {
+      await (downloads.has(code) ? waitForDownload(code) : downloadPack(code))
+      installed.add(code)
+    } catch {
+      // Offline or blocked: recognize with the languages there are.
+    }
+  }
+  signal?.throwIfAborted()
+  const langs = selectedLangs.filter((code) => installed.has(code))
+  return langs.length ? langs : [BUILT_IN_PACK]
+}
+
+function waitForDownload(code: string): Promise<void> {
+  return new Promise((resolve) => {
+    const stop = useOcrPacks.subscribe(({ progress }) => {
+      if (progress[code]) return
+      stop()
+      resolve()
+    })
+    if (!useOcrPacks.getState().progress[code]) {
+      stop()
+      resolve()
+    }
+  })
 }
 
 export function ensurePacks(
@@ -225,6 +297,7 @@ async function browserDownload(code: string, signal: AbortSignal) {
 
 export async function downloadPack(code: string): Promise<void> {
   const pack = requirePack(code)
+  if (code === BUILT_IN_PACK) return
   if (downloads.has(code)) throw new Error('The ' + pack.name + ' OCR pack is already downloading.')
   const controller = new AbortController()
   downloads.set(code, controller)
@@ -266,7 +339,8 @@ export async function cancelDownload(code: string): Promise<void> {
 }
 
 export async function removePack(code: string): Promise<void> {
-  requirePack(code)
+  const pack = requirePack(code)
+  if (code === BUILT_IN_PACK) throw new Error(pack.name + ' is built in.')
   if (downloads.has(code)) throw new Error('Wait for the OCR pack download to finish or cancel it before removing the pack.')
   if (isTauri) await (await core()).invoke('ocr_remove_pack', { code })
   else await packTransaction('readwrite', (store) => store.delete(code))

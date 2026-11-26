@@ -298,10 +298,63 @@ function statsForIndex(index: number): PageTextStats {
         nonWhitespaceCount++
       }
     }
-    return { index, charCount: count, nonWhitespaceCount }
+    // A page full of text isn't a scan to read (if it is one, it already has its text).
+    const imageCoverage = nonWhitespaceCount < 1500 ? pictureCoverage(pc.pagePtr) : 0
+    // Scans often carry a little real text (a page number, a "downloaded from" line): measure how
+    // much of the page it takes up, which only matters on a page that is mostly a picture.
+    const textCoverage = imageCoverage >= 0.3 && nonWhitespaceCount >= 10 ? textArea(tp, count, pc.pagePtr) : 0
+    return { index, charCount: count, nonWhitespaceCount, imageCoverage, textCoverage }
   } finally {
     pc.release()
   }
+}
+
+/** Share of the page (0–1) covered by the boxes of its characters. */
+function textArea(tp: number, count: number, pagePtr: number): number {
+  const width = mod.FPDF_GetPageWidthF(pagePtr)
+  const height = mod.FPDF_GetPageHeightF(pagePtr)
+  if (!(width > 0 && height > 0)) return 0
+  const box = scratch(32)
+  let area = 0
+  try {
+    for (let i = 0; i < count; i++) {
+      if (!mod.FPDFText_GetCharBox(tp, i, box, box + 8, box + 16, box + 24)) continue
+      const w = getD(box + 8) - getD(box)
+      const h = getD(box + 24) - getD(box + 16)
+      if (w > 0 && h > 0) area += w * h
+    }
+  } finally {
+    free(box)
+  }
+  return Math.min(1, area / (width * height))
+}
+
+/** Share of the page (0–1) under its largest picture, looking inside form XObjects too. */
+function pictureCoverage(pagePtr: number): number {
+  const width = mod.FPDF_GetPageWidthF(pagePtr)
+  const height = mod.FPDF_GetPageHeightF(pagePtr)
+  if (!(width > 0 && height > 0)) return 0
+  const rect = scratch(16)
+  let best = 0
+  const visit = (obj: number, depth: number) => {
+    const type = mod.FPDFPageObj_GetType(obj)
+    if (type === 3 /* FPDF_PAGEOBJ_IMAGE */) {
+      if (!mod.FPDFPageObj_GetBounds(obj, rect, rect + 4, rect + 8, rect + 12)) return
+      const w = Math.min(getF(rect + 8), width) - Math.max(getF(rect), 0)
+      const h = Math.min(getF(rect + 12), height) - Math.max(getF(rect + 4), 0)
+      if (w > 0 && h > 0) best = Math.max(best, (w * h) / (width * height))
+    } else if (type === 5 /* FPDF_PAGEOBJ_FORM */ && depth < 4) {
+      const n = mod.FPDFFormObj_CountObjects(obj)
+      for (let i = 0; i < n && best < 0.5; i++) visit(mod.FPDFFormObj_GetObject(obj, i), depth + 1)
+    }
+  }
+  try {
+    const n = mod.FPDFPage_CountObjects(pagePtr)
+    for (let i = 0; i < n && best < 0.5; i++) visit(mod.FPDFPage_GetObject(pagePtr, i), 0)
+  } finally {
+    free(rect)
+  }
+  return Math.min(1, best)
 }
 
 function pageTextStats(key: number): PageTextStats {

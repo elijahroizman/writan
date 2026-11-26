@@ -15,6 +15,8 @@ export const Priority = {
   nearby: 40,
   thumbnails: 50,
   search: 60,
+  /** Recognizing text on scanned pages in the background. */
+  ocr: 70,
 } as const
 
 export class Cancelled extends Error {

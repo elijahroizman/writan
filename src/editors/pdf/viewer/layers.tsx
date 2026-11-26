@@ -8,6 +8,7 @@ import type { CSSProperties } from 'react'
 import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { Annot, Box, PageInfo, TextRun } from '../engine/protocol'
 import type { DocStore } from '../engine/store'
+import { wordPart } from '../ocr'
 import { isWebLink } from '../../../lib/platform'
 
 export const pos = (b: Box): CSSProperties => ({
@@ -29,8 +30,11 @@ function textWidth(text: string) {
   return measureCtx.measureText(text).width / 100
 }
 
-/** Invisible text laid over the drawing so it can be selected, copied and highlighted. */
-export const TextLayer = memo(function TextLayer({ store, index, page }: { store: DocStore; index: number; page: PageInfo }) {
+/**
+ * Invisible text laid over the drawing so it can be selected, copied and highlighted. `recognized`
+ * is set once text has been recognized on a scanned page, which adds its words.
+ */
+export const TextLayer = memo(function TextLayer({ store, index, page, recognized }: { store: DocStore; index: number; page: PageInfo; recognized?: boolean }) {
   const [runs, setRuns] = useState<TextRun[] | null>(null)
   const indexRef = useRef(index)
   indexRef.current = index
@@ -43,7 +47,7 @@ export const TextLayer = memo(function TextLayer({ store, index, page }: { store
     return () => {
       live = false
     }
-  }, [store, page.key, page.rotation])
+  }, [store, page.key, page.rotation, recognized])
 
   const children = useMemo(() => {
     if (!runs) return null
@@ -95,12 +99,15 @@ export function clearTextSelection(within?: Node) {
   }
 }
 
-/** Characters picked by the current text selection, per page: [first, last] PDFium indices. */
-export async function selectedCharacters(store: DocStore): Promise<{ index: number; key: number; start: number; end: number }[]> {
+/**
+ * Text picked by the current selection, per page: [first, last] PDFium character indices (-1 when
+ * none), and boxes around picked words that were recognized on a scanned page.
+ */
+export async function selectedCharacters(store: DocStore): Promise<{ index: number; key: number; start: number; end: number; boxes: Box[] }[]> {
   const sel = window.getSelection()
   if (!sel || sel.isCollapsed || !sel.rangeCount) return []
   const range = sel.getRangeAt(0)
-  const byKey = new Map<number, { start: number; end: number }>()
+  const byKey = new Map<number, { start: number; end: number; boxes: Box[] }>()
   for (const layer of document.querySelectorAll<HTMLElement>('.text-layer')) {
     if (!range.intersectsNode(layer)) continue
     const key = Number(layer.dataset.key)
@@ -117,10 +124,16 @@ export async function selectedCharacters(store: DocStore): Promise<{ index: numb
       if (textNode && range.startContainer === textNode) from = range.startOffset
       if (textNode && range.endContainer === textNode) to = range.endOffset
       if (to <= from) continue
+      const have = byKey.get(key) ?? { start: -1, end: -1, boxes: [] }
+      byKey.set(key, have)
+      if (run.ocr) {
+        have.boxes.push(wordPart(run, from, Math.min(to, run.text.length)))
+        continue
+      }
       const start = run.map[from]
       const end = run.map[Math.min(to, run.map.length) - 1]
-      const have = byKey.get(key)
-      byKey.set(key, have ? { start: Math.min(have.start, start), end: Math.max(have.end, end) } : { start, end })
+      have.start = have.start === -1 ? start : Math.min(have.start, start)
+      have.end = Math.max(have.end, end)
     }
   }
   return [...byKey].map(([key, r]) => ({ key, index: store.pages.findIndex((p) => p.key === key), ...r }))
