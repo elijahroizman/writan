@@ -311,6 +311,13 @@ export class WordEngine {
     return p as { width: number; height: number; items: import('../paint').PaintItem[] }
   }
 
+  /** Draws a page for printing/exporting without making the editor's page view count it as drawn. */
+  paintStandalone(page: number) {
+    const p = JSON.parse(this.doc.paintStandalone(page))
+    this.styles.add(p.styles)
+    return p as { width: number; height: number; items: import('../paint').PaintItem[] }
+  }
+
   focus() {
     this.input?.focus({ preventScroll: true })
   }

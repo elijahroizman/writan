@@ -1171,7 +1171,7 @@ async function printPages(editor: WordEngine | null) {
   style.textContent = `@page { size: ${sizes[0][0]}px ${sizes[0][1]}px; margin: 0; }`
   root.appendChild(style)
   for (let i = 0; i < sizes.length; i++) {
-    const p = editor.paint(i, true)!
+    const p = editor.paintStandalone(i)
     // Printing cannot redraw after MathJax arrives: wait before the equation's object URL is made.
     if (itemsContainLatex(p.items)) await loadLatexMath()
     const wrap = document.createElement('div')

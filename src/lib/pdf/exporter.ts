@@ -624,8 +624,7 @@ export async function exportWordToPdf(bytes: Uint8Array, title?: string, signal?
     const pages: PdfPageInput[] = []
     for (let i = 0; i < sizes.length; i++) {
       signal?.throwIfAborted?.()
-      const p = engine.paint(i, true)
-      if (!p) continue
+      const p = engine.paintStandalone(i)
       walkItems(p.items, ctx)
       const items = await prepareTextOverlays(p.items, engine.styles, ctx, extraMedia)
       pages.push({

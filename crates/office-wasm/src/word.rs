@@ -288,20 +288,33 @@ impl WordDoc {
         self.progressive
     }
 
-    /// Draws a page: `{ width, height, items, styles }`, where `styles` are paint styles the
-    /// app hasn't been sent before (numbered on from the last ones sent). Answers `null` when the
-    /// page is drawn the same as last time, unless `force` (the app dropped what it drew).
-    pub fn paint(&mut self, page: usize, force: bool) -> String {
+    fn paint_inner(&mut self, page: usize, force: bool, track: bool) -> String {
         let mut m = JsMeasurer(&self.host);
         let p = self.view.paint(&mut m, page);
         let items = json(&p.items);
         let hash = fnv(items.as_bytes()) ^ (p.width.to_bits().rotate_left(7)) ^ p.height.to_bits();
-        if !force && self.drawn.get(&page) == Some(&hash) {
-            return "null".into();
+        if track {
+            if !force && self.drawn.get(&page) == Some(&hash) {
+                return "null".into();
+            }
+            self.drawn.insert(page, hash);
         }
-        self.drawn.insert(page, hash);
         let styles = json(&self.view.new_styles());
         format!("{{\"width\":{},\"height\":{},\"items\":{items},\"styles\":{styles}}}", p.width, p.height)
+    }
+
+    /// Draws a page: `{ width, height, items, styles }`, where `styles` are paint styles the
+    /// app hasn't been sent before (numbered on from the last ones sent). Answers `null` when the
+    /// page is drawn the same as last time, unless `force` (the app dropped what it drew).
+    pub fn paint(&mut self, page: usize, force: bool) -> String {
+        self.paint_inner(page, force, true)
+    }
+
+    /// Draws a page for a consumer outside the editor's page view. This always answers the page
+    /// and does not mark it as drawn there: printing must not make the editor keep stale HTML.
+    #[wasm_bindgen(js_name = paintStandalone)]
+    pub fn paint_standalone(&mut self, page: usize) -> String {
+        self.paint_inner(page, true, false)
     }
 
     /// Send every paint style again with the next page drawn.
