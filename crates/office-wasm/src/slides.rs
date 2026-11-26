@@ -97,7 +97,6 @@ fn open_view(bytes: &[u8]) -> office_core::Result<SlidesView> {
     SlidesView::open(bytes)
 }
 
-
 #[wasm_bindgen]
 impl SlidesDoc {
     /// Opens a PowerPoint file, or makes a new deck when `bytes` is empty.
