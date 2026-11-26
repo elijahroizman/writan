@@ -135,7 +135,7 @@ impl SlidesView {
             let plain = plain_frames(original, old, scale);
             let layout = plain
                 .as_ref()
-                .and_then(|(name, _)| layouts.iter().find(|l| l.name == *name))
+                .and_then(|plain| layouts.iter().find(|l| l.name == plain.name))
                 .or_else(|| old.and_then(|old| fallbacks.get(&old.part).map(|&index| &layouts[index])))
                 .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.name.eq_ignore_ascii_case(&old.name))))
                 .or_else(|| old.and_then(|old| layouts.iter().find(|l| l.layout_type == old.layout_type)))
@@ -158,7 +158,7 @@ impl SlidesView {
                 slide.origin = Origin::new(origin);
             }
             for (frame, previous) in slide.frames.iter_mut().zip(&original.frames) {
-                let plain_frame = plain.as_ref().and_then(|(_, frames)| frames.iter().find(|f| f.name == frame.name));
+                let plain_frame = plain.as_ref().and_then(|plain| plain.frames.iter().find(|f| f.name == frame.name));
                 let ph = previous.placeholder.as_ref();
                 let target = if let Some(ph) = ph {
                     layout.matching(ph.kind.as_deref().unwrap_or("obj"), ph.index)
@@ -172,11 +172,11 @@ impl SlidesView {
                 };
                 if let Some(p) = target {
                     frame.placeholder = Some(Placeholder { kind: (p.kind != "obj").then(|| p.kind.clone()), index: p.index });
-                    if let Some(plain) = plain_frame {
-                        if frame.shape.xfrm == plain.shape.xfrm {
+                    if let (Some(starter), Some(reference)) = (&plain, plain_frame) {
+                        if !starter.composite && frame.shape.xfrm == reference.shape.xfrm {
                             frame.shape.xfrm = None;
                         }
-                        inherit_plain_text(frame, plain);
+                        inherit_plain_text(frame, reference);
                     }
                 } else if let Some(ph) = ph {
                     frame.shape.xfrm = crate::resolve(&self.doc, original, previous).xfrm;
@@ -248,7 +248,13 @@ fn add_fallback_layout(
     Template::read(pkg, part)
 }
 
-fn plain_frames(slide: &Slide, layout: Option<&Template>, (sx, sy): (f64, f64)) -> Option<(&'static str, Vec<Frame>)> {
+struct PlainStarter {
+    name: &'static str,
+    frames: Vec<Frame>,
+    composite: bool,
+}
+
+fn plain_frames(slide: &Slide, layout: Option<&Template>, (sx, sy): (f64, f64)) -> Option<PlainStarter> {
     if layout.is_some_and(|l| l.layout_type.as_deref() != Some("blank")) {
         return None;
     }
@@ -256,22 +262,22 @@ fn plain_frames(slide: &Slide, layout: Option<&Template>, (sx, sy): (f64, f64)) 
     let has = |names: &[&str]| slide.frames.iter().any(|f| f.placeholder.is_none() && names.contains(&f.name.as_str()));
     let cover = templates::plain_title(sx, sy);
     if title.shape.xfrm == cover[0].shape.xfrm || has(&["Subtitle"]) {
-        return Some(("Title Slide", cover));
+        return Some(PlainStarter { name: "Title Slide", frames: cover, composite: false });
     }
     let mut content = templates::plain_content(sx, sy);
-    let name = if has(&["Left Header", "Right Header", "Left Body", "Right Body"]) {
-        "Comparison"
+    let (name, composite) = if has(&["Left Header", "Right Header", "Left Body", "Right Body"]) {
+        ("Comparison", true)
     } else if has(&["Left Content", "Right Content"]) {
-        "Two Content"
+        ("Two Content", true)
     } else if has(&["Content"]) {
-        return Some(("Title and Content", content));
+        return Some(PlainStarter { name: "Title and Content", frames: content, composite: false });
     } else if title.shape.xfrm == content[0].shape.xfrm {
-        "Title Only"
+        ("Title Only", false)
     } else {
         return None;
     };
     content.truncate(1);
-    Some((name, content))
+    Some(PlainStarter { name, frames: content, composite })
 }
 
 fn inherit_plain_text(frame: &mut Frame, plain: &Frame) {
@@ -438,6 +444,22 @@ mod tests {
         for (slide, (_, expected)) in view.slides()[2..].iter().zip(cases) {
             assert_eq!(crate::template(&view.doc, slide.layout.as_deref()).unwrap().name, expected);
             assert!(slide.frames[0].placeholder.is_some());
+        }
+    }
+
+    #[test]
+    fn themed_column_starter_titles_do_not_overlap_their_panels() {
+        let mut view = SlidesView::blank();
+        view.add_template(1, "twoContent");
+        view.add_template(2, "comparison");
+        view.apply_theme("Graphite").unwrap();
+        for slide in &view.slides()[2..] {
+            let title = &slide.frames[0];
+            let placement = crate::resolve(&view.doc, slide, title).xfrm.unwrap();
+            for panel in &slide.frames[1..] {
+                let bounds = panel.shape.xfrm.as_ref().unwrap();
+                assert!(placement.y.0 + placement.height.0 <= bounds.y.0, "title overlaps {}", panel.name);
+            }
         }
     }
 
