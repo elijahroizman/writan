@@ -54,10 +54,15 @@ function formatDate(iso: string | null): string | null {
   return date.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
+let cachedMd: { render(src: string): string } | null = null
+let cachedSanitize: ((html: string) => string) | null = null
 async function renderNotes(markdown: string): Promise<string> {
-  const [{ default: MarkdownIt }, { default: DOMPurify }] = await Promise.all([import('markdown-it'), import('dompurify')])
-  const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
-  return DOMPurify.sanitize(md.render(markdown))
+  if (!cachedMd || !cachedSanitize) {
+    const [{ default: MarkdownIt }, { default: DOMPurify }] = await Promise.all([import('markdown-it'), import('dompurify')])
+    cachedMd ??= new MarkdownIt({ html: false, linkify: true, breaks: true })
+    cachedSanitize ??= DOMPurify.sanitize.bind(DOMPurify)
+  }
+  return cachedSanitize(cachedMd.render(markdown))
 }
 
 export function UpdateButton() {
@@ -83,6 +88,7 @@ export function UpdateButton() {
   const label = buttonLabel(phase)
 
   useEffect(() => {
+    if (!open) return
     if (!notes.trim()) {
       setHtml('')
       return
@@ -94,9 +100,10 @@ export function UpdateButton() {
     return () => {
       cancel = true
     }
-  }, [notes])
+  }, [open, notes])
 
   useEffect(() => {
+    if (!open) return
     if (!releases.length) {
       setSections(null)
       return
@@ -108,7 +115,7 @@ export function UpdateButton() {
     return () => {
       cancel = true
     }
-  }, [releases])
+  }, [open, releases])
 
   useLayoutEffect(() => {
     if (!open) return

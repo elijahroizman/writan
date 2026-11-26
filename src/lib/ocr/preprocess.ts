@@ -15,16 +15,25 @@ type MapPoint = (x: number, y: number) => Point
 
 export interface PreparedImage extends GrayImage {
   scale: number
+  skewAngle: number
   mapPoint: MapPoint
   mapBox: (bbox: OcrBBox) => OcrBBox
 }
 
-export function grayscale(data: Uint8Array | Uint8ClampedArray, width: number, height: number): GrayImage {
-  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1 ||
-      data.length !== width * height * 4) {
+export function grayscale(data: Uint8Array | Uint8ClampedArray, width: number, height: number, channels?: 1 | 4): GrayImage {
+  const pixelCount = width * height
+  if (!Number.isSafeInteger(width) || !Number.isSafeInteger(height) || width < 1 || height < 1) {
     throw new Error('OCR requires a valid RGBA image.')
   }
-  const pixels = new Uint8Array(width * height)
+  if ((channels === 1 || data.length === pixelCount) && channels !== 4) {
+    if (data.length !== pixelCount) throw new Error('OCR requires a valid grayscale image.')
+    const pixels = data instanceof Uint8Array && data.constructor === Uint8Array ? data : new Uint8Array(data)
+    return { pixels, width, height }
+  }
+  if (data.length !== pixelCount * 4) {
+    throw new Error('OCR requires a valid RGBA image.')
+  }
+  const pixels = new Uint8Array(pixelCount)
   for (let i = 0, j = 0; i < pixels.length; i++, j += 4) {
     const luminance = (77 * data[j] + 150 * data[j + 1] + 29 * data[j + 2]) / 256
     pixels[i] = Math.round(255 + (luminance - 255) * data[j + 3] / 255)
@@ -76,27 +85,37 @@ export function enhanceContrast({ pixels, width, height }: GrayImage): GrayImage
   return { pixels: output, width, height }
 }
 
-function bilinear(image: GrayImage, x: number, y: number): number {
-  x = Math.max(0, Math.min(image.width - 1, x))
-  y = Math.max(0, Math.min(image.height - 1, y))
-  const left = Math.floor(x)
-  const top = Math.floor(y)
-  const right = Math.min(left + 1, image.width - 1)
-  const bottom = Math.min(top + 1, image.height - 1)
-  const dx = x - left
-  const dy = y - top
-  const { pixels, width } = image
-  const upper = pixels[top * width + left] * (1 - dx) + pixels[top * width + right] * dx
-  const lower = pixels[bottom * width + left] * (1 - dx) + pixels[bottom * width + right] * dx
-  return Math.round(upper * (1 - dy) + lower * dy)
-}
-
 export function upscale2x(image: GrayImage): GrayImage {
-  const width = image.width * 2
-  const height = image.height * 2
+  const srcW = image.width
+  const srcH = image.height
+  const src = image.pixels
+  const width = srcW * 2
+  const height = srcH * 2
   const pixels = new Uint8Array(width * height)
+  const maxX = srcW - 1
+  const maxY = srcH - 1
   for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) pixels[y * width + x] = bilinear(image, (x + 0.5) / 2 - 0.5, (y + 0.5) / 2 - 0.5)
+    let sy = (y + 0.5) / 2 - 0.5
+    if (sy < 0) sy = 0
+    else if (sy > maxY) sy = maxY
+    const top = Math.floor(sy)
+    const bottom = top + 1 <= maxY ? top + 1 : maxY
+    const dy = sy - top
+    const invDy = 1 - dy
+    const topRow = top * srcW
+    const botRow = bottom * srcW
+    const dstRow = y * width
+    for (let x = 0; x < width; x++) {
+      let sx = (x + 0.5) / 2 - 0.5
+      if (sx < 0) sx = 0
+      else if (sx > maxX) sx = maxX
+      const left = Math.floor(sx)
+      const right = left + 1 <= maxX ? left + 1 : maxX
+      const dx = sx - left
+      const upper = src[topRow + left] * (1 - dx) + src[topRow + right] * dx
+      const lower = src[botRow + left] * (1 - dx) + src[botRow + right] * dx
+      pixels[dstRow + x] = Math.round(upper * invDy + lower * dy)
+    }
   }
   return { pixels, width, height }
 }
@@ -110,11 +129,24 @@ export function rotateQuarter(image: GrayImage, rotation: OcrRotation): GrayImag
   const inverse: MapPoint = rotation === 90 ? (x, y) => ({ x: y, y: height - x })
     : rotation === 180 ? (x, y) => ({ x: width - x, y: height - y })
     : (x, y) => ({ x: width - y, y: x })
+  const src = image.pixels
   const pixels = new Uint8Array(outWidth * outHeight)
-  for (let y = 0; y < outHeight; y++) {
-    for (let x = 0; x < outWidth; x++) {
-      const src = inverse(x + 0.5, y + 0.5)
-      pixels[y * outWidth + x] = image.pixels[Math.floor(src.y) * width + Math.floor(src.x)]
+  if (rotation === 90) {
+    // Output (x, y) reads source (y, height - 1 - x): a transpose, flipped.
+    for (let y = 0; y < outHeight; y++) {
+      const dstRow = y * outWidth
+      for (let x = 0; x < outWidth; x++) pixels[dstRow + x] = src[(height - 1 - x) * width + y]
+    }
+  } else if (rotation === 180) {
+    for (let y = 0; y < outHeight; y++) {
+      const sy = Math.floor(height - (y + 0.5)) * width
+      const dstRow = y * outWidth
+      for (let x = 0; x < outWidth; x++) pixels[dstRow + x] = src[sy + Math.floor(width - (x + 0.5))]
+    }
+  } else {
+    for (let y = 0; y < outHeight; y++) {
+      const dstRow = y * outWidth
+      for (let x = 0; x < outWidth; x++) pixels[dstRow + x] = src[x * width + Math.floor(width - (y + 0.5))]
     }
   }
   return { pixels, width: outWidth, height: outHeight, inverse }
@@ -181,28 +213,61 @@ export function rotateDeskew(image: GrayImage, degrees: number): GrayImage & { i
   const radians = degrees * Math.PI / 180
   const cos = Math.cos(radians)
   const sin = Math.sin(radians)
-  const width = Math.ceil(image.width * Math.abs(cos) + image.height * Math.abs(sin))
-  const height = Math.ceil(image.width * Math.abs(sin) + image.height * Math.abs(cos))
+  const srcW = image.width
+  const srcH = image.height
+  const srcPixels = image.pixels
+  const width = Math.ceil(srcW * Math.abs(cos) + srcH * Math.abs(sin))
+  const height = Math.ceil(srcW * Math.abs(sin) + srcH * Math.abs(cos))
+  const halfW = width / 2
+  const halfH = height / 2
+  const srcHalfW = srcW / 2
+  const srcHalfH = srcH / 2
+  const maxX = srcW - 1
+  const maxY = srcH - 1
   const inverse: MapPoint = (x, y) => ({
-    x: (x - width / 2) * cos + (y - height / 2) * sin + image.width / 2,
-    y: (y - height / 2) * cos - (x - width / 2) * sin + image.height / 2,
+    x: (x - halfW) * cos + (y - halfH) * sin + srcHalfW,
+    y: (y - halfH) * cos - (x - halfW) * sin + srcHalfH,
   })
   const pixels = new Uint8Array(width * height)
   for (let y = 0; y < height; y++) {
+    const dy = y + 0.5 - halfH
+    const baseSx = dy * sin + srcHalfW
+    const baseSy = dy * cos + srcHalfH
+    const dstRow = y * width
     for (let x = 0; x < width; x++) {
-      const src = inverse(x + 0.5, y + 0.5)
-      pixels[y * width + x] = src.x < 0 || src.x >= image.width || src.y < 0 || src.y >= image.height
-        ? 255 : bilinear(image, src.x - 0.5, src.y - 0.5)
+      const dx = x + 0.5 - halfW
+      const sxRaw = dx * cos + baseSx
+      const syRaw = baseSy - dx * sin
+      if (sxRaw < 0 || sxRaw >= srcW || syRaw < 0 || syRaw >= srcH) {
+        pixels[dstRow + x] = 255
+      } else {
+        let sx = sxRaw - 0.5
+        let sy = syRaw - 0.5
+        if (sx < 0) sx = 0
+        else if (sx > maxX) sx = maxX
+        if (sy < 0) sy = 0
+        else if (sy > maxY) sy = maxY
+        const left = Math.floor(sx)
+        const top = Math.floor(sy)
+        const right = left + 1 <= maxX ? left + 1 : maxX
+        const bottom = top + 1 <= maxY ? top + 1 : maxY
+        const fx = sx - left
+        const fy = sy - top
+        const upper = srcPixels[top * srcW + left] * (1 - fx) + srcPixels[top * srcW + right] * fx
+        const lower = srcPixels[bottom * srcW + left] * (1 - fx) + srcPixels[bottom * srcW + right] * fx
+        pixels[dstRow + x] = Math.round(upper * (1 - fy) + lower * fy)
+      }
     }
   }
   return { pixels, width, height, inverse }
 }
 
-export function prepareOrientation(image: GrayImage, rotation: OcrRotation): PreparedImage {
+export function prepareOrientation(image: GrayImage, rotation: OcrRotation, knownSkew?: number): PreparedImage {
   const oriented = rotateQuarter(image, rotation)
   const scale = oriented.height < 900 ? 2 : 1
   const scaled = scale === 2 ? upscale2x(oriented) : oriented
-  const skew = rotateDeskew(scaled, detectDeskew(scaled))
+  const skewAngle = knownSkew ?? detectDeskew(scaled)
+  const skew = rotateDeskew(scaled, skewAngle)
   const mapPoint: MapPoint = (x, y) => {
     const pt = skew.inverse(x, y)
     return oriented.inverse(pt.x / scale, pt.y / scale)
@@ -217,7 +282,7 @@ export function prepareOrientation(image: GrayImage, rotation: OcrRotation): Pre
     const bottom = clipY(Math.max(...corners.map((pt) => pt.y)))
     return { x: left, y: top, w: right - left, h: bottom - top }
   }
-  return { pixels: skew.pixels, width: skew.width, height: skew.height, scale, mapPoint, mapBox }
+  return { pixels: skew.pixels, width: skew.width, height: skew.height, scale, skewAngle, mapPoint, mapBox }
 }
 
 export function preprocessImage(

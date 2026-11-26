@@ -10,6 +10,7 @@ import { IconButton } from '../../components/ui'
 import { focusReplace } from '../../lib/codemirror'
 import { TextFile } from '../../lib/textcodec'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { schedulePrintCleanup } from '../../lib/print'
 import './text.css'
 
 /** Plain .txt files: a wrapping text editor with nothing else around it. */
@@ -40,7 +41,8 @@ export default function TextEditor({ tab, active }: EditorProps) {
           EditorView.updateListener.of((u) => {
             if (u.docChanged) {
               file.update(u.changes)
-              markDirty(tab.id, u.state.doc.toString() !== savedText.current)
+              const lenDiffers = u.state.doc.length !== savedText.current.length
+              markDirty(tab.id, lenDiffers || u.state.doc.toString() !== savedText.current)
             }
             if (u.docChanged || u.selectionSet) {
               const head = u.state.selection.main.head
@@ -77,6 +79,7 @@ export default function TextEditor({ tab, active }: EditorProps) {
           pre.className = 'txt-print'
           pre.textContent = currentText(viewRef.current)
           root.appendChild(pre)
+          schedulePrintCleanup()
           window.print()
         },
       }),

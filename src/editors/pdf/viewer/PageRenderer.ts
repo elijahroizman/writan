@@ -74,7 +74,7 @@ export class PageRenderer {
           this.pageEl.dispatchEvent(new CustomEvent('pagerendered', { bubbles: true, detail: { key: page.key, rev } }))
           if (this.params && this.wantedTiles().size === 0) this.dropTiles(() => true)
           const index = this.store.pages.findIndex((p) => p.key === page.key)
-          if (index !== -1 && this.base) this.store.offerThumb(index, this.base)
+          if (index !== -1 && this.base && this.store.hasThumbSubscribers()) this.store.offerThumb(index, this.base)
         })
         .catch((err) => {
           if (!isCancelled(err)) console.warn(err)

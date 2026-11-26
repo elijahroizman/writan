@@ -4,7 +4,7 @@
 import { Bot, Check, Copy, RefreshCw } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { AGENT_IDS, AGENTS, type AgentId } from '../collab/agents/identity'
-import { useAgentsStatus } from '../collab/agents/bridge'
+import { useAgentsStatus } from '../collab/agents/status'
 import SKILL from '../collab/agents/SKILL.md?raw'
 import { confirmDialog, isTauri } from '../lib/platform'
 import { useAi } from '../state/ai'

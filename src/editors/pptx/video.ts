@@ -53,9 +53,13 @@ export async function videoPoster(link: VideoLink): Promise<string> {
     try {
       const bytes = await fetchBytes(link.thumbnailUrl)
       const bitmap = await createImageBitmap(new Blob([bytes as BlobPart]))
-      // hqdefault is 4:3 with letterbox bars; crop to the 16:9 picture.
-      const srcH = bitmap.width * (9 / 16)
-      ctx.drawImage(bitmap, 0, (bitmap.height - srcH) / 2, bitmap.width, srcH, 0, 0, canvas.width, canvas.height)
+      try {
+        // hqdefault is 4:3 with letterbox bars; crop to the 16:9 picture.
+        const srcH = bitmap.width * (9 / 16)
+        ctx.drawImage(bitmap, 0, (bitmap.height - srcH) / 2, bitmap.width, srcH, 0, 0, canvas.width, canvas.height)
+      } finally {
+        bitmap.close()
+      }
     } catch {
       /* offline: keep the plain poster */
     }

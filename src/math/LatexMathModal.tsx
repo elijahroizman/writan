@@ -2,8 +2,9 @@ import { AlertCircle, Sigma, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { shortcut } from '../lib/platform'
-import type { LatexMathSpec } from './latexMath'
-import { LATEX_SNIPPETS, normalizeHexColor, renderLatexToSvg } from './latexMath'
+import type { LatexMathSpec } from './latexTag'
+import { normalizeHexColor } from './latexTag'
+import { LATEX_SNIPPETS, renderLatexToSvg } from './latexMath'
 import { latexToOmml } from './omml'
 
 const COLOR_SWATCHES = ['#000000', '#FFFFFF', '#1E40AF', '#DC2626', '#15803D', '#7C3AED']

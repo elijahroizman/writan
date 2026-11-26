@@ -43,7 +43,10 @@ export const SlideStrip = memo(function SlideStrip({
   // Thumbnails fill the sidebar, which the user can resize.
   useEffect(() => {
     const list = listRef.current!
-    const observer = new ResizeObserver(() => setThumbWidth(Math.max(80, Math.floor(list.clientWidth - 40))))
+    const observer = new ResizeObserver(() => {
+      if (list.clientWidth === 0) return
+      setThumbWidth(Math.max(80, Math.floor(list.clientWidth - 40)))
+    })
     observer.observe(list)
     return () => observer.disconnect()
   }, [])
@@ -64,21 +67,35 @@ export const SlideStrip = memo(function SlideStrip({
     const el = e.currentTarget as HTMLElement
     let dragging = false
     let target = index
+    let midpoints: number[] | null = null
+    let lastScrollTop = 0
+    const scroller = listRef.current!.closest('.sidebar-scroll')
+    const measureMidpoints = () => {
+      const items = Array.from(listRef.current!.querySelectorAll<HTMLElement>('.slide-item'))
+      midpoints = items.map((item) => {
+        const r = item.getBoundingClientRect()
+        return r.top + r.height / 2
+      })
+      lastScrollTop = scroller?.scrollTop ?? 0
+    }
     const move = (ev: PointerEvent) => {
       if (!dragging && Math.abs(ev.clientY - startY) < 6) return
-      if (!dragging) el.setPointerCapture(e.pointerId)
+      if (!dragging) {
+        el.setPointerCapture(e.pointerId)
+        measureMidpoints()
+      }
       dragging = true
-      const items = Array.from(listRef.current!.querySelectorAll<HTMLElement>('.slide-item'))
-      target = items.length
-      for (let i = 0; i < items.length; i++) {
-        const r = items[i].getBoundingClientRect()
-        if (ev.clientY < r.top + r.height / 2) {
+      const scrollDelta = (scroller?.scrollTop ?? 0) - lastScrollTop
+      const cy = ev.clientY + scrollDelta
+      const mids = midpoints!
+      target = mids.length
+      for (let i = 0; i < mids.length; i++) {
+        if (cy < mids[i]) {
           target = i
           break
         }
       }
       setDrag({ from: index, target })
-      const scroller = listRef.current!.closest('.sidebar-scroll')
       if (scroller) {
         const r = scroller.getBoundingClientRect()
         if (ev.clientY < r.top + 30) scroller.scrollTop -= 12

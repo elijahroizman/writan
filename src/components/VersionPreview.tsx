@@ -156,6 +156,7 @@ function useWidth() {
 const SIDE = 32
 
 function WordPages({ engine }: { engine: WordEngine }) {
+  useSyncExternalStore(engine.subscribe, engine.getTick)
   const [ref, width] = useWidth()
   const widest = Math.max(1, ...engine.sizes.map(([w]) => w))
   const scale = Math.min(1, Math.max(0.2, (width - SIDE * 2) / widest))
@@ -180,7 +181,8 @@ function WordPage({ engine, index, w, h, scale }: { engine: WordEngine; index: n
     if (!near || !content.current) return
     const p = engine.paint(index, true)
     if (p) content.current.innerHTML = itemsHtml(p.items, engine.styles, engine.media.url)
-  }, [near, engine, index])
+    // latexVersion: equations draw once MathJax has loaded, after the first paint.
+  }, [near, engine, index, engine.latexVersion])
   return (
     <div ref={box} className="vp-page" style={{ width: w * scale, height: h * scale }}>
       <div ref={content} className="docx-page-content" style={{ inset: 'auto', left: 0, top: 0, width: w, height: h, zoom: scale }} />
@@ -189,6 +191,7 @@ function WordPage({ engine, index, w, h, scale }: { engine: WordEngine; index: n
 }
 
 function Slides({ engine }: { engine: SlidesEngine }) {
+  useSyncExternalStore(engine.subscribe, engine.getTick)
   const [ref, width] = useWidth()
   const slideWidth = Math.max(160, Math.min(960, width - SIDE * 2))
   return (

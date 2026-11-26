@@ -180,6 +180,9 @@ impl Parser {
         for a in attrs.iter().filter(|a| !a.is_ns_decl()) {
             let prefix_list = (ns.as_deref().is_some_and(|n| n == super::ns::MC) && a.local == "Requires")
                 || (a.ns.as_deref().is_some_and(|n| n == super::ns::MC) && matches!(a.local.as_str(), "Ignorable" | "MustUnderstand"));
+            if !prefix_list && !a.value.as_bytes().contains(&b':') {
+                continue;
+            }
             for token in a.value.split_whitespace() {
                 let p = match token.split_once(':') {
                     Some((p, _)) => p,

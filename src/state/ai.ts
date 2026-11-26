@@ -24,13 +24,18 @@ function newToken() {
   return btoa(String.fromCharCode(...b)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
-function load(): AiSettings {
+function load(): { state: AiSettings; hadStored: boolean } {
   try {
-    const v = JSON.parse(localStorage.getItem(KEY) || '{}') as Partial<AiSettings>
-    const token = typeof v.token === 'string' && /^[\w-]{16,}$/.test(v.token) ? v.token : newToken()
-    return { agents: typeof v.agents === 'boolean' ? v.agents : isTauri, token, messages: v.messages !== false }
+    const raw = localStorage.getItem(KEY)
+    const v = JSON.parse(raw || '{}') as Partial<AiSettings>
+    const hasToken = typeof v.token === 'string' && /^[\w-]{16,}$/.test(v.token)
+    const token = hasToken ? v.token! : newToken()
+    return {
+      state: { agents: typeof v.agents === 'boolean' ? v.agents : isTauri, token, messages: v.messages !== false },
+      hadStored: raw !== null && hasToken && typeof v.agents === 'boolean',
+    }
   } catch {
-    return { agents: isTauri, token: newToken(), messages: true }
+    return { state: { agents: isTauri, token: newToken(), messages: true }, hadStored: false }
   }
 }
 
@@ -49,8 +54,10 @@ function save(s: AiSettings) {
   }
 }
 
+const initial = load()
+
 export const useAi = create<AiState>((set, get) => ({
-  ...load(),
+  ...initial.state,
   setAgents: (agents) => {
     set({ agents })
     save(get())
@@ -66,4 +73,4 @@ export const useAi = create<AiState>((set, get) => ({
 }))
 
 // The secret is made once and kept from then on.
-save(useAi.getState())
+if (!initial.hadStored) save(useAi.getState())

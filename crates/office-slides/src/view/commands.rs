@@ -181,13 +181,32 @@ impl SlidesView {
         self.record(vec![SStep::Slide { index, before: Box::new(before), after: Box::new(after) }], sel, kind);
     }
 
-    /// Changes the list of slides, as one undo step.
-    pub(crate) fn change_deck(&mut self, f: impl FnOnce(&mut Vec<Slide>)) {
+    /// Before slides move: the slide showing an editing-only bullet draws without it. Its new
+    /// revision moves with it, where `sync_caret` would touch whichever slide took its index.
+    fn release_caret_bullet(&mut self) {
+        if let Some((slide, _, _)) = self.caret_shown.take() {
+            self.touch(slide);
+        }
+    }
+
+    /// Changes the list of slides, maintaining per-slide revisions in lockstep (`on_revs`
+    /// returns the earliest slide index from which dynamic `slidenum` fields shifted).
+    pub(crate) fn change_deck_with_revs(&mut self, f: impl FnOnce(&mut Vec<Slide>, &mut Vec<u64>, &mut u64) -> Option<usize>) {
+        self.release_caret_bullet();
         let before = self.slides().to_vec();
         let sel = self.sel.clone();
-        f(self.slides_mut());
+        let mut revs = std::mem::take(&mut self.revisions);
+        let mut next_rev = self.next_revision;
+        let slide_num_from = f(self.slides_mut(), &mut revs, &mut next_rev);
+        self.revisions = revs;
+        self.next_revision = next_rev;
         let after = self.slides().to_vec();
-        self.touch_all();
+        if let Some(from) = slide_num_from {
+            self.bump_slidenums(from);
+        } else {
+            self.slides_meta_ver += 1;
+            self.elements_ver += 1;
+        }
         let n = after.len();
         self.sel.active = self.sel.active.min(n.saturating_sub(1));
         self.record(vec![SStep::Deck { before, after }], sel, None);
@@ -282,12 +301,14 @@ impl SlidesView {
         if index < self.slides().len() && index != self.sel.active {
             self.sel = Sel { active: index, frames: Vec::new(), editing: None };
             self.history.seal();
+            self.elements_ver += 1;
         }
     }
 
     /// Adds a slide after `after` on layout `layout` (a layout's part), or on the layout of the
     /// slide it follows. Becomes the active slide.
     pub fn add_slide(&mut self, after: usize, layout: Option<&str>) {
+        self.release_caret_bullet();
         let layout = layout
             .map(str::to_string)
             .or_else(|| self.slides().get(after).and_then(|s| s.layout.clone()))
@@ -306,7 +327,10 @@ impl SlidesView {
         let to = (after + 1).min(self.slides().len() - 1);
         let s = self.slides_mut().remove(i);
         self.slides_mut().insert(to, s);
-        self.touch_all();
+        let rev = self.next_revision;
+        self.next_revision += 1;
+        self.revisions.insert(to, rev);
+        self.bump_slidenums(to + 1);
         self.sel = Sel { active: to, frames: Vec::new(), editing: None };
         let after_slides = self.slides().to_vec();
         self.record(vec![SStep::Deck { before, after: after_slides }], sel, None);
@@ -323,7 +347,8 @@ impl SlidesView {
         let seed = self.new_part_seed();
         let parts = crate::copy_notes_in(&mut self.doc, &idx, seed.as_deref());
         self.share_copied_notes(&parts);
-        self.change_deck(|slides| {
+        let mut inserted_at = 0usize;
+        self.change_deck_with_revs(|slides, revs, next_rev| {
             let copies: Vec<Slide> = idx
                 .iter()
                 .zip(parts)
@@ -334,10 +359,15 @@ impl SlidesView {
                 })
                 .collect();
             let at = (last + 1).min(slides.len());
+            inserted_at = at;
             for (k, s) in copies.into_iter().enumerate() {
                 slides.insert(at + k, s);
+                revs.insert(at + k, *next_rev);
+                *next_rev += 1;
             }
+            Some(at)
         });
+        let _ = inserted_at;
         self.sel.active = last + 1;
         self.sel.frames.clear();
     }
@@ -348,15 +378,22 @@ impl SlidesView {
         idx.sort_unstable();
         idx.dedup();
         let blank_layout = crate::layout(&self.doc, "blank").map(|t| t.part.clone());
-        self.change_deck(|slides| {
+        let first_removed = idx.first().copied().unwrap_or(0);
+        self.change_deck_with_revs(|slides, revs, next_rev| {
             for &i in idx.iter().rev() {
                 if i < slides.len() {
                     slides.remove(i);
+                    if i < revs.len() {
+                        revs.remove(i);
+                    }
                 }
             }
             if slides.is_empty() {
                 slides.push(Slide { layout: blank_layout, ..Default::default() });
+                revs.push(*next_rev);
+                *next_rev += 1;
             }
+            Some(first_removed)
         });
         self.sel = Sel { active: idx.first().copied().unwrap_or(0).min(self.slides().len() - 1), frames: Vec::new(), editing: None };
     }
@@ -366,21 +403,31 @@ impl SlidesView {
         if from >= n || to >= n || from == to {
             return;
         }
-        self.change_deck(|slides| {
+        self.change_deck_with_revs(|slides, revs, _| {
             let s = slides.remove(from);
             slides.insert(to, s);
+            if from < revs.len() && to <= revs.len() {
+                let r = revs.remove(from);
+                revs.insert(to.min(revs.len()), r);
+            }
+            Some(from.min(to))
         });
         self.sel.active = to;
     }
 
     pub fn toggle_hidden(&mut self, indexes: &[usize]) {
         let all_hidden = indexes.iter().all(|&i| self.slides().get(i).is_some_and(|s| s.hidden));
-        self.change_deck(|slides| {
+        self.change_deck_with_revs(|slides, revs, next_rev| {
             for &i in indexes {
                 if let Some(s) = slides.get_mut(i) {
                     s.hidden = !all_hidden;
+                    if let Some(r) = revs.get_mut(i) {
+                        *r = *next_rev;
+                        *next_rev += 1;
+                    }
                 }
             }
+            None
         });
     }
 
@@ -405,6 +452,7 @@ impl SlidesView {
         let sel = self.sel.clone();
         let seed = self.notes_part_seed(index);
         crate::set_notes_in(&mut self.doc, index, after.clone(), seed.as_deref());
+        self.slides_meta_ver += 1;
         self.record(vec![SStep::Notes { index, before, after }], sel, Some("notes"));
     }
 
@@ -1731,7 +1779,7 @@ impl SlidesView {
                 Some((flow, x, y, b))
             }
             FrameContent::Table { table } => {
-                let paint = super::text::Paint { doc: &self.doc, slide: &slide };
+                let paint = super::text::Paint::new(&self.doc, &slide);
                 let style = super::table_style::style_for(&self.tables, table);
                 let mut flowed = Vec::new();
                 let mut ctx2 = Ctx { host: d.ctx.host, measure: d.ctx.measure, styles: d.ctx.styles };

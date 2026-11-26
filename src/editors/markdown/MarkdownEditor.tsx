@@ -17,6 +17,7 @@ import { kindFromPath } from '../../lib/kinds'
 import { TextFile } from '../../lib/textcodec'
 import * as platform from '../../lib/platform'
 import { getEditor, registerEditor, useWorkspace } from '../../state/workspace'
+import { schedulePrintCleanup } from '../../lib/print'
 import type { Heading } from './render'
 import { renderMarkdown } from './render'
 import './markdown.css'
@@ -45,31 +46,33 @@ const highlight = HighlightStyle.define([
 export default function MarkdownEditor({ tab, active }: EditorProps) {
   const file = useMemo(() => new TextFile(tab.bytes, NEW_NOTE), [tab.bytes])
   const initial = file.text
-  const [text, setText] = useState(initial)
+  const [previewRev, setPreviewRev] = useState(0)
   const [mode, setMode] = useState<ViewMode>(initialView(!!tab.bytes))
   const [rendered, setRendered] = useState(() => renderMarkdown(initial))
   const [activeSlug, setActiveSlug] = useState<string | null>(null)
   const [findOpen, setFindOpen] = useState(false)
   const [findState, setFindState] = useState<{ count: number; current: number } | null>(null)
   const savedText = useRef(initial)
-  const textRef = useRef(initial)
   const viewRef = useRef<EditorView | null>(null)
   const sourceHost = useRef<HTMLDivElement>(null)
   const previewRef = useRef<HTMLDivElement>(null)
   const findQuery = useRef('')
   const markDirty = useWorkspace((s) => s.markDirty)
 
-  // Re-render the preview shortly after typing stops.
+  // Re-render the preview shortly after typing stops, skipping eager full-string extraction per keystroke.
   useEffect(() => {
-    const t = setTimeout(() => setRendered(renderMarkdown(text)), text.length > 200_000 ? 300 : 60)
+    if (previewRev === 0) return
+    const src = viewRef.current?.state.doc.toString() ?? initial
+    const delay = mode === 'write' ? 600 : src.length > 200_000 ? 300 : 60
+    const t = setTimeout(() => setRendered(renderMarkdown(src)), delay)
     return () => clearTimeout(t)
-  }, [text])
+  }, [previewRev, mode, initial])
 
   const onDocChange = useCallback(
-    (next: string) => {
-      textRef.current = next
-      setText(next)
-      markDirty(tab.id, next !== savedText.current)
+    (doc: EditorView['state']['doc']) => {
+      setPreviewRev((r) => r + 1)
+      const lenDiffers = doc.length !== savedText.current.length
+      markDirty(tab.id, lenDiffers || doc.toString() !== savedText.current)
     },
     [markDirty, tab.id],
   )
@@ -80,7 +83,7 @@ export default function MarkdownEditor({ tab, active }: EditorProps) {
     const view = new EditorView({
       parent: sourceHost.current,
       state: EditorState.create({
-        doc: textRef.current,
+        doc: initial,
         extensions: [
           history(),
           drawSelection(),
@@ -95,7 +98,7 @@ export default function MarkdownEditor({ tab, active }: EditorProps) {
           EditorView.updateListener.of((u) => {
             if (u.docChanged) {
               file.update(u.changes)
-              onDocChange(u.state.doc.toString())
+              onDocChange(u.state.doc)
             }
           }),
           EditorView.domEventHandlers({
@@ -240,7 +243,7 @@ export default function MarkdownEditor({ tab, active }: EditorProps) {
         getBytes: async () => file.getBytes(),
         getRevision: () => file.revision,
         markSaved: () => {
-          savedText.current = textRef.current
+          savedText.current = viewRef.current?.state.doc.toString() ?? initial
         },
         viewMode: (next) => setMode((m) => nextView(m, next)),
         find: () => {
@@ -258,9 +261,10 @@ export default function MarkdownEditor({ tab, active }: EditorProps) {
         print: async () => {
           const root = document.getElementById('print-root')!
           // Reuse the live preview so images already resolved from disk come along.
-          const html = previewRef.current?.querySelector('article')?.innerHTML ?? renderMarkdown(textRef.current).html
+          const html = previewRef.current?.querySelector('article')?.innerHTML ?? renderMarkdown(viewRef.current?.state.doc.toString() ?? initial).html
           root.innerHTML = `<article class="md-body md-print">${html}</article>`
           await waitForImages(root)
+          schedulePrintCleanup()
           window.print()
         },
       }),
@@ -279,7 +283,7 @@ export default function MarkdownEditor({ tab, active }: EditorProps) {
             key={i}
             type="button"
             className={`list-item outline-item ${activeSlug === h.slug ? 'active' : ''}`}
-            style={{ paddingLeft: 8 + (h.level - Math.min(...headings.map((x) => x.level))) * 14 }}
+            style={{ paddingLeft: 8 + (h.level - rendered.minHeadingLevel) * 14 }}
             onClick={() => goToHeading(h)}
           >
             <span className="label" style={{ fontWeight: h.level <= 2 ? 550 : 400 }}>

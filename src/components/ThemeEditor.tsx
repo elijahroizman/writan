@@ -6,27 +6,16 @@
 import { ChevronDown, ChevronRight, ChevronUp, Code, Moon, MousePointer2, RotateCcw, Search, Sun, X } from 'lucide-react'
 import type { PointerEvent as ReactPointerEvent } from 'react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
-import { create } from 'zustand'
 import { cssLoadsFiles } from '../lib/themeCss'
 import { inspectRole } from '../lib/themeInspector'
 import type { Appearance, Role, ThemeDef } from '../lib/themes'
 import { isColor, isHex, ROLES, THEME_CSS_MAX_LENGTH, toHex6 } from '../lib/themes'
 import { useAppearance } from '../state/appearance'
+import { useThemeEditor, type ThemeEditorSession as Session } from '../state/modals'
 import { useWorkspace } from '../state/workspace'
 import { Button, IconButton, Segmented, Switch, TextField } from './ui'
 
-interface Session {
-  theme: ThemeDef
-  /** Changing a saved custom theme, not making a new one. */
-  editing: boolean
-  key: number
-}
-
-export const useThemeEditor = create<{ session: Session | null; open(theme: ThemeDef, editing: boolean): void; close(): void }>((set) => ({
-  session: null,
-  open: (theme, editing) => set({ session: { theme: structuredClone(theme), editing, key: Date.now() } }),
-  close: () => set({ session: null }),
-}))
+export { useThemeEditor }
 
 export function ThemeEditorHost() {
   const session = useThemeEditor((s) => s.session)
@@ -35,19 +24,26 @@ export function ThemeEditorHost() {
 
 const GROUPS = [...new Set(ROLES.map((r) => r.group))]
 
-/** "#rrggbb" for any CSS color, as the page draws it, for a color input. */
+let swatchCtx: CanvasRenderingContext2D | null = null
+/** "#rrggbb" for any CSS color, resolved without mutating the DOM. */
 function swatchHex(color: string): string {
   const hex = toHex6(color)
   if (hex) return hex
-  const probe = document.createElement('i')
-  probe.style.color = color
-  document.body.appendChild(probe)
-  const rgb = getComputedStyle(probe).color.match(/\d+(\.\d+)?/g)?.map(Number) ?? [0, 0, 0]
-  probe.remove()
-  return `#${rgb
-    .slice(0, 3)
-    .map((v) => Math.round(v).toString(16).padStart(2, '0'))
-    .join('')}`
+  swatchCtx ??= document.createElement('canvas').getContext('2d')
+  if (swatchCtx) {
+    swatchCtx.fillStyle = '#000000'
+    swatchCtx.fillStyle = color
+    const out = swatchCtx.fillStyle
+    if (out.startsWith('#')) return out.toLowerCase()
+    const rgb = out.match(/\d+(\.\d+)?/g)?.map(Number)
+    if (rgb && rgb.length >= 3) {
+      return `#${rgb
+        .slice(0, 3)
+        .map((v) => Math.round(v).toString(16).padStart(2, '0'))
+        .join('')}`
+    }
+  }
+  return '#000000'
 }
 
 function ThemeEditorPanel({ session }: { session: Session }) {
@@ -75,7 +71,8 @@ function ThemeEditorPanel({ session }: { session: Session }) {
   useLayoutEffect(() => () => useAppearance.getState().setPreview(null), [])
 
   const own = draft.variants?.[mode] ?? {}
-  const shown = (css: string) => getComputedStyle(document.documentElement).getPropertyValue(css).trim()
+  const rootStyle = getComputedStyle(document.documentElement)
+  const shown = (css: string) => rootStyle.getPropertyValue(css).trim()
   const setRole = (role: Role, value: string | null) => {
     const colors = { ...own }
     if (value === null) delete colors[role]

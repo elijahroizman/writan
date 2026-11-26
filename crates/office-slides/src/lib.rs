@@ -13,7 +13,7 @@
 pub mod templates;
 pub mod view;
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use office_core::drawing::{Color, Rgba, Theme, Xfrm};
 use office_core::formats::common::{PartCtx, PartRels};
@@ -36,11 +36,28 @@ pub struct Decks;
 pub struct Ppt {
     /// Every master and layout, masters first.
     pub templates: Vec<Template>,
+    /// Part path -> index in `templates`.
+    template_idx: HashMap<String, usize>,
     /// The presentation's `defaultTextStyle`, for text outside placeholders.
     pub default_text: Levels,
     /// Speaker notes by slide part.
     notes: Vec<(String, Vec<Paragraph>)>,
+    /// Slide part -> index in `notes`.
+    notes_idx: HashMap<String, usize>,
     notes_read: Vec<(String, Vec<Paragraph>)>,
+}
+
+impl Ppt {
+    pub(crate) fn rebuild_indices(&mut self) {
+        self.template_idx.clear();
+        for (i, t) in self.templates.iter().enumerate() {
+            self.template_idx.insert(t.part.clone(), i);
+        }
+        self.notes_idx.clear();
+        for (i, (part, _)) in self.notes.iter().enumerate() {
+            self.notes_idx.insert(part.clone(), i);
+        }
+    }
 }
 
 const NOTES_SLIDE: &str = "application/vnd.openxmlformats-officedocument.presentationml.notesSlide+xml";
@@ -89,6 +106,7 @@ impl Layer for Decks {
             }
         }
         ppt.notes_read = ppt.notes.clone();
+        ppt.rebuild_indices();
         doc.extensions.insert(ppt);
         Ok(())
     }
@@ -158,7 +176,11 @@ fn slides(doc: &Document) -> &[Slide] {
 
 fn template<'a>(doc: &'a Document, part: Option<&str>) -> Option<&'a Template> {
     let part = part?;
-    ppt(doc)?.templates.iter().find(|t| t.part == part)
+    let p = ppt(doc)?;
+    if p.template_idx.len() == p.templates.len() {
+        return p.template_idx.get(part).and_then(|&i| p.templates.get(i));
+    }
+    p.templates.iter().find(|t| t.part == part)
 }
 
 // ---- layouts ----
@@ -304,41 +326,74 @@ pub fn resolve(doc: &Document, slide: &Slide, frame: &Frame) -> Resolved {
     Resolved { xfrm, paragraphs }
 }
 
+/// Just a frame's inherited position/size (`xfrm`) without resolving its paragraphs or runs.
+pub fn resolve_xfrm(doc: &Document, slide: &Slide, frame: &Frame) -> Option<Xfrm> {
+    if let Some(x) = &frame.shape.xfrm {
+        return Some(x.clone());
+    }
+    let ph = frame.placeholder.as_ref()?;
+    let k = ph.kind.as_deref().unwrap_or("obj");
+    let layout = template(doc, slide.layout.as_deref());
+    let from_layout = layout.and_then(|l| l.matching(k, ph.index));
+    if let Some(x) = from_layout.and_then(|p| p.xfrm.as_ref()) {
+        return Some(x.clone());
+    }
+    let master =
+        template(doc, layout.and_then(|l| l.master.as_deref())).or_else(|| ppt(doc)?.templates.iter().find(|t| t.layout_type.is_none()));
+    let mk = from_layout.map(|p| p.kind.as_str()).unwrap_or(k);
+    master.and_then(|m| m.matching(mk, None)).and_then(|p| p.xfrm.clone())
+}
+
+/// Pre-resolved theme + scheme color mapping for one slide, avoiding repeated template scans and
+/// XML walks per color lookup.
+pub struct SlideColorMap<'a> {
+    theme: Option<&'a Theme>,
+    slide_map: Vec<(String, String)>,
+    layout_map: &'a [(String, String)],
+    master_map: &'a [(String, String)],
+}
+
+impl<'a> SlideColorMap<'a> {
+    pub fn new(doc: &'a Document, slide: &Slide) -> Self {
+        let layout = template(doc, slide.layout.as_deref());
+        let master = template(doc, layout.and_then(|l| l.master.as_deref()));
+        let slide_map: Vec<(String, String)> = slide
+            .origin
+            .get()
+            .and_then(|o| o.path(ns::P, &["clrMapOvr"]))
+            .and_then(|o| o.child(ns::A, "overrideClrMapping"))
+            .map(|m| m.attrs.iter().filter(|a| !a.is_ns_decl()).map(|a| (a.local.clone(), a.value.clone())).collect())
+            .unwrap_or_default();
+        let use_master =
+            slide.origin.get().and_then(|o| o.child(ns::P, "clrMapOvr")).is_some_and(|o| o.child(ns::A, "masterClrMapping").is_some());
+        let layout_map = if !use_master { layout.map(|l| l.color_map.as_slice()).unwrap_or(&[]) } else { &[] };
+        let master_map = master.map(|m| m.color_map.as_slice()).unwrap_or(&[]);
+        let theme = master.and_then(|m| m.theme.as_ref()).or(doc.theme.as_ref());
+        Self { theme, slide_map, layout_map, master_map }
+    }
+
+    pub fn resolve(&self, c: &Color) -> Rgba {
+        self.resolve_with_override(c, None)
+    }
+
+    pub fn resolve_with_override(&self, c: &Color, override_map: Option<&Element>) -> Rgba {
+        c.resolve(&|name| {
+            let mapped = override_map
+                .and_then(|m| m.attr(name))
+                .or_else(|| self.slide_map.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str()))
+                .or_else(|| self.layout_map.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str()))
+                .or_else(|| self.master_map.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str()))
+                .unwrap_or(name);
+            self.theme?.scheme_color(mapped)
+        })
+    }
+}
+
 /// The color a slide shows `c` as: theme colors through the master's color map (and the
 /// layout's and slide's overrides of it), so `tx1` is the theme's dark or light color as the
 /// master says.
 pub fn color(doc: &Document, slide: &Slide, c: &Color) -> Rgba {
-    color_with_override(doc, slide, c, None)
-}
-
-fn color_with_override(doc: &Document, slide: &Slide, c: &Color, override_map: Option<&Element>) -> Rgba {
-    let layout = template(doc, slide.layout.as_deref());
-    let master = template(doc, layout.and_then(|l| l.master.as_deref()));
-    let slide_map: Vec<(String, String)> = slide
-        .origin
-        .get()
-        .and_then(|o| o.path(ns::P, &["clrMapOvr"]))
-        .and_then(|o| o.child(ns::A, "overrideClrMapping"))
-        .map(|m| m.attrs.iter().filter(|a| !a.is_ns_decl()).map(|a| (a.local.clone(), a.value.clone())).collect())
-        .unwrap_or_default();
-    let use_master =
-        slide.origin.get().and_then(|o| o.child(ns::P, "clrMapOvr")).is_some_and(|o| o.child(ns::A, "masterClrMapping").is_some());
-    let maps: Vec<&[(String, String)]> = [
-        Some(slide_map.as_slice()),
-        layout.filter(|_| !use_master).map(|l| l.color_map.as_slice()),
-        master.map(|m| m.color_map.as_slice()),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let theme = master.and_then(|m| m.theme.as_ref()).or(doc.theme.as_ref());
-    c.resolve(&|name| {
-        let mapped = override_map
-            .and_then(|m| m.attr(name))
-            .or_else(|| maps.iter().find_map(|m| m.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str())))
-            .unwrap_or(name);
-        theme?.scheme_color(mapped)
-    })
+    SlideColorMap::new(doc, slide).resolve(c)
 }
 
 // ---- notes ----
@@ -364,10 +419,37 @@ fn notes_body(root: &Element) -> Option<&Element> {
         .child(ns::P, "txBody")
 }
 
+fn notes_slice<'a>(doc: &'a Document, part: &str) -> Option<&'a [Paragraph]> {
+    let p = ppt(doc)?;
+    if let Some(&i) = p.notes_idx.get(part) {
+        if p.notes.get(i).is_some_and(|(s, _)| s == part) {
+            return Some(&p.notes[i].1);
+        }
+    }
+    p.notes.iter().find(|(s, _)| s == part).map(|(_, n)| n.as_slice())
+}
+
 /// A slide's speaker notes.
 pub fn notes(doc: &Document, slide_index: usize) -> Vec<Paragraph> {
     let Some(part) = slides(doc).get(slide_index).and_then(|s| s.part.as_deref()) else { return Vec::new() };
-    ppt(doc).and_then(|p| p.notes.iter().find(|(s, _)| s == part)).map(|(_, n)| n.clone()).unwrap_or_default()
+    notes_slice(doc, part).map(<[Paragraph]>::to_vec).unwrap_or_default()
+}
+
+/// Plain text of a slide's speaker notes without cloning paragraphs.
+pub fn notes_text(doc: &Document, slide_index: usize) -> String {
+    let Some(part) = slides(doc).get(slide_index).and_then(|s| s.part.as_deref()) else { return String::new() };
+    let Some(list) = notes_slice(doc, part) else { return String::new() };
+    if list.is_empty() {
+        return String::new();
+    }
+    let mut out = String::new();
+    for (i, p) in list.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&p.plain_text());
+    }
+    out
 }
 
 /// Sets a slide's speaker notes. A slide added without a part name gets one, so the notes stay
@@ -394,9 +476,21 @@ pub(crate) fn set_notes_in(doc: &mut Document, slide_index: usize, paragraphs: V
 
 fn put_notes(doc: &mut Document, part: String, paragraphs: Vec<Paragraph>) {
     let ppt = ppt_mut(doc);
+    if let Some(&i) = ppt.notes_idx.get(&part) {
+        if let Some((s, n)) = ppt.notes.get_mut(i) {
+            if *s == part {
+                *n = paragraphs;
+                return;
+            }
+        }
+    }
     match ppt.notes.iter_mut().find(|(s, _)| *s == part) {
         Some((_, n)) => *n = paragraphs,
-        None => ppt.notes.push((part, paragraphs)),
+        None => {
+            let idx = ppt.notes.len();
+            ppt.notes_idx.insert(part.clone(), idx);
+            ppt.notes.push((part, paragraphs));
+        }
     }
 }
 

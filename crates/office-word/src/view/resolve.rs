@@ -79,6 +79,7 @@ pub(super) fn list_label<'a>(labels: &'a HashMap<Path, String>, prefix: &[u32], 
 pub struct SpecCache {
     map: HashMap<u64, (Arc<ParaSpec>, Keep, u32)>,
     tables: HashMap<u64, (TableLook, u32)>,
+    table_styles: HashMap<(usize, Option<String>), TableLookStyle>,
     pass: u32,
 }
 
@@ -90,12 +91,14 @@ impl SpecCache {
             let keep = self.pass.saturating_sub(16);
             self.map.retain(|_, (_, _, p)| *p >= keep);
             self.tables.retain(|_, (_, p)| *p >= keep);
+            self.table_styles.clear();
         }
     }
 
     pub fn clear(&mut self) {
         self.map.clear();
         self.tables.clear();
+        self.table_styles.clear();
     }
 }
 
@@ -128,7 +131,7 @@ impl<'a> WordResolver<'a> {
     }
 
     /// The run formatting text has in this paragraph, styles and table style included.
-    fn run_props(&self, p: &Paragraph, direct: &RunProps, path: &Path) -> RunProps {
+    fn run_props(&mut self, p: &Paragraph, direct: &RunProps, path: &Path) -> RunProps {
         let mut r = match word(self.doc) {
             Some(w) => w.styles.resolve_run(&p.props, direct, self.theme()),
             None => direct.clone(),
@@ -145,10 +148,16 @@ impl<'a> WordResolver<'a> {
     }
 
     /// The conditional table-style part (header row, banded row…) the cell holding `path` is in.
-    fn cell_part(&self, path: &Path) -> Option<super::extras::PartLook> {
+    fn cell_part(&mut self, path: &Path) -> Option<super::extras::PartLook> {
         let (table_path, row, col) = path.cell()?;
         let Block::Table(t) = blocks_at(self.story, table_path.container())?.get(table_path.block() as usize)? else { return None };
-        let look = self.table_style(t);
+        let origin_id = t.origin.id();
+        let style_id = t.style.clone();
+        if !self.specs.table_styles.contains_key(&(origin_id, style_id.clone())) {
+            let resolved = self.table_style(t);
+            self.specs.table_styles.insert((origin_id, style_id.clone()), resolved);
+        }
+        let look = &self.specs.table_styles[&(origin_id, style_id)];
         let parts = cell_parts(t, row as usize, col as usize);
         let mut out: Option<super::extras::PartLook> = None;
         for name in parts.iter().rev() {
@@ -497,11 +506,8 @@ impl WordResolver<'_> {
                                 let kind = if *shown {
                                     ItemKind::Hidden
                                 } else {
-                                    ItemKind::Atomic {
-                                        text: v,
-                                        style: self.style(ctx, &self.run_props(p, &r.props, path), false),
-                                        inline: i as u32,
-                                    }
+                                    let props = self.run_props(p, &r.props, path);
+                                    ItemKind::Atomic { text: v, style: self.style(ctx, &props, false), inline: i as u32 }
                                 };
                                 *shown = true;
                                 items.push(Item { start, end, kind });
@@ -585,7 +591,8 @@ impl WordResolver<'_> {
                                 ItemKind::Hidden
                             } else {
                                 let rpr = xml.descendant(ns::W, "rPr").map(office_core::formats::docx::read_run_props).unwrap_or_default();
-                                ItemKind::Atomic { text, style: self.style(ctx, &self.run_props(p, &rpr, path), false), inline: i as u32 }
+                                let props = self.run_props(p, &rpr, path);
+                                ItemKind::Atomic { text, style: self.style(ctx, &props, false), inline: i as u32 }
                             }
                         }
                         RawShow::OwnNoteRef => ItemKind::Hidden,
@@ -608,11 +615,8 @@ impl WordResolver<'_> {
                                     .or_else(|| xml.descendant(ns::W, "rPr"))
                                     .map(office_core::formats::docx::read_run_props)
                                     .unwrap_or_default();
-                                ItemKind::Atomic {
-                                    text: s,
-                                    style: self.style(ctx, &self.run_props(p, &rpr, path), false),
-                                    inline: i as u32,
-                                }
+                                let props = self.run_props(p, &rpr, path);
+                                ItemKind::Atomic { text: s, style: self.style(ctx, &props, false), inline: i as u32 }
                             }
                         }
                         RawShow::Math(s) => {

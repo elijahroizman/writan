@@ -362,8 +362,11 @@ impl SlidesView {
                 Element::new(ns::P, "bgPr").with_child(Element::new(ns::A, "solidFill").with_child(Color::scheme("bg1").to_drawingml())),
             )));
         mark_starter(&mut origin, template);
-        self.change_deck(|slides| {
-            slides.insert(to, Slide { frames: b.frames, part, layout, origin: Origin::new(origin), ..Default::default() })
+        self.change_deck_with_revs(|slides, revs, next_rev| {
+            slides.insert(to, Slide { frames: b.frames, part, layout, origin: Origin::new(origin), ..Default::default() });
+            revs.insert(to, *next_rev);
+            *next_rev += 1;
+            Some(to + 1)
         });
         self.sel = Sel { active: to, frames: Vec::new(), editing: None };
     }

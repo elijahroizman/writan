@@ -7,7 +7,9 @@
 //! from the last hour, then one per 10 minutes for a day, one a day for a month, one a week after
 //! that. Versions with a name are always kept.
 
+use std::fmt::Write as _;
 use std::fs;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -79,11 +81,32 @@ fn root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
         .join("history"))
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    Sha256::digest(bytes)
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect()
+fn format_sha256(digest: impl AsRef<[u8]>) -> String {
+    let bytes = digest.as_ref();
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for b in bytes {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    format_sha256(Sha256::digest(bytes))
+}
+
+/// Streams a file's SHA-256 digest in 64 KB chunks without loading the whole file into RAM.
+pub fn sha256_file(path: &Path) -> std::io::Result<String> {
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
+    Ok(format_sha256(hasher.finalize()))
 }
 
 fn log_path(root: &Path, file: &str) -> PathBuf {
@@ -122,16 +145,46 @@ fn write_log(root: &Path, log: &Log) -> std::io::Result<()> {
     fs::rename(tmp, path)
 }
 
-fn store_object(root: &Path, bytes: &[u8]) -> std::io::Result<String> {
-    let hash = sha256_hex(bytes);
-    let path = object_path(root, &hash);
+fn store_object_with_hash(root: &Path, bytes: &[u8], hash: &str) -> std::io::Result<()> {
+    let path = object_path(root, hash);
     if !path.exists() {
         fs::create_dir_all(path.parent().unwrap())?;
         let tmp = path.with_extension("tmp");
         fs::write(&tmp, bytes)?;
         fs::rename(tmp, &path)?;
     }
-    Ok(hash)
+    Ok(())
+}
+
+/// Streams `file` directly into content-addressed storage without buffering the full file in RAM.
+fn store_file_object(root: &Path, file: &Path) -> std::io::Result<(String, u64)> {
+    let mut input = fs::File::open(file)?;
+    let objects_dir = root.join("objects");
+    fs::create_dir_all(&objects_dir)?;
+    let mut tmp = tempfile::NamedTempFile::new_in(&objects_dir)?;
+    let mut hasher = Sha256::new();
+    let mut buf = [0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let n = input.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        total += n as u64;
+        hasher.update(&buf[..n]);
+        tmp.write_all(&buf[..n])?;
+    }
+    let hash = format_sha256(hasher.finalize());
+    let dest = object_path(root, &hash);
+    if !dest.exists() {
+        fs::create_dir_all(dest.parent().unwrap())?;
+        if let Err(e) = tmp.persist_noclobber(&dest) {
+            if e.error.kind() != std::io::ErrorKind::AlreadyExists {
+                return Err(e.error);
+            }
+        }
+    }
+    Ok((hash, total))
 }
 
 fn now_ms() -> u64 {
@@ -228,20 +281,23 @@ pub fn remember_original(root: &Path, file: &Path) {
     if !log.versions.is_empty() && (log.disk.is_none() || log.disk == stamp(file)) {
         return;
     }
-    let Ok(bytes) = fs::read(file) else { return };
+    let Ok((hash, size)) = store_file_object(root, file) else {
+        return;
+    };
     let source = if log.versions.is_empty() {
         "original"
     } else {
         "outside"
     };
-    let _ = add_version(root, log, &bytes, source, None, file);
+    let _ = add_version_hashed(root, log, hash, size, source, None, file);
 }
 
-/// A version just saved; `disk` is the file's stamp right after the save.
-pub fn record(
+/// A version just saved using a precomputed SHA-256 digest; `disk` is the stamp right after save.
+pub fn record_with_hash(
     root: &Path,
     file: &Path,
     bytes: &[u8],
+    hash: String,
     label: Option<String>,
     disk: Option<Stamp>,
 ) -> std::io::Result<()> {
@@ -249,18 +305,31 @@ pub fn record(
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let mut log = read_log(root, &key);
     log.disk = disk;
-    add_version(root, log, bytes, "save", label, file)
+    store_object_with_hash(root, bytes, &hash)?;
+    add_version_hashed(root, log, hash, bytes.len() as u64, "save", label, file)
 }
 
-fn add_version(
+#[cfg(test)]
+pub fn record(
+    root: &Path,
+    file: &Path,
+    bytes: &[u8],
+    label: Option<String>,
+    disk: Option<Stamp>,
+) -> std::io::Result<()> {
+    let hash = sha256_hex(bytes);
+    record_with_hash(root, file, bytes, hash, label, disk)
+}
+
+fn add_version_hashed(
     root: &Path,
     mut log: Log,
-    bytes: &[u8],
+    hash: String,
+    size: u64,
     source: &str,
     label: Option<String>,
     file: &Path,
 ) -> std::io::Result<()> {
-    let hash = store_object(root, bytes)?;
     let time = now_ms();
     if let Some(latest) = log.versions.first_mut() {
         if latest.hash == hash {
@@ -275,7 +344,7 @@ fn add_version(
         id: new_id(time, &hash),
         hash,
         time,
-        size: bytes.len() as u64,
+        size,
         label,
         source: source.into(),
     };
@@ -317,7 +386,7 @@ pub fn history_read<R: Runtime>(
 }
 
 /// Name a version (or clear its name with null). Named versions are never thinned out.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_label<R: Runtime>(
     app: AppHandle<R>,
     path: String,
@@ -338,7 +407,7 @@ pub fn history_label<R: Runtime>(
     write_log(&root, &log).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_delete<R: Runtime>(
     app: AppHandle<R>,
     path: String,
@@ -357,7 +426,7 @@ pub fn history_delete<R: Runtime>(
 }
 
 /// How much space every file's history takes, in bytes.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_usage<R: Runtime>(app: AppHandle<R>) -> Result<u64, String> {
     fn size(dir: &Path) -> u64 {
         fs::read_dir(dir)
@@ -377,7 +446,7 @@ pub fn history_usage<R: Runtime>(app: AppHandle<R>) -> Result<u64, String> {
 }
 
 /// Forget every version of every file.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn history_clear_all<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let root = root(&app)?;
     let _guard = LOCK.lock().unwrap_or_else(|e| e.into_inner());

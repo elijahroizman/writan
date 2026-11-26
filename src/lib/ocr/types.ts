@@ -58,6 +58,10 @@ export interface OcrPageInput {
   data: Uint8ClampedArray | Uint8Array
   width: number
   height: number
+  /** Pixel format of `data`: `4` for RGBA (default), `1` for packed 8-bit grayscale. */
+  channels?: 1 | 4
+  /** Transfer `data.buffer` straight to the OCR worker without cloning when unshared. */
+  transfer?: boolean
   pageIndex?: number
   widthPt?: number
   heightPt?: number

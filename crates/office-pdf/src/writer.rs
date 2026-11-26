@@ -1,3 +1,4 @@
+use std::borrow::Borrow;
 use std::collections::{BTreeMap, HashMap};
 
 use pdf_writer::{
@@ -15,6 +16,22 @@ pub fn render_document_to_pdf(
     input: &PdfDocumentInput,
     media: &HashMap<String, Vec<u8>>,
     fonts: &HashMap<String, Vec<u8>>,
+) -> Result<Vec<u8>, String> {
+    render_document_to_pdf_with(input, media, fonts)
+}
+
+pub fn render_document_to_pdf_slices(
+    input: &PdfDocumentInput,
+    media: &HashMap<&str, &[u8]>,
+    fonts: &HashMap<&str, &[u8]>,
+) -> Result<Vec<u8>, String> {
+    render_document_to_pdf_with(input, media, fonts)
+}
+
+fn render_document_to_pdf_with<KM: Borrow<str>, VM: AsRef<[u8]>, KF: Borrow<str> + Ord, VF: AsRef<[u8]>>(
+    input: &PdfDocumentInput,
+    media: &HashMap<KM, VM>,
+    fonts: &HashMap<KF, VF>,
 ) -> Result<Vec<u8>, String> {
     let mut engine = Engine::new(media, fonts);
     let specs: Vec<_> = input.styles.iter().map(|s| FontSpec::parse(&s.font)).collect();
@@ -71,7 +88,7 @@ pub(crate) struct Engine<'a> {
     pdf: Pdf,
     next: Ref,
     pages: Vec<Ref>,
-    media: &'a HashMap<String, Vec<u8>>,
+    media: HashMap<&'a str, &'a [u8]>,
     images: HashMap<String, (Ref, u8)>,
     opacities: HashMap<(u32, u32), Ref>,
     pub fonts: Fonts<'a>,
@@ -79,9 +96,13 @@ pub(crate) struct Engine<'a> {
 }
 
 impl<'a> Engine<'a> {
-    pub fn new(media: &'a HashMap<String, Vec<u8>>, blobs: &'a HashMap<String, Vec<u8>>) -> Self {
+    pub fn new<KM: Borrow<str>, VM: AsRef<[u8]>, KF: Borrow<str> + Ord, VF: AsRef<[u8]>>(
+        media: &'a HashMap<KM, VM>,
+        blobs: &'a HashMap<KF, VF>,
+    ) -> Self {
         let mut pdf = Pdf::new();
         pdf.set_version(1, 7);
+        let media = media.iter().map(|(k, v)| (k.borrow(), v.as_ref())).collect();
         let fonts = Fonts::new(blobs);
         let font_names = (0..fonts.len()).map(|id| (id, format!("F{id}"))).collect();
         Self { pdf, next: Ref::new(5), pages: Vec::new(), media, images: HashMap::new(), opacities: HashMap::new(), fonts, font_names }

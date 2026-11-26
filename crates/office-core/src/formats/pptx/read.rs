@@ -101,12 +101,13 @@ fn read_frame(el: &Element, rels: &PartRels, doc: &mut Document) -> Frame {
         placeholder,
         link: c_nv.and_then(|c| crate::formats::dml::read_link(c, Some(rels))),
         // A group's frames are read below. Copying its whole tree here as well, at every level,
-        // made nested groups quadratic.
-        content: FrameContent::Raw { xml: if el.is(ns::P, "grpSp") { Element::new("", "grpSp") } else { el.clone() }, chart_part: None },
+        // made nested groups quadratic; only fallback/raw frames keep a clone of `el`.
+        content: FrameContent::Raw { xml: Element::new("", ""), chart_part: None },
         origin: Default::default(),
     };
     if !el.in_ns(ns::P) {
         // mc:AlternateContent and other wrappers stay whole.
+        frame.content = FrameContent::Raw { xml: el.clone(), chart_part: None };
         return frame;
     }
     let sp_pr = el.child(ns::P, "spPr").or_else(|| el.child(ns::P, "grpSpPr"));
@@ -155,8 +156,10 @@ fn read_frame(el: &Element, rels: &PartRels, doc: &mut Document) -> Frame {
                     data.remove_children(ns::A, "tbl");
                 }
                 frame.origin = crate::model::Origin::new(origin);
+            } else {
+                // Charts, diagrams and embedded objects stay raw.
+                frame.content = FrameContent::Raw { xml: el.clone(), chart_part: None };
             }
-            // Charts, diagrams and embedded objects stay raw.
         }
         "grpSp" => {
             let frames = el
@@ -167,7 +170,9 @@ fn read_frame(el: &Element, rels: &PartRels, doc: &mut Document) -> Frame {
             frame.content = FrameContent::Group { frames };
             frame.origin = shell(el, |e| !(e.is(ns::P, "nvGrpSpPr") || e.is(ns::P, "grpSpPr") || e.is(ns::P, "extLst")));
         }
-        _ => {}
+        _ => {
+            frame.content = FrameContent::Raw { xml: el.clone(), chart_part: None };
+        }
     }
     frame
 }

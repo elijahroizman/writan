@@ -150,6 +150,7 @@ pub enum BlockBox {
     /// Markup with nothing to lay out.
     Empty {
         path: Path,
+        y: f64,
     },
 }
 
@@ -256,7 +257,7 @@ pub fn layout_block(ctx: &mut Ctx, cache: &mut Cache, resolver: &mut dyn Resolve
             let flow = resolver.preview(ctx, cache, &path, preview, width);
             BlockBox::Preview { path, y: 0.0, flow, blocks: preview.clone() }
         }
-        Block::Raw { .. } => BlockBox::Empty { path },
+        Block::Raw { .. } => BlockBox::Empty { path, y: 0.0 },
     }
 }
 
@@ -285,7 +286,7 @@ pub fn restack(blocks: &mut [BlockBox]) -> f64 {
                 *top = y;
                 y += flow.height;
             }
-            BlockBox::Empty { .. } => {}
+            BlockBox::Empty { y: top, .. } => *top = y,
         }
     }
     y + prev_after
@@ -296,7 +297,36 @@ impl BlockBox {
         match self {
             BlockBox::Para(p) => &p.path,
             BlockBox::Table(t) => &t.path,
-            BlockBox::Preview { path, .. } | BlockBox::Empty { path } => path,
+            BlockBox::Preview { path, .. } | BlockBox::Empty { path, .. } => path,
+        }
+    }
+
+    /// Top y of this block within its flow. Monotonically non-decreasing across [`FlowLayout::blocks`].
+    pub fn top_y(&self) -> f64 {
+        match self {
+            BlockBox::Para(p) => p.y,
+            BlockBox::Table(t) => t.y,
+            BlockBox::Preview { y, .. } | BlockBox::Empty { y, .. } => *y,
+        }
+    }
+
+    /// Bottom y of this block within its flow (excluding trailing spacing).
+    pub fn bottom_y(&self) -> f64 {
+        match self {
+            BlockBox::Para(p) => p.y + p.layout.height,
+            BlockBox::Table(t) => t.y + t.height,
+            BlockBox::Preview { y, flow, .. } => *y + flow.height,
+            BlockBox::Empty { y, .. } => *y,
+        }
+    }
+
+    /// Extent bottom used by [`hit`] (includes `space_after`).
+    pub fn hit_bottom(&self) -> f64 {
+        match self {
+            BlockBox::Para(p) => p.y + p.layout.height + p.spec.space_after,
+            BlockBox::Table(t) => t.y + t.height,
+            BlockBox::Preview { y, flow, .. } => *y + flow.height,
+            BlockBox::Empty { y, .. } => *y,
         }
     }
 
@@ -310,7 +340,7 @@ impl BlockBox {
         }
         match self {
             BlockBox::Para(p) => shift_path(&mut p.path, delta),
-            BlockBox::Preview { path, .. } | BlockBox::Empty { path } => shift_path(path, delta),
+            BlockBox::Preview { path, .. } | BlockBox::Empty { path, .. } => shift_path(path, delta),
             BlockBox::Table(t) => {
                 shift_path(&mut t.path, delta);
                 for cell in &mut t.cells {
@@ -442,29 +472,20 @@ impl FlowLayout {
 
 /// The position nearest (`x`, `y`) in a laid-out flow.
 pub fn hit(ctx: &mut Ctx, flow: &FlowLayout, x: f64, y: f64) -> Option<crate::pos::Pos> {
-    // The block whose extent (with its spacing) holds y, or the nearest one.
-    let mut best: Option<&BlockBox> = None;
-    for b in &flow.blocks {
-        let (top, bottom) = match b {
-            BlockBox::Para(p) => (p.y - p.spec.space_before, p.y + p.layout.height + p.spec.space_after),
-            BlockBox::Table(t) => (t.y, t.y + t.height),
-            BlockBox::Preview { y: top, flow, .. } => {
-                if y >= *top && y < *top + flow.height {
-                    return None;
-                }
-                continue;
-            }
-            BlockBox::Empty { .. } => continue,
-        };
-        if y < bottom || best.is_none() {
-            best = Some(b);
-        }
-        if y < bottom {
-            let _ = top;
-            break;
-        }
+    // The block whose extent (with its spacing) holds y, or the nearest non-Empty one.
+    let mut idx = flow.blocks.partition_point(|b| match b {
+        BlockBox::Empty { y: ey, .. } => *ey <= y,
+        _ => b.hit_bottom() <= y,
+    });
+    if idx >= flow.blocks.len() {
+        idx = flow.blocks.len().checked_sub(1)?;
     }
-    match best? {
+    // Skip any Empty blocks forward, or fall back backward to the nearest non-Empty block.
+    let best = flow.blocks[idx..]
+        .iter()
+        .find(|b| !matches!(b, BlockBox::Empty { .. }))
+        .or_else(|| flow.blocks[..idx].iter().rev().find(|b| !matches!(b, BlockBox::Empty { .. })))?;
+    match best {
         BlockBox::Para(p) => {
             let ly = y - p.y;
             let li = p.layout.lines.iter().position(|l| ly < l.top + l.height).unwrap_or(p.layout.lines.len().saturating_sub(1));

@@ -1,77 +1,25 @@
 // Sharing a document, over the internet in the app and on the network in a browser: the title
 // bar's button and panel, and the dialog for joining what someone else shared. The work is in collab/session.ts.
 
-import { Check, Copy, Link2, LogIn, RefreshCw, Users } from 'lucide-react'
+import { Check, Copy, Link2, LogIn, RefreshCw } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { create } from 'zustand'
-import { colorFor, displayName, join, newCode, requireApproval, setDisplayName, share, SHAREABLE, stop, useCollab, type Peer } from '../collab/session'
+import { colorFor, displayName, join, newCode, requireApproval, setDisplayName, share, stop, useCollab, type Peer } from '../collab/session'
 import { cancelJoins, parseCode, parseInvite } from '../collab/transport'
 import { PeerAvatar } from '../collab/cursors'
 import { askForNetwork, NETWORK_ASK, NETWORK_DENIED, openNetworkSettings, whileNetworkAllowed } from '../collab/network'
 import { isMac, isTauri } from '../lib/platform'
+import { showJoinDialog, showSharePanel, useSharePanel } from '../state/modals'
 import { useWorkspace } from '../state/workspace'
+import { canShare, ShareButton } from './ShareButton'
 import { Button, Modal, Spinner, TextField } from './ui'
 
-/** Which tab's sharing panel is open, and whether the join dialog is. */
-export const useSharePanel = create<{ tabId: string | null; joining: boolean }>(() => ({ tabId: null, joining: false }))
-
-export const showSharePanel = (tabId = useWorkspace.getState().activeId) => useSharePanel.setState({ tabId })
-export const showJoinDialog = () => useSharePanel.setState({ joining: true, tabId: null })
-
-/** Whether the tab in front can be shared, or is shared. */
-export function canShare(tabId: string) {
-  const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
-  return !!tab && (SHAREABLE.has(tab.kind) || !!useCollab.getState()[tabId])
-}
-
-const Avatar = PeerAvatar
+export { canShare, ShareButton, showJoinDialog, showSharePanel, useSharePanel }
 
 /** How long a code has left, as `9:41`, or null once it's out. */
 function timeLeft(expiresAt: number, now: number): string | null {
   const secs = Math.ceil((expiresAt - now) / 1000)
   return secs > 0 ? `${Math.floor(secs / 60)}:${String(secs % 60).padStart(2, '0')}` : null
-}
-
-export function ShareButton() {
-  const activeId = useWorkspace((s) => s.activeId)
-  const tab = useWorkspace((s) => s.tabs.find((t) => t.id === s.activeId))
-  const state = useCollab((s) => s[activeId])
-  const openFor = useSharePanel((s) => s.tabId)
-  const button = useRef<HTMLButtonElement>(null)
-  if (!tab || (!SHAREABLE.has(tab.kind) && !state)) return null
-  const on = state?.status === 'live' || state?.status === 'connecting'
-  // Shared with this computer's agents only, it shows who's in it, and offers to share.
-  const live = on && !state.private
-  const peers = on ? state.peers : []
-  const label = live ? (state.role === 'host' ? (state.internet ? 'Shared' : 'Shared on your network') : 'Editing a shared document') : isTauri ? 'Share' : 'Share on your network'
-  const waiting = live ? (state.waiting?.length ?? 0) : 0
-  return (
-    <>
-      <button
-        ref={button}
-        type="button"
-        className={`share-btn ${live ? 'live' : ''}`}
-        aria-haspopup="dialog"
-        aria-expanded={openFor === activeId}
-        aria-label={label}
-        title={label}
-        onClick={() => useSharePanel.setState({ tabId: openFor === activeId ? null : activeId })}
-      >
-        {peers.length ? (
-          <span className="share-stack">
-            {peers.slice(0, 3).map((p) => (
-              <Avatar key={p.client} peer={p} />
-            ))}
-          </span>
-        ) : (
-          <Users size={14} />
-        )}
-        {live && (!peers.length || waiting > 0) && <span className="share-btn-dot" />}
-      </button>
-      {openFor === activeId && <SharePanel tabId={activeId} anchor={button} />}
-    </>
-  )
 }
 
 function useName() {
@@ -94,7 +42,9 @@ function NetworkNote({ state }: { state: Network }) {
 }
 
 
-function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<HTMLButtonElement | null> }) {
+const Avatar = PeerAvatar
+
+export function SharePanel({ tabId, anchor }: { tabId: string; anchor: React.RefObject<HTMLButtonElement | null> }) {
   const state = useCollab((s) => s[tabId])
   const tab = useWorkspace((s) => s.tabs.find((t) => t.id === tabId))
   const panel = useRef<HTMLDivElement>(null)

@@ -1,6 +1,5 @@
 import { ArrowDown, ArrowUp, Check, ClipboardCopy, Download, FileStack, FileText, FolderOpen } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { create } from 'zustand'
 import {
   bundleTabsToPdf,
   canExportMarkdown,
@@ -12,31 +11,11 @@ import {
 } from '../lib/convert'
 import type { ConvertFormat } from '../lib/convert'
 import * as platform from '../lib/platform'
+import { useConvertDialog, type ConvertModalMode } from '../state/modals'
 import { useWorkspace } from '../state/workspace'
 import { DocBadge, Kbd, Modal } from './ui'
 
-export type ConvertModalMode = 'convert' | 'bundle'
-
-interface ConvertModalState {
-  open: boolean
-  mode: ConvertModalMode
-  tabId: string | null
-  /** The format selected when the dialog opens. */
-  format: ConvertFormat | null
-  openConvert(tabId?: string | null, format?: ConvertFormat): void
-  openBundle(): void
-  close(): void
-}
-
-export const useConvertDialog = create<ConvertModalState>((set) => ({
-  open: false,
-  mode: 'convert',
-  tabId: null,
-  format: null,
-  openConvert: (tabId = null, format) => set({ open: true, mode: 'convert', tabId, format: format ?? null }),
-  openBundle: () => set({ open: true, mode: 'bundle', tabId: null, format: null }),
-  close: () => set({ open: false, tabId: null, format: null }),
-}))
+export { useConvertDialog, type ConvertModalMode }
 
 export function ConvertModal() {
   const mode = useConvertDialog((s) => s.mode)
@@ -106,33 +85,36 @@ function ConvertFileDialog() {
     }
   }
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        dismiss()
-      } else if (targets.length && e.key === 'ArrowDown') {
-        setIndex((i) => (i + 1) % targets.length)
-      } else if (targets.length && e.key === 'ArrowUp') {
-        setIndex((i) => (i - 1 + targets.length) % targets.length)
-      } else if (targets.length && e.key === 'Enter' && !busy) {
-        if (e.target instanceof HTMLButtonElement) return
-        void runConvert((targets[index] ?? targets[0]).format)
-      } else if (!e.metaKey && !e.ctrlKey && !e.altKey && !busy) {
-        const at = Number(e.key)
-        if (at >= 1 && at <= Math.min(9, targets.length)) {
-          void runConvert(targets[at - 1].format)
-        } else {
-          return
-        }
+  const onKeyRef = useRef<(e: KeyboardEvent) => void>(() => {})
+  onKeyRef.current = (e: KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      dismiss()
+    } else if (targets.length && e.key === 'ArrowDown') {
+      setIndex((i) => (i + 1) % targets.length)
+    } else if (targets.length && e.key === 'ArrowUp') {
+      setIndex((i) => (i - 1 + targets.length) % targets.length)
+    } else if (targets.length && e.key === 'Enter' && !busy) {
+      if (e.target instanceof HTMLButtonElement) return
+      void runConvert((targets[index] ?? targets[0]).format)
+    } else if (!e.metaKey && !e.ctrlKey && !e.altKey && !busy) {
+      const at = Number(e.key)
+      if (at >= 1 && at <= Math.min(9, targets.length)) {
+        void runConvert(targets[at - 1].format)
       } else {
         return
       }
-      e.preventDefault()
-      e.stopPropagation()
+    } else {
+      return
     }
+    e.preventDefault()
+    e.stopPropagation()
+  }
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => onKeyRef.current(e)
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  })
+  }, [])
 
   if (!tab) {
     return (

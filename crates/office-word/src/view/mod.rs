@@ -153,6 +153,8 @@ pub struct WordView {
     pub(crate) list_memo: ListMemo,
     /// Each body paragraph's list and level at the last layout.
     pub(crate) last_lists: Vec<Option<(String, u8)>>,
+    /// True when the body contains only top-level paragraphs (1:1 with `last_lists`).
+    pub(crate) flat_body_paras: bool,
     /// Set while the document is shared with other copies (see `collab`).
     /// Another copy changed the document since it was saved here, while shared. Their changes
     /// aren't in the undo history, which [`Self::is_dirty`] otherwise goes by.
@@ -218,6 +220,15 @@ pub struct Mark {
     pub id: String,
     pub from: Pos,
     pub to: Pos,
+}
+
+/// Whether `p` is still a place a mark may end: an existing paragraph, at a character boundary.
+fn mark_pos_valid(blocks: &[Block], p: &Pos) -> bool {
+    pos::para(blocks, &p.path).is_some_and(|q| {
+        let flat = text::flat(q);
+        let offset = p.offset as usize;
+        offset <= flat.text.len() && flat.text.is_char_boundary(offset)
+    })
 }
 
 /// One page drawn: its size and items.
@@ -301,6 +312,7 @@ impl WordView {
             unrecorded: false,
             list_memo: HashMap::new(),
             last_lists: Vec::new(),
+            flat_body_paras: false,
             others_changed: false,
             replica: None,
             collab_extra: Vec::new(),
@@ -357,9 +369,37 @@ impl WordView {
 
     // ---- layout ----
 
+    /// How many top-level body blocks the document holds.
+    pub fn body_block_count(&self) -> usize {
+        match &self.doc.body {
+            Body::Flow { blocks } => blocks.len(),
+            _ => 0,
+        }
+    }
+
+    /// How many page sections the document declares.
+    pub fn section_count(&self) -> usize {
+        crate::sections(&self.doc).len()
+    }
+
     /// Lays the document out again where it changed.
     pub fn layout(&mut self, host: &mut dyn Measurer) {
-        if !self.stale {
+        self.layout_inner(host, None, false);
+    }
+
+    /// Lays only the first `max_blocks` top-level blocks. Progressive opening uses this for a
+    /// quick first paint; the result is temporary and `layout_full` replaces it.
+    pub fn layout_prefix(&mut self, host: &mut dyn Measurer, max_blocks: u32) {
+        self.layout_inner(host, Some(max_blocks), true);
+    }
+
+    /// Lays the whole document even though nothing since the last layout is marked dirty.
+    pub fn layout_full(&mut self, host: &mut dyn Measurer) {
+        self.layout_inner(host, None, true);
+    }
+
+    fn layout_inner(&mut self, host: &mut dyn Measurer, max_blocks: Option<u32>, force: bool) {
+        if !self.stale && !force {
             return;
         }
         self.stale = false;
@@ -371,17 +411,40 @@ impl WordView {
             self.list_memo.clear();
         }
         // Paragraphs moved (blocks added or removed): labels are keyed by path, so work them out again.
-        let moved = !matches!(self.dirty, Dirty::Clean | Dirty::Blocks { delta: 0, .. }) || self.unrecorded;
-        if let Some(labels) = body_labels(&self.doc, &mut self.list_memo, &mut self.last_lists, moved) {
-            self.labels = labels;
-        }
-        let t_labels = timing::now();
-        let sections = crate::sections(&self.doc);
-        let places = section_ends(&self.doc);
-        let body = match &self.doc.body {
+        let body_now = match &self.doc.body {
             Body::Flow { blocks } => blocks.as_slice(),
             _ => &[],
         };
+        let dirty_snapshot = if self.unrecorded { Dirty::Full } else { self.dirty.clone() };
+        let moved = !matches!(dirty_snapshot, Dirty::Clean | Dirty::Blocks { delta: 0, .. });
+        let skip_labels = match &dirty_snapshot {
+            Dirty::Clean if !self.last_lists.is_empty() || body_now.is_empty() => true,
+            Dirty::Blocks { first, end, delta: 0 } if self.flat_body_paras && self.last_lists.len() == body_now.len() => {
+                let s = (*first as usize).min(body_now.len());
+                let e = (*end as usize).min(body_now.len());
+                body_now[s..e].iter().enumerate().all(|(offset, b)| {
+                    let Block::Paragraph(p) = b else { return false };
+                    let idx = s + offset;
+                    let key = list_key(p);
+                    self.list_memo.get(&key) == self.last_lists.get(idx)
+                })
+            }
+            _ => false,
+        };
+        let labels_changed = if skip_labels {
+            false
+        } else if let Some(labels) = body_labels(&self.doc, &mut self.list_memo, &mut self.last_lists, moved) {
+            self.flat_body_paras = body_now.iter().all(|b| matches!(b, Block::Paragraph(_)));
+            self.labels = labels;
+            true
+        } else {
+            self.flat_body_paras = body_now.iter().all(|b| matches!(b, Block::Paragraph(_)));
+            false
+        };
+        let t_labels = timing::now();
+        let sections = crate::sections(&self.doc);
+        let places = section_ends(&self.doc);
+        let body = body_now;
         let mut ranges = Vec::with_capacity(sections.len());
         let mut first = 0u32;
         for i in 0..sections.len() {
@@ -411,8 +474,18 @@ impl WordView {
         let mut old_flows: Vec<Option<SectionFlow>> =
             if reusable { std::mem::take(&mut self.sections).into_iter().map(Some).collect() } else { Vec::new() };
         let mut flows = Vec::with_capacity(sections.len());
+        // Pages can be kept only when the edit was to body blocks whose breaks all came out the
+        // same. A header, footer or note edit marks nothing in the body, but moves it.
+        let mut same_pagination = reusable && !self.pages.is_empty() && matches!(dirty, Dirty::Blocks { .. });
+        // Progressive opening is deliberately conservative: one flowing section whose tail can
+        // be appended without changes to earlier section starts. Anything more exotic lays out whole.
+        let prefix = max_blocks.filter(|_| sections.len() == 1);
         for (i, section) in sections.into_iter().enumerate() {
             let (first, last) = ranges[i];
+            let last = match prefix {
+                Some(max) if i == 0 => (first + max.saturating_sub(1)).min(last),
+                _ => last,
+            };
             let width = emu_px(section.text_width()).max(24.0);
             let slice = body.get(first as usize..=(last as usize).min(body.len().saturating_sub(1))).unwrap_or(&[]);
             let mut ctx = Ctx { host, measure: &mut self.measure, styles: &mut self.styles };
@@ -427,16 +500,30 @@ impl WordView {
                 specs: &mut self.specs,
             };
             let flow = match old_flows.get_mut(i).and_then(Option::take) {
-                Some(old) => {
-                    relayout(&mut ctx, &mut self.cache, &mut r, old, slice, first, width, (keep_from, keep_end, delta), &self.labels)
+                Some(old) if !labels_changed && delta == 0 && old.first == first && old.flow.blocks.len() == slice.len() => {
+                    let (f, unchanged) =
+                        relayout_in_place(&mut ctx, &mut self.cache, &mut r, old, slice, first, width, (keep_from, keep_end));
+                    same_pagination &= unchanged;
+                    f
                 }
-                None => flow::layout_from(&mut ctx, &mut self.cache, &mut r, slice, &[], first, width),
+                Some(old) => {
+                    let (f, unchanged) =
+                        relayout(&mut ctx, &mut self.cache, &mut r, old, slice, first, width, (keep_from, keep_end, delta), &self.labels);
+                    same_pagination &= unchanged;
+                    f
+                }
+                None => {
+                    same_pagination = false;
+                    flow::layout_from(&mut ctx, &mut self.cache, &mut r, slice, &[], first, width)
+                }
             };
             flows.push(SectionFlow { section, first, last, flow });
         }
         self.sections = flows;
         let t_flow = timing::now();
-        self.pages = paginate::paginate(self, host);
+        if !same_pagination {
+            self.pages = paginate::paginate(self, host);
+        }
         let t_pages = timing::now();
         timing::report(&[("labels", t_labels - t0), ("flow", t_flow - t_labels), ("pages", t_pages - t_flow)]);
     }
@@ -451,7 +538,7 @@ impl WordView {
         let blocks = self.blocks(StoryId::Body);
         let kept: Vec<Mark> = marks
             .into_iter()
-            .filter(|(_, from, to)| pos::para(blocks, &from.path).is_some() && pos::para(blocks, &to.path).is_some())
+            .filter(|(_, from, to)| from <= to && mark_pos_valid(blocks, from) && mark_pos_valid(blocks, to))
             .map(|(id, from, to)| Mark { set: set.to_string(), id, from, to })
             .collect();
         self.marks.retain(|m| m.set != set);
@@ -684,7 +771,11 @@ impl WordView {
             Body::Flow { blocks } => blocks,
             _ => &[],
         };
-        let section_of = |path: &Path| sections.iter().position(|s| path.0[0] >= s.first && path.0[0] <= s.last);
+        let section_of = |path: &Path| {
+            let b = path.0[0];
+            let i = sections.partition_point(|s| s.last < b);
+            sections.get(i).filter(|s| b >= s.first).map(|_| i)
+        };
         let mut ctx = Ctx { host, measure, styles };
         let mut rects_for = |from: &Pos, to: &Pos, through_marks: bool, out: &mut Vec<(usize, f64, f64, f64, f64)>| {
             for path in pos::paras_between(blocks, &from.path, &to.path) {
@@ -703,7 +794,7 @@ impl WordView {
         if !sel.is_collapsed() {
             rects_for(&from, &to, false, &mut out.rects);
         }
-        for mark in marks.iter() {
+        for mark in marks.iter().filter(|m| m.from <= m.to && mark_pos_valid(blocks, &m.from) && mark_pos_valid(blocks, &m.to)) {
             let mut rects = Vec::new();
             rects_for(&mark.from, &mark.to, true, &mut rects);
             out.marks.extend(rects.into_iter().map(|(p, x, y, w, h)| (p, x, y, w, h, mark.set.clone(), mark.id.clone())));
@@ -896,10 +987,58 @@ impl WordView {
     }
 }
 
-/// Lays a section out again after an edit, keeping the laid-out boxes of blocks that didn't
-/// change: those before the edit as they are, those after it moved by the blocks added or
-/// removed. Their neighbors on either side of the edit are laid out again too (spacing between
-/// paragraphs of one style depends on the next one), as is any paragraph whose list label changed.
+fn para_has_notes(p: &Paragraph) -> bool {
+    p.content.iter().any(|i| matches!(i, Inline::Raw { .. }))
+}
+
+fn para_matches_geometry(prev: &BlockBox, next: &BlockBox, block: &Block) -> bool {
+    match (prev, next, block) {
+        (BlockBox::Para(op), BlockBox::Para(np), Block::Paragraph(par)) => {
+            !para_has_notes(par)
+                && op.keep == np.keep
+                && op.spec.space_before == np.spec.space_before
+                && op.spec.space_after == np.spec.space_after
+                && op.layout.height == np.layout.height
+                && op.layout.lines.len() == np.layout.lines.len()
+                && op.layout.lines.iter().zip(&np.layout.lines).all(|(a, b)| a.top == b.top && a.height == b.height && a.ends == b.ends)
+        }
+        _ => false,
+    }
+}
+
+/// Updates only blocks near an in-place (`delta == 0`) edit with zero Vec reallocation across unchanged blocks.
+#[allow(clippy::too_many_arguments)]
+fn relayout_in_place(
+    ctx: &mut Ctx,
+    cache: &mut Cache,
+    r: &mut WordResolver,
+    mut old: SectionFlow,
+    slice: &[Block],
+    first: u32,
+    width: f64,
+    (from, end): (u32, u32),
+) -> (FlowLayout, bool) {
+    let sec_end = first + slice.len() as u32;
+    let mut same_breaks = true;
+    if !slice.is_empty() && from != u32::MAX && from <= sec_end && end >= first {
+        let lo = from.saturating_sub(1).max(first) - first;
+        let hi = end.min(sec_end.saturating_sub(1)) - first;
+        for (k, block) in slice.iter().enumerate().take(hi as usize + 1).skip(lo as usize) {
+            let i = first + k as u32;
+            let new_box = flow::layout_block(ctx, cache, r, block, Path::top(i), width);
+            let prev = &mut old.flow.blocks[k];
+            if same_breaks && !para_matches_geometry(prev, &new_box, block) {
+                same_breaks = false;
+            }
+            *prev = new_box;
+        }
+    }
+    // The replaced blocks were laid out at the top; stacking puts every block back in place. It
+    // is arithmetic over the section's blocks, and the same stacking a full layout does (spacing
+    // carries across a block that isn't a paragraph).
+    let height = flow::restack(&mut old.flow.blocks);
+    (FlowLayout { blocks: old.flow.blocks, height }, same_breaks)
+}
 #[allow(clippy::too_many_arguments)]
 fn relayout(
     ctx: &mut Ctx,
@@ -911,10 +1050,12 @@ fn relayout(
     width: f64,
     (from, end, delta): (u32, u32, i64),
     labels: &HashMap<Path, String>,
-) -> FlowLayout {
+) -> (FlowLayout, bool) {
+    let old_height = old.flow.height;
     let mut old_blocks: Vec<Option<BlockBox>> = old.flow.blocks.into_iter().map(Some).collect();
     let old_first = old.first;
     let mut out = Vec::with_capacity(slice.len());
+    let mut same_breaks = delta == 0;
     for (k, block) in slice.iter().enumerate() {
         let i = first + k as u32;
         let old_index = if i < from {
@@ -925,10 +1066,12 @@ fn relayout(
             None
         };
         let near_edit = i + 1 == from || i == end;
-        let kept = old_index
-            .filter(|_| !near_edit)
-            .and_then(|oi| usize::try_from(oi - old_first as i64).ok())
-            .and_then(|oi| old_blocks.get_mut(oi).and_then(Option::take))
+        let oi = old_index.and_then(|oi| usize::try_from(oi - old_first as i64).ok());
+        let mut candidate = if !near_edit { oi.and_then(|oi| old_blocks.get_mut(oi).and_then(Option::take)) } else { None };
+        // Moved into place first, then compared: a list label is looked up by the block's path.
+        let kept = candidate
+            .take()
+            .filter(|_| i < from || i >= end)
             .map(|mut b| {
                 if i >= end && delta != 0 {
                     b.shift(delta);
@@ -936,14 +1079,43 @@ fn relayout(
                 b
             })
             .filter(|b| b.path().0.first() == Some(&i) && same_labels(b, labels, &[]));
+        // If `!near_edit && delta == 0` didn't take `candidate` only when it failed labels, or if in `from..end`:
+        // Re-grab old box at matching block index `k` when `delta == 0` so we can compare break geometry.
         let b = match kept {
             Some(b) => b,
-            None => flow::layout_block(ctx, cache, r, block, Path::top(i), width),
+            None => {
+                let b = flow::layout_block(ctx, cache, r, block, Path::top(i), width);
+                if same_breaks {
+                    let prev_ref = oi
+                        .and_then(|oi| old_blocks.get(oi).and_then(|o| o.as_ref()))
+                        .or_else(|| old_blocks.get(k).and_then(|o| o.as_ref()));
+                    let matches_old = match (prev_ref, &b, block) {
+                        (Some(BlockBox::Para(op)), BlockBox::Para(np), Block::Paragraph(par)) => {
+                            !para_has_notes(par)
+                                && op.keep == np.keep
+                                && op.spec.space_before == np.spec.space_before
+                                && op.spec.space_after == np.spec.space_after
+                                && op.layout.height == np.layout.height
+                                && op.layout.lines.len() == np.layout.lines.len()
+                                && op
+                                    .layout
+                                    .lines
+                                    .iter()
+                                    .zip(&np.layout.lines)
+                                    .all(|(a, b)| a.top == b.top && a.height == b.height && a.ends == b.ends)
+                        }
+                        _ => false,
+                    };
+                    same_breaks &= matches_old;
+                }
+                b
+            }
         };
         out.push(b);
     }
     let height = flow::restack(&mut out);
-    FlowLayout { blocks: out, height }
+    same_breaks &= height == old_height;
+    (FlowLayout { blocks: out, height }, same_breaks)
 }
 
 /// Whether a kept box's list labels are still the ones its paragraphs have.
@@ -963,18 +1135,13 @@ fn same_labels(b: &BlockBox, labels: &HashMap<Path, String>, prefix: &[u32]) -> 
 
 /// The page of section `si` showing flow position `y`.
 fn page_at(pages: &[Page], si: usize, y: f64) -> usize {
-    let mut best = 0;
-    for (i, p) in pages.iter().enumerate() {
-        if p.section == si {
-            best = i;
-            if y < p.bottom - 0.01 {
-                return i;
-            }
-        } else if p.section > si {
-            break;
-        }
+    let start = pages.partition_point(|p| p.section < si);
+    if start >= pages.len() || pages[start].section != si {
+        return 0;
     }
-    best
+    let end = start + pages[start..].partition_point(|p| p.section == si);
+    let idx = start + pages[start..end].partition_point(|p| y >= p.bottom - 0.01);
+    idx.min(end - 1)
 }
 
 /// Where on which page a flow position of section `si` is drawn.
@@ -1115,10 +1282,15 @@ fn paint_floating(ctx: &mut Ctx, doc: &Document, page: &Page, blocks: &[Block], 
     let Some(pkg) = &doc.package else { return };
     let Ok(main) = pkg.main_part() else { return };
     let Ok(rels) = pkg.rels(&main) else { return };
-    for b in &flow.blocks {
+    let start = flow.blocks.partition_point(|b| b.bottom_y() <= page.top - 0.01);
+    for b in &flow.blocks[start..] {
+        if b.top_y() >= page.bottom - 0.01 {
+            break;
+        }
         let BlockBox::Para(pb) = b else { continue };
         let top = pb.y;
-        if top < page.top - 0.01 || top >= page.bottom - 0.01 {
+        // Drawn on the page where its paragraph starts, not on every page the paragraph reaches.
+        if top < page.top - 0.01 {
             continue;
         }
         let Some(p) = pos::para(blocks, &pb.path) else { continue };
@@ -1194,6 +1366,12 @@ fn section_ends(doc: &Document) -> Vec<Option<usize>> {
 /// Which list each paragraph is in, remembered by what decides it: its markup, style and level.
 pub(crate) type ListMemo = HashMap<(usize, u64, Option<u8>), Option<(String, u8)>>;
 
+fn list_key(p: &Paragraph) -> (usize, u64, Option<u8>) {
+    let mut h = fingerprint::Fnv::default();
+    std::hash::Hash::hash(&p.props.style, &mut h);
+    (p.origin.id(), std::hash::Hasher::finish(&h), p.props.level)
+}
+
 /// List labels for the body's paragraphs, by path. Answers `None` when every paragraph is in the
 /// same list at the same level as last time (`last`) and no paragraph moved, so the labels last
 /// worked out still hold.
@@ -1214,9 +1392,7 @@ fn body_labels(doc: &Document, memo: &mut ListMemo, last: &mut Vec<Option<(Strin
     }
     let mut lists = Vec::with_capacity(last.len());
     walk(blocks, &mut |p| {
-        let mut h = fingerprint::Fnv::default();
-        std::hash::Hash::hash(&p.props.style, &mut h);
-        let key = (p.origin.id(), std::hash::Hasher::finish(&h), p.props.level);
+        let key = list_key(p);
         lists.push(memo.entry(key).or_insert_with(|| crate::list_of(doc, p)).clone());
     });
     if !moved && lists == *last {

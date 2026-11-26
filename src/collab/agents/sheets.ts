@@ -4,9 +4,7 @@
 // also see a sheet the way people do — cells, pictures and charts — to check how things look.
 
 import { createElement } from 'react'
-import { renderToStaticMarkup } from 'react-dom/server'
 import type { ChartView, SheetsEngine } from '../../engine/sheets/engine'
-import { ChartSvg } from '../../engine/sheets/Chart'
 import type { PaintItem, PaintStyle } from '../../engine/paint'
 import { type Answer, type Args, bool, canvasPicture, doc, found, foundAnswer, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
 import { draw, mark } from './picture'
@@ -560,22 +558,28 @@ export async function viewSheet(e: SheetsEngine, args: Args): Promise<Answer> {
     }
   }
   // Charts aren't engine paint items; the editor draws them as SVG, so draw the same SVG here.
-  for (const c of charts) {
-    if (!overlap(view, c)) continue
-    const markup = renderToStaticMarkup(createElement(ChartSvg, { chart: c, width: c.w, height: c.h }))
-    const svg = markup.slice(markup.indexOf('<svg'), markup.lastIndexOf('</svg>') + 6).replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"')
-    const img = new Image()
-    img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
-    try {
-      await img.decode()
-      ctx.drawImage(img, c.x, c.y, c.w, c.h)
-    } catch {
-      ctx.fillStyle = '#fff'
-      ctx.fillRect(c.x, c.y, c.w, c.h)
-      ctx.strokeStyle = '#d9d9d9'
-      ctx.strokeRect(c.x, c.y, c.w, c.h)
-    } finally {
-      URL.revokeObjectURL(img.src)
+  const visibleCharts = charts.filter((c) => overlap(view, c))
+  if (visibleCharts.length > 0) {
+    const [{ renderToStaticMarkup }, { ChartSvg }] = await Promise.all([
+      import('react-dom/server'),
+      import('../../engine/sheets/Chart'),
+    ])
+    for (const c of visibleCharts) {
+      const markup = renderToStaticMarkup(createElement(ChartSvg, { chart: c, width: c.w, height: c.h }))
+      const svg = markup.slice(markup.indexOf('<svg'), markup.lastIndexOf('</svg>') + 6).replace('<svg', '<svg xmlns="http://www.w3.org/2000/svg"')
+      const img = new Image()
+      img.src = URL.createObjectURL(new Blob([svg], { type: 'image/svg+xml' }))
+      try {
+        await img.decode()
+        ctx.drawImage(img, c.x, c.y, c.w, c.h)
+      } catch {
+        ctx.fillStyle = '#fff'
+        ctx.fillRect(c.x, c.y, c.w, c.h)
+        ctx.strokeStyle = '#d9d9d9'
+        ctx.strokeRect(c.x, c.y, c.w, c.h)
+      } finally {
+        URL.revokeObjectURL(img.src)
+      }
     }
   }
   if (labels) for (const [i, c] of charts.entries()) if (overlap(view, c)) mark(ctx, { label: `chart ${i + 1}`, x: c.x, y: c.y, w: c.w, h: c.h }, 1 / scale)

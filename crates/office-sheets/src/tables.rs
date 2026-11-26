@@ -24,8 +24,9 @@ pub(crate) fn range(el: &Element) -> Option<Range> {
     Range::parse(el.attr("ref")?).filter(|r| r.end.row < MAX_ROWS && r.end.col < MAX_COLS)
 }
 
-pub(crate) struct Table<'a> {
-    sheet: &'a str,
+#[derive(Clone, Debug)]
+pub(crate) struct Table {
+    sheet: String,
     index: usize,
     name: String,
     display_name: String,
@@ -35,8 +36,8 @@ pub(crate) struct Table<'a> {
     columns: Vec<String>,
 }
 
-impl<'a> Table<'a> {
-    pub(crate) fn read(pkg: &Package, sheets: &'a [Sheet]) -> Vec<Self> {
+impl Table {
+    pub(crate) fn read(pkg: &Package, sheets: &[Sheet]) -> Vec<Self> {
         sheets
             .iter()
             .enumerate()
@@ -51,7 +52,7 @@ impl<'a> Table<'a> {
                     let totals = el.attr("totalsRowCount").and_then(|n| n.parse::<u32>().ok()).unwrap_or(0).min(range.rows() - headers);
                     let display_name = el.attr("displayName")?.to_string();
                     Some(Self {
-                        sheet: &s.name,
+                        sheet: s.name.clone(),
                         index: i,
                         name: el.attr("name").unwrap_or(&display_name).to_string(),
                         display_name,

@@ -4,7 +4,7 @@
 // text frame) edits its text, with the caret and selection drawn inside the frame.
 
 import type { ReactNode } from 'react'
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { PeerBox, PeerCaret, PeerSelection, together } from '../../collab/cursors'
 import { usePlaces } from '../../collab/session'
 import type { MenuEntry } from '../../components/ui'
@@ -70,7 +70,10 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
   useLayoutEffect(() => {
     const el = viewport.current
     if (!el) return
-    const measure = () => setView({ w: el.clientWidth, h: el.clientHeight })
+    const measure = () => {
+      if (el.clientWidth === 0 || el.clientHeight === 0) return
+      setView({ w: el.clientWidth, h: el.clientHeight })
+    }
     measure()
     const ro = new ResizeObserver(measure)
     ro.observe(el)
@@ -127,7 +130,7 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
       const moving = drag?.kind === 'move' && drag.moved && drag.ids.includes(el.dataset.id!)
       el.style.translate = moving ? `${drag.dx}px ${drag.dy}px` : ''
     }
-  })
+  }, [drag, html])
 
   const run = <T,>(cmd: Record<string, unknown> & { cmd: string }) => engine.run<T>(cmd)
 
@@ -170,10 +173,16 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
 
   useEffect(() => {
     if (!drag) return
-    const move = (e: MouseEvent) => {
+    let raf = 0
+    let pending: { clientX: number; clientY: number; shiftKey: boolean } | null = null
+    const flush = () => {
+      raf = 0
+      const ev = pending
+      pending = null
+      if (!ev) return
       const d = dragRef.current
       if (!d) return
-      const p = toSlide(e.clientX, e.clientY)
+      const p = toSlide(ev.clientX, ev.clientY)
       switch (d.kind) {
         case 'move': {
           const dx = p.x - d.x0
@@ -182,13 +191,13 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
           break
         }
         case 'resize':
-          setDrag({ ...d, next: resized(d.box, d.handle, p.x - d.x0, p.y - d.y0, e.shiftKey || isPicture(engine, d.box.id)) })
+          setDrag({ ...d, next: resized(d.box, d.handle, p.x - d.x0, p.y - d.y0, ev.shiftKey || isPicture(engine, d.box.id)) })
           break
         case 'rotate': {
           const cx = d.box.x + d.box.w / 2
           const cy = d.box.y + d.box.h / 2
           let rot = (Math.atan2(p.y - cy, p.x - cx) * 180) / Math.PI + 90
-          if (e.shiftKey) rot = Math.round(rot / 15) * 15
+          if (ev.shiftKey) rot = Math.round(rot / 15) * 15
           setDrag({ ...d, rot: ((rot % 360) + 360) % 360 })
           break
         }
@@ -200,7 +209,17 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
           break
       }
     }
-    const up = () => {
+    const move = (e: MouseEvent) => {
+      pending = { clientX: e.clientX, clientY: e.clientY, shiftKey: e.shiftKey }
+      if (!raf) raf = requestAnimationFrame(flush)
+    }
+    const up = (e: MouseEvent) => {
+      if (raf) {
+        cancelAnimationFrame(raf)
+        raf = 0
+        if (pending && dragRef.current?.kind !== 'text') flush()
+        pending = null
+      }
       const d = dragRef.current
       setDrag(null)
       if (!d) return
@@ -208,10 +227,15 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
       else if (d.kind === 'resize' && d.next !== d.box) run({ cmd: 'setBox', id: Number(d.box.id), x: d.next.x, y: d.next.y, w: d.next.w, h: d.next.h, rot: d.box.rot })
       else if (d.kind === 'rotate') run({ cmd: 'setBox', id: Number(d.box.id), x: d.box.x, y: d.box.y, w: d.box.w, h: d.box.h, rot: d.rot })
       else if (d.kind === 'marquee' && (Math.abs(d.x1 - d.x0) > 2 || Math.abs(d.y1 - d.y0) > 2)) run({ cmd: 'selectIn', x0: d.x0, y0: d.y0, x1: d.x1, y1: d.y1, additive: d.additive })
+      else if (d.kind === 'text') {
+        const p = toSlide(e.clientX, e.clientY)
+        run({ cmd: 'textClick', x: p.x, y: p.y, extend: true, count: 1 })
+      }
     }
     window.addEventListener('mousemove', move)
     window.addEventListener('mouseup', up)
     return () => {
+      if (raf) cancelAnimationFrame(raf)
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
@@ -410,12 +434,23 @@ export function SlideCanvas({ engine, scale, padding = 40, active, onContextMenu
   const caret = text?.caret
   const overFrame = frameOverlay && engine.elements.find((x) => x.id === frameOverlay.id)
   // Everyone else on this slide. People who picked the same frame share its outline.
-  const remote = places.map((place) => ({ place, o: engine.remoteOverlay(place.at) }))
-  const peerBoxes = together(remote.flatMap(({ place, o }) => o.boxes.map((b) => ({ place, key: [b.id, b.x, b.y, b.w, b.h, b.rot].join(), item: b }))))
+  const slideRev = engine.slides[st.active]?.revision ?? 0
+  const remote = useMemo(
+    () => places.map((place) => ({ place, o: engine.remoteOverlay(place.at) })),
+    [engine, places, st.active, slideRev],
+  )
+  const peerBoxes = useMemo(
+    () => together(remote.flatMap(({ place, o }) => o.boxes.map((b) => ({ place, key: [b.id, b.x, b.y, b.w, b.h, b.rot].join(), item: b })))),
+    [remote],
+  )
   // Someone typing in a frame is named at their caret, not on the frame too.
-  const typing = new Set(remote.filter(({ o }) => o.text?.caret).map(({ place }) => place.peer.client))
-  const peerCarets = together(
-    remote.flatMap(({ place, o: { text: t } }) => (t?.caret ? [{ place, key: [t.frame, t.x, t.y, t.rot, ...t.caret].join(), item: { t, caret: t.caret } }] : [])),
+  const typing = useMemo(() => new Set(remote.filter(({ o }) => o.text?.caret).map(({ place }) => place.peer.client)), [remote])
+  const peerCarets = useMemo(
+    () =>
+      together(
+        remote.flatMap(({ place, o: { text: t } }) => (t?.caret ? [{ place, key: [t.frame, t.x, t.y, t.rot, ...t.caret].join(), item: { t, caret: t.caret } }] : [])),
+      ),
+    [remote],
   )
 
   // The input sits at the caret, so an input method's window opens there.

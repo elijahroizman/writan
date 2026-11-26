@@ -1,5 +1,5 @@
 import { ArrowRightLeft, Check, CircleAlert, ClipboardCopy, Columns2, Copy, FileStack, FolderOpen, History, LayoutGrid, Plus, Save, SaveOff, Users, X } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useRef, useState } from 'react'
 import { autosaveBlock, useAutosaveStatus } from '../lib/autosave'
 import { isMac, isTauri, revealInFinder, revealLabel, shortcut, tildify } from '../lib/platform'
 import { enabledKinds, usePlugins } from '../state/plugins'
@@ -9,13 +9,76 @@ import { HOME_TAB_ID, SPLIT_KINDS, useWorkspace } from '../state/workspace'
 import type { DocKind } from '../lib/kinds'
 import { pickSplit } from '../App'
 import { keeperOf, useCollab } from '../collab/session'
-import { canExportMarkdown, canIncludeInPdfBundle, copyTabAsMarkdown, targetsForKind } from '../lib/convert'
-import { useConvertDialog } from './ConvertDialog'
+import { canExportMarkdown, canIncludeInPdfBundle, targetsForKind } from '../lib/convertMeta'
+import { showSharePanel, showVersionHistory, useConvertDialog } from '../state/modals'
 import { ChatButton } from './AgentChat'
-import { canShare, ShareButton, showSharePanel } from './Share'
+import { canShare, ShareButton } from './ShareButton'
 import { UpdateButton } from './UpdateButton'
-import { showVersionHistory } from './VersionHistory'
 import { IconButton, KindIcon, PopoverMenu } from './ui'
+
+interface TabItemProps {
+  id: string
+  title: string
+  kind: DocKind
+  path?: string
+  dirty: boolean
+  active: boolean
+  beside: boolean
+  dragDx: number | undefined
+  setRef(id: string, el: HTMLDivElement | null): void
+  onStartDrag(e: React.PointerEvent, id: string): void
+  onContext(id: string, x: number, y: number): void
+}
+
+const TabItem = memo(function TabItem({ id, title, kind, path, dirty, active, beside, dragDx, setRef, onStartDrag, onContext }: TabItemProps) {
+  const sharedTab = useCollab((s) => s[id])
+  // Someone else's shared document has nothing unsaved here: they have the changes.
+  const isDirty = dirty && keeperOf(id) === null
+  const dragging = dragDx !== undefined
+  const isShared = (sharedTab?.status === 'live' || sharedTab?.status === 'connecting') && !sharedTab.private
+  return (
+    <div
+      ref={(el) => setRef(id, el)}
+      role="tab"
+      aria-selected={active}
+      className={`tab ${active ? 'active' : ''} ${beside ? 'beside' : ''} ${isDirty ? 'dirty' : ''} ${dragging ? 'dragging' : ''}`}
+      title={path ?? title}
+      style={dragging ? { transform: `translateX(${dragDx}px)` } : undefined}
+      onPointerDown={(e) => onStartDrag(e, id)}
+      onAuxClick={(e) => {
+        if (e.button === 1) void useWorkspace.getState().closeTab(id)
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault()
+        useWorkspace.getState().activate(id)
+        onContext(id, e.clientX, e.clientY)
+      }}
+    >
+      <span className="tab-icon">
+        <KindIcon kind={kind} size={15} />
+      </span>
+      <span className="tab-title">{title}</span>
+      {isShared && (
+        <span className="tab-shared" title={sharedTab.role === 'host' ? 'Shared on your network' : 'A shared document'}>
+          <Users size={12} />
+        </span>
+      )}
+      <button
+        type="button"
+        className="tab-close"
+        aria-label={isDirty ? `Close ${title} (unsaved changes)` : `Close ${title}`}
+        title={shortcut(withKeys(isDirty ? 'Unsaved changes — close' : 'Close', 'close-tab'))}
+        onClick={(e) => {
+          e.stopPropagation()
+          void useWorkspace.getState().closeTab(id)
+        }}
+      >
+        <span className="dirty-dot" style={isDirty ? undefined : { display: 'none' }} />
+        <X size={13} className="x" />
+      </button>
+    </div>
+  )
+})
 
 export function TitleBar() {
   const tabs = useWorkspace((s) => s.tabs)
@@ -29,7 +92,12 @@ export function TitleBar() {
   const [drag, setDrag] = useState<{ id: string; dx: number } | null>(null)
   const tabRefs = useRef(new Map<string, HTMLDivElement>())
   const scrollRef = useRef<HTMLDivElement>(null)
-  const shared = useCollab((s) => s)
+
+  const setTabRef = useCallback((id: string, el: HTMLDivElement | null) => {
+    if (el) tabRefs.current.set(id, el)
+    else tabRefs.current.delete(id)
+  }, [])
+  const openTabContext = useCallback((id: string, x: number, y: number) => setTabMenu({ x, y, id }), [])
 
   // Traffic lights disappear in full screen, so reclaim their space.
   useEffect(() => {
@@ -55,7 +123,7 @@ export function TitleBar() {
   }, [activeId, tabs.length])
 
   /** Pointer-driven reordering (HTML5 drag-and-drop is owned by the native file drop handler). */
-  const startDrag = (e: React.PointerEvent, id: string) => {
+  const startDrag = useCallback((e: React.PointerEvent, id: string) => {
     if (e.button !== 0 || (e.target as HTMLElement).closest('.tab-close')) return
     // Activating the tab can scroll it into view, and the strip can scroll mid-drag; the tab moves with it.
     const scroll0 = scrollRef.current?.scrollLeft ?? 0
@@ -92,7 +160,7 @@ export function TitleBar() {
     el.addEventListener('pointermove', onMove)
     el.addEventListener('pointerup', onUp)
     el.addEventListener('pointercancel', onUp)
-  }
+  }, [activate, moveTab])
 
   return (
     <header className={`titlebar ${isMac && isTauri ? 'mac' : ''} ${fullscreen ? 'fullscreen' : ''}`} data-tauri-drag-region>
@@ -121,54 +189,21 @@ export function TitleBar() {
           {tabs.map((tab) => {
             const active = tab.id === activeId
             const beside = !active && !!split?.includes(tab.id)
-            const dragging = drag?.id === tab.id
-            // Someone else's shared document has nothing unsaved here: they have the changes.
-            const dirty = tab.dirty && !keeperOf(tab.id)
             return (
-              <div
+              <TabItem
                 key={tab.id}
-                ref={(el) => {
-                  if (el) tabRefs.current.set(tab.id, el)
-                  else tabRefs.current.delete(tab.id)
-                }}
-                role="tab"
-                aria-selected={active}
-                className={`tab ${active ? 'active' : ''} ${beside ? 'beside' : ''} ${dirty ? 'dirty' : ''} ${dragging ? 'dragging' : ''}`}
-                title={tab.path ?? tab.title}
-                style={dragging ? { transform: `translateX(${drag.dx}px)` } : undefined}
-                onPointerDown={(e) => startDrag(e, tab.id)}
-                onAuxClick={(e) => {
-                  if (e.button === 1) void closeTab(tab.id)
-                }}
-                onContextMenu={(e) => {
-                  e.preventDefault()
-                  activate(tab.id)
-                  setTabMenu({ x: e.clientX, y: e.clientY, id: tab.id })
-                }}
-              >
-                <span className="tab-icon">
-                  <KindIcon kind={tab.kind} size={15} />
-                </span>
-                <span className="tab-title">{tab.title}</span>
-                {(shared[tab.id]?.status === 'live' || shared[tab.id]?.status === 'connecting') && !shared[tab.id].private && (
-                  <span className="tab-shared" title={shared[tab.id].role === 'host' ? 'Shared on your network' : 'A shared document'}>
-                    <Users size={12} />
-                  </span>
-                )}
-                <button
-                  type="button"
-                  className="tab-close"
-                  aria-label={dirty ? `Close ${tab.title} (unsaved changes)` : `Close ${tab.title}`}
-                  title={shortcut(withKeys(dirty ? 'Unsaved changes — close' : 'Close', 'close-tab'))}
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    void closeTab(tab.id)
-                  }}
-                >
-                  <span className="dirty-dot" style={dirty ? undefined : { display: 'none' }} />
-                  <X size={13} className="x" />
-                </button>
-              </div>
+                id={tab.id}
+                title={tab.title}
+                kind={tab.kind}
+                path={tab.path ?? undefined}
+                dirty={tab.dirty}
+                active={active}
+                beside={beside}
+                dragDx={drag?.id === tab.id ? drag.dx : undefined}
+                setRef={setTabRef}
+                onStartDrag={startDrag}
+                onContext={openTabContext}
+              />
             )
           })}
         </div>
@@ -201,7 +236,15 @@ export function TitleBar() {
               : SPLIT_KINDS.has(tabs.find((t) => t.id === tabMenu.id)?.kind as DocKind)
                 ? [{ label: 'Open to the side…', icon: <Columns2 size={14} />, onSelect: () => void openBeside(tabMenu.id) }]
                 : []),
-            ...(canShare(tabMenu.id) ? [{ label: shared[tabMenu.id] && !shared[tabMenu.id].private ? 'Sharing…' : isTauri ? 'Share…' : 'Share on your network…', icon: <Users size={14} />, onSelect: () => showSharePanel(tabMenu.id) }] : []),
+            ...(canShare(tabMenu.id)
+              ? [
+                  {
+                    label: useCollab.getState()[tabMenu.id] && !useCollab.getState()[tabMenu.id].private ? 'Sharing…' : isTauri ? 'Share…' : 'Share on your network…',
+                    icon: <Users size={14} />,
+                    onSelect: () => showSharePanel(tabMenu.id),
+                  },
+                ]
+              : []),
             ...(() => {
               const t = tabs.find((x) => x.id === tabMenu.id)
               if (!t) return []
@@ -218,7 +261,7 @@ export function TitleBar() {
                 out.push({
                   label: 'Copy as Markdown (LLM)',
                   icon: <ClipboardCopy size={14} />,
-                  onSelect: () => void copyTabAsMarkdown(t.id),
+                  onSelect: () => void import('../lib/convert').then((m) => m.copyTabAsMarkdown(t.id)),
                 })
               }
               if (tabs.some((x) => canIncludeInPdfBundle(x.kind))) {
@@ -281,13 +324,17 @@ async function openBeside(id: string) {
 
 /** Where the active tab autosaves to, and how the last autosave went; clickable when saving enables autosave. */
 function AutosaveChip() {
-  const tabs = useWorkspace((s) => s.tabs)
   const activeId = useWorkspace((s) => s.activeId)
+  const tab = useWorkspace((s) => s.tabs.find((t) => t.id === s.activeId))
+  const duplicateTab = useWorkspace((s) => {
+    const cur = s.tabs.find((t) => t.id === s.activeId)
+    return cur?.path ? s.tabs.some((t) => t.id !== cur.id && t.path === cur.path) : false
+  })
   const autosave = useSettings((s) => s.autosave)
   const status = useAutosaveStatus((s) => s[activeId])
-  const tab = tabs.find((t) => t.id === activeId)
   // Following someone else's shared document: the file is theirs.
   const keeper = useCollab(() => keeperOf(activeId))
+  void duplicateTab
   if (!tab) return null
   if (keeper !== null) {
     return (

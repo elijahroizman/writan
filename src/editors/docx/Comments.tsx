@@ -6,7 +6,7 @@ import { withKeys } from '../../state/shortcuts'
 import type { Anchor, Note, Thread } from './commentXml'
 import { initialsOf, nearest, newParaId, readComments, writeComments } from './commentXml'
 
-type Paragraphs = readonly { paraId?: string; text: string }[]
+type Paragraphs = readonly { paraId?: string; blockId?: string; text: string }[]
 
 const NAME_KEY = 'workspace.authorName'
 export const authorName = () => localStorage.getItem(NAME_KEY) ?? ''
@@ -99,8 +99,12 @@ export class CommentStore {
     this.touched = false
     this.loading = (async () => {
       if (!original || !editor.hasComments()) return
-      // Read them from the engine's own save, whose paragraph ids are the ones it uses.
-      const loaded = await readComments(new Uint8Array(await editor.save()))
+      // Read from original when paragraph ids already exist; fall back to the engine's save so
+      // older files without w14:paraId get matching synthetic ids.
+      const paragraphs = editor.query({ type: 'paragraphs' })
+      const missingIds = paragraphs.some((p) => !p.paraId || p.paraId.startsWith('#'))
+      const bytes = missingIds ? new Uint8Array(await editor.save()) : original
+      const loaded = await readComments(bytes)
       // Keep anything posted while the file's comments were still being read.
       this.threads = [...loaded, ...this.threads].sort((a, b) => a.anchor.index - b.anchor.index || a.anchor.start - b.anchor.start)
       this.relocate(editor)
@@ -128,7 +132,7 @@ export class CommentStore {
       const next = locate(this.draft, paragraphs, indexOf)
       this.draft = next?.found ? { paraId: next.paraId, index: next.index, start: next.start, text: next.text } : null
     }
-    this.paint(editor)
+    this.paint(editor, paragraphs)
     this.emit()
   }
 
@@ -142,14 +146,24 @@ export class CommentStore {
     }
   }
 
-  paint(editor: Editor) {
+  paint(editor: Editor, cachedParagraphs?: Paragraphs) {
     const ranges: HighlightRange[] = []
     this.ids = []
+    let paragraphs = cachedParagraphs
     const add = (id: string, a: Anchor) => {
-      const m = this.matchFor(editor, a)
-      if (!m) return
+      if (!a.text.trim()) return
+      if (!paragraphs) {
+        try {
+          paragraphs = editor.query({ type: 'paragraphs' })
+        } catch {
+          paragraphs = []
+        }
+      }
+      const p = paragraphs[a.index]
+      const blockId = p?.blockId ?? this.matchFor(editor, a)?.blockId
+      if (!blockId) return
       this.ids.push(id)
-      ranges.push({ blockId: m.blockId, start: a.start, length: a.text.length, expectedText: a.text })
+      ranges.push({ blockId, start: a.start, length: a.text.length, expectedText: a.text })
     }
     for (const t of this.threads) if (!t.resolved && !this.lost.has(t.id)) add(t.id, t.anchor)
     if (this.draft) add('draft', this.draft)

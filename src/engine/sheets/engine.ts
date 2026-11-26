@@ -180,6 +180,7 @@ export class SheetsEngine {
   /** Only selecting cells and sheets works: every command that would change the workbook is ignored. */
   readOnly = false
   revision = 0
+  gridRevision = 0
   tick = 0
   private geometry = new Map<number, { revision: number; g: Geometry }>()
   private chartCache = new Map<number, { revision: number; charts: ChartView[] }>()
@@ -207,8 +208,7 @@ export class SheetsEngine {
     const engine = await loadEngine()
     if (!/\.(csv|tsv)$/i.test(name) || bytes?.length) expectKind(bytes, 'sheets')
     await preloadFonts(BASE_FONTS)
-    const doc = new engine.SheetsDoc(bytes ?? new Uint8Array(), name, host)
-    doc.setNow(serialNow())
+    const doc = new engine.SheetsDoc(bytes ?? new Uint8Array(), name, host, serialNow())
     const e = new SheetsEngine(doc)
     e.refresh()
     if (e.sheets[e.state.sheet]?.hidden) {
@@ -240,6 +240,7 @@ export class SheetsEngine {
     this.sheets = JSON.parse(this.doc.sheets())
     this.state = JSON.parse(this.doc.state())
     this.revision = this.doc.revision()
+    this.gridRevision = this.doc.gridRevision()
     const [r, c] = this.state.focus
     this.cell = JSON.parse(this.doc.cell(this.state.sheet, r, c))
     this.tick++
@@ -249,9 +250,9 @@ export class SheetsEngine {
 
   geometryOf(sheet: number): Geometry {
     const hit = this.geometry.get(sheet)
-    if (hit && hit.revision === this.revision) return hit.g
+    if (hit && hit.revision === this.gridRevision) return hit.g
     const g = new Geometry(JSON.parse(this.doc.grid(sheet)))
-    this.geometry.set(sheet, { revision: this.revision, g })
+    this.geometry.set(sheet, { revision: this.gridRevision, g })
     return g
   }
 

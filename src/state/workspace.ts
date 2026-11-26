@@ -22,8 +22,10 @@ export interface DocTab {
   title: string
   /** Where the file lives on disk; null until an untitled document is saved. */
   path: string | null
-  /** Bytes to load into the editor; null means “start a blank document”. */
+  /** Bytes to load into the editor; null means “start a blank document” unless `deferred` is set. */
   bytes: Uint8Array | null
+  /** A restored file whose bytes have not been read yet; they load the first time the tab is shown. */
+  deferred?: boolean
   /** Bumped to make the editor reload `bytes` (revert, external reload). */
   loadId: number
   dirty: boolean
@@ -80,7 +82,56 @@ export const getEditor = (tabId: string) => handles.get(tabId)
  * agent to work in (App.tsx `EditorSlot`). */
 export const useWoken = create<Record<string, true>>(() => ({}))
 export function wakeTab(tabId: string) {
+  void ensureTabLoaded(tabId)
   if (!useWoken.getState()[tabId]) useWoken.setState({ [tabId]: true })
+}
+
+const pendingDeferredLoads = new Map<string, Promise<void>>()
+
+/**
+ * Reads a restored tab's file the first time anyone shows it. Inactive restored tabs therefore
+ * cost no disk read, memory or digest at launch. Deduplicated per tab. A file that went missing
+ * is dropped when reached, as a missing file is left out while restoring.
+ */
+export function ensureTabLoaded(tabId: string): Promise<void> {
+  const inflight = pendingDeferredLoads.get(tabId)
+  if (inflight) return inflight
+  const initial = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+  if (!initial?.deferred || !initial.path || initial.dirty || initial.recovered) return Promise.resolve()
+  const { path, title } = initial
+  const job = (async () => {
+    try {
+      const bytes = await platform.readFile(path)
+      const now = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+      // Recovery may have supplied newer unsaved bytes while this read was in flight.
+      if (!now?.deferred || now.path !== path || now.dirty || now.recovered) return
+      await remember(tabId, bytes, false)
+      useWorkspace.setState((state) => ({
+        tabs: state.tabs.map((t) => (t.id === tabId && t.deferred && !t.dirty && !t.recovered ? { ...t, bytes, deferred: false } : t)),
+      }))
+    } catch (err) {
+      // This read can lose a race with crash recovery, which already replaced the shell with the
+      // newer unsaved document: a stale disk failure must not delete that tab.
+      // Checked again after every await: recovery can adopt the tab at any of them.
+      const stillShell = () => {
+        const t = useWorkspace.getState().tabs.find((t) => t.id === tabId)
+        return !!t?.deferred && !t.recovered && !t.dirty
+      }
+      if (!stillShell()) return
+      const missing = !(await platform.pathExists(path).catch(() => false))
+      if (!stillShell()) return
+      if (missing) useWorkspace.getState().removeRecent(path)
+      disk.delete(tabId)
+      useWorkspace.setState((s) => ({
+        tabs: s.tabs.filter((t) => t.id !== tabId),
+        activeId: s.activeId === tabId ? HOME_TAB_ID : s.activeId,
+        split: s.split?.includes(tabId) ? null : s.split,
+      }))
+      await platform.showError(`“${title}” couldn't be opened.\n\n${String(err)}`)
+    }
+  })().finally(() => pendingDeferredLoads.delete(tabId))
+  pendingDeferredLoads.set(tabId, job)
+  return job
 }
 
 /** Counts edits per tab, so a save can tell whether the document changed while it was writing. */
@@ -98,8 +149,22 @@ async function digest(bytes: Uint8Array) {
   return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('')
 }
 
+function rememberDigest(tabId: string, d: string) {
+  disk.set(tabId, { digest: d })
+}
+
 async function remember(tabId: string, bytes: Uint8Array, written: boolean) {
-  disk.set(tabId, written ? { digest: await digest(bytes) } : { bytes })
+  if (written) {
+    disk.set(tabId, { digest: await digest(bytes) })
+    return
+  }
+  const entry: DiskState = { bytes }
+  disk.set(tabId, entry)
+  // Convert idle disk byte buffers into SHA-256 digests off-critical-path so the heap doesn't
+  // retain a second copy of every opened/restored file alongside `tab.bytes` and WASM memory.
+  void digest(bytes).then((d) => {
+    if (disk.get(tabId) === entry) disk.set(tabId, { digest: d })
+  })
 }
 
 async function unchangedOnDisk(tabId: string, path: string): Promise<boolean> {
@@ -195,7 +260,10 @@ export const recoveryHooks = {
 export async function diskDigest(tabId: string): Promise<string | null> {
   const known = disk.get(tabId)
   if (!known) return null
-  return 'digest' in known ? known.digest : digest(known.bytes)
+  if ('digest' in known) return known.digest
+  const d = await digest(known.bytes)
+  if (disk.get(tabId) === known) disk.set(tabId, { digest: d })
+  return d
 }
 
 type Theme = 'dark' | 'light'
@@ -230,7 +298,7 @@ interface WorkspaceState {
   activateOffset(delta: number): void
   activateIndex(index: number): void
   moveTab(id: string, toIndex: number): void
-  openPaths(paths: string[]): Promise<void>
+  openPaths(paths: string[], opts?: { lazyExcept?: string | null }): Promise<void>
   openFiles(files: platform.OpenedFile[]): void
   openDialog(): Promise<void>
   /**
@@ -340,22 +408,34 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     return get().tabs.find((t) => t.id === tabId)
   }
 
-  const addRecent = (path: string, kind: DocKind) => {
-    if (path.startsWith('browser:')) return
-    const recents = [{ path, kind, openedAt: Date.now() }, ...get().recents.filter((r) => r.path !== path)].slice(0, 30)
+  const addRecents = (items: { path: string; kind: DocKind }[]) => {
+    const valid = items.filter((item) => !item.path.startsWith('browser:'))
+    if (!valid.length) return
+    let recents = get().recents
+    const now = Date.now()
+    for (const item of valid) {
+      recents = [{ path: item.path, kind: item.kind, openedAt: now }, ...recents.filter((r) => r.path !== item.path)]
+    }
+    recents = recents.slice(0, 30)
     set({ recents })
     localStorage.setItem(STORAGE.recents, JSON.stringify(recents))
   }
 
-  const addTab = (tab: DocTab) => {
+  const addRecent = (path: string, kind: DocKind) => addRecents([{ path, kind }])
+
+  const addTabs = (newTabs: DocTab[], activateLast = true) => {
+    if (!newTabs.length) return
     const { tabs, activeId } = get()
     // Open next to the current tab, like a browser.
     const at = tabs.findIndex((t) => t.id === activeId)
     const next = [...tabs]
-    next.splice(at === -1 ? tabs.length : at + 1, 0, tab)
+    next.splice(at === -1 ? tabs.length : at + 1, 0, ...newTabs)
+    const lastId = newTabs[newTabs.length - 1].id
     set({ tabs: next })
-    get().activate(tab.id)
+    if (activateLast) get().activate(lastId)
   }
+
+  const addTab = (tab: DocTab) => addTabs([tab])
 
   /** In split view, show or hide one pane's panel. False when not split, for the normal toggle. */
   const toggleSplitPanel = (side: 'left' | 'right', tabId = get().activeId) => {
@@ -382,6 +462,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
 
     activate: (id) => {
       const { split, activeId, tabs } = get()
+      if (tabs.find((t) => t.id === id)?.deferred) void ensureTabLoaded(id)
       // In split view another Word or PDF tab takes the focused pane's place; anything else leaves split view.
       if (split && !split.includes(id)) {
         const kind = tabs.find((t) => t.id === id)?.kind
@@ -404,7 +485,11 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         await get().duplicateTab(activeId)
         other = get().activeId
         set({ activeId })
-      } else if (!tabs.some((t) => t.id === other)) return
+      } else {
+        const otherTab = tabs.find((t) => t.id === other)
+        if (!otherTab) return
+        if (otherTab.deferred) void ensureTabLoaded(other)
+      }
       set({ split: [activeId, other], activeId: other, splitPanels: {} })
     },
 
@@ -432,7 +517,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       set({ tabs })
     },
 
-    openPaths: async (paths) => {
+    openPaths: async (paths, opts) => {
       const failures: string[] = []
       const toRead: { path: string; kind: DocKind }[] = []
       const needPlugin: string[] = []
@@ -459,15 +544,20 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         if (toRead.some((t) => t.path === path)) continue
         toRead.push({ path, kind })
       }
-      // Files are read at the same time rather than one after another: a restored session with
-      // several tabs waits for the slowest read, not the sum of them. Tabs keep the given order.
+      const deferInactive = opts?.lazyExcept !== undefined
+      // Files are read at the same time rather than one after another: a restored session reads
+      // only its active tab upfront and defers inactive ones until they are shown.
       const read = await Promise.all(
         toRead.map(async ({ path, kind }): Promise<DocTab | null> => {
+          const title = stripExtension(platform.basename(path))
+          if (deferInactive && path !== opts.lazyExcept) {
+            return { id: newId(), kind, title, path, bytes: null, deferred: true, loadId: 0, dirty: false }
+          }
           try {
             const bytes = await platform.readFile(path)
             const id = newId()
             await remember(id, bytes, false)
-            return { id, kind, title: stripExtension(platform.basename(path)), path, bytes, loadId: 0, dirty: false }
+            return { id, kind, title, path, bytes, loadId: 0, dirty: false }
           } catch (err) {
             failures.push(String(err))
             if (!(await platform.pathExists(path))) get().removeRecent(path)
@@ -476,23 +566,31 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         }),
       )
       const opened = read.filter((t): t is DocTab => t !== null)
-      // Add them in one go, so only the last one is shown. The others load when first opened
-      // (see EditorSlot), which keeps a restored session from loading every document at launch.
+      // Batch into one store update so multi-tab open and session restore don't trigger N renders.
+      const toAdd: DocTab[] = []
+      const recentsToAdd: { path: string; kind: DocKind }[] = []
+      let existingToActivate: string | null = null
+      const seenPaths = new Set(get().tabs.map((t) => t.path).filter((p): p is string => !!p))
       for (const tab of opened) {
-        // Another open of the same file may have finished while these were read.
-        const existing = get().tabs.find((t) => t.path === tab.path)
-        if (existing) {
+        if (seenPaths.has(tab.path!)) {
           disk.delete(tab.id)
-          get().activate(existing.id)
+          existingToActivate = get().tabs.find((t) => t.path === tab.path)?.id ?? existingToActivate
           continue
         }
-        addTab(tab)
-        addRecent(tab.path!, tab.kind)
+        seenPaths.add(tab.path!)
+        toAdd.push(tab)
+        recentsToAdd.push({ path: tab.path!, kind: tab.kind })
+      }
+      if (toAdd.length) {
+        addTabs(toAdd, !deferInactive)
+        addRecents(recentsToAdd)
+      } else if (existingToActivate) {
+        get().activate(existingToActivate)
       }
       if (failures.length) void platform.showError(failures.join('\n\n'))
       if (needPlugin.length) {
         const ready = await offerPlugins(needPlugin, platform.basename)
-        if (ready.length) await get().openPaths(ready)
+        if (ready.length) await get().openPaths(ready, opts)
       }
     },
 
@@ -504,16 +602,26 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       if (needPlugin.length) {
         void offerPlugins(needPlugin, (f) => f.name).then((ready) => ready.length && get().openFiles(ready))
       }
+      const toAdd: DocTab[] = []
+      const recentsToAdd: { path: string; kind: DocKind }[] = []
+      let existingToActivate: string | null = null
+      const seenPaths = new Set(get().tabs.map((t) => t.path).filter((p): p is string => !!p))
       for (const file of files) {
         const kind = kindFromPath(file.name)
         if (!kind || !kindEnabled(kind)) continue
-        const existing = get().tabs.find((t) => t.path === file.path)
-        if (existing) {
-          get().activate(existing.id)
+        if (seenPaths.has(file.path)) {
+          existingToActivate = get().tabs.find((t) => t.path === file.path)?.id ?? existingToActivate
           continue
         }
-        addTab({ id: newId(), kind, title: stripExtension(file.name), path: file.path, bytes: file.bytes, loadId: 0, dirty: false })
-        addRecent(file.path, kind)
+        seenPaths.add(file.path)
+        toAdd.push({ id: newId(), kind, title: stripExtension(file.name), path: file.path, bytes: file.bytes, loadId: 0, dirty: false })
+        recentsToAdd.push({ path: file.path, kind })
+      }
+      if (toAdd.length) {
+        addTabs(toAdd)
+        addRecents(recentsToAdd)
+      } else if (existingToActivate) {
+        get().activate(existingToActivate)
       }
     },
 
@@ -618,22 +726,39 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
             const editsBefore = edits.get(tab.id) ?? 0
             const revisionBefore = editor.getRevision?.()
             const bytes = await editor.getBytes()
-            // Another app, or another tab on this file, changed it since: ask before writing over that.
-            if (savePath === tab.path && !(await unchangedOnDisk(tab.id, savePath))) {
+            const confirmConflict = async () => {
               if (opts?.quiet) throw new Error(`“${tab.title}” was changed in another app or tab. Save it yourself to choose which to keep.`)
-              const ok = await platform.confirmDialog('It was changed in another app or another tab since you opened it here. Saving replaces those changes with this version.', {
+              return await platform.confirmDialog('It was changed in another app or another tab since you opened it here. Saving replaces those changes with this version.', {
                 title: `“${tab.title}” changed on disk`,
                 okLabel: 'Save Anyway',
                 danger: true,
               })
-              if (!ok) return false
             }
-            if (normalizedPpt && savePath !== tab.path && (await platform.pathExists(savePath))) {
-              const ok = await platform.confirmDialog(`“${platform.basename(savePath)}” already exists. Saving replaces it.`, { title: 'Replace file?', okLabel: 'Replace', danger: true })
-              if (!ok) return false
+            const history = useSettings.getState().history
+            let writtenDigest: string | undefined
+            if (platform.isTauri && savePath === tab.path && disk.has(tab.id) && (await platform.supportsCasWrite())) {
+              const known = disk.get(tab.id)!
+              const expectedSha256 = 'digest' in known ? known.digest : await digest(known.bytes)
+              try {
+                writtenDigest = await platform.writeFile(savePath, bytes, { history, label: opts?.label, expectedSha256 })
+              } catch (err) {
+                if (!String(err).includes('__WRITAN_CONFLICT__')) throw err
+                if (!(await confirmConflict())) return false
+                writtenDigest = await platform.writeFile(savePath, bytes, { history, label: opts?.label })
+              }
+            } else {
+              // Another app, or another tab on this file, changed it since: ask before writing over that.
+              if (savePath === tab.path && !(await unchangedOnDisk(tab.id, savePath))) {
+                if (!(await confirmConflict())) return false
+              }
+              if (normalizedPpt && savePath !== tab.path && (await platform.pathExists(savePath))) {
+                const ok = await platform.confirmDialog(`“${platform.basename(savePath)}” already exists. Saving replaces it.`, { title: 'Replace file?', okLabel: 'Replace', danger: true })
+                if (!ok) return false
+              }
+              writtenDigest = await platform.writeFile(savePath, bytes, { history, label: opts?.label })
             }
-            await platform.writeFile(savePath, bytes, { history: useSettings.getState().history, label: opts?.label })
-            await remember(tab.id, bytes, true)
+            if (typeof writtenDigest === 'string' && writtenDigest.length === 64) rememberDigest(tab.id, writtenDigest)
+            else await remember(tab.id, bytes, true)
             const title = stripExtension(platform.basename(savePath))
             const dirty = (edits.get(tab.id) ?? 0) !== editsBefore || editor.getRevision?.() !== revisionBefore || getEditor(tab.id) !== editor
             if (!dirty) editor.markSaved?.()
@@ -727,6 +852,12 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       const closedPaths = path ? [...get().closedPaths, path].slice(-20) : get().closedPaths
       edits.delete(tabId)
       disk.delete(tabId)
+      useWoken.setState((s) => {
+        if (!(tabId in s)) return s
+        const next = { ...s }
+        delete next[tabId]
+        return next
+      })
       set({ tabs: remaining, activeId: nextActive, closedPaths })
       return true
     },
@@ -751,7 +882,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         // A copy read fresh starts from what's on disk now; one with unsaved edits, from what the original last read.
         if (!fromEditor && bytes) await remember(id, bytes, false)
         else if (disk.has(tab.id)) disk.set(id, disk.get(tab.id)!)
-        addTab({ ...tab, id, title: tab.path ? `${base} (${copies + 1})` : `${base} copy`, bytes, loadId: 0, dirty: tab.dirty })
+        addTab({ ...tab, id, title: tab.path ? `${base} (${copies + 1})` : `${base} copy`, bytes, deferred: false, loadId: 0, dirty: tab.dirty })
       } catch (err) {
         await platform.showError(String(err))
       }
@@ -874,13 +1005,17 @@ export function pruneRecents() {
   useFolder.getState().pruneRecent(before)
 }
 
+let lastPersistedSession: string | null = null
 /** Remember which files were open so the next launch picks up where you left off. */
 export function persistSession() {
   if (!sessionRestored) return
   const { tabs, activeId } = useWorkspace.getState()
   const paths = tabs.filter((t) => t.path && !t.path.startsWith('browser:')).map((t) => t.path as string)
   const active = tabs.find((t) => t.id === activeId)?.path ?? null
-  localStorage.setItem(STORAGE.session, JSON.stringify({ paths, active, activeTab: activeId } satisfies Session))
+  const serialized = JSON.stringify({ paths, active, activeTab: activeId } satisfies Session)
+  if (serialized === lastPersistedSession) return
+  lastPersistedSession = serialized
+  localStorage.setItem(STORAGE.session, serialized)
 }
 
 export async function restoreSession() {
@@ -903,9 +1038,9 @@ async function reopen(session: Session) {
   const found = await Promise.all(known.map((path) => platform.pathExists(path)))
   const existing = known.filter((_, i) => found[i])
   const { openPaths } = useWorkspace.getState()
-  // Open in order without moving focus around, then focus the tab that was active.
+  // Open in order without moving focus around, reading only the active tab upfront.
   useWorkspace.setState({ activeId: HOME_TAB_ID })
-  await openPaths(existing)
+  await openPaths(existing, { lazyExcept: session.active ?? null })
   const state = useWorkspace.getState()
   const active = state.tabs.find((t) => t.path === session.active)
   useWorkspace.setState({ activeId: active?.id ?? HOME_TAB_ID })
@@ -929,7 +1064,7 @@ async function recover(session: Session) {
     const open = doc.path ? tabs.find((t) => t.path === doc.path && t.kind === doc.kind && !taken.has(t.id)) : undefined
     let tab: DocTab
     if (open) {
-      tab = { ...open, bytes: doc.bytes, loadId: open.loadId + 1, dirty: true, recovered: true }
+      tab = { ...open, bytes: doc.bytes, deferred: false, loadId: open.loadId + 1, dirty: true, recovered: true }
       tabs[tabs.indexOf(open)] = tab
     } else {
       const onDisk = !!doc.path && !doc.path.startsWith('browser:') && kindFromPath(doc.path) === doc.kind && (await platform.pathExists(doc.path).catch(() => false))

@@ -201,7 +201,9 @@ export function Inspector({
           aria-expanded={!!themeMenu}
           disabled={shared}
           title={shared ? 'Themes can’t be changed while sharing' : undefined}
+          onMouseEnter={() => engine.preloadThemes()}
           onClick={(e) => {
+            engine.preloadThemes()
             const r = e.currentTarget.getBoundingClientRect()
             setThemeMenu({ x: r.right, y: r.bottom + 4, opener: e.currentTarget })
           }}
@@ -214,8 +216,9 @@ export function Inspector({
             opener={themeMenu.opener}
             items={engine.themes.map((name) => ({ label: name, onSelect: () => {
               try {
-                engine.run({ cmd: 'applyTheme', name })
-                setThemeError(false)
+                const res = engine.applyTheme(name)
+                if (res instanceof Promise) void res.then(() => setThemeError(false), () => setThemeError(true))
+                else setThemeError(false)
               } catch {
                 setThemeError(true)
               }
@@ -749,11 +752,20 @@ function TransitionSection({ deck, indexes }: { deck: Deck; indexes: readonly nu
   const type = indexes.every((i) => (slides[i]?.transition?.kind || 'none') === (current?.kind || 'none')) ? (current?.kind || 'none') : null
   const option = TRANSITIONS.find((t) => t.value === type)
   const set = (change: (t: Transition | undefined) => Transition | undefined, targets: readonly number[] = indexes) => {
-    engine.run({ cmd: 'beginGroup' })
-    try {
-      for (const index of targets) engine.run({ cmd: 'transition', indexes: [index], transition: change(slides[index]?.transition) ?? null })
-    } finally {
-      engine.run({ cmd: 'endGroup' })
+    const firstNext = change(slides[targets[0]]?.transition) ?? null
+    const uniform = targets.every((i) => {
+      const next = change(slides[i]?.transition) ?? null
+      return JSON.stringify(next) === JSON.stringify(firstNext)
+    })
+    if (uniform) {
+      engine.run({ cmd: 'transition', indexes: [...targets], transition: firstNext })
+    } else {
+      engine.run({ cmd: 'beginGroup' })
+      try {
+        for (const index of targets) engine.run({ cmd: 'transition', indexes: [index], transition: change(slides[index]?.transition) ?? null })
+      } finally {
+        engine.run({ cmd: 'endGroup' })
+      }
     }
     setRun((r) => r + 1)
   }

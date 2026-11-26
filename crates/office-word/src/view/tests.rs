@@ -214,6 +214,21 @@ fn many_paragraphs_make_pages() {
 }
 
 #[test]
+fn progressive_prefix_expands_to_the_same_document() {
+    let mut host = FixedMeasurer::default();
+    let lines: Vec<String> = (0..200).map(|i| format!("Paragraph number {i}")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut v = WordView::open(&doc_bytes(&refs)).unwrap();
+    v.layout_prefix(&mut host, 100);
+    let prefix_pages = v.page_count();
+    assert!(prefix_pages > 0);
+    let first = format!("{:?}", v.paint(&mut host, 0).items);
+    v.layout_full(&mut host);
+    assert!(v.page_count() > prefix_pages, "prefix {prefix_pages}, full {}", v.page_count());
+    assert_eq!(first, format!("{:?}", v.paint(&mut host, 0).items), "the first settled page is unchanged");
+}
+
+#[test]
 fn typing_enter_undo_and_save() {
     let mut host = FixedMeasurer::default();
     let mut v = WordView::open(&doc_bytes(&["Hello"])).unwrap();
@@ -1472,4 +1487,94 @@ fn double_click_math_image_beside_punctuation_keeps_math_tag() {
     assert!(v.click(&mut host, 0, x, y, false, 2));
     assert_eq!(v.selection().ordered(), (Pos::new(Path::top(0), 1), Pos::new(Path::top(0), 4)));
     assert_eq!(v.state().math_tag.as_deref(), Some(tag.as_str()));
+}
+
+#[test]
+fn a_header_growing_moves_the_body_down() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&["body"])).unwrap();
+    v.layout(&mut host);
+    assert!(v.edit_header_footer(0, crate::StoryKind::Header));
+    v.insert_text("Header");
+    v.exit_header_footer();
+    v.layout(&mut host);
+    let before = v.pages[0].body_y;
+    assert!(v.edit_header_footer(0, crate::StoryKind::Header));
+    for _ in 0..12 {
+        v.enter();
+        v.insert_text("more header");
+    }
+    v.exit_header_footer();
+    v.layout(&mut host);
+    assert!(v.pages[0].body_y > before, "body_y stayed at {before}");
+}
+
+#[test]
+fn stale_marks_inside_a_character_are_not_drawn() {
+    let mut host = FixedMeasurer::default();
+    let text = "start —zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let start = text.as_bytes().windows(3).position(|w| w == b"zzq").unwrap() as u32;
+    let end = start + "zzqmisspell".len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), start), Pos::new(Path::top(0), end))]);
+    assert!(!v.overlay(&mut host).marks.is_empty());
+
+    v.set_selection(Selection::caret(Pos::start()));
+    v.insert_text("x");
+    assert!(v.overlay(&mut host).marks.is_empty(), "the stale start now falls inside the shifted em dash");
+}
+
+#[test]
+fn formatting_leaves_text_marks_in_place() {
+    let mut host = FixedMeasurer::default();
+    let text = "start — zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let start = text.as_bytes().windows(3).position(|w| w == b"zzq").unwrap() as u32;
+    let end = start + "zzqmisspell".len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), start), Pos::new(Path::top(0), end))]);
+    v.set_selection(Selection { anchor: Pos::new(Path::top(0), start), focus: Pos::new(Path::top(0), end) });
+    v.toggle(Toggle::Bold);
+    assert!(!v.overlay(&mut host).marks.is_empty(), "formatting does not move the text a mark addresses");
+}
+
+#[test]
+fn marks_inside_a_character_are_dropped() {
+    let text = "start — zzqmisspell end";
+    let mut v = WordView::open(&doc_bytes(&[text])).unwrap();
+    let inside_dash = text.find('—').unwrap() as u32 + 1;
+    let end = text.len() as u32;
+    v.set_marks("spelling", vec![("0".into(), Pos::new(Path::top(0), inside_dash), Pos::new(Path::top(0), end))]);
+    assert!(v.overlay(&mut FixedMeasurer::default()).marks.is_empty());
+}
+
+#[test]
+fn a_list_item_added_in_the_middle_renumbers_the_ones_after_it() {
+    let mut host = FixedMeasurer::default();
+    let mut v = WordView::open(&doc_bytes(&["one"])).unwrap();
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 3)));
+    v.list(Some(crate::ListKind::Numbers));
+    for text in ["two", "three"] {
+        v.enter();
+        v.insert_text(text);
+    }
+    v.layout(&mut host);
+    v.paint(&mut host, 0);
+    // A new item after "one": "two" and "three" move down and must draw as 3. and 4.
+    v.set_selection(Selection::caret(Pos::new(Path::top(0), 3)));
+    v.enter();
+    v.insert_text("new");
+    v.layout(&mut host);
+    fn all(items: &[Item], out: &mut Vec<String>) {
+        for i in items {
+            match i {
+                Item::Text { text, .. } => out.push(text.clone()),
+                Item::Group { items, .. } => all(items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut drawn = Vec::new();
+    all(&v.paint(&mut host, 0).items, &mut drawn);
+    let labels: Vec<&str> = drawn.iter().map(String::as_str).filter(|t| t.ends_with('.') && t.len() <= 3).collect();
+    assert_eq!(labels, ["1.", "2.", "3.", "4."], "{drawn:?}");
 }

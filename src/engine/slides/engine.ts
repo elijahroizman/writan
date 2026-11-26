@@ -7,7 +7,8 @@ import type { PaintItem } from '../paint'
 import { itemsHtml, MediaCache, StyleSheet } from '../paint'
 import { BASE_FONTS } from '../preload'
 import { preloadFonts } from '../host'
-import { LATEX_MATH_PREFIX, renderLatexTagToSvgBytes } from '../../math/latexMath'
+import { LATEX_MATH_PREFIX } from '../../math/latexTag'
+import { renderLazyLatexTag } from '../../math/lazyLatex'
 import type { SlidesDoc } from '../wasm/office_wasm'
 
 export interface Transition {
@@ -132,6 +133,38 @@ export interface DeckState {
 }
 
 let sheets = 0
+const themeBytesCache = new Map<string, Uint8Array>()
+const themeLoads = new Map<string, Promise<Uint8Array>>()
+const MAX_DRAWN_SLIDES = 64
+// The built-in themes are files beside the engine, not inside it: the WASM stays 170 KB smaller
+// and a theme downloads only when someone picks it. One copy, in the crate its tests read.
+const THEME_URLS = import.meta.glob<string>('../../../crates/office-slides/assets/themes/*.pptx', { query: '?url', import: 'default', eager: true })
+
+function fetchThemeBytes(name: string): Promise<Uint8Array> {
+  const cached = themeBytesCache.get(name)
+  if (cached) return Promise.resolve(cached)
+  let pending = themeLoads.get(name)
+  if (!pending) {
+    const url = THEME_URLS[`../../../crates/office-slides/assets/themes/${name}.pptx`]
+    pending = (url ? fetch(url) : Promise.reject(new Error(`Unknown theme ${name}`)))
+      .then((res) => {
+        if (!res.ok) throw new Error(`Could not load theme ${name}`)
+        return res.arrayBuffer()
+      })
+      .then((buf) => {
+        const bytes = new Uint8Array(buf)
+        themeBytesCache.set(name, bytes)
+        themeLoads.delete(name)
+        return bytes
+      })
+      .catch((err) => {
+        themeLoads.delete(name)
+        throw err
+      })
+    themeLoads.set(name, pending)
+  }
+  return pending
+}
 
 export class SlidesEngine {
   /** Set while the document is shared (collab/session.ts): hears about every change, to send it. */
@@ -156,17 +189,28 @@ export class SlidesEngine {
   private elementsJson = ''
   private layoutsJson = ''
   private themeJson = ''
+  private lastVersions = [-1, -1, -1, -1]
   private drawn = new Map<string, { revision: number; html: string }>()
   private listeners = new Set<() => void>()
   private stopFonts: () => void
   private disposed = false
+
+  private themeChoice = 0
+  /** Goes up when MathJax arrives, so slides drawn without their equations draw again. */
+  latexVersion = 0
 
   private constructor(doc: SlidesDoc) {
     this.doc = doc
     this.styles = new StyleSheet(`p${++sheets}s`)
     this.media = new MediaCache((id) => {
       if (id.startsWith(LATEX_MATH_PREFIX)) {
-        return renderLatexTagToSvgBytes(id)
+        return renderLazyLatexTag(id, () => {
+          if (this.disposed) return
+          this.drawn.clear()
+          this.latexVersion++
+          this.tick++
+          for (const f of this.listeners) f()
+        })
       }
       const bytes = this.doc.media(id)
       return bytes ? { bytes, type: this.doc.mediaType(id) ?? 'image/png' } : null
@@ -194,7 +238,14 @@ export class SlidesEngine {
     const doc = new engine.SlidesDoc(bytes ?? new Uint8Array(), host)
     const e = new SlidesEngine(doc)
     e.refresh()
+    e.preloadThemes()
     return e
+  }
+
+  preloadThemes(): void {
+    for (const name of this.themes) {
+      if (name !== 'Default') void fetchThemeBytes(name).catch(() => {})
+    }
   }
 
   subscribe = (f: () => void) => {
@@ -213,30 +264,67 @@ export class SlidesEngine {
     return out
   }
 
+  applyTheme(name: string): boolean | Promise<boolean> {
+    // The last choice wins: a theme still downloading doesn't apply after a later pick.
+    const choice = ++this.themeChoice
+    if (name === 'Default') {
+      return this.run<boolean>({ cmd: 'applyTheme', name })
+    }
+    const cached = themeBytesCache.get(name)
+    if (cached) {
+      const applied = this.doc.applyThemeBytes(name, cached)
+      this.refresh()
+      return applied
+    }
+    return fetchThemeBytes(name).then((bytes) => {
+      if (this.disposed || choice !== this.themeChoice) return false
+      const applied = this.doc.applyThemeBytes(name, bytes)
+      this.refresh()
+      return applied
+    })
+  }
+
   refresh() {
     if (this.disposed) return
-    const theme = this.doc.theme()
-    if (theme !== this.themeJson) {
-      this.themeJson = theme
-      this.theme = JSON.parse(theme)
+    const [tVer, lVer, sVer, eVer] = JSON.parse(this.doc.versions()) as [number, number, number, number]
+    const [ptVer, plVer, psVer, peVer] = this.lastVersions
+    if (tVer !== ptVer) {
+      const theme = this.doc.theme()
+      if (theme !== this.themeJson) {
+        this.themeJson = theme
+        this.theme = JSON.parse(theme)
+      }
     }
-    const layouts = this.doc.layouts()
-    if (layouts !== this.layoutsJson) {
-      this.layoutsJson = layouts
-      this.layouts = JSON.parse(layouts)
+    if (lVer !== plVer) {
+      const layouts = this.doc.layouts()
+      if (layouts !== this.layoutsJson) {
+        this.layoutsJson = layouts
+        this.layouts = JSON.parse(layouts)
+      }
     }
-    const slides = this.doc.slides()
-    if (slides !== this.slidesJson) {
-      this.slidesJson = slides
-      this.slides = JSON.parse(slides)
-      this.slidesVersion++
+    if (sVer !== psVer) {
+      const slides = this.doc.slides()
+      if (slides !== this.slidesJson) {
+        this.slidesJson = slides
+        this.slides = JSON.parse(slides)
+        this.slidesVersion++
+        if (this.drawn.size > 0) {
+          const live = new Set(this.slides.map((s) => s.id))
+          for (const id of this.drawn.keys()) {
+            if (!live.has(id)) this.drawn.delete(id)
+          }
+        }
+      }
     }
     this.state = JSON.parse(this.doc.state())
-    const elements = this.doc.elements(this.state.active)
-    if (elements !== this.elementsJson) {
-      this.elementsJson = elements
-      this.elements = JSON.parse(elements)
+    if (eVer !== peVer) {
+      const elements = this.doc.elements(this.state.active)
+      if (elements !== this.elementsJson) {
+        this.elementsJson = elements
+        this.elements = JSON.parse(elements)
+      }
     }
+    this.lastVersions = [tVer, lVer, sVer, eVer]
     this.tick++
     for (const f of this.listeners) f()
     this.collab?.changed()
@@ -247,10 +335,18 @@ export class SlidesEngine {
     const info = this.slides[index]
     if (!info) return ''
     const hit = this.drawn.get(info.id)
-    if (hit && hit.revision === info.revision) return hit.html
+    if (hit && hit.revision === info.revision) {
+      this.drawn.delete(info.id)
+      this.drawn.set(info.id, hit)
+      return hit.html
+    }
     const p = JSON.parse(this.doc.paint(index)) as { items: PaintItem[]; styles: import('../paint').PaintStyle[] }
     this.styles.add(p.styles)
     const html = itemsHtml(p.items, this.styles, this.media.url)
+    if (this.drawn.size >= MAX_DRAWN_SLIDES) {
+      const oldest = this.drawn.keys().next().value
+      if (oldest !== undefined) this.drawn.delete(oldest)
+    }
     this.drawn.set(info.id, { revision: info.revision, html })
     return html
   }

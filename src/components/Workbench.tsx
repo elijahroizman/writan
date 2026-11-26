@@ -33,21 +33,36 @@ export function Resizer({ side }: { side: 'left' | 'right' | 'explorer' }) {
         setDragging(true)
         const startX = e.clientX
         const startW = (el.parentElement as HTMLElement).getBoundingClientRect().width
-        const onMove = (ev: PointerEvent) => {
-          const delta = side === 'right' ? startX - ev.clientX : ev.clientX - startX
+        let pendingX = startX
+        let raf = 0
+        const apply = () => {
+          raf = 0
+          const delta = side === 'right' ? startX - pendingX : pendingX - startX
           const w = Math.round(Math.min(440, Math.max(200, startW + delta)))
           document.documentElement.style.setProperty(`--${side}-w`, `${w}px`)
         }
+        const onMove = (ev: PointerEvent) => {
+          pendingX = ev.clientX
+          if (!raf) raf = requestAnimationFrame(apply)
+        }
         const onUp = () => {
+          if (raf) {
+            cancelAnimationFrame(raf)
+            apply()
+          }
           setDragging(false)
           el.removeEventListener('pointermove', onMove)
           el.removeEventListener('pointerup', onUp)
+          el.removeEventListener('pointercancel', onUp)
           const w = parseInt(getComputedStyle(document.documentElement).getPropertyValue(`--${side}-w`))
-          localStorage.setItem(WIDTH_KEY, JSON.stringify({ ...savedWidths, [side]: w }))
-          savedWidths[side] = w
+          if (!Number.isNaN(w)) {
+            localStorage.setItem(WIDTH_KEY, JSON.stringify({ ...savedWidths, [side]: w }))
+            savedWidths[side] = w
+          }
         }
         el.addEventListener('pointermove', onMove)
         el.addEventListener('pointerup', onUp)
+        el.addEventListener('pointercancel', onUp)
       }}
       onDoubleClick={() => {
         document.documentElement.style.removeProperty(`--${side}-w`)

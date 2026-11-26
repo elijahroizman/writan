@@ -1,8 +1,8 @@
 // Tracked changes can be accepted and rejected from the Word inspector, and undone.
 // node tests/stress/ui/tracked-changes.mjs
-import { resolve } from 'node:path'
+import { join, resolve } from 'node:path'
 import JSZip from 'jszip'
-import { launch, start, open, tabs, check, done } from './harness.mjs'
+import { launch, start, open, tabs, check, done, TMP } from './harness.mjs'
 
 const file = resolve(import.meta.dirname, '../samples/tracked-changes.docx')
 const { browser, page, logs } = await launch()
@@ -46,6 +46,6 @@ xml = await body()
 check('reject all puts the deleted text back', xml.includes('slow') && !xml.includes('quick'))
 check('reject all drops the new formatting', !xml.includes('<w:b/>'))
 check('reject all leaves no revision marks', !marks(xml))
-await page.screenshot({ path: '/tmp/writan-stress/tracked-changes.png' })
+await page.screenshot({ path: join(TMP, 'tracked-changes.png') })
 
 await done(browser, logs)

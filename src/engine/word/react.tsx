@@ -105,22 +105,28 @@ class SearchStore {
     this.activeIndex = ((i % this.count) + this.count) % this.count
     e.run({ cmd: 'selectMatch', index: this.activeIndex })
     // Use layout coordinates: an offscreen page may not have any painted text yet.
-    const sc = this.viewport()
-    const rect = e.overlay.rects[0]
-    if (sc && rect && e.toClient) {
-      const [page, x, y, width, height] = rect
-      const start = e.toClient(page, x, y)
-      const end = e.toClient(page, x + width, y + height)
-      const view = sc.getBoundingClientRect()
-      const top = view.top + sc.clientTop + 24
-      const bottom = view.top + sc.clientTop + sc.clientHeight - 24
-      const left = view.left + sc.clientLeft + 24
-      const right = view.left + sc.clientLeft + sc.clientWidth - 24
-      if (start.y < top) sc.scrollTop += start.y - top
-      else if (end.y > bottom) sc.scrollTop += Math.min(end.y - bottom, start.y - top)
-      if (start.x < left) sc.scrollLeft += start.x - left
-      else if (end.x > right) sc.scrollLeft += Math.min(end.x - right, start.x - left)
+    const reveal = () => {
+      const sc = this.viewport()
+      const rect = e.overlay.rects[0]
+      if (sc && rect && e.toClient) {
+        const [page, x, y, width, height] = rect
+        const start = e.toClient(page, x, y)
+        const end = e.toClient(page, x + width, y + height)
+        const view = sc.getBoundingClientRect()
+        const top = view.top + sc.clientTop + 24
+        const bottom = view.top + sc.clientTop + sc.clientHeight - 24
+        const left = view.left + sc.clientLeft + 24
+        const right = view.left + sc.clientLeft + sc.clientWidth - 24
+        if (start.y < top) sc.scrollTop += start.y - top
+        else if (end.y > bottom) sc.scrollTop += Math.min(end.y - bottom, start.y - top)
+        if (start.x < left) sc.scrollLeft += start.x - left
+        else if (end.x > right) sc.scrollLeft += Math.min(end.x - right, start.x - left)
+      }
     }
+    reveal()
+    // Once more after the pages render: a large document that opened progressively completes its
+    // layout inside this search, and the pages below aren't there to scroll to until then.
+    requestAnimationFrame(reveal)
     this.emit()
   }
   next() {
@@ -258,7 +264,7 @@ function Root({
     let opened: WordEngine | null = null
     setEngine(null)
     setError(null)
-    Engine.open(document)
+    Engine.open(document, { progressive: true })
       .then((e) => {
         if (!live) return e.dispose()
         opened = e
@@ -300,7 +306,10 @@ function Viewport({ className, children }: { className?: string; children: React
   useLayoutEffect(() => {
     const el = viewport.current
     if (!el) return
-    const update = () => zoom.resize(el.clientWidth, Math.max(...(engine?.sizes.map((s) => s[0]) ?? [794])))
+    const update = () => {
+      if (el.clientWidth === 0) return
+      zoom.resize(el.clientWidth, Math.max(...(engine?.sizes.map((s) => s[0]) ?? [794])))
+    }
     update()
     const ro = new ResizeObserver(update)
     ro.observe(el)

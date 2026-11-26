@@ -128,7 +128,11 @@ impl Writer {
         }
         for (p, uri) in &extra {
             match p {
-                Some(p) => self.out.push_str(&format!(" xmlns:{p}=\"")),
+                Some(p) => {
+                    self.out.push_str(" xmlns:");
+                    self.out.push_str(p);
+                    self.out.push_str("=\"");
+                }
                 None => self.out.push_str(" xmlns=\""),
             }
             escape_attr(uri, &mut self.out);

@@ -321,7 +321,7 @@ mod tests {
         v.insert_table(3, 2);
         let slide = &v.slides()[0];
         let FrameContent::Table { table } = &slide.frames.last().unwrap().content else { panic!("table") };
-        let paint = Paint { doc: &v.doc, slide };
+        let paint = Paint::new(&v.doc, slide);
         let styles = TableStyles::default();
         for (id, accent) in [
             ("{5C22544A-7EE6-4342-B048-85BDC9FD1C3A}", "accent1"),

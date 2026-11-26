@@ -1,10 +1,10 @@
 import { ChevronRight, ChevronsDownUp, Copy, File, Folder, FolderOpen, MoreHorizontal, RotateCw, Search, X } from 'lucide-react'
-import { memo, useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useState } from 'react'
+import { folderFiles, relativeDir, startFolderPalette } from '../lib/folderFiles'
 import { KINDS, kindFromPath } from '../lib/kinds'
 import type { DirEntry } from '../lib/platform'
-import { basename, dirname, isTauri, listDir, revealInFinder, revealLabel, walkDir } from '../lib/platform'
+import { basename, isTauri, listDir, revealInFinder, revealLabel } from '../lib/platform'
 import { folderName, useFolder } from '../state/folder'
-import { addPaletteSource } from './CommandPalette'
 import { keysFor } from '../state/shortcuts'
 import { useWorkspace } from '../state/workspace'
 import { KindIcon } from './ui'
@@ -12,8 +12,7 @@ import { Resizer } from './Workbench'
 import type { MenuEntry } from './ui'
 import { IconButton, PopoverMenu } from './ui'
 
-/** Every extension some plugin opens (on or off: opening one offers to turn its plugin on). */
-const OPENABLE = [...new Set(Object.values(KINDS).flatMap((k) => k.extensions))]
+export { folderFiles, startFolderPalette }
 
 /** A folder's entries, read when it's first shown and again after a refresh. */
 const cache = new Map<string, Promise<DirEntry[]>>()
@@ -55,12 +54,24 @@ export function Explorer() {
   const [more, setMore] = useState<{ x: number; y: number; align: 'end' } | null>(null)
   const { toggleVisible, collapseAll, refresh, close, setShowAll } = useFolder.getState()
 
-  // Files change behind our back (Finder, sync apps): look again when the window comes back.
+  // Files change behind our back (Finder, sync apps): look again when the window comes back,
+  // throttled so rapid window switching doesn't re-stat an entire folder tree every click.
   useEffect(() => {
-    const onFocus = () => useFolder.getState().refresh()
+    let lastRefresh = Date.now()
+    const onFocus = () => {
+      const now = Date.now()
+      if (now - lastRefresh < 15_000) return
+      lastRefresh = now
+      useFolder.getState().refresh()
+    }
     window.addEventListener('focus', onFocus)
     return () => window.removeEventListener('focus', onFocus)
   }, [])
+
+  const activePath = useWorkspace((s) => s.tabs.find((t) => t.id === s.activeId)?.path ?? null)
+  const tabPathKey = useWorkspace((s) => s.tabs.map((t) => t.path ?? '').join('\n'))
+  const openPaths = useMemo(() => new Set(tabPathKey ? tabPathKey.split('\n').filter(Boolean) : []), [tabPathKey])
+  const handleMenu = useCallback((m: Menu) => setMenu(m), [])
 
   if (!root) return null
   const menuItems = (entry: DirEntry): MenuEntry[] => [
@@ -108,7 +119,11 @@ export function Explorer() {
         </label>
       </div>
       <div className="sidebar-scroll explorer-tree" role="tree">
-        {filter.trim() ? <Matches root={root} query={filter.trim()} rev={rev} onMenu={setMenu} /> : <DirChildren path={root} depth={0} showAll={showAll} onMenu={setMenu} />}
+        {filter.trim() ? (
+          <Matches root={root} query={filter.trim()} rev={rev} activePath={activePath} openPaths={openPaths} onMenu={handleMenu} />
+        ) : (
+          <DirChildren path={root} depth={0} showAll={showAll} activePath={activePath} openPaths={openPaths} onMenu={handleMenu} />
+        )}
       </div>
       <Resizer side="explorer" />
       {menu && <PopoverMenu anchor={menu} onClose={() => setMenu(null)} items={menuItems(menu.entry)} />}
@@ -130,19 +145,53 @@ export function Explorer() {
   )
 }
 
-const DirChildren = memo(function DirChildren({ path, depth, showAll, onMenu }: { path: string; depth: number; showAll: boolean; onMenu(m: Menu): void }) {
+const DirChildren = memo(function DirChildren({
+  path,
+  depth,
+  showAll,
+  activePath,
+  openPaths,
+  onMenu,
+}: {
+  path: string
+  depth: number
+  showAll: boolean
+  activePath: string | null
+  openPaths: ReadonlySet<string>
+  onMenu(m: Menu): void
+}) {
   const entries = useEntries(path)
   if (!entries) return null
   const shown = entries.filter((e) => e.isDir || showAll || kindFromPath(e.name))
   if (!shown.length && depth === 0) return <p className="explorer-empty faint">{showAll ? 'This folder is empty.' : 'No documents in this folder.'}</p>
   return (
     <>
-      {shown.map((e) => (e.isDir ? <DirRow key={e.path} entry={e} depth={depth} showAll={showAll} onMenu={onMenu} /> : <FileRow key={e.path} entry={e} depth={depth} onMenu={onMenu} />))}
+      {shown.map((e) =>
+        e.isDir ? (
+          <DirRow key={e.path} entry={e} depth={depth} showAll={showAll} activePath={activePath} openPaths={openPaths} onMenu={onMenu} />
+        ) : (
+          <FileRow key={e.path} entry={e} depth={depth} active={activePath === e.path} open={openPaths.has(e.path)} onMenu={onMenu} />
+        ),
+      )}
     </>
   )
 })
 
-function DirRow({ entry, depth, showAll, onMenu }: { entry: DirEntry; depth: number; showAll: boolean; onMenu(m: Menu): void }) {
+const DirRow = memo(function DirRow({
+  entry,
+  depth,
+  showAll,
+  activePath,
+  openPaths,
+  onMenu,
+}: {
+  entry: DirEntry
+  depth: number
+  showAll: boolean
+  activePath: string | null
+  openPaths: ReadonlySet<string>
+  onMenu(m: Menu): void
+}) {
   const open = useFolder((s) => s.expanded.includes(entry.path))
   return (
     <>
@@ -164,17 +213,29 @@ function DirRow({ entry, depth, showAll, onMenu }: { entry: DirEntry; depth: num
       </button>
       {open && (
         <div role="group">
-          <DirChildren path={entry.path} depth={depth + 1} showAll={showAll} onMenu={onMenu} />
+          <DirChildren path={entry.path} depth={depth + 1} showAll={showAll} activePath={activePath} openPaths={openPaths} onMenu={onMenu} />
         </div>
       )}
     </>
   )
-}
+})
 
-function FileRow({ entry, depth, detail, onMenu }: { entry: DirEntry; depth: number; detail?: string; onMenu(m: Menu): void }) {
+const FileRow = memo(function FileRow({
+  entry,
+  depth,
+  detail,
+  active,
+  open,
+  onMenu,
+}: {
+  entry: DirEntry
+  depth: number
+  detail?: string
+  active: boolean
+  open: boolean
+  onMenu(m: Menu): void
+}) {
   const kind = kindFromPath(entry.name)
-  const active = useWorkspace((s) => s.tabs.find((t) => t.id === s.activeId)?.path === entry.path)
-  const open = useWorkspace((s) => s.tabs.some((t) => t.path === entry.path))
   return (
     <button
       type="button"
@@ -196,10 +257,24 @@ function FileRow({ entry, depth, detail, onMenu }: { entry: DirEntry; depth: num
       {detail && <span className="explorer-detail">{detail}</span>}
     </button>
   )
-}
+})
 
 /** Searching: every document under the folder whose name (or folder) has the letters typed. */
-function Matches({ root, query, rev, onMenu }: { root: string; query: string; rev: number; onMenu(m: Menu): void }) {
+const Matches = memo(function Matches({
+  root,
+  query,
+  rev,
+  activePath,
+  openPaths,
+  onMenu,
+}: {
+  root: string
+  query: string
+  rev: number
+  activePath: string | null
+  openPaths: ReadonlySet<string>
+  onMenu(m: Menu): void
+}) {
   const [files, setFiles] = useState<string[] | null>(null)
   useEffect(() => {
     let live = true
@@ -228,60 +303,24 @@ function Matches({ root, query, rev, onMenu }: { root: string; query: string; re
   return (
     <>
       {matches.map(({ path }) => (
-        <FileRow key={path} entry={{ name: basename(path), path, isDir: false }} depth={0} detail={relativeDir(root, path)} onMenu={onMenu} />
+        <FileRow
+          key={path}
+          entry={{ name: basename(path), path, isDir: false }}
+          depth={0}
+          detail={relativeDir(root, path)}
+          active={activePath === path}
+          open={openPaths.has(path)}
+          onMenu={onMenu}
+        />
       ))}
     </>
   )
-}
+})
 
 function subsequence(q: string, text: string) {
   let i = 0
-  for (const ch of text) if (ch === q[i]) i++
+  for (const ch of text) {
+    if (ch === q[i] && ++i === q.length) return true
+  }
   return i === q.length
-}
-
-function relativeDir(root: string, path: string) {
-  const dir = dirname(path)
-  return dir.length > root.length ? dir.slice(root.length + 1) : ''
-}
-
-/** The open folder's documents in the command palette (⌘K), read in the background. */
-export function startFolderPalette() {
-  let files: string[] = []
-  let root: string | null = null
-  const load = () => {
-    const s = useFolder.getState()
-    root = s.root
-    files = []
-    if (s.root) void folderFiles(s.root, s.rev).then((f) => root === s.root && (files = f))
-  }
-  load()
-  const unsubscribe = useFolder.subscribe((s, prev) => {
-    if (s.root !== prev.root || s.rev !== prev.rev) load()
-  })
-  const removeSource = addPaletteSource(() =>
-    root
-      ? files.map((path) => ({
-          id: `folder:${path}`,
-          label: basename(path),
-          detail: relativeDir(root!, path) || folderName(root!),
-          group: 'Folder' as const,
-          path,
-          icon: kindFromPath(path) ? <KindIcon kind={kindFromPath(path)!} /> : <File size={14} />,
-          run: () => useWorkspace.getState().openPaths([path]),
-        }))
-      : [],
-  )
-  return () => {
-    unsubscribe()
-    removeSource()
-  }
-}
-
-let walked: { key: string; files: Promise<string[]> } | null = null
-/** Every document under the open folder (cached until a refresh). For search here and in the command palette. */
-export function folderFiles(root: string, rev = useFolder.getState().rev) {
-  const key = `${root}\n${rev}`
-  if (walked?.key !== key) walked = { key, files: walkDir(root, OPENABLE).catch(() => []) }
-  return walked.files
 }

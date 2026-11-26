@@ -2,6 +2,8 @@
 //! formatting text really has once styles, document defaults and direct formatting are put
 //! together the way Word does.
 
+use std::collections::HashMap;
+
 use office_core::drawing::Theme;
 use office_core::formats::docx::{read_para_props, read_run_props, val};
 use office_core::model::{ParaProps, RunProps, Strike};
@@ -95,6 +97,18 @@ pub struct Styles {
     pub default_para: ParaProps,
     pub default_run: RunProps,
     pub default_run_toggles: RunToggles,
+    by_id: HashMap<String, usize>,
+    by_name: HashMap<String, usize>,
+    defaults: [Option<usize>; 4],
+}
+
+fn kind_index(kind: StyleKind) -> usize {
+    match kind {
+        StyleKind::Paragraph => 0,
+        StyleKind::Character => 1,
+        StyleKind::Table => 2,
+        StyleKind::Numbering => 3,
+    }
 }
 
 impl Styles {
@@ -103,23 +117,45 @@ impl Styles {
         let defaults = root.child(ns::W, "docDefaults");
         let default_run = defaults.and_then(|d| d.path(ns::W, &["rPrDefault", "rPr"])).map(read_run_props).unwrap_or_default();
         let default_para = defaults.and_then(|d| d.path(ns::W, &["pPrDefault", "pPr"])).map(read_para_props).unwrap_or_default();
-        let styles = root.children_named(ns::W, "style").filter_map(parse_style).collect();
+        let styles: Vec<Style> = root.children_named(ns::W, "style").filter_map(parse_style).collect();
         let default_run_toggles = defaults.and_then(|d| d.path(ns::W, &["rPrDefault", "rPr"])).map(RunToggles::read).unwrap_or_default();
-        Styles { styles, default_para, default_run, default_run_toggles }
+        let mut by_id = HashMap::with_capacity(styles.len());
+        let mut by_name = HashMap::with_capacity(styles.len());
+        let mut default_idxs = [None; 4];
+        for (i, s) in styles.iter().enumerate() {
+            by_id.entry(s.id.clone()).or_insert(i);
+            by_name.entry(s.name.to_ascii_lowercase()).or_insert(i);
+            let k = kind_index(s.kind);
+            if s.default && default_idxs[k].is_none() {
+                default_idxs[k] = Some(i);
+            }
+        }
+        Styles { styles, default_para, default_run, default_run_toggles, by_id, by_name, defaults: default_idxs }
     }
 
     pub fn get(&self, id: &str) -> Option<&Style> {
-        self.styles.iter().find(|s| s.id == id)
+        self.by_id.get(id).map(|&i| &self.styles[i])
     }
 
     /// The style named `name` (as Word shows it: "heading 1"), ignoring case.
     pub fn by_name(&self, name: &str) -> Option<&Style> {
-        self.styles.iter().find(|s| s.name.eq_ignore_ascii_case(name))
+        if name.is_ascii() {
+            let mut buf = [0u8; 64];
+            if name.len() <= buf.len() {
+                for (dst, &b) in buf[..name.len()].iter_mut().zip(name.as_bytes()) {
+                    *dst = b.to_ascii_lowercase();
+                }
+                if let Ok(lower) = std::str::from_utf8(&buf[..name.len()]) {
+                    return self.by_name.get(lower).map(|&i| &self.styles[i]);
+                }
+            }
+        }
+        self.by_name.get(&name.to_ascii_lowercase()).map(|&i| &self.styles[i])
     }
 
     /// The default style of a kind: Normal for paragraphs.
     pub fn default_of(&self, kind: StyleKind) -> Option<&Style> {
-        self.styles.iter().find(|s| s.kind == kind && s.default)
+        self.defaults[kind_index(kind)].map(|i| &self.styles[i])
     }
 
     /// A style and the styles it's based on, the root first. Stops at loops.

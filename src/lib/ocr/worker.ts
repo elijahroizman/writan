@@ -273,10 +273,35 @@ type Engine = Awaited<ReturnType<typeof createEngine>>
 
 function recognizePage({ core, api }: Engine, page: OcrPageInput): OcrPageResult {
   const start = performance.now()
-  const base = enhanceContrast(grayscale(page.data, page.width, page.height))
+  const base = enhanceContrast(grayscale(page.data, page.width, page.height, page.channels))
+  let ink = 0
+  for (let i = 0; i < base.pixels.length; i++) {
+    if (base.pixels[i] <= 230 && ++ink >= 40) break
+  }
+  if (ink < 40) {
+    return {
+      pageIndex: page.pageIndex ?? 0,
+      widthPx: page.width,
+      heightPx: page.height,
+      widthPt: page.widthPt,
+      heightPt: page.heightPt,
+      text: '',
+      meanConfidence: 0,
+      detectedRotation: 0,
+      elapsedMs: performance.now() - start,
+      blocks: [],
+    }
+  }
   let best: Candidate | undefined
-  for (const rotation of [0, 90, 180, 270] as const) {
-    const image = prepareOrientation(base, rotation)
+  let skew0: number | undefined
+  let skew90: number | undefined
+  let suggested: OcrRotation | undefined
+
+  const tryRotation = (rotation: OcrRotation) => {
+    const known = rotation === 180 ? skew0 : rotation === 270 ? skew90 : undefined
+    const image = prepareOrientation(base, rotation, known)
+    if (rotation === 0) skew0 = image.skewAngle
+    else if (rotation === 90) skew90 = image.skewAngle
     const resolution = Math.round((page.heightPt && page.heightPt > 0 ? page.height * 72 / page.heightPt : 96) * image.scale)
     const address = core._malloc(image.pixels.length)
     if (!address) throw new Error('There is not enough memory to recognize this page.')
@@ -286,11 +311,14 @@ function recognizePage({ core, api }: Engine, page: OcrPageInput): OcrPageResult
       api.SetSourceResolution(resolution)
       if (api.Recognize(0) !== 0) throw new Error('The OCR engine could not recognize this page.')
       const meanConfidence = confidence(api.MeanTextConf())
-      if (best && meanConfidence <= best.meanConfidence) continue
+      if (best && meanConfidence <= best.meanConfidence) return
       const iterator = api.GetIterator()
-      if (!core.getPointer(iterator)) continue
+      if (!core.getPointer(iterator)) return
       try {
         const { blocks, orientation } = extract(core, iterator, image, resolution)
+        if (rotation === 0 && orientation > 0 && orientation < 4) {
+          suggested = ((360 - orientation * 90) % 360) as OcrRotation
+        }
         if (blocks.length) {
           const correction = ((rotation + 360 - orientation * 90) % 360) as OcrRotation
           best = { blocks, meanConfidence, rotation: correction, text: api.GetUTF8Text()?.trim() ?? '' }
@@ -302,7 +330,15 @@ function recognizePage({ core, api }: Engine, page: OcrPageInput): OcrPageResult
       api.Clear()
       core._free(address)
     }
-    if (rotation === 0 && best && best.meanConfidence >= 45) break
+  }
+
+  tryRotation(0)
+  if (!(best && best.meanConfidence >= 45)) {
+    const rest: OcrRotation[] = suggested ? [suggested, ...([90, 180, 270] as const).filter((r) => r !== suggested)] : [90, 180, 270]
+    for (const rotation of rest) {
+      tryRotation(rotation)
+      if (best && best.meanConfidence >= 70) break
+    }
   }
   return {
     pageIndex: page.pageIndex ?? 0,

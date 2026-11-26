@@ -36,6 +36,7 @@ pub mod validation;
 pub mod view;
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use office_core::model::{Body, CellRef, Document, Kind, Origin, Sheet, SheetCell, Value};
 use office_core::opc::Package;
@@ -322,17 +323,17 @@ pub fn formula(doc: &Document, sheet_index: usize, at: CellRef) -> Option<String
     None
 }
 
-struct SheetFormulas<'a> {
+pub(crate) struct SheetFormulas<'a> {
     sheet: &'a Sheet,
     leaders: Option<HashMap<&'a str, (CellRef, &'a str)>>,
 }
 
 impl<'a> SheetFormulas<'a> {
-    fn new(sheet: &'a Sheet) -> Self {
+    pub(crate) fn new(sheet: &'a Sheet) -> Self {
         Self { sheet, leaders: None }
     }
 
-    fn read(&mut self, at: CellRef, cell: &SheetCell) -> Option<String> {
+    pub(crate) fn read(&mut self, at: CellRef, cell: &SheetCell) -> Option<String> {
         if let Some(text) = &cell.formula {
             return Some(text.clone());
         }
@@ -411,10 +412,35 @@ pub fn circular_references(doc: &Document, now: Option<f64>) -> Vec<(usize, Cell
     evaluate(doc, now, |_| true).1
 }
 
-type CellKey = (usize, u32, u32);
+pub(crate) type CellKey = (usize, u32, u32);
 
 /// Every formula's result, and the formulas in a circular reference (see [`evaluate`]).
 type Evaluated = (Vec<(CellKey, Value)>, Vec<(usize, CellRef)>);
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum LookupKey {
+    Num(u64),
+    Bool(bool),
+    TextLower(String),
+    Empty,
+}
+
+impl LookupKey {
+    fn from_v(v: &V) -> Option<Self> {
+        Some(match v {
+            V::Num(n) => Self::Num(if *n == 0.0 { 0.0f64.to_bits() } else { n.to_bits() }),
+            V::Bool(b) => Self::Bool(*b),
+            V::Text(t) => Self::TextLower(t.to_lowercase()),
+            V::Empty => Self::Empty,
+            V::Err(_) | V::Range(_) => return None,
+        })
+    }
+}
+
+struct LookupIndex {
+    map: HashMap<LookupKey, usize>,
+    deps: Vec<CellKey>,
+}
 
 /// Works out the formulas of the cells `include` picks; the rest keep their stored results.
 fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bool) -> Evaluated {
@@ -426,19 +452,23 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
             for c in row.cells.iter().filter(|c| include(c)) {
                 if let Some(text) = reader.read(CellRef::new(row.index, c.col), c) {
                     let expr = formula::parse(&text).unwrap_or(Expr::Error("#NAME?".into()));
-                    formulas.insert((si, row.index, c.col), std::rc::Rc::new(expr));
+                    formulas.insert((si, row.index, c.col), Rc::new(expr));
                 }
             }
         }
     }
+    let tables = doc.package.as_ref().map(|pkg| Table::read(pkg, sheets)).unwrap_or_default();
     let x = excel(doc);
+    let names = x.map(|x| x.names.as_slice()).unwrap_or(&[]);
+    let mut keys: Vec<CellKey> = formulas.keys().copied().collect();
+    keys.sort_unstable();
     let mut book = Workbook {
         sheets,
-        tables: doc.package.as_ref().map(|pkg| Table::read(pkg, sheets)).unwrap_or_default(),
-        names: x.map(|x| x.names.clone()).unwrap_or_default(),
+        tables: &tables,
+        names,
         date_system: x.map(|x| x.date_system).unwrap_or_default(),
         now,
-        formulas,
+        formulas: &formulas,
         done: HashMap::new(),
         working: HashSet::new(),
         path: Vec::new(),
@@ -446,8 +476,11 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
         current: vec![0],
         deep: None,
         extents: vec![Default::default(); sheets.len()],
+        lookup_caches: HashMap::new(),
+        lookup_seen: HashSet::new(),
+        lookup_entries: 0,
     };
-    let keys = book.work_out();
+    book.work_out_keys(&keys);
     // A formula is in a circular reference when, through the formulas it reads, it comes back
     // to itself. What the loop got to depends on where it was entered, so the loop's formulas
     // come to 0, as in Excel, and everything is worked out again with that.
@@ -462,7 +495,10 @@ fn evaluate(doc: &Document, now: Option<f64>, include: impl Fn(&SheetCell) -> bo
         circular.extend(found);
         book.done = circular.iter().map(|&k| (k, V::Num(0.0))).collect();
         book.reads.clear();
-        book.work_out();
+        book.lookup_caches.clear();
+        book.lookup_seen.clear();
+        book.lookup_entries = 0;
+        book.work_out_keys(&keys);
     }
     let results = keys.iter().map(|k| (*k, book.done.get(k).map(V::to_value).unwrap_or(Value::Number(0.0)))).collect();
     let mut circular: Vec<CellKey> = circular.into_iter().collect();
@@ -539,24 +575,19 @@ fn loops(reads: &HashMap<CellKey, HashSet<CellKey>>) -> HashSet<CellKey> {
 }
 
 impl Workbook<'_> {
-    /// Works out every formula, returning their cells in order.
-    fn work_out(&mut self) -> Vec<CellKey> {
-        let book = self;
-        // Top to bottom, so a chain that runs down the sheet (a running total) is worked out a
-        // cell at a time instead of all at once from its last cell.
-        let mut keys: Vec<CellKey> = book.formulas.keys().copied().collect();
-        keys.sort_unstable();
-        for &key in &keys {
+    /// Works out the given formula keys in order.
+    fn work_out_keys(&mut self, keys: &[CellKey]) {
+        for &key in keys {
             // A chain deeper than MAX_DEPTH stops where it gets too deep; that cell is worked out
             // first, then the chain again, which now finds it done.
             let mut stack = vec![key];
             while let Some(&(s, r, c)) = stack.last() {
-                book.current = vec![s];
-                book.value(s, r, c);
-                match book.deep.take() {
+                self.current = vec![s];
+                self.value(s, r, c);
+                match self.deep.take() {
                     // A loop that long: it's found in `reads` all the same.
                     Some(d) if stack.contains(&d) => {
-                        book.done.insert(d, V::Num(0.0));
+                        self.done.insert(d, V::Num(0.0));
                     }
                     Some(d) => stack.push(d),
                     None => {
@@ -565,20 +596,19 @@ impl Workbook<'_> {
                 }
             }
         }
-        keys
     }
 }
 
 /// The workbook as formulas see it while they're worked out.
 struct Workbook<'a> {
     sheets: &'a [Sheet],
-    tables: Vec<Table<'a>>,
-    names: Vec<DefinedName>,
+    tables: &'a [Table],
+    names: &'a [DefinedName],
     date_system: DateSystem,
     now: Option<f64>,
     /// Shared, so working one out doesn't copy its tree: a copy recurses, and a sum of a
     /// hundred thousand terms overflowed the stack.
-    formulas: HashMap<CellKey, std::rc::Rc<Expr>>,
+    formulas: &'a HashMap<CellKey, Rc<Expr>>,
     done: HashMap<CellKey, V>,
     working: HashSet<CellKey>,
     /// The formulas being worked out, outermost first.
@@ -592,11 +622,20 @@ struct Workbook<'a> {
     deep: Option<CellKey>,
     /// Each sheet's last used row and column, once asked for.
     extents: Vec<std::cell::OnceCell<Option<(u32, u32)>>>,
+    lookup_caches: HashMap<(usize, u32, u32, u32, bool), LookupIndex>,
+    /// Exact ranges already scanned once. A large range is indexed when asked about again, so a
+    /// moving range filled down a sheet does not leave thousands of overlapping indexes behind.
+    lookup_seen: HashSet<(usize, u32, u32, u32, bool)>,
+    /// Keys and dependencies indexed across `lookup_caches`, held under [`MAX_LOOKUP_ENTRIES`].
+    lookup_entries: usize,
 }
 
 /// How many formulas deep one is worked out before [`Workbook::deep`] takes over. Each level
 /// is a few stack frames, and a test thread or a browser has a small stack.
 const MAX_DEPTH: usize = 200;
+
+/// How many cells the exact-lookup indexes of one pass may hold together.
+const MAX_LOOKUP_ENTRIES: usize = 1_000_000;
 
 impl Workbook<'_> {
     fn sheet_index(&self, name: Option<&str>) -> Option<usize> {
@@ -608,7 +647,7 @@ impl Workbook<'_> {
 
     fn value(&mut self, s: usize, r: u32, c: u32) -> V {
         let key = (s, r, c);
-        let Some(expr) = self.formulas.get(&key).cloned() else {
+        let Some(expr) = self.formulas.get(&key) else {
             return V::from_value(self.sheets[s].value(CellRef::new(r, c)));
         };
         if let Some(&from) = self.path.last() {
@@ -629,6 +668,7 @@ impl Workbook<'_> {
             self.deep = Some(key);
             return V::Empty;
         }
+        let expr = Rc::clone(expr);
         self.path.push(key);
         self.current.push(s);
         let v = eval::eval(&expr, self);
@@ -675,7 +715,7 @@ impl Book for Workbook<'_> {
 
     fn table(&self, reference: &TableReference) -> Option<Result<Vec<Reference>, &'static str>> {
         let here = self.path.last().map(|&(sheet, row, col)| (sheet, CellRef::new(row, col)));
-        Some(Table::find(&self.tables, reference.table.as_deref(), here)?.resolve(reference, here))
+        Some(Table::find(self.tables, reference.table.as_deref(), here)?.resolve(reference, here))
     }
 
     fn date_system(&self) -> DateSystem {
@@ -684,6 +724,176 @@ impl Book for Workbook<'_> {
 
     fn now(&self) -> Option<f64> {
         self.now
+    }
+
+    fn visit_range(
+        &mut self,
+        sheet: Option<&str>,
+        r0: u32,
+        r1: u32,
+        c0: u32,
+        c1: u32,
+        visit: &mut dyn FnMut(u32, u32, V) -> Result<(), &'static str>,
+    ) -> Option<Result<u64, &'static str>> {
+        let si = match self.sheet_index(sheet) {
+            Some(s) => s,
+            None => return Some(Err("#REF!")),
+        };
+        let row_len = self.sheets[si].rows.len();
+        let mut ri = self.sheets[si].rows.partition_point(|row| row.index < r0);
+        let mut visited = 0u64;
+        while ri < row_len {
+            let r_idx = self.sheets[si].rows[ri].index;
+            if r_idx > r1 {
+                break;
+            }
+            let cell_len = self.sheets[si].rows[ri].cells.len();
+            let mut ci = self.sheets[si].rows[ri].cells.partition_point(|c| c.col < c0);
+            while ci < cell_len {
+                let col = self.sheets[si].rows[ri].cells[ci].col;
+                if col > c1 {
+                    break;
+                }
+                let is_formula = self.formulas.contains_key(&(si, r_idx, col));
+                let v = if is_formula { self.value(si, r_idx, col) } else { V::from_value(&self.sheets[si].rows[ri].cells[ci].value) };
+                visited += 1;
+                if let Err(e) = visit(r_idx, col, v) {
+                    return Some(Err(e));
+                }
+                ci += 1;
+            }
+            ri += 1;
+        }
+        Some(Ok(visited))
+    }
+
+    fn exact_lookup(
+        &mut self,
+        sheet: Option<&str>,
+        r0: u32,
+        r1: u32,
+        c0: u32,
+        c1: u32,
+        horizontal: bool,
+        key: &V,
+    ) -> Option<Result<Option<usize>, &'static str>> {
+        if let V::Text(k) = key {
+            if k.contains(['*', '?', '~']) {
+                return None;
+            }
+        }
+        let Some(lk) = LookupKey::from_v(key) else {
+            return Some(Ok(None));
+        };
+        let si = match self.sheet_index(sheet) {
+            Some(s) => s,
+            None => return Some(Err("#REF!")),
+        };
+        let (cache_key, len) =
+            if horizontal { ((si, c0, c1, r0, true), (c1 - c0 + 1) as usize) } else { ((si, r0, r1, c0, false), (r1 - r0 + 1) as usize) };
+        if !self.lookup_caches.contains_key(&cache_key) {
+            let mut map = HashMap::new();
+            let mut deps = Vec::new();
+            let mut hit_working = false;
+            // Sheets are sparse, so even a full column is scanned through its stored cells. Blank
+            // slots all have the same lookup key; only the first can ever be found, as `or_insert`
+            // keeps the earliest match.
+            let mut first_empty = None;
+            let mut next_position = 0usize;
+            let mut note_position = |position: usize, filled: bool| {
+                if first_empty.is_none() && position > next_position {
+                    first_empty = Some(next_position);
+                }
+                if filled {
+                    next_position = position + 1;
+                } else if first_empty.is_none() && position == next_position {
+                    first_empty = Some(position);
+                }
+            };
+            if horizontal {
+                let row_index = self.sheets[si].rows.binary_search_by_key(&r0, |row| row.index);
+                if let Ok(ri) = row_index {
+                    let cell_len = self.sheets[si].rows[ri].cells.len();
+                    let mut ci = self.sheets[si].rows[ri].cells.partition_point(|cell| cell.col < c0);
+                    while ci < cell_len {
+                        let cc = self.sheets[si].rows[ri].cells[ci].col;
+                        if cc > c1 {
+                            break;
+                        }
+                        let i = (cc - c0) as usize;
+                        note_position(i, true);
+                        if self.working.contains(&(si, r0, cc)) {
+                            hit_working = true;
+                        }
+                        if self.formulas.contains_key(&(si, r0, cc)) {
+                            deps.push((si, r0, cc));
+                        }
+                        let v = self.value(si, r0, cc);
+                        if let Some(item_key) = LookupKey::from_v(&v) {
+                            map.entry(item_key).or_insert(i);
+                        }
+                        ci += 1;
+                    }
+                }
+            } else {
+                let row_len = self.sheets[si].rows.len();
+                let mut ri = self.sheets[si].rows.partition_point(|row| row.index < r0);
+                while ri < row_len {
+                    let rr = self.sheets[si].rows[ri].index;
+                    if rr > r1 {
+                        break;
+                    }
+                    let i = (rr - r0) as usize;
+                    let filled = self.sheets[si].rows[ri].cells.binary_search_by_key(&c0, |cell| cell.col).is_ok();
+                    note_position(i, filled);
+                    if filled {
+                        if self.working.contains(&(si, rr, c0)) {
+                            hit_working = true;
+                        }
+                        if self.formulas.contains_key(&(si, rr, c0)) {
+                            deps.push((si, rr, c0));
+                        }
+                        let v = self.value(si, rr, c0);
+                        if let Some(item_key) = LookupKey::from_v(&v) {
+                            map.entry(item_key).or_insert(i);
+                        }
+                    }
+                    ri += 1;
+                }
+            }
+            if first_empty.is_none() && next_position < len {
+                first_empty = Some(next_position);
+            }
+            // A stored blank (a formatted cell with no value) may already be in the map from the
+            // scan; an untouched blank before it is the first match.
+            if let Some(i) = first_empty {
+                map.entry(LookupKey::Empty).and_modify(|at| *at = (*at).min(i)).or_insert(i);
+            }
+            // A cell still being worked out, or one past the depth limit (answered Empty for now,
+            // worked out properly on the retry), would leave a wrong index behind: use it once.
+            if hit_working || self.deep.is_some() {
+                return Some(Ok(map.get(&lk).copied()));
+            }
+            let entries = map.len() + deps.len();
+            let repeated = !self.lookup_seen.insert(cache_key);
+            let fits = entries <= MAX_LOOKUP_ENTRIES.saturating_sub(self.lookup_entries);
+            // Small indexes are cheap enough to keep at once. A large one is kept when its exact
+            // range comes back: repeated full-column lookups still hit, while moving ranges filled
+            // down a sheet scan sparsely instead of accumulating overlapping copies.
+            if (entries <= 4096 || repeated) && fits {
+                self.lookup_entries += entries;
+                self.lookup_caches.insert(cache_key, LookupIndex { map, deps });
+            } else {
+                return Some(Ok(map.get(&lk).copied()));
+            }
+        }
+        let index = &self.lookup_caches[&cache_key];
+        if !index.deps.is_empty() {
+            if let Some(&from) = self.path.last() {
+                self.reads.entry(from).or_default().extend(index.deps.iter().copied());
+            }
+        }
+        Some(Ok(index.map.get(&lk).copied()))
     }
 }
 

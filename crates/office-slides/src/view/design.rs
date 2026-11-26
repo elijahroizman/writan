@@ -9,17 +9,7 @@ use office_core::{Error, Result};
 use super::{art::ArtSet, templates, SStep, SlidesView};
 use crate::Template;
 
-const THEMES: &[(&str, &[u8])] = &[
-    ("Harbor", include_bytes!("../../assets/themes/Harbor.pptx")),
-    ("Summit", include_bytes!("../../assets/themes/Summit.pptx")),
-    ("Grove", include_bytes!("../../assets/themes/Grove.pptx")),
-    ("Copper", include_bytes!("../../assets/themes/Copper.pptx")),
-    ("Graphite", include_bytes!("../../assets/themes/Graphite.pptx")),
-    ("Meridian", include_bytes!("../../assets/themes/Meridian.pptx")),
-    ("Standard", include_bytes!("../../assets/themes/Standard.pptx")),
-    ("Gallery", include_bytes!("../../assets/themes/Gallery.pptx")),
-    ("Dune", include_bytes!("../../assets/themes/Dune.pptx")),
-];
+const THEME_NAMES: &[&str] = &["Harbor", "Summit", "Grove", "Copper", "Graphite", "Meridian", "Standard", "Gallery", "Dune"];
 
 #[derive(Clone, Debug)]
 pub struct Design {
@@ -32,7 +22,7 @@ pub struct Design {
 
 impl SlidesView {
     pub fn theme_names() -> Vec<&'static str> {
-        std::iter::once("Default").chain(THEMES.iter().map(|(name, _)| *name)).collect()
+        std::iter::once("Default").chain(THEME_NAMES.iter().copied()).collect()
     }
 
     pub fn can_apply_theme(&self) -> bool {
@@ -53,14 +43,40 @@ impl SlidesView {
         self.doc.package = design.package.clone();
         self.doc.origin = design.origin.clone();
         self.doc.theme = design.theme.clone();
-        crate::ppt_mut(&mut self.doc).templates = design.templates.clone();
+        let ppt = crate::ppt_mut(&mut self.doc);
+        ppt.templates = design.templates.clone();
+        ppt.rebuild_indices();
         *self.slides_mut() = design.slides.clone();
         self.art = ArtSet::read(&self.doc);
         self.cache.clear();
+        self.theme_ver += 1;
+        self.layouts_ver += 1;
         self.touch_all();
     }
 
     pub fn apply_theme(&mut self, name: &str) -> Result<bool> {
+        if !self.can_apply_theme() {
+            return Ok(false);
+        }
+        if name == "Default" {
+            return self.apply_theme_bytes(name, &[]);
+        }
+        if !THEME_NAMES.contains(&name) {
+            return Err(Error::Invalid(format!("unknown theme: {name}")));
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/themes").join(format!("{name}.pptx"));
+            let bytes = std::fs::read(&path).map_err(|e| Error::Invalid(format!("couldn't read theme {name}: {e}")))?;
+            self.apply_theme_bytes(name, &bytes)
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            Err(Error::Invalid(format!("theme {name} must be loaded via applyThemeBytes")))
+        }
+    }
+
+    pub fn apply_theme_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<bool> {
         if !self.can_apply_theme() {
             return Ok(false);
         }
@@ -69,7 +85,9 @@ impl SlidesView {
         let donor = if let Some(view) = &plain_view {
             view.doc.package.clone().unwrap()
         } else {
-            let bytes = THEMES.iter().find(|(n, _)| *n == name).ok_or_else(|| Error::Invalid(format!("unknown theme: {name}")))?.1;
+            if !THEME_NAMES.contains(&name) {
+                return Err(Error::Invalid(format!("unknown theme: {name}")));
+            }
             Package::read(bytes)?
         };
         let before = self.design();
@@ -569,9 +587,14 @@ mod tests {
         }
     }
 
+    fn test_theme_bytes(name: &str) -> Vec<u8> {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/themes").join(format!("{name}.pptx"));
+        std::fs::read(&path).unwrap()
+    }
+
     #[test]
     fn imported_title_only_keeps_its_heading_geometry_on_default() {
-        let mut view = SlidesView::open(THEMES.iter().find(|(name, _)| *name == "Graphite").unwrap().1).unwrap();
+        let mut view = SlidesView::open(&test_theme_bytes("Graphite")).unwrap();
         let index =
             view.slides().iter().position(|s| crate::template(&view.doc, s.layout.as_deref()).unwrap().name == "Title Only").unwrap();
         let heading = |view: &SlidesView| {
@@ -639,7 +662,7 @@ mod tests {
         let plain = view.slides()[0].frames[0].shape.xfrm.clone();
         view.set_notes(1, "Keep these notes");
         view.toggle_hidden(&[1]);
-        for (name, _) in THEMES {
+        for name in THEME_NAMES {
             assert!(view.apply_theme(name).unwrap());
             assert_eq!(view.doc.theme.as_ref().unwrap().name, *name);
             assert_eq!(crate::layouts(&view.doc).iter().map(|l| l.name.as_str()).collect::<Vec<_>>(), LAYOUTS);
@@ -666,7 +689,7 @@ mod tests {
 
     #[test]
     fn named_custom_layouts_with_the_same_powerpoint_type_map_by_name() {
-        let mut view = SlidesView::open(THEMES[0].1).unwrap();
+        let mut view = SlidesView::open(&test_theme_bytes(THEME_NAMES[0])).unwrap();
         let original = content(&view);
         let names = |v: &SlidesView| {
             v.slides().iter().map(|s| crate::template(&v.doc, s.layout.as_deref()).unwrap().name.clone()).collect::<Vec<_>>()
@@ -680,7 +703,7 @@ mod tests {
 
     #[test]
     fn distinct_layouts_with_the_same_missing_name_keep_their_geometry() {
-        let mut pkg = Package::read(THEMES[0].1).unwrap();
+        let mut pkg = Package::read(&test_theme_bytes(THEME_NAMES[0])).unwrap();
         let main = pkg.main_part().unwrap();
         let master = &pkg.related(&main, kind::SLIDE_MASTER).unwrap()[0].1;
         for (_, part) in pkg.related(master, kind::SLIDE_LAYOUT).unwrap() {

@@ -154,6 +154,16 @@ impl SlidesDoc {
         json(&SlidesView::theme_names())
     }
 
+    #[wasm_bindgen(js_name = applyThemeBytes)]
+    pub fn apply_theme_bytes(&mut self, name: &str, bytes: &[u8]) -> Result<bool, JsError> {
+        self.view.apply_theme_bytes(name, bytes).map_err(err)
+    }
+
+    /// Monotonic version counters: `[theme_ver, layouts_ver, slides_meta_ver, elements_ver]`.
+    pub fn versions(&self) -> String {
+        json(&self.view.versions())
+    }
+
     pub fn layouts(&self) -> String {
         json(&self.view.layout_infos())
     }

@@ -54,6 +54,7 @@ export class StyleSheet {
 
   add(styles: PaintStyle[]) {
     if (!styles.length) return
+    const sheet = this.sheet.sheet
     let css = ''
     for (const s of styles) {
       this.sent.push(s)
@@ -61,13 +62,22 @@ export class StyleSheet {
       const [ascent, descent] = host.metrics(s.font)
       this.ascents.push(ascent)
       this.shifts.push(s.shift ?? 0)
-      css += `.${this.prefix}${id}{font:${s.font};color:${s.color};line-height:${(ascent + descent).toFixed(2)}px;height:${(ascent + descent).toFixed(2)}px`
-      if (s.decoration) css += `;text-decoration:${s.decoration};text-decoration-skip-ink:auto`
-      if (s.background) css += `;background:${s.background}`
-      if (s.smallCaps) css += `;font-variant:small-caps`
-      css += '}\n'
+      let rule = `.${this.prefix}${id}{font:${s.font};color:${s.color};line-height:${(ascent + descent).toFixed(2)}px;height:${(ascent + descent).toFixed(2)}px`
+      if (s.decoration) rule += `;text-decoration:${s.decoration};text-decoration-skip-ink:auto`
+      if (s.background) rule += `;background:${s.background}`
+      if (s.smallCaps) rule += `;font-variant:small-caps`
+      rule += '}'
+      if (sheet) {
+        try {
+          sheet.insertRule(rule, sheet.cssRules.length)
+          continue
+        } catch {
+          // Fall back to textContent concatenation below.
+        }
+      }
+      css += rule + '\n'
     }
-    this.sheet.textContent += css
+    if (css) this.sheet.textContent += css
   }
 
   /** Starts over: the engine numbers its styles from 0 again. */

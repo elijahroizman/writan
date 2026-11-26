@@ -70,12 +70,16 @@ impl SheetsDoc {
     /// Opens a workbook or CSV file (`name` says which), or makes a new one when `bytes` is empty
     /// (`csv` in the name for a CSV file).
     #[wasm_bindgen(constructor)]
-    pub fn new(bytes: &[u8], name: &str, host: Host) -> Result<SheetsDoc, JsError> {
+    pub fn new(bytes: &[u8], name: &str, host: Host, now: Option<f64>) -> Result<SheetsDoc, JsError> {
         let csv = name.to_ascii_lowercase().ends_with(".csv") || name.to_ascii_lowercase().ends_with(".tsv");
         let mut view = if bytes.is_empty() {
-            SheetsView::blank(if csv { Kind::Csv } else { Kind::Sheets })
+            let mut v = SheetsView::blank(if csv { Kind::Csv } else { Kind::Sheets });
+            if let Some(n) = now {
+                v.set_now(n);
+            }
+            v
         } else {
-            SheetsView::open(bytes, name).map_err(err)?
+            SheetsView::open_with_now(bytes, name, now).map_err(err)?
         };
         if view.kind == Kind::Csv && !bytes.is_empty() {
             view.fit_columns(&mut JsMeasurer(&host), 0);
@@ -157,6 +161,12 @@ impl SheetsDoc {
     /// Goes up with every change.
     pub fn revision(&self) -> f64 {
         self.view.revision() as f64
+    }
+
+    /// Goes up when column widths, row heights, or sheet bounds change.
+    #[wasm_bindgen(js_name = gridRevision)]
+    pub fn grid_revision(&self) -> f64 {
+        self.view.grid_revision() as f64
     }
 
     /// A range as clipboard data: `{ text, clipboard }`.

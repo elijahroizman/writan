@@ -2,6 +2,9 @@
 //! `0%`, `d-mmm-yy` and `[Red](#,##0);0`. Formatting follows Excel's US English rules: a dot
 //! for decimals and a comma between thousands.
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+
 use office_core::model::Value;
 
 use crate::dates::{from_serial, DateSystem};
@@ -54,38 +57,58 @@ pub struct Formatted {
     pub color: Option<String>,
 }
 
+thread_local! {
+    static SECTION_CACHE: RefCell<HashMap<String, Vec<Vec<Token>>>> = RefCell::new(HashMap::new());
+}
+
+fn cached_sections(code: &str) -> Vec<Vec<Token>> {
+    SECTION_CACHE.with(|cache| {
+        if let Some(hit) = cache.borrow().get(code) {
+            return hit.clone();
+        }
+        let parsed: Vec<Vec<Token>> = split_sections(code).into_iter().map(|s| tokenize(&s)).collect();
+        let mut map = cache.borrow_mut();
+        if map.len() >= 512 {
+            map.clear();
+        }
+        map.insert(code.to_string(), parsed.clone());
+        parsed
+    })
+}
+
 /// Shows `value` the way format `code` says.
 pub fn format(value: &Value, code: &str, system: DateSystem) -> Formatted {
     let plain = |text: String| Formatted { text, color: None };
-    let sections = split_sections(code);
     match value {
         Value::Empty => plain(String::new()),
         Value::Bool(b) => plain(if *b { "TRUE" } else { "FALSE" }.into()),
         Value::Error(e) => plain(e.clone()),
         Value::Text(_) | Value::Rich(_) => {
             let text = value.display();
+            let parsed = cached_sections(code);
             // The fourth section is for text, or a single section that has a place for it.
-            let section = match sections.len() {
-                4.. => Some(&sections[3]),
-                1 if sections[0].contains('@') => Some(&sections[0]),
+            let section = match parsed.len() {
+                4.. => Some(&parsed[3]),
+                // An `@` anywhere in the section, as before the cache (quoted ones included).
+                1 if split_sections(code)[0].contains('@') => Some(&parsed[0]),
                 _ => None,
             };
             match section {
-                Some(s) => render_text(&tokenize(s), &text),
+                Some(tokens) => render_text(tokens, &text),
                 None => plain(text),
             }
         }
-        Value::Number(n) => format_number_with(*n, &sections, system),
+        Value::Number(n) => format_number_with(*n, code, system),
     }
 }
 
 /// Whether a format shows numbers as dates or times.
 pub fn is_date_format(code: &str) -> bool {
-    split_sections(code).first().is_some_and(|s| tokenize(s).iter().any(|t| matches!(t, Token::Date(_) | Token::Elapsed(..))))
+    cached_sections(code).first().is_some_and(|s| s.iter().any(|t| matches!(t, Token::Date(_) | Token::Elapsed(..))))
 }
 
 pub(crate) fn has_calendar_date(code: &str, n: f64) -> bool {
-    let sections: Vec<_> = split_sections(code).iter().map(|s| tokenize(s)).collect();
+    let sections = cached_sections(code);
     if sections.is_empty() {
         return false;
     }
@@ -98,14 +121,17 @@ pub(crate) fn has_calendar_date(code: &str, n: f64) -> bool {
         })
 }
 
-fn format_number_with(n: f64, sections: &[String], system: DateSystem) -> Formatted {
+fn format_number_with(n: f64, code: &str, system: DateSystem) -> Formatted {
     if !n.is_finite() {
         return Formatted { text: "#NUM!".into(), color: None };
     }
-    if sections.is_empty() {
+    if code.is_empty() || code.eq_ignore_ascii_case("General") {
         return Formatted { text: general(n), color: None };
     }
-    let parsed: Vec<Vec<Token>> = sections.iter().map(|s| tokenize(s)).collect();
+    let parsed = cached_sections(code);
+    if parsed.is_empty() {
+        return Formatted { text: general(n), color: None };
+    }
     let (tokens, value) = number_section(&parsed, n);
     let mut out = if tokens.iter().any(|t| matches!(t, Token::General)) {
         Formatted { text: general(value), color: None }
@@ -253,47 +279,63 @@ fn split_sections(code: &str) -> Vec<String> {
 const COLORS: [&str; 8] = ["black", "blue", "cyan", "green", "magenta", "red", "white", "yellow"];
 
 fn tokenize(section: &str) -> Vec<Token> {
-    let chars: Vec<char> = section.chars().collect();
     let mut out = Vec::new();
     let mut i = 0;
+    let bytes = section.as_bytes();
     let lit = |out: &mut Vec<Token>, s: &str| match out.last_mut() {
         Some(Token::Literal(l)) => l.push_str(s),
         _ => out.push(Token::Literal(s.to_string())),
     };
     let mut seen_exponent = false;
-    while i < chars.len() {
-        let c = chars[i];
-        let rest: String = chars[i..].iter().collect();
-        let lower = rest.to_ascii_lowercase();
-        match c {
-            _ if lower.starts_with("general") => {
-                out.push(Token::General);
-                i += 7;
+    while i < section.len() {
+        let rest = &section[i..];
+        let b = bytes[i];
+        if rest.len() >= 7 && rest.is_char_boundary(7) && rest[..7].eq_ignore_ascii_case("general") {
+            out.push(Token::General);
+            i += 7;
+            continue;
+        }
+        match b {
+            b'"' => {
+                let start = i + 1;
+                let end = section[start..].find('"').map(|p| start + p).unwrap_or(section.len());
+                lit(&mut out, &section[start..end]);
+                i = (end + 1).min(section.len());
+                continue;
             }
-            '"' => {
-                let end = chars[i + 1..].iter().position(|&c| c == '"').map(|p| i + 1 + p).unwrap_or(chars.len());
-                lit(&mut out, &chars[i + 1..end].iter().collect::<String>());
-                i = end + 1;
-            }
-            '\\' => {
-                if let Some(&n) = chars.get(i + 1) {
-                    lit(&mut out, &n.to_string());
+            b'\\' => {
+                i += 1;
+                if let Some(ch) = section[i..].chars().next() {
+                    let mut buf = [0u8; 4];
+                    lit(&mut out, ch.encode_utf8(&mut buf));
+                    i += ch.len_utf8();
                 }
-                i += 2;
+                continue;
             }
             // `_x` leaves room as wide as x; a space is near enough. `*x` fills the cell; nothing here.
-            '_' => {
+            b'_' => {
                 lit(&mut out, " ");
-                i += 2;
+                i += 1;
+                if let Some(ch) = section[i..].chars().next() {
+                    i += ch.len_utf8();
+                }
+                continue;
             }
-            '*' => i += 2,
-            '[' => {
-                let end = chars[i..].iter().position(|&c| c == ']').map(|p| i + p).unwrap_or(chars.len());
-                let inside: String = chars[i + 1..end.min(chars.len())].iter().collect();
+            b'*' => {
+                i += 1;
+                if let Some(ch) = section[i..].chars().next() {
+                    i += ch.len_utf8();
+                }
+                continue;
+            }
+            b'[' => {
+                let start = i + 1;
+                let end = section[start..].find(']').map(|p| start + p).unwrap_or(section.len());
+                let inside = &section[start..end];
                 let low = inside.to_ascii_lowercase();
                 if COLORS.contains(&low.as_str()) || low.starts_with("color") {
                     out.push(Token::Color(low));
-                } else if let Some(cond) = parse_condition(&inside) {
+                } else if let Some(cond) = parse_condition(inside) {
                     out.push(Token::Condition(cond));
                 } else if !low.is_empty() && low.chars().all(|c| c == 'h') {
                     out.push(Token::Elapsed('h', low.len()));
@@ -305,15 +347,17 @@ fn tokenize(section: &str) -> Vec<Token> {
                     // [$€-407]: a currency symbol and a locale; the symbol shows.
                     lit(&mut out, currency.split('-').next().unwrap_or(""));
                 }
-                i = end + 1;
+                i = (end + 1).min(section.len());
+                continue;
             }
-            '0' | '#' | '?' => {
-                out.push(Token::Digit(c));
+            b'0' | b'#' | b'?' => {
+                out.push(Token::Digit(b as char));
                 i += 1;
+                continue;
             }
-            '.' => {
+            b'.' => {
                 // Right after seconds, a dot starts fractions of a second.
-                let zeros = chars[i + 1..].iter().take_while(|&&c| c == '0').count();
+                let zeros = section[i + 1..].bytes().take_while(|&c| c == b'0').count();
                 if zeros > 0
                     && matches!(out.iter().rev().find(|t| !matches!(t, Token::Literal(_))), Some(Token::Date(d)) if d.starts_with('s'))
                 {
@@ -323,49 +367,64 @@ fn tokenize(section: &str) -> Vec<Token> {
                     out.push(Token::Point);
                     i += 1;
                 }
+                continue;
             }
-            ',' => {
+            b',' => {
                 out.push(Token::Comma);
                 i += 1;
+                continue;
             }
-            '%' => {
+            b'%' => {
                 out.push(Token::Percent);
                 i += 1;
+                continue;
             }
-            '@' => {
+            b'@' => {
                 out.push(Token::Text);
                 i += 1;
+                continue;
             }
-            '/' if out.iter().any(|t| matches!(t, Token::Digit(_))) && !out.iter().any(|t| matches!(t, Token::Date(_))) => {
+            b'/' if out.iter().any(|t| matches!(t, Token::Digit(_))) && !out.iter().any(|t| matches!(t, Token::Date(_))) => {
                 out.push(Token::Slash);
                 i += 1;
+                continue;
             }
-            'E' | 'e'
-                if !seen_exponent && matches!(chars.get(i + 1), Some('+' | '-')) && out.iter().any(|t| matches!(t, Token::Digit(_))) =>
+            b'E' | b'e'
+                if !seen_exponent && matches!(bytes.get(i + 1), Some(b'+' | b'-')) && out.iter().any(|t| matches!(t, Token::Digit(_))) =>
             {
-                out.push(Token::Exponent(chars[i + 1] == '+'));
+                out.push(Token::Exponent(bytes[i + 1] == b'+'));
                 seen_exponent = true;
                 i += 2;
+                continue;
             }
-            _ if lower.starts_with("am/pm") => {
-                out.push(Token::Date("AM/PM".into()));
-                i += 5;
-            }
-            _ if lower.starts_with("a/p") => {
-                out.push(Token::Date(if c == 'a' { "a/p" } else { "A/P" }.into()));
-                i += 3;
-            }
-            'y' | 'Y' | 'm' | 'M' | 'd' | 'D' | 'h' | 'H' | 's' | 'S' => {
-                let n = chars[i..].iter().take_while(|&&x| x.eq_ignore_ascii_case(&c)).count();
-                out.push(Token::Date(c.to_ascii_lowercase().to_string().repeat(n)));
-                i += n;
-            }
-            // Characters Excel shows as they are without quotes.
-            c => {
-                lit(&mut out, &c.to_string());
-                i += 1;
-            }
+            _ => {}
         }
+        if rest.len() >= 5 && rest.is_char_boundary(5) && rest[..5].eq_ignore_ascii_case("am/pm") {
+            out.push(Token::Date("AM/PM".into()));
+            i += 5;
+            continue;
+        }
+        if rest.len() >= 3 && rest.is_char_boundary(3) && rest[..3].eq_ignore_ascii_case("a/p") {
+            out.push(Token::Date(if b == b'a' { "a/p" } else { "A/P" }.into()));
+            i += 3;
+            continue;
+        }
+        if matches!(b, b'y' | b'Y' | b'm' | b'M' | b'd' | b'D' | b'h' | b'H' | b's' | b'S') {
+            let n = section[i..].bytes().take_while(|x| x.eq_ignore_ascii_case(&b)).count();
+            let ch = (b as char).to_ascii_lowercase();
+            let mut s = String::with_capacity(n);
+            for _ in 0..n {
+                s.push(ch);
+            }
+            out.push(Token::Date(s));
+            i += n;
+            continue;
+        }
+        // Characters Excel shows as they are without quotes.
+        let ch = rest.chars().next().unwrap();
+        let mut buf = [0u8; 4];
+        lit(&mut out, ch.encode_utf8(&mut buf));
+        i += ch.len_utf8();
     }
     out
 }

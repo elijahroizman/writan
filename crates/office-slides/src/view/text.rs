@@ -264,12 +264,16 @@ pub fn auto_number(n: u32, scheme: &str) -> String {
 /// Everything needed to turn colors in a slide into paint.
 pub struct Paint<'a> {
     pub doc: &'a Document,
-    pub slide: &'a Slide,
+    colors: crate::SlideColorMap<'a>,
 }
 
-impl Paint<'_> {
+impl<'a> Paint<'a> {
+    pub fn new(doc: &'a Document, slide: &'a Slide) -> Self {
+        Self { doc, colors: crate::SlideColorMap::new(doc, slide) }
+    }
+
     pub fn color(&self, c: &Color) -> Rgba {
-        crate::color(self.doc, self.slide, c)
+        self.colors.resolve(c)
     }
 
     /// The theme's minor (body) font: what text without a font is in.

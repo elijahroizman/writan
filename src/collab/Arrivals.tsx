@@ -21,8 +21,8 @@ function useRequests() {
 export function Arrivals() {
   const list = useArrivals()
   const requests = useRequests()
-  const tabs = useWorkspace((s) => s.tabs)
   if (!list.length && !requests.length) return null
+  const tabs = useWorkspace.getState().tabs
   const titleOf = (tabId: string) => {
     const title = tabs.find((t) => t.id === tabId)?.title
     return title ? stripExtension(title) : null

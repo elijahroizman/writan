@@ -67,6 +67,33 @@ pub trait Book {
     fn date_system(&self) -> DateSystem;
     /// Now, as a serial number, for NOW() and TODAY(); `None` makes them #N/A.
     fn now(&self) -> Option<f64>;
+    /// Visits every stored non-empty cell in `[r0..=r1, c0..=c1]` in row-major order.
+    /// Returns `Some(visited_count)` when implemented sparsely, or `None` to fall back to `cell()`.
+    fn visit_range(
+        &mut self,
+        _sheet: Option<&str>,
+        _r0: u32,
+        _r1: u32,
+        _c0: u32,
+        _c1: u32,
+        _visit: &mut dyn FnMut(u32, u32, V) -> Result<(), &'static str>,
+    ) -> Option<Result<u64, &'static str>> {
+        None
+    }
+    /// Indexed exact-match lookup over `(r0..=r1, c0..=c1)`, returning row offset (vertical) or col offset (horizontal).
+    #[allow(clippy::too_many_arguments)]
+    fn exact_lookup(
+        &mut self,
+        _sheet: Option<&str>,
+        _r0: u32,
+        _r1: u32,
+        _c0: u32,
+        _c1: u32,
+        _horizontal: bool,
+        _key: &V,
+    ) -> Option<Result<Option<usize>, &'static str>> {
+        None
+    }
 }
 
 type R = Result<V, &'static str>;
@@ -96,6 +123,29 @@ impl Book for Context<'_> {
     }
     fn now(&self) -> Option<f64> {
         self.book.now()
+    }
+    fn visit_range(
+        &mut self,
+        sheet: Option<&str>,
+        r0: u32,
+        r1: u32,
+        c0: u32,
+        c1: u32,
+        visit: &mut dyn FnMut(u32, u32, V) -> Result<(), &'static str>,
+    ) -> Option<Result<u64, &'static str>> {
+        self.book.visit_range(sheet, r0, r1, c0, c1, visit)
+    }
+    fn exact_lookup(
+        &mut self,
+        sheet: Option<&str>,
+        r0: u32,
+        r1: u32,
+        c0: u32,
+        c1: u32,
+        horizontal: bool,
+        key: &V,
+    ) -> Option<Result<Option<usize>, &'static str>> {
+        self.book.exact_lookup(sheet, r0, r1, c0, c1, horizontal, key)
     }
 }
 
@@ -197,12 +247,9 @@ fn eval_chain(op: Op, left: &Expr, right: &Expr, book: &mut Context<'_>) -> R {
     Ok(acc)
 }
 
-fn reference(r: &Reference, book: &mut Context<'_>) -> R {
+fn ref_bounds<'a>(r: &'a Reference, book: &mut Context<'_>) -> Result<(Option<&'a str>, u32, u32, u32, u32), &'static str> {
     let sheet = r.sheet.as_deref();
-    let Some(end) = r.end else {
-        let (row, col) = (r.start.row.ok_or("#REF!")?, r.start.col.ok_or("#REF!")?);
-        return Ok(book.cell(sheet, row, col));
-    };
+    let end = r.end.ok_or("#VALUE!")?;
     // A whole column (or row) runs to the last row (or column) the sheet uses; only those need
     // the sheet's extent.
     let open = [r.start.row, r.start.col, end.row, end.col].iter().any(Option::is_none);
@@ -211,11 +258,20 @@ fn reference(r: &Reference, book: &mut Context<'_>) -> R {
         (Some(a), Some(b)) => (a.min(b), a.max(b)),
         _ => (0, last),
     };
-    let bound = |a: &RefPart, b: &RefPart| (span(a.row, b.row, last_row), span(a.col, b.col, last_col));
-    let ((r0, r1), (c0, c1)) = bound(&r.start, &end);
+    let (r0, r1) = span(r.start.row, end.row, last_row);
+    let (c0, c1) = span(r.start.col, end.col, last_col);
     if (r1 - r0 + 1) as u64 * (c1 - c0 + 1) as u64 > 10_000_000 {
         return Err("#NUM!");
     }
+    Ok((sheet, r0, r1, c0, c1))
+}
+
+fn reference(r: &Reference, book: &mut Context<'_>) -> R {
+    if r.end.is_none() {
+        let (row, col) = (r.start.row.ok_or("#REF!")?, r.start.col.ok_or("#REF!")?);
+        return Ok(book.cell(r.sheet.as_deref(), row, col));
+    }
+    let (sheet, r0, r1, c0, c1) = ref_bounds(r, book)?;
     Ok(V::Range((r0..=r1).map(|row| (c0..=c1).map(|col| book.cell(sheet, row, col)).collect()).collect()))
 }
 
@@ -280,7 +336,7 @@ fn truthy(v: &V) -> Result<bool, &'static str> {
 }
 
 /// Excel's order for comparing: numbers, then text (ignoring case), then booleans.
-fn compare(a: &V, b: &V) -> Result<std::cmp::Ordering, &'static str> {
+pub(crate) fn compare(a: &V, b: &V) -> Result<std::cmp::Ordering, &'static str> {
     use std::cmp::Ordering;
     let rank = |v: &V| match v {
         V::Num(_) | V::Empty => 0,
@@ -443,18 +499,69 @@ fn flatten(args: &[Expr], book: &mut Context<'_>) -> Result<Vec<(V, bool)>, &'st
     Ok(out)
 }
 
+fn stream_range_values(
+    book: &mut Context<'_>,
+    r: &Reference,
+    mut f: impl FnMut(u32, u32, V) -> Result<(), &'static str>,
+) -> Result<u64, &'static str> {
+    let (sheet, r0, r1, c0, c1) = ref_bounds(r, book)?;
+    let total = (r1 - r0 + 1) as u64 * (c1 - c0 + 1) as u64;
+    if let Some(res) = book.visit_range(sheet, r0, r1, c0, c1, &mut f) {
+        return res.map(|_| total);
+    }
+    for row in r0..=r1 {
+        for col in c0..=c1 {
+            f(row, col, book.cell(sheet, row, col))?;
+        }
+    }
+    Ok(total)
+}
+
+/// Streams numbers from arguments without allocating 2D range grids for sparse cell references.
+fn visit_numbers(args: &[Expr], book: &mut Context<'_>, mut f: impl FnMut(f64) -> Result<(), &'static str>) -> Result<(), &'static str> {
+    for a in args {
+        if let Expr::Ref(r) = a {
+            if r.end.is_some() {
+                stream_range_values(book, r, |_, _, v| match v {
+                    V::Err(e) => Err(e),
+                    V::Num(n) => f(n),
+                    _ => Ok(()),
+                })?;
+                continue;
+            }
+        }
+        match eval_inner(a, book)? {
+            V::Range(rows) => {
+                for v in rows.into_iter().flatten() {
+                    match v {
+                        V::Err(e) => return Err(e),
+                        V::Num(n) => f(n)?,
+                        _ => {}
+                    }
+                }
+            }
+            v => {
+                let in_range = is_reference(a, book, 0);
+                match (&v, in_range) {
+                    (V::Err(e), _) => return Err(e),
+                    (V::Num(n), _) => f(*n)?,
+                    (_, true) | (V::Empty, false) => {}
+                    (v, false) => f(num(v)?)?,
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The numbers SUM, AVERAGE, MIN and MAX use: in ranges only numbers; as direct arguments,
 /// numbers, booleans and numeric text. An error anywhere is the answer.
 fn numbers(args: &[Expr], book: &mut Context<'_>) -> Result<Vec<f64>, &'static str> {
     let mut out = Vec::new();
-    for (v, in_range) in flatten(args, book)? {
-        match (&v, in_range) {
-            (V::Err(e), _) => return Err(e),
-            (V::Num(n), _) => out.push(*n),
-            (_, true) | (V::Empty, false) => {}
-            (v, false) => out.push(num(v)?),
-        }
-    }
+    visit_numbers(args, book, |n| {
+        out.push(n);
+        Ok(())
+    })?;
     Ok(out)
 }
 
@@ -467,56 +574,80 @@ fn grid(arg: &Expr, book: &mut Context<'_>) -> Result<Vec<Vec<V>>, &'static str>
     })
 }
 
-/// A criterion as SUMIF and COUNTIF take one: `">5"`, `"<>x"`, `"=a*"`, `"apple"`, 3.
-fn matches_criterion(v: &V, criterion: &V) -> bool {
-    let (op, operand) = match criterion {
-        V::Text(t) => {
-            let t = t.as_str();
-            let op = ["<=", ">=", "<>", "<", ">", "="].into_iter().find(|o| t.starts_with(o)).unwrap_or("");
-            let rest = &t[op.len()..];
-            let operand = match rest.parse::<f64>() {
-                Ok(n) => V::Num(n),
-                Err(_) if rest.eq_ignore_ascii_case("TRUE") => V::Bool(true),
-                Err(_) if rest.eq_ignore_ascii_case("FALSE") => V::Bool(false),
-                Err(_) => V::Text(rest.to_string()),
-            };
-            (if op.is_empty() { "=" } else { op }, operand)
-        }
-        V::Empty => ("=", V::Num(0.0)),
-        other => ("=", other.clone()),
-    };
-    // Equality with text uses wildcards; numbers compare only with numbers.
-    match (&operand, v) {
-        (V::Text(pattern), _) if op == "=" || op == "<>" => {
-            let s = match v {
-                V::Text(s) => s.clone(),
-                V::Empty => String::new(),
-                _ => return op == "<>",
-            };
-            let m = wildcard(&pattern.to_lowercase(), &s.to_lowercase());
-            if op == "=" {
-                m
-            } else {
-                !m
+/// Pre-parsed criterion for SUMIF / COUNTIF / SUMIFS loops so strings aren't re-parsed per cell.
+struct CompiledCriterion {
+    op: &'static str,
+    operand: V,
+    text_lower: Option<(String, bool, bool)>,
+}
+
+impl CompiledCriterion {
+    fn parse(criterion: &V) -> Self {
+        let (op, operand) = match criterion {
+            V::Text(t) => {
+                let t = t.as_str();
+                let op = ["<=", ">=", "<>", "<", ">", "="].into_iter().find(|o| t.starts_with(o)).unwrap_or("");
+                let rest = &t[op.len()..];
+                let operand = match rest.parse::<f64>() {
+                    Ok(n) => V::Num(n),
+                    Err(_) if rest.eq_ignore_ascii_case("TRUE") => V::Bool(true),
+                    Err(_) if rest.eq_ignore_ascii_case("FALSE") => V::Bool(false),
+                    Err(_) => V::Text(rest.to_string()),
+                };
+                (if op.is_empty() { "=" } else { op }, operand)
             }
+            V::Empty => ("=", V::Num(0.0)),
+            other => ("=", other.clone()),
+        };
+        let text_lower = match &operand {
+            V::Text(pattern) if op == "=" || op == "<>" => {
+                let lower = pattern.to_lowercase();
+                let has_wildcard = lower.contains(['*', '?', '~']);
+                let ascii = pattern.is_ascii();
+                Some((lower, has_wildcard, ascii))
+            }
+            _ => None,
+        };
+        Self { op, operand, text_lower }
+    }
+
+    fn matches(&self, v: &V) -> bool {
+        if let Some((pattern_lower, has_wildcard, ascii)) = &self.text_lower {
+            let s = match v {
+                V::Text(s) => s.as_str(),
+                V::Empty => "",
+                _ => return self.op == "<>",
+            };
+            let m = if !has_wildcard {
+                if *ascii && s.is_ascii() {
+                    s.eq_ignore_ascii_case(pattern_lower)
+                } else {
+                    s.to_lowercase() == *pattern_lower
+                }
+            } else {
+                wildcard(pattern_lower, &s.to_lowercase())
+            };
+            return if self.op == "=" { m } else { !m };
         }
-        (V::Num(_), V::Num(_) | V::Empty) | (V::Bool(_), V::Bool(_)) | (V::Text(_), V::Text(_)) => match compare(v, &operand) {
-            Ok(o) => match op {
-                "=" => o.is_eq(),
-                "<>" => o.is_ne(),
-                "<" => o.is_lt(),
-                "<=" => o.is_le(),
-                ">" => o.is_gt(),
-                _ => o.is_ge(),
+        match (&self.operand, v) {
+            (V::Num(_), V::Num(_) | V::Empty) | (V::Bool(_), V::Bool(_)) | (V::Text(_), V::Text(_)) => match compare(v, &self.operand) {
+                Ok(o) => match self.op {
+                    "=" => o.is_eq(),
+                    "<>" => o.is_ne(),
+                    "<" => o.is_lt(),
+                    "<=" => o.is_le(),
+                    ">" => o.is_gt(),
+                    _ => o.is_ge(),
+                },
+                Err(_) => false,
             },
-            Err(_) => false,
-        },
-        _ => op == "<>",
+            _ => self.op == "<>",
+        }
     }
 }
 
 /// `*` any run, `?` any one character, `~` escapes.
-fn wildcard(pattern: &str, s: &str) -> bool {
+pub(crate) fn wildcard(pattern: &str, s: &str) -> bool {
     let s: Vec<char> = s.chars().collect();
     let mut matched = vec![false; s.len() + 1];
     matched[0] = true;
@@ -796,7 +927,12 @@ fn call(name: &str, args: &[Expr], book: &mut Context<'_>) -> R {
         }
         "SUMSQ" => {
             need(1, 255)?;
-            finite(numbers(args, book)?.iter().map(|n| n * n).sum())?
+            let mut total = 0.0;
+            visit_numbers(args, book, |n| {
+                total += n * n;
+                Ok(())
+            })?;
+            finite(total)?
         }
         "QUOTIENT" => {
             need(2, 2)?;
@@ -1054,27 +1190,143 @@ fn call(name: &str, args: &[Expr], book: &mut Context<'_>) -> R {
             }
         }
         // ---- maths ----
-        "SUM" => V::Num(numbers(args, book)?.iter().sum()),
-        "PRODUCT" => V::Num(numbers(args, book)?.iter().product()),
+        "SUM" => {
+            let mut total = 0.0;
+            visit_numbers(args, book, |n| {
+                total += n;
+                Ok(())
+            })?;
+            V::Num(total)
+        }
+        "PRODUCT" => {
+            let mut total = 1.0;
+            visit_numbers(args, book, |n| {
+                total *= n;
+                Ok(())
+            })?;
+            V::Num(total)
+        }
         "AVERAGE" => {
-            let n = numbers(args, book)?;
-            if n.is_empty() {
+            let mut sum = 0.0;
+            let mut count = 0usize;
+            visit_numbers(args, book, |n| {
+                sum += n;
+                count += 1;
+                Ok(())
+            })?;
+            if count == 0 {
                 return Err("#DIV/0!");
             }
-            V::Num(n.iter().sum::<f64>() / n.len() as f64)
+            V::Num(sum / count as f64)
         }
-        "MIN" => V::Num(numbers(args, book)?.into_iter().reduce(f64::min).unwrap_or(0.0)),
-        "MAX" => V::Num(numbers(args, book)?.into_iter().reduce(f64::max).unwrap_or(0.0)),
-        "COUNT" => V::Num(
-            flatten(args, book)?
-                .iter()
-                .filter(|(v, in_range)| matches!(v, V::Num(_)) || !in_range && num(v).is_ok() && !matches!(v, V::Empty))
-                .count() as f64,
-        ),
-        "COUNTA" => V::Num(flatten(args, book)?.iter().filter(|(v, _)| !matches!(v, V::Empty)).count() as f64),
+        "MIN" => {
+            let mut best: Option<f64> = None;
+            visit_numbers(args, book, |n| {
+                best = Some(match best {
+                    Some(b) => b.min(n),
+                    None => n,
+                });
+                Ok(())
+            })?;
+            V::Num(best.unwrap_or(0.0))
+        }
+        "MAX" => {
+            let mut best: Option<f64> = None;
+            visit_numbers(args, book, |n| {
+                best = Some(match best {
+                    Some(b) => b.max(n),
+                    None => n,
+                });
+                Ok(())
+            })?;
+            V::Num(best.unwrap_or(0.0))
+        }
+        "COUNT" => {
+            let mut count = 0u64;
+            for a in args {
+                if let Expr::Ref(r) = a {
+                    if r.end.is_some() {
+                        stream_range_values(book, r, |_, _, v| {
+                            if matches!(v, V::Num(_)) {
+                                count += 1;
+                            }
+                            Ok(())
+                        })?;
+                        continue;
+                    }
+                }
+                match eval_inner(a, book)? {
+                    V::Range(rows) => {
+                        for v in rows.into_iter().flatten() {
+                            if matches!(v, V::Num(_)) {
+                                count += 1;
+                            }
+                        }
+                    }
+                    v => {
+                        let in_range = is_reference(a, book, 0);
+                        if matches!(v, V::Num(_)) || (!in_range && !matches!(v, V::Empty) && num(&v).is_ok()) {
+                            count += 1;
+                        }
+                    }
+                }
+            }
+            V::Num(count as f64)
+        }
+        "COUNTA" => {
+            let mut count = 0u64;
+            for a in args {
+                if let Expr::Ref(r) = a {
+                    if r.end.is_some() {
+                        stream_range_values(book, r, |_, _, v| {
+                            if !matches!(v, V::Empty) {
+                                count += 1;
+                            }
+                            Ok(())
+                        })?;
+                        continue;
+                    }
+                }
+                match eval_inner(a, book)? {
+                    V::Range(rows) => count += rows.into_iter().flatten().filter(|v| !matches!(v, V::Empty)).count() as u64,
+                    v if !matches!(v, V::Empty) => count += 1,
+                    _ => {}
+                }
+            }
+            V::Num(count as f64)
+        }
         "COUNTBLANK" => {
-            V::Num(flatten(args, book)?.iter().filter(|(v, _)| matches!(v, V::Empty) || matches!(v, V::Text(t) if t.is_empty())).count()
-                as f64)
+            let mut count = 0u64;
+            for a in args {
+                if let Expr::Ref(r) = a {
+                    if r.end.is_some() {
+                        let (sheet, r0, r1, c0, c1) = ref_bounds(r, book)?;
+                        let total = (r1 - r0 + 1) as u64 * (c1 - c0 + 1) as u64;
+                        let mut non_blank = 0u64;
+                        if let Some(res) = book.visit_range(sheet, r0, r1, c0, c1, &mut |_, _, v| {
+                            if !(matches!(v, V::Empty) || matches!(v, V::Text(t) if t.is_empty())) {
+                                non_blank += 1;
+                            }
+                            Ok(())
+                        }) {
+                            res?;
+                            count += total - non_blank;
+                            continue;
+                        }
+                    }
+                }
+                match eval_inner(a, book)? {
+                    V::Range(rows) => {
+                        count +=
+                            rows.into_iter().flatten().filter(|v| matches!(v, V::Empty) || matches!(v, V::Text(t) if t.is_empty())).count()
+                                as u64
+                    }
+                    V::Empty => count += 1,
+                    V::Text(t) if t.is_empty() => count += 1,
+                    _ => {}
+                }
+            }
+            V::Num(count as f64)
         }
         "ABS" => V::Num(n_arg(0, book)?.abs()),
         "INT" => V::Num(n_arg(0, book)?.floor()),
@@ -1135,29 +1387,95 @@ fn call(name: &str, args: &[Expr], book: &mut Context<'_>) -> R {
             V::Num(total)
         }
         "SUMIF" | "COUNTIF" | "AVERAGEIF" => {
-            let range = grid(args.first().ok_or("#VALUE!")?, book)?;
-            let criterion = arg(1, book)?;
-            let values = if args.len() > 2 && name != "COUNTIF" { grid(&args[2], book)? } else { range.clone() };
-            let mut picked = Vec::new();
+            let first = args.first().ok_or("#VALUE!")?;
+            let criterion = CompiledCriterion::parse(&arg(1, book)?);
+            let sum_arg = (args.len() > 2 && name != "COUNTIF").then(|| &args[2]);
+            if let Expr::Ref(r) = first {
+                if r.end.is_some() {
+                    if let Some(Expr::Ref(vr)) = sum_arg {
+                        if vr.end.is_some() && !criterion.matches(&V::Empty) {
+                            let (sheet, r0, r1, c0, c1) = ref_bounds(r, book)?;
+                            let (vs, vr0, vr1, vc0, vc1) = ref_bounds(vr, book)?;
+                            let mut hits = Vec::new();
+                            if let Some(res) = book.visit_range(sheet, r0, r1, c0, c1, &mut |row, col, v| {
+                                if criterion.matches(&v) {
+                                    let (tr, tc) = (vr0 + (row - r0), vc0 + (col - c0));
+                                    if tr <= vr1 && tc <= vc1 {
+                                        hits.push((tr, tc));
+                                    }
+                                }
+                                Ok(())
+                            }) {
+                                res?;
+                                let mut sum = 0.0;
+                                let mut num_count = 0usize;
+                                for (tr, tc) in hits {
+                                    if let V::Num(n) = book.cell(vs, tr, tc) {
+                                        sum += n;
+                                        num_count += 1;
+                                    }
+                                }
+                                return Ok(match name {
+                                    "SUMIF" => V::Num(sum),
+                                    _ if num_count == 0 => return Err("#DIV/0!"),
+                                    _ => V::Num(sum / num_count as f64),
+                                });
+                            }
+                        }
+                    } else if sum_arg.is_none() {
+                        let (sheet, r0, r1, c0, c1) = ref_bounds(r, book)?;
+                        let empty_matches = criterion.matches(&V::Empty);
+                        let mut count = 0u64;
+                        let mut sum = 0.0;
+                        let mut num_count = 0usize;
+                        if let Some(res) = book.visit_range(sheet, r0, r1, c0, c1, &mut |_, _, v| {
+                            if criterion.matches(&v) {
+                                count += 1;
+                                if let V::Num(n) = v {
+                                    sum += n;
+                                    num_count += 1;
+                                }
+                            }
+                            Ok(())
+                        }) {
+                            let visited = res?;
+                            if empty_matches {
+                                let total = (r1 - r0 + 1) as u64 * (c1 - c0 + 1) as u64;
+                                count += total.saturating_sub(visited);
+                            }
+                            return Ok(match name {
+                                "COUNTIF" => V::Num(count as f64),
+                                "SUMIF" => V::Num(sum),
+                                _ if num_count == 0 => return Err("#DIV/0!"),
+                                _ => V::Num(sum / num_count as f64),
+                            });
+                        }
+                    }
+                }
+            }
+            let range = grid(first, book)?;
+            let values = if let Some(sa) = sum_arg { grid(sa, book)? } else { range.clone() };
+            let mut count = 0usize;
+            let mut sum = 0.0;
+            let mut num_count = 0usize;
             for (r, row) in range.iter().enumerate() {
                 for (c, v) in row.iter().enumerate() {
-                    if matches_criterion(v, &criterion) {
-                        picked.push(values.get(r).and_then(|x| x.get(c)).cloned().unwrap_or(V::Empty));
+                    if criterion.matches(v) {
+                        count += 1;
+                        if name != "COUNTIF" {
+                            if let Some(V::Num(n)) = values.get(r).and_then(|x| x.get(c)) {
+                                sum += *n;
+                                num_count += 1;
+                            }
+                        }
                     }
                 }
             }
             match name {
-                "COUNTIF" => V::Num(picked.len() as f64),
-                _ => {
-                    let nums: Vec<f64> = picked.iter().filter_map(|v| if let V::Num(n) = v { Some(*n) } else { None }).collect();
-                    if name == "SUMIF" {
-                        V::Num(nums.iter().sum())
-                    } else if nums.is_empty() {
-                        return Err("#DIV/0!");
-                    } else {
-                        V::Num(nums.iter().sum::<f64>() / nums.len() as f64)
-                    }
-                }
+                "COUNTIF" => V::Num(count as f64),
+                "SUMIF" => V::Num(sum),
+                _ if num_count == 0 => return Err("#DIV/0!"),
+                _ => V::Num(sum / num_count as f64),
             }
         }
         // ---- logic ----
@@ -1315,8 +1633,41 @@ fn call(name: &str, args: &[Expr], book: &mut Context<'_>) -> R {
         "VLOOKUP" | "HLOOKUP" => {
             need(3, 4)?;
             let key = arg(0, book)?;
+            let horizontal = name == "HLOOKUP";
+            if let Expr::Ref(r) = &args[1] {
+                if r.end.is_some() {
+                    let (sheet, r0, r1, c0, c1) = ref_bounds(r, book)?;
+                    let index = n_arg(2, book)? as usize;
+                    let approximate = args.len() < 4 || truthy(&arg(3, book)?)?;
+                    let width = if horizontal { (r1 - r0 + 1) as usize } else { (c1 - c0 + 1) as usize };
+                    if index < 1 || index > width {
+                        return Err(if index < 1 { "#VALUE!" } else { "#REF!" });
+                    }
+                    if !approximate {
+                        if let Some(res) = book.exact_lookup(sheet, r0, r1, c0, c1, horizontal, &key) {
+                            let offset = res?.ok_or("#N/A")? as u32;
+                            return Ok(if horizontal {
+                                book.cell(sheet, r0 + index as u32 - 1, c0 + offset)
+                            } else {
+                                book.cell(sheet, r0 + offset, c0 + index as u32 - 1)
+                            });
+                        }
+                    }
+                    let keys: Vec<V> = if horizontal {
+                        (c0..=c1).map(|c| book.cell(sheet, r0, c)).collect()
+                    } else {
+                        (r0..=r1).map(|row| book.cell(sheet, row, c0)).collect()
+                    };
+                    let pos = lookup(&key, &keys, if approximate { 1 } else { 0 })? as u32;
+                    return Ok(if horizontal {
+                        book.cell(sheet, r0 + index as u32 - 1, c0 + pos)
+                    } else {
+                        book.cell(sheet, r0 + pos, c0 + index as u32 - 1)
+                    });
+                }
+            }
             let mut table = grid(&args[1], book)?;
-            if name == "HLOOKUP" {
+            if horizontal {
                 table = transpose(table);
             }
             let index = n_arg(2, book)? as usize;
@@ -1330,13 +1681,32 @@ fn call(name: &str, args: &[Expr], book: &mut Context<'_>) -> R {
         }
         "MATCH" => {
             let key = arg(0, book)?;
-            let g = grid(args.get(1).ok_or("#N/A")?, book)?;
+            let kind = if args.len() > 2 { n_arg(2, book)? as i32 } else { 1 };
+            let r_expr = args.get(1).ok_or("#N/A")?;
+            if let Expr::Ref(r) = r_expr {
+                if r.end.is_some() {
+                    let (sheet, r0, r1, c0, c1) = ref_bounds(r, book)?;
+                    let horizontal = r0 == r1 && c1 > c0;
+                    if kind == 0 {
+                        if let Some(res) = book.exact_lookup(sheet, r0, r1, c0, c1, horizontal, &key) {
+                            let offset = res?.ok_or("#N/A")?;
+                            return Ok(V::Num((offset + 1) as f64));
+                        }
+                    }
+                    let list: Vec<V> = if horizontal {
+                        (c0..=c1).map(|c| book.cell(sheet, r0, c)).collect()
+                    } else {
+                        (r0..=r1).map(|row| book.cell(sheet, row, c0)).collect()
+                    };
+                    return Ok(V::Num((lookup(&key, &list, kind)? + 1) as f64));
+                }
+            }
+            let g = grid(r_expr, book)?;
             let list: Vec<V> = if g.len() == 1 {
                 g.into_iter().next().unwrap()
             } else {
                 g.into_iter().map(|r| r.into_iter().next().unwrap_or(V::Empty)).collect()
             };
-            let kind = if args.len() > 2 { n_arg(2, book)? as i32 } else { 1 };
             V::Num((lookup(&key, &list, kind)? + 1) as f64)
         }
         "INDEX" => {
@@ -1402,13 +1772,13 @@ fn conditional_aggregate(name: &str, args: &[Expr], book: &mut Context<'_>) -> R
         if let V::Err(e) = criterion {
             return Err(e);
         }
-        conditions.push((range, criterion));
+        conditions.push((range, CompiledCriterion::parse(&criterion)));
     }
     let mut count = 0;
     let mut ns = Vec::new();
     for (r, row) in values.iter().enumerate() {
         for (c, value) in row.iter().enumerate() {
-            if conditions.iter().all(|(g, criterion)| matches_criterion(&g[r][c], criterion)) {
+            if conditions.iter().all(|(g, criterion)| criterion.matches(&g[r][c])) {
                 count += 1;
                 if name != "COUNTIFS" {
                     match value {

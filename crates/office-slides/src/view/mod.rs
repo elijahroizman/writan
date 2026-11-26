@@ -97,6 +97,10 @@ pub struct SlidesView {
     /// Each slide's revision: goes up when the slide changes, so drawings can be reused.
     pub(crate) revisions: Vec<u64>,
     pub(crate) next_revision: u64,
+    pub(crate) theme_ver: u64,
+    pub(crate) layouts_ver: u64,
+    pub(crate) slides_meta_ver: u64,
+    pub(crate) elements_ver: u64,
     /// The empty paragraph whose bullet shows because the caret is in it (slide, frame,
     /// paragraph), as last drawn.
     pub(crate) caret_shown: Option<(usize, u32, u32)>,
@@ -160,6 +164,10 @@ impl SlidesView {
             styles_sent: 0,
             revisions: (1..=n as u64).collect(),
             next_revision: n as u64 + 1,
+            theme_ver: 1,
+            layouts_ver: 1,
+            slides_meta_ver: 1,
+            elements_ver: 1,
             caret_shown: None,
             goal_x: None,
             pending: None,
@@ -207,19 +215,40 @@ impl SlidesView {
         &self.revisions
     }
 
+    pub fn versions(&self) -> [u64; 4] {
+        [self.theme_ver, self.layouts_ver, self.slides_meta_ver, self.elements_ver]
+    }
+
     /// Notes that slide `index` changed.
     pub(crate) fn touch(&mut self, index: usize) {
         if let Some(r) = self.revisions.get_mut(index) {
             *r = self.next_revision;
             self.next_revision += 1;
         }
+        self.slides_meta_ver += 1;
+        self.elements_ver += 1;
     }
 
-    /// Every slide changed (added, removed, moved).
+    /// Every slide changed (theme or fonts changed).
     pub(crate) fn touch_all(&mut self) {
         let n = self.slides().len();
         self.revisions = (0..n as u64).map(|i| self.next_revision + i).collect();
         self.next_revision += n as u64;
+        self.slides_meta_ver += 1;
+        self.elements_ver += 1;
+    }
+
+    /// Bumps only slides from `from_index` onward that show a dynamic slide number (`slidenum`),
+    /// avoiding full-deck thumbnail invalidation when slides are inserted, removed, or reordered.
+    pub(crate) fn bump_slidenums(&mut self, from_index: usize) {
+        let n = self.slides().len();
+        for i in from_index..n {
+            if slide_has_slidenum(&self.slides()[i]) {
+                self.touch(i);
+            }
+        }
+        self.slides_meta_ver += 1;
+        self.elements_ver += 1;
     }
 
     /// The frame and paragraph the caret is in on slide `index`, while editing text outside a table.
@@ -286,6 +315,26 @@ impl SlidesView {
     pub fn media_type(&self, id: &str) -> Option<String> {
         self.doc.media(id).map(|m| m.content_type.clone()).or_else(|| self.doc.package.as_ref()?.content_type(id).map(str::to_string))
     }
+}
+
+pub(crate) fn slide_has_slidenum(slide: &Slide) -> bool {
+    fn has_in_frames(frames: &[Frame]) -> bool {
+        frames.iter().any(|f| {
+            if f.placeholder.as_ref().is_some_and(|p| p.kind.as_deref() == Some("sldNum")) {
+                return true;
+            }
+            match &f.content {
+                FrameContent::Shape { text: Some(body), .. } => body.paragraphs.iter().any(|p| {
+                    p.content.iter().any(|i| {
+                        matches!(i, office_core::model::Inline::Raw { xml } if xml.is(office_core::xml::ns::A, "fld") && xml.attr("type") == Some("slidenum"))
+                    })
+                }),
+                FrameContent::Group { frames } => has_in_frames(frames),
+                _ => false,
+            }
+        })
+    }
+    has_in_frames(&slide.frames)
 }
 
 pub(crate) fn slides_of(doc: &Document) -> &[Slide] {

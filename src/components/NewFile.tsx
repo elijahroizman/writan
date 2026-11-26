@@ -1,13 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
-import { create } from 'zustand'
+import { useNewFile } from '../state/modals'
 import { enabledKinds, usePlugins } from '../state/plugins'
 import { useWorkspace } from '../state/workspace'
 import { DocBadge, Kbd, Modal } from './ui'
 
-export const useNewFile = create<{ open: boolean; setOpen(open: boolean): void }>((set) => ({
-  open: false,
-  setOpen: (open) => set({ open }),
-}))
+export { useNewFile }
 
 /** ⌘N: pick the kind of file to create. Arrows and return, or the number beside it. */
 export function NewFilePicker() {
@@ -27,21 +24,25 @@ export function NewFilePicker() {
     list.current?.focus()
   }, [])
 
+  const stateRef = useRef({ items, index })
+  stateRef.current = { items, index }
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      const { items: listItems, index: idx } = stateRef.current
       const at = Number(e.key)
       if (e.key === 'Escape') close()
-      else if (e.key === 'ArrowDown') setIndex((i) => (i + 1) % items.length)
-      else if (e.key === 'ArrowUp') setIndex((i) => (i - 1 + items.length) % items.length)
-      else if (e.key === 'Enter') pick(items[index])
-      else if (at >= 1 && at <= Math.min(9, items.length) && !e.metaKey && !e.ctrlKey) pick(items[at - 1])
+      else if (e.key === 'ArrowDown') setIndex((i) => (i + 1) % listItems.length)
+      else if (e.key === 'ArrowUp') setIndex((i) => (i - 1 + listItems.length) % listItems.length)
+      else if (e.key === 'Enter') pick(listItems[idx])
+      else if (at >= 1 && at <= Math.min(9, listItems.length) && !e.metaKey && !e.ctrlKey) pick(listItems[at - 1])
       else return
       e.preventDefault()
       e.stopPropagation()
     }
     window.addEventListener('keydown', onKey, true)
     return () => window.removeEventListener('keydown', onKey, true)
-  })
+  }, [])
 
   return (
     <Modal placement="top" dim="light" layer="picker" onClose={close}>

@@ -98,15 +98,15 @@ impl SheetsView {
     }
 
     /// Changes cells through `f`, recording each cell's before and after.
-    fn change_cells(&mut self, sheet: usize, cells: &[CellRef], f: impl Fn(&mut SheetsView, CellRef)) {
+    fn change_cells(&mut self, sheet: usize, cells: &[CellRef], mut f: impl FnMut(&mut SheetsView, CellRef)) {
         let before = self.sel;
-        if let Some(step) = self.cell_changes(sheet, cells, f) {
-            self.changed(Some(sheet));
+        if let Some(step) = self.cell_changes(sheet, cells, &mut f) {
+            self.cells_changed(sheet, cells);
             self.record(vec![step], before);
         }
     }
 
-    fn cell_changes(&mut self, sheet: usize, cells: &[CellRef], f: impl Fn(&mut SheetsView, CellRef)) -> Option<CStep> {
+    fn cell_changes(&mut self, sheet: usize, cells: &[CellRef], mut f: impl FnMut(&mut SheetsView, CellRef)) -> Option<CStep> {
         let mut steps = Vec::with_capacity(cells.len());
         for &at in cells {
             let old = self.sheets().get(sheet).and_then(|s| s.cell(at)).cloned();
@@ -408,7 +408,18 @@ impl SheetsView {
         let cells = all_cells(range, 20_000);
         let p = patch.clone();
         let (r0, r1, c0, c1) = (range.start.row, range.end.row, range.start.col, range.end.col);
+        let mut style_map: HashMap<Option<u32>, Option<u32>> = HashMap::new();
+        let no_borders = p.borders.is_none();
         self.change_cells(sheet, &cells, |v, at| {
+            let old_style = crate::sheet(&v.doc, sheet).and_then(|s| s.cell(at)).and_then(|c| c.style);
+            if no_borders {
+                if let Some(&new_style) = style_map.get(&old_style) {
+                    if let Some(s) = crate::sheet_mut(&mut v.doc, sheet) {
+                        s.cell_mut(at).style = new_style;
+                    }
+                    return;
+                }
+            }
             let mut f = format_of(&v.doc, sheet, at);
             if let Some(b) = p.bold {
                 f.font.bold = b;
@@ -493,6 +504,10 @@ impl SheetsView {
                 }
             }
             set_format(&mut v.doc, sheet, at, &f);
+            if no_borders {
+                let new_style = crate::sheet(&v.doc, sheet).and_then(|s| s.cell(at)).and_then(|c| c.style);
+                style_map.insert(old_style, new_style);
+            }
         });
     }
 
@@ -729,15 +744,26 @@ impl SheetsView {
         let mut formulas =
             clipboard.as_mut().filter(|c| !c.cut).map(|c| std::mem::take(&mut c.cells).into_iter().collect::<HashMap<_, _>>());
         let mut text = String::new();
+        let sheet_ref = self.sheets().get(sheet);
+        let date_system = crate::excel(&self.doc).map(|x| x.date_system).unwrap_or_default();
         for r in range.start.row..=range.end.row {
+            let row_ref = sheet_ref.and_then(|s| s.rows.binary_search_by_key(&r, |row| row.index).ok().map(|i| &s.rows[i]));
             for c in range.start.col..=range.end.col {
-                let at = CellRef::new(r, c);
-                let display = crate::display(&self.doc, sheet, at);
                 if c > range.start.col {
                     text.push('\t');
                 }
+                let cell = row_ref.and_then(|row| row.cells.binary_search_by_key(&c, |cell| cell.col).ok().map(|i| &row.cells[i]));
+                let Some(cell) = cell else { continue };
+                if cell.value.is_empty() {
+                    continue;
+                }
+                let code = crate::excel(&self.doc)
+                    .map(|x| x.styles.format(cell.style.unwrap_or(0)).number_format)
+                    .unwrap_or_else(|| "General".into());
+                let display = crate::numfmt::format(&cell.value, &code, date_system).text;
                 text.push_str(&display);
                 if let (Some(clipboard), Some(formulas)) = (&mut clipboard, &mut formulas) {
+                    let at = CellRef::new(r, c);
                     if let Some(cell) = formulas.remove(&at) {
                         clipboard.cells.push((at, cell));
                     } else if !display.is_empty() {

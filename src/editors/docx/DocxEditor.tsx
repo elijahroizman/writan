@@ -37,7 +37,7 @@ import {
   Undo2,
 } from 'lucide-react'
 import type { ReactNode } from 'react'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { EditorProps } from '../../App'
 import type { Rect } from '../../components/CropOverlay'
 import { CropOverlay } from '../../components/CropOverlay'
@@ -50,10 +50,12 @@ import { LinkExcelModal } from '../../links/LinkExcelModal'
 import { LinkedExcelSection } from '../../links/LinkedExcelSection'
 import type { ExcelLink, ExcelLinksController, LinkedDocumentTarget } from '../../links/excelLinks'
 import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
-import { LatexMathModal } from '../../math/LatexMathModal'
+const LatexMathModal = lazy(() => import('../../math/LatexMathModal').then((m) => ({ default: m.LatexMathModal })))
+
 import { MathInspectorSection } from '../../math/MathInspectorSection'
-import type { LatexMathSpec } from '../../math/latexMath'
-import { encodeLatexTag, normalizeHexColor, parseLatexTag } from '../../math/latexMath'
+import type { LatexMathSpec } from '../../math/latexTag'
+import { encodeLatexTag, normalizeHexColor, parseLatexTag } from '../../math/latexTag'
+import { itemsContainLatex, loadLatexMath } from '../../math/lazyLatex'
 import { itemsHtml } from '../../engine/paint'
 import {
   DocxEditor,
@@ -173,8 +175,20 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
   const excelLinksRef = useRef(excelLinks)
   excelLinksRef.current = excelLinks
   useEffect(() => {
-    if (import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) Object.assign(window, { __docxLinks: excelLinks })
+    if (!(import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS)) return
+    Object.assign(window, { __docxLinks: excelLinks })
+    return () => {
+      const w = window as unknown as Record<string, unknown>
+      if (w.__docxLinks === excelLinks) delete w.__docxLinks
+    }
   }, [excelLinks])
+  useEffect(() => {
+    if (!(import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) || !editor) return
+    return () => {
+      const w = window as unknown as Record<string, unknown>
+      if (w.__docxEditor === editor) delete w.__docxEditor
+    }
+  }, [editor])
   const openExcelSource = (link: ExcelLink) => {
     const open = findOpenWorkbook(link)
     if (open) useWorkspace.getState().activate(open.tabId)
@@ -352,27 +366,31 @@ function DocxWorkbench({ tab, active, comments, commentsChanged }: EditorProps &
       {peek && <CommentPeek store={comments} id={peek.id} at={peek.at} />}
       {crop && <CropOverlay src={crop.src} frame={crop.frame} image={crop.image} onDone={endCrop} onCancel={() => endCrop()} />}
       <LinkExcelModal open={excelModalOpen} onClose={() => setExcelModalOpen(false)} controller={excelLinks} targetLabel="Word" />
-      <LatexMathModal
-        open={!!mathModal}
-        mode={mathModal?.mode ?? 'insert'}
-        targetLabel="Word"
-        initialSpec={mathModal?.initialSpec ?? { latex: '', display: false, fontSizePt: 12, color: '#000000' }}
-        onClose={() => {
-          setMathModal(null)
-          editorRef.current?.focus()
-        }}
-        onCommit={({ spec, omml, fingerprint, width, height }) => {
-          const ed = editorRef.current
-          if (!ed) return
-          const tag = encodeLatexTag(spec, { width, height, fingerprint })
-          if (mathModal?.mode === 'edit') {
-            ed.updateSelectedMath(tag, omml)
-          } else {
-            ed.insertMath(tag, omml)
-          }
-          ed.focus()
-        }}
-      />
+      {mathModal && (
+        <Suspense fallback={null}>
+          <LatexMathModal
+            open
+            mode={mathModal.mode}
+            targetLabel="Word"
+            initialSpec={mathModal.initialSpec}
+            onClose={() => {
+              setMathModal(null)
+              editorRef.current?.focus()
+            }}
+            onCommit={({ spec, omml, fingerprint, width, height }) => {
+              const ed = editorRef.current
+              if (!ed) return
+              const tag = encodeLatexTag(spec, { width, height, fingerprint })
+              if (mathModal.mode === 'edit') {
+                ed.updateSelectedMath(tag, omml)
+              } else {
+                ed.insertMath(tag, omml)
+              }
+              ed.focus()
+            }}
+          />
+        </Suspense>
+      )}
       <FindBar
         open={!!findOpen}
         replacing={findOpen === 'replace'}
@@ -1154,6 +1172,8 @@ function useLinks(stageRef: React.RefObject<HTMLDivElement | null>) {
 /** Draw every page into the print root at its true size, then open the print panel. */
 async function printPages(editor: WordEngine | null) {
   if (!editor) return
+  // Printing needs every page, even when the document is still completing its progressive open.
+  editor.finishProgressive()
   const root = document.getElementById('print-root')!
   root.innerHTML = ''
   const sizes = editor.sizes
@@ -1163,7 +1183,9 @@ async function printPages(editor: WordEngine | null) {
   style.textContent = `@page { size: ${sizes[0][0]}px ${sizes[0][1]}px; margin: 0; }`
   root.appendChild(style)
   for (let i = 0; i < sizes.length; i++) {
-    const p = editor.paint(i, true)!
+    const p = editor.paintStandalone(i)
+    // Printing cannot redraw after MathJax arrives: wait before the equation's object URL is made.
+    if (itemsContainLatex(p.items)) await loadLatexMath()
     const wrap = document.createElement('div')
     wrap.className = 'print-page docx-print-page'
     const page = document.createElement('div')
@@ -1177,5 +1199,7 @@ async function printPages(editor: WordEngine | null) {
     root.appendChild(wrap)
   }
   await Promise.all(Array.from(root.querySelectorAll('img')).map((img) => img.decode().catch(() => {})))
+  const { schedulePrintCleanup } = await import('../../lib/print')
+  schedulePrintCleanup()
   window.print()
 }

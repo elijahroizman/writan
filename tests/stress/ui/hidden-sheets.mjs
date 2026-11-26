@@ -1,5 +1,5 @@
-import { resolve } from 'node:path'
-import { launch, start, open, check, done } from './harness.mjs'
+import { join, resolve } from 'node:path'
+import { launch, start, open, check, done, TMP } from './harness.mjs'
 const { browser, page, logs } = await launch()
 try {
   await start(page)
@@ -18,5 +18,5 @@ try {
   check('hidden sheet names are absent from navigation', !names.includes('Hidden first') && !names.includes('Very hidden') && names.includes('Visible'), names)
   await nav.getByRole('button', { name: 'Visible', exact: true }).click()
   check('visible sheet still responds', await page.evaluate(() => window.__sheets.state.sheet === 2))
-  await page.screenshot({ path: `/tmp/writan-stress/hidden-sheets-${process.env.ENGINE ?? 'chromium'}.png` })
+  await page.screenshot({ path: join(TMP, `hidden-sheets-${process.env.ENGINE ?? 'chromium'}.png`) })
 } finally { await done(browser, logs) }

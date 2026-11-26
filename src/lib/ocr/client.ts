@@ -85,12 +85,17 @@ export class OcrClient {
         throw error
       }
     }
-    // Transfer our copy so callers can render or rerun OCR on their original pixels.
-    const data = new Uint8Array(page.data)
+    const canTransfer =
+      !!page.transfer &&
+      page.data.byteOffset === 0 &&
+      page.data.byteLength === page.data.buffer.byteLength &&
+      page.data.buffer instanceof ArrayBuffer
+    // Copy by default so callers retain their original pixels; transfer straight when explicitly owned.
+    const data = canTransfer ? page.data : new Uint8Array(page.data)
     // ImageData exposes width and height on its prototype.
-    const { width, height, pageIndex, widthPt, heightPt } = page
+    const { width, height, channels, pageIndex, widthPt, heightPt } = page
     const reply = await this.call({
-      kind: 'recognize', page: { data, width, height, pageIndex, widthPt, heightPt },
+      kind: 'recognize', page: { data, width, height, channels, pageIndex, widthPt, heightPt },
     }, [data.buffer], signal)
     if (reply.kind !== 'result') throw new Error('Unexpected OCR worker response.')
     return reply.page

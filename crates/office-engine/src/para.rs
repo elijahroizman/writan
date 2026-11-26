@@ -1085,19 +1085,33 @@ impl ParaLayout {
                 }
                 return match f.kind {
                     FragKind::Text(_) => {
-                        let mut best = f.start;
-                        let mut prev_x = f.x;
                         let text = &spec.text[f.start as usize..f.end as usize];
-                        for (i, c) in text.char_indices() {
-                            let next = f.start + (i + c.len_utf8()) as u32;
-                            let nx = x_in_line(ctx, spec, line, next);
-                            if x < (prev_x + nx) / 2.0 {
-                                return best;
+                        let mut bounds: Vec<(u32, f64)> = Vec::new();
+                        let mut pos = f.start;
+                        let mut px = f.x;
+                        // Binary-search character boundaries for O(log C) width measurements.
+                        let offsets: Vec<u32> =
+                            std::iter::once(f.start).chain(text.char_indices().map(|(i, c)| f.start + (i + c.len_utf8()) as u32)).collect();
+                        let mut lo = 0usize;
+                        let mut hi = offsets.len() - 1;
+                        while lo + 1 < hi {
+                            let mid = (lo + hi) / 2;
+                            let mx = frag_x(ctx, spec, f, offsets[mid]);
+                            if x < mx {
+                                hi = mid;
+                            } else {
+                                lo = mid;
+                                px = mx;
+                                pos = offsets[mid];
                             }
-                            best = next;
-                            prev_x = nx;
                         }
-                        best.min(line_end)
+                        if lo + 1 < offsets.len() {
+                            let next = offsets[lo + 1];
+                            let nx = if bounds.is_empty() { frag_x(ctx, spec, f, next) } else { px };
+                            let _ = &mut bounds;
+                            return if x < (px + nx) / 2.0 { pos } else { next }.min(line_end);
+                        }
+                        pos.min(line_end)
                     }
                     _ => {
                         if x < f.x + f.width / 2.0 {

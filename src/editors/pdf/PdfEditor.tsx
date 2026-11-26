@@ -25,7 +25,7 @@ import {
   Type,
   Undo2,
 } from 'lucide-react'
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type { EditorProps } from '../../App'
 import { FindBar, InspectorHeader, Workbench, formatZoom } from '../../components/Workbench'
 import type { MenuEntry } from '../../components/ui'
@@ -84,6 +84,90 @@ interface FindState {
   done: boolean
 }
 
+const EMPTY_STROKES: Stroke[] = []
+
+interface PdfPageOverlayProps {
+  store: DocStore
+  index: number
+  page: PageInfo
+  unit: number
+  hits: Box[][] | undefined
+  currentHit: number
+  pendingInk: Stroke[]
+  tool: ToolId
+  selectedId: string | null
+  inkColor: string
+  inkThickness: number
+  fontSize: number
+  draftAt: { x: number; y: number } | null
+  actions: AnnotationActions
+  onAddStroke(key: number, stroke: Stroke): void
+  onPlaceOnPage(key: number, x: number, y: number): void
+  onStartDraft(key: number, x: number, y: number): void
+  onFinishDraft(key: number, text: string, box: Box): void
+}
+
+const PdfPageOverlay = memo(function PdfPageOverlay({
+  store,
+  index,
+  page: p,
+  unit,
+  hits,
+  currentHit,
+  pendingInk,
+  tool,
+  selectedId,
+  inkColor,
+  inkThickness,
+  fontSize,
+  draftAt,
+  actions,
+  onAddStroke,
+  onPlaceOnPage,
+  onStartDraft,
+  onFinishDraft,
+}: PdfPageOverlayProps) {
+  return (
+    <>
+      {hits && <SearchLayer boxes={hits} current={currentHit} />}
+      <TextLayer store={store} index={index} page={p} />
+      <AnnotationLayer
+        store={store}
+        index={index}
+        page={p}
+        rev={0}
+        unit={unit}
+        interactive={tool === 'select' || tool === 'highlight'}
+        selectable={tool === 'select'}
+        selectedId={selectedId}
+        actions={actions}
+      />
+      {tool === 'draw' ? (
+        <DrawLayer unit={unit} color={inkColor} width={inkThickness} strokes={pendingInk} onStroke={(stroke) => onAddStroke(p.key, stroke)} />
+      ) : (
+        pendingInk.length > 0 && (
+          <div className="tool-layer passive">
+            <InkPreview strokes={pendingInk} color={inkColor} width={inkThickness} />
+          </div>
+        )
+      )}
+      {tool === 'sign' && <PlaceLayer unit={unit} onPlace={(x, y) => onPlaceOnPage(p.key, x, y)} />}
+      {tool === 'text' && <TextToolLayer unit={unit} onPlace={(x, y) => onStartDraft(p.key, x, y)} />}
+      {draftAt && (
+        <TextDraft
+          key={`${draftAt.x},${draftAt.y}`}
+          x={draftAt.x}
+          y={draftAt.y}
+          unit={unit}
+          fontSize={fontSize}
+          color={inkColor}
+          onDone={(text, box) => onFinishDraft(p.key, text, box)}
+        />
+      )}
+    </>
+  )
+})
+
 const toRect = (b: Box) => ({ origin: { x: b.x, y: b.y }, size: { width: b.w, height: b.h } })
 const union = (boxes: Box[]): Box => {
   const x = Math.min(...boxes.map((b) => b.x))
@@ -134,20 +218,66 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const lastWritten = useRef<Uint8Array | null>(null)
   const markDirty = useWorkspace((s) => s.markDirty)
   /** Keys of the pages that are scans, whose text is recognized in the background. */
-  const [scannedKeys, setScannedKeys] = useState<number[]>([])
+  const statsCacheRef = useRef(new Map<string, boolean>())
+  const scannedKeysRef = useRef(new Set<number>())
+  const ocrActiveRef = useRef(false)
+  /** Scanned pages a finished run couldn't read: not tried again until the languages change. */
+  const ocrGaveUpRef = useRef(new Set<number>())
+  const [ocrKick, setOcrKick] = useState(0)
   const [ocrProgress, setOcrProgress] = useState<OcrProgress | null>(null)
 
-  // Once per list of pages: annotation edits don't change a page's text, and the check reads every page.
+  useEffect(() => {
+    statsCacheRef.current.clear()
+    scannedKeysRef.current.clear()
+    ocrGaveUpRef.current.clear()
+  }, [store])
+
+  // Once per list of pages: check page stats outward in small chunks so rendering and search win.
   const pageKeys = pages.map((p) => p.key).join(',')
   useEffect(() => {
     if (!store || !pageKeys) return
     const job = new AbortController()
-    void store.engine.call('documentTextStats', [], { priority: Priority.search, signal: job.signal })
-      .then((stats) => {
+    const currentPages = store.pages
+    const cachedSet = new Set<number>()
+    const unchecked: number[] = []
+    for (const p of currentPages) {
+      const hit = statsCacheRef.current.get(`${p.key}:${p.rotation}`)
+      if (hit === undefined) unchecked.push(p.key)
+      else if (hit) cachedSet.add(p.key)
+    }
+    scannedKeysRef.current = cachedSet
+    if (cachedSet.size && !ocrActiveRef.current) setOcrKick((k) => k + 1)
+    if (!unchecked.length) return () => job.abort()
+
+    const center = Math.max(0, Math.min(currentPages.length - 1, pageRef.current))
+    const keyIndex = new Map(currentPages.map((p, i) => [p.key, i]))
+    unchecked.sort((a, b) => Math.abs((keyIndex.get(a) ?? 0) - center) - Math.abs((keyIndex.get(b) ?? 0) - center))
+
+    const STATS_BATCH = 16
+    void (async () => {
+      for (let i = 0; i < unchecked.length; i += STATS_BATCH) {
         if (job.signal.aborted) return
-        const keys = stats.filter(isScannedPage).map((p) => store.pages[p.index]?.key).filter((key) => key !== undefined)
-        setScannedKeys((have) => (have.join(',') === keys.join(',') ? have : keys))
-      }).catch(() => {})
+        const chunk = unchecked.slice(i, i + STATS_BATCH)
+        try {
+          const stats = await store.engine.call('pageTextStatsBatch', [chunk], { priority: Priority.thumbnails + 5, signal: job.signal })
+          if (job.signal.aborted) return
+          let added = false
+          for (let j = 0; j < stats.length; j++) {
+            const p = currentPages[stats[j].index]
+            if (!p) continue
+            const scanned = isScannedPage(stats[j])
+            statsCacheRef.current.set(`${p.key}:${p.rotation}`, scanned)
+            if (scanned && !scannedKeysRef.current.has(p.key)) {
+              scannedKeysRef.current.add(p.key)
+              added = true
+            }
+          }
+          if (added && !ocrActiveRef.current) setOcrKick((k) => k + 1)
+        } catch {
+          return
+        }
+      }
+    })()
     return () => job.abort()
   }, [store, pageKeys])
 
@@ -302,6 +432,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     for (const f of files) {
       addPages(async () => {
         const at = indexOfKey(key) + 1
+        // A fresh copy each time: the worker takes the buffer, and redo inserts the file again.
         const r = await call((s) => s.engine.call('insertPdf', [at, f.bytes.slice().buffer]))
         return { pages: r.pages, at, count: r.count }
       })
@@ -652,21 +783,12 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
 
   // ── Forms
 
-  /** Every fillable field in page order, read when asked (a long form's pages load lazily). */
-  const formFields = async () => {
-    const s = storeRef.current
-    if (!s) return []
-    const out: { index: number; annot: Annot }[] = []
-    for (let i = 0; i < s.pages.length; i++) {
-      for (const a of await s.getAnnotations(i)) {
-        const f = a.field
-        if (f && !f.readOnly && f.kind !== 'button' && f.kind !== 'other') out.push({ index: i, annot: a })
-      }
-    }
-    return out
-  }
+  type CachedFormField = { annot: Annot; groupName: string; filled: boolean }
+  const formSummaryRef = useRef(new Map<number, { rev: number; fields: CachedFormField[] }>())
+  useEffect(() => {
+    formSummaryRef.current.clear()
+  }, [store])
 
-  const [formStats, setFormStats] = useState<{ total: number; filled: number } | null>(null)
   const isFilled = (a: Annot) => {
     const f = a.field!
     if (f.kind === 'checkbox' || f.kind === 'radio') return f.checked
@@ -674,40 +796,87 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     if (f.kind === 'signature') return false
     return !!f.value.trim()
   }
+
+  const pageFormFields = async (s: DocStore, i: number): Promise<CachedFormField[]> => {
+    const p = s.pages[i]
+    if (!p) return []
+    const rev = s.rev(p.key)
+    const cached = formSummaryRef.current.get(p.key)
+    if (cached && cached.rev === rev) return cached.fields
+    const fields: CachedFormField[] = []
+    for (const a of await s.getAnnotations(i)) {
+      const f = a.field
+      if (f && !f.readOnly && f.kind !== 'button' && f.kind !== 'other') {
+        fields.push({ annot: a, groupName: f.name || a.id, filled: isFilled(a) })
+      }
+    }
+    formSummaryRef.current.set(p.key, { rev, fields })
+    return fields
+  }
+
+  const [formStats, setFormStats] = useState<{ total: number; filled: number } | null>(null)
+  const revTick = useSyncExternalStore(
+    useCallback((cb) => (store ? store.subscribeRev(cb) : () => {}), [store]),
+    useCallback(() => store?.revTick() ?? 0, [store]),
+  )
   // Recount after each change; radio groups count once.
-  const revSig = useMemo(() => pages.map((p) => storeRef.current?.rev(p.key) ?? 0).join(','), [pages])
   useEffect(() => {
     if (!hasForm || !store) return
     let live = true
-    void formFields().then((fields) => {
-      if (!live) return
+    void (async () => {
       const groups = new Map<string, boolean>()
-      for (const { annot } of fields) {
-        if (annot.field!.kind === 'signature') continue
-        const name = annot.field!.name || annot.id
-        groups.set(name, (groups.get(name) ?? false) || isFilled(annot))
+      for (let i = 0; i < store.pages.length; i++) {
+        if (!live) return
+        for (const item of await pageFormFields(store, i)) {
+          if (item.annot.field!.kind === 'signature') continue
+          groups.set(item.groupName, (groups.get(item.groupName) ?? false) || item.filled)
+        }
       }
-      setFormStats({ total: groups.size, filled: [...groups.values()].filter(Boolean).length })
-    })
+      if (!live) return
+      let filled = 0
+      for (const v of groups.values()) if (v) filled++
+      setFormStats({ total: groups.size, filled })
+    })()
     return () => {
       live = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hasForm, store, revSig])
+  }, [hasForm, store, pages, revTick])
 
   /** Go to the next field after the current page that's still empty, and put the cursor in it. */
   const nextEmptyField = async () => {
     selectTool('select')
-    const fields = (await formFields()).filter(({ annot }) => !isFilled(annot) && annot.field!.kind !== 'signature')
-    if (!fields.length) return
+    const s = storeRef.current
+    if (!s || !s.pages.length) return
     const focused = document.activeElement
-    const after = fields.findIndex(({ index, annot }) => index > page || (index === page && !(focused instanceof HTMLElement && focused.getAttribute('data-annot') === annot.id)))
-    const next = fields[after === -1 ? 0 : after]
-    viewer.current?.reveal(next.index, next.annot.box)
+    const focusedAnnotId = focused instanceof HTMLElement ? focused.getAttribute('data-annot') : null
+    let next: { index: number; annot: Annot } | null = null
+    let firstWrap: { index: number; annot: Annot } | null = null
+    for (let offset = 0; offset < s.pages.length; offset++) {
+      const i = (page + offset) % s.pages.length
+      const fields = await pageFormFields(s, i)
+      for (const item of fields) {
+        if (item.filled || item.annot.field!.kind === 'signature') continue
+        const match = { index: i, annot: item.annot }
+        if (i === page && item.annot.id === focusedAnnotId) {
+          firstWrap ??= match
+          continue
+        }
+        if (i >= page) {
+          next = match
+          break
+        }
+        firstWrap ??= match
+      }
+      if (next) break
+    }
+    const target = next ?? firstWrap
+    if (!target) return
+    viewer.current?.reveal(target.index, target.annot.box)
     // The page's fields appear once it's drawn.
     for (let tries = 0; tries < 20; tries++) {
       await new Promise((r) => setTimeout(r, 60))
-      const el = stageRef.current?.querySelector<HTMLElement>(`[data-annot="${CSS.escape(next.annot.id)}"]`)
+      const el = stageRef.current?.querySelector<HTMLElement>(`[data-annot="${CSS.escape(target.annot.id)}"]`)
       if (el) {
         el.focus({ preventScroll: true })
         return
@@ -769,21 +938,36 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
       setFindAt(null)
       const order = s.pages.map((_, i) => (i + page) % s.pages.length)
       let lastFlush = performance.now()
+      const SEARCH_BATCH = 16
       void (async () => {
-        for (const i of order) {
-          const p = s.pages[i]
-          if (!p) break
-          let own: Box[][] = []
+        for (let start = 0; start < order.length; start += SEARCH_BATCH) {
+          if (job.signal.aborted) return
+          const batchIndices = order.slice(start, start + SEARCH_BATCH)
+          const batchPages: PageInfo[] = []
+          const batchKeys: number[] = []
+          for (const idx of batchIndices) {
+            const p = s.pages[idx]
+            if (p) {
+              batchPages.push(p)
+              batchKeys.push(p.key)
+            }
+          }
+          if (!batchKeys.length) break
+          const ownByKey = new Map<number, Box[][]>()
           try {
-            own = await s.engine.call('search', [p.key, query, false], { priority: Priority.search, signal: job.signal })
+            const res = await s.engine.call('searchBatch', [batchKeys, query, false], { priority: Priority.search, signal: job.signal })
+            for (const item of res) ownByKey.set(item.key, item.boxes)
           } catch {
-            // A page that couldn't be searched still has any text recognized on it.
+            // A page batch that couldn't be searched still has any text recognized on it.
             if (job.signal.aborted) return
           }
-          const recognized = s.ocrText(p)
-          const found = recognized ? [...own, ...searchPageText(recognized, query)] : own
-          if (found.length) hits.set(p.key, found)
-          run.searched.add(p.key)
+          for (const p of batchPages) {
+            const own = ownByKey.get(p.key) ?? []
+            const recognized = s.ocrText(p)
+            const found = recognized ? [...own, ...searchPageText(recognized, query)] : own
+            if (found.length) hits.set(p.key, found)
+            run.searched.add(p.key)
+          }
           if (performance.now() - lastFlush > 120) {
             lastFlush = performance.now()
             showFound(run)
@@ -869,25 +1053,49 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   useEffect(() => {
     if (store && readWith.current !== ocrLangs) {
       store.clearOcr()
+      ocrGaveUpRef.current.clear()
       // The open search loses the matches read with the old languages.
       if (findRun.current) runFind(findRun.current.query)
     }
     readWith.current = ocrLangs
-    if (!store || !awake || !scannedKeys.length) return
-    const scanned = new Set(scannedKeys)
-    const todo = store.pages.filter((p) => scanned.has(p.key) && !store.ocrText(p))
-    if (!todo.length) return
+    if (!store || !awake) {
+      ocrActiveRef.current = false
+      return
+    }
+    const scanned = scannedKeysRef.current
+    if (!scanned.size) {
+      ocrActiveRef.current = false
+      return
+    }
+    const gaveUp = ocrGaveUpRef.current
+    const todo = store.pages.filter((p) => scanned.has(p.key) && !gaveUp.has(p.key) && !store.ocrText(p))
+    if (!todo.length) {
+      ocrActiveRef.current = false
+      return
+    }
     const job = new AbortController()
-    void recognizePages({ store, pages: todo, current: () => pageRef.current, signal: job.signal, onProgress: setOcrProgress, onPage: recognizedPage }).catch((err) => {
-      if (!job.signal.aborted) console.warn('Text recognition stopped', err)
-      setOcrProgress(null)
-    })
+    ocrActiveRef.current = true
+    void recognizePages({ store, pages: todo, current: () => pageRef.current, signal: job.signal, onProgress: setOcrProgress, onPage: recognizedPage })
+      .catch((err) => {
+        if (!job.signal.aborted) console.warn('Text recognition stopped', err)
+        setOcrProgress(null)
+      })
+      .finally(() => {
+        ocrActiveRef.current = false
+        if (job.signal.aborted) return
+        // A run that ended without reading a page gave up on it (or couldn't start at all).
+        for (const p of todo) if (!store.ocrText(p)) gaveUp.add(p.key)
+        if (store.pages.some((p) => scannedKeysRef.current.has(p.key) && !gaveUp.has(p.key) && !store.ocrText(p))) {
+          setOcrKick((k) => k + 1)
+        }
+      })
     return () => {
       job.abort()
+      ocrActiveRef.current = false
       setOcrProgress(null)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [store, awake, scannedKeys, layoutSig, ocrLangs])
+  }, [store, awake, layoutSig, ocrLangs, ocrKick])
 
   // ── Shell integration
   const saveBytes = async () => {
@@ -917,7 +1125,9 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
           return !!(inkRef.current && !inkRef.current.committing) || !!draftRef.current || (isEditable(focus) && !!stageRef.current?.contains(focus))
         },
         markSaved: () => {
-          cleanBytes.current = lastWritten.current
+          const written = lastWritten.current
+          lastWritten.current = null
+          cleanBytes.current = written && written !== tab.bytes ? written : null
           history.current.markSaved()
           fieldsDirty.current = false
           refreshDirty()
@@ -991,51 +1201,46 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const onPageChange = useCallback((i: number) => setPage(i), [])
   const onZoomChange = useCallback((z: number) => setZoom(z), [])
 
-  const renderPage = ({ index, page: p, unit }: PageSlot) => {
-    const s = storeRef.current!
-    const hits = find?.hits.get(p.key)
-    const current = matchList[findIndex]
-    const pendingInk = ink?.key === p.key ? ink.strokes : []
-    return (
-      <>
-        {hits && <SearchLayer boxes={hits} current={current && current[0] === index ? current[1] : -1} />}
-        <TextLayer store={s} index={index} page={p} recognized={!!s.ocrText(p)} />
-        <AnnotationLayer
+  const pageOpsRef = useRef({ addStroke, finishDraft, placeOnPage })
+  pageOpsRef.current = { addStroke, finishDraft, placeOnPage }
+  const onAddStroke = useCallback((key: number, stroke: Stroke) => pageOpsRef.current.addStroke(key, stroke), [])
+  const onFinishDraft = useCallback((key: number, text: string, box: Box) => pageOpsRef.current.finishDraft(key, text, box), [])
+  const onPlaceOnPage = useCallback((key: number, x: number, y: number) => pageOpsRef.current.placeOnPage(key, x, y), [])
+  const onStartDraft = useCallback((key: number, x: number, y: number) => {
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    setDraft({ key, x, y })
+  }, [])
+
+  const currentMatch = matchList[findIndex]
+  const renderPage = useCallback(
+    ({ index, page: p, unit }: PageSlot) => {
+      const s = storeRef.current!
+      const hits = find?.hits.get(p.key)
+      return (
+        <PdfPageOverlay
           store={s}
           index={index}
           page={p}
-          rev={s.rev(p.key)}
           unit={unit}
-          interactive={tool === 'select' || tool === 'highlight'}
-          selectable={tool === 'select'}
+          hits={hits}
+          currentHit={hits && currentMatch && currentMatch[0] === index ? currentMatch[1] : -1}
+          pendingInk={ink?.key === p.key ? ink.strokes : EMPTY_STROKES}
+          tool={tool}
           selectedId={selected?.key === p.key ? selected.id : null}
+          inkColor={inkColor}
+          inkThickness={inkThickness}
+          fontSize={fontSize}
+          draftAt={draft?.key === p.key ? { x: draft.x, y: draft.y } : null}
           actions={actions}
+          onAddStroke={onAddStroke}
+          onPlaceOnPage={onPlaceOnPage}
+          onStartDraft={onStartDraft}
+          onFinishDraft={onFinishDraft}
         />
-        {tool === 'draw' ? (
-          <DrawLayer unit={unit} color={inkColor} width={inkThickness} strokes={pendingInk} onStroke={(stroke) => addStroke(p.key, stroke)} />
-        ) : (
-          pendingInk.length > 0 && (
-            <div className="tool-layer passive">
-              <InkPreview strokes={pendingInk} color={inkColor} width={inkThickness} />
-            </div>
-          )
-        )}
-        {tool === 'sign' && <PlaceLayer unit={unit} onPlace={(x, y) => placeOnPage(p.key, x, y)} />}
-        {tool === 'text' && (
-          <TextToolLayer
-            unit={unit}
-            onPlace={(x, y) => {
-              ;(document.activeElement as HTMLElement | null)?.blur?.()
-              setDraft({ key: p.key, x, y })
-            }}
-          />
-        )}
-        {draft?.key === p.key && (
-          <TextDraft key={`${draft.x},${draft.y}`} x={draft.x} y={draft.y} unit={unit} fontSize={fontSize} color={inkColor} onDone={(text, box) => finishDraft(p.key, text, box)} />
-        )}
-      </>
-    )
-  }
+      )
+    },
+    [find, currentMatch, ink, tool, selected, inkColor, inkThickness, fontSize, draft, actions, onAddStroke, onPlaceOnPage, onStartDraft, onFinishDraft],
+  )
 
   const numPages = pages.length
   const currentTool = TOOLS.find((t) => t.id === tool)!
@@ -1388,6 +1593,8 @@ async function printPdf(store: DocStore) {
       root.appendChild(div)
     }
     await Promise.all(Array.from(root.querySelectorAll('img')).map((img) => img.decode().catch(() => {})))
+    const { schedulePrintCleanup } = await import('../../lib/print')
+    schedulePrintCleanup()
     window.print()
   } finally {
     canvas.width = canvas.height = 0

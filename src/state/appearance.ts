@@ -223,17 +223,31 @@ function apply() {
   if (isTauri && isWindows) void paintWindowChrome()
 }
 
-/** "#rrggbb" for a CSS color, as the page draws it. */
+let colorProbeCtx: CanvasRenderingContext2D | null = null
+/** "#rrggbb" for a CSS color, resolved without mutating the DOM. */
 function hexOf(color: string) {
-  const probe = document.createElement('i')
-  probe.style.color = color
-  document.body.appendChild(probe)
-  const rgb = getComputedStyle(probe).color.match(/\d+(\.\d+)?/g)?.map(Number) ?? [0, 0, 0]
-  probe.remove()
-  return `#${rgb
-    .slice(0, 3)
-    .map((v) => Math.round(v).toString(16).padStart(2, '0'))
-    .join('')}`
+  let raw = color.trim()
+  const varMatch = /^var\((--[^,)]+)(?:,\s*([^)]+))?\)$/.exec(raw)
+  if (varMatch) {
+    raw = getComputedStyle(document.documentElement).getPropertyValue(varMatch[1]).trim() || (varMatch[2]?.trim() ?? '')
+  }
+  const hex = /^#([0-9a-f]{6})$/i.exec(raw)
+  if (hex) return `#${hex[1].toLowerCase()}`
+  colorProbeCtx ??= document.createElement('canvas').getContext('2d')
+  if (colorProbeCtx) {
+    colorProbeCtx.fillStyle = '#000000'
+    colorProbeCtx.fillStyle = raw
+    const out = colorProbeCtx.fillStyle
+    if (out.startsWith('#')) return out.toLowerCase()
+    const m = out.match(/\d+(\.\d+)?/g)?.map(Number)
+    if (m && m.length >= 3) {
+      return `#${m
+        .slice(0, 3)
+        .map((v) => Math.round(v).toString(16).padStart(2, '0'))
+        .join('')}`
+    }
+  }
+  return '#000000'
 }
 
 /** Windows draws the title and menu bars itself; give them the tab bar's colors so the top of the window is one band. */
@@ -253,7 +267,10 @@ async function paintWindowChrome() {
 export function startAppearance() {
   apply()
   useWorkspace.subscribe((s, prev) => (s.theme !== prev.theme || s.themeMode !== prev.themeMode) && apply())
-  useAppearance.subscribe(apply)
+  useAppearance.subscribe((s, prev) => {
+    if (s.light === prev.light && s.dark === prev.dark && s.custom === prev.custom && s.preview === prev.preview && s.published === prev.published) return
+    apply()
+  })
   void refreshPublished()
   void listen('themes-changed', () => void refreshPublished())
 }
