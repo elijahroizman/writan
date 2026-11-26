@@ -202,6 +202,32 @@ pub fn theme_publish<R: Runtime>(
     Ok(path.to_string_lossy().into_owned())
 }
 
+/// Deletes `<id>.json` and its background images. The JSON goes last, so if an image can't be
+/// deleted the theme is still listed and can be deleted again.
+pub fn remove(folder: &Path, id: &str) -> Result<(), String> {
+    if !valid_id(id) {
+        return Err(format!("“{id}” can't name a theme."));
+    }
+    for ext in BACKGROUND_EXTENSIONS
+        .into_iter()
+        .chain(std::iter::once("json"))
+    {
+        let path = folder.join(format!("{id}.{ext}"));
+        // Only files; a folder or link with the name is left alone.
+        if fs::symlink_metadata(&path).is_ok_and(|m| m.file_type().is_file()) {
+            fs::remove_file(&path).map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn theme_delete<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), String> {
+    remove(&dir(&app)?, &id)?;
+    let _ = app.emit("themes-changed", ());
+    Ok(())
+}
+
 /// What the folder holds, cheaply: each name with its size and time.
 fn signature(folder: &Path) -> Vec<(String, String)> {
     let Ok(entries) = fs::read_dir(folder) else {
@@ -297,6 +323,24 @@ mod tests {
             .to_string_lossy()
             .ends_with(".tmp")));
         assert!(publish(&d, "../escape", "{}").is_err());
+        let _ = fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn removes_a_theme_and_its_background() {
+        let d = temp();
+        publish(&d, "dusk", r#"{"name":"Dusk"}"#).unwrap();
+        publish(&d, "dawn", r#"{"name":"Dawn"}"#).unwrap();
+        fs::write(d.join("dusk.jpg"), [1, 2, 3]).unwrap();
+        remove(&d, "dusk").unwrap();
+        let read = read_folder(&d);
+        assert_eq!(read.len(), 1);
+        assert_eq!(read[0].id, "dawn");
+        assert!(!d.join("dusk.jpg").exists());
+        // Already gone is fine; a bad id isn't.
+        remove(&d, "dusk").unwrap();
+        assert!(remove(&d, "../dawn").is_err());
+        assert!(d.join("dawn.json").exists());
         let _ = fs::remove_dir_all(&d);
     }
 
