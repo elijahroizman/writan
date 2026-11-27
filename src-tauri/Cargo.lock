@@ -1602,7 +1602,7 @@ dependencies = [
 
 [[package]]
 name = "gdk-pixbuf-sys"
-version = "0.19.0"
+version = "0.18.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f9839ea644ed9c97a34d129ad56d38a25e6756f99f3a88e15cd39c20629caf7"
 dependencies = [
@@ -6957,7 +6957,7 @@ dependencies = [
 
 [[package]]
 name = "writan"
-version = "0.18.0"
+version = "0.19.0"
 dependencies = [
  "base64 0.22.1",
  "getrandom 0.3.4",
