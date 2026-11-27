@@ -5,6 +5,7 @@ import {
   ArrowUpToLine,
   Copy,
   FileOutput,
+  FilePen,
   FilePlus2,
   Highlighter,
   ImagePlus,
@@ -29,9 +30,10 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { EditorProps } from '../../App'
 import { FindBar, InspectorHeader, Workbench, formatZoom } from '../../components/Workbench'
 import type { MenuEntry } from '../../components/ui'
-import { Button, CenterState, IconButton, PopoverMenu, Section, Segmented, TextField, ToolButton } from '../../components/ui'
+import { Button, CenterState, IconButton, LinkButton, PopoverMenu, Section, Segmented, TextField, ToolButton } from '../../components/ui'
 import { useOcrPacks } from '../../lib/ocr/packs'
 import * as platform from '../../lib/platform'
+import { usePdfToWord } from '../../state/pdfToWord'
 import { registerEditor, useWorkspace } from '../../state/workspace'
 import { isCancelled, PdfEngine, Priority } from './engine/client'
 import type { Annot, Box, DocMeta, OutlineItem, PageInfo } from './engine/protocol'
@@ -177,6 +179,7 @@ const union = (boxes: Box[]): Box => {
 const isEditable = (el: EventTarget | null) => el instanceof HTMLElement && (el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName))
 
 export default function PdfEditor({ tab, active, visible = false }: EditorProps) {
+  const wordJob = usePdfToWord((s) => s.jobs[tab.id])
   const viewer = useRef<ViewerHandle>(null)
   const storeRef = useRef<DocStore | null>(null)
   const [store, setStore] = useState<DocStore | null>(null)
@@ -1285,6 +1288,24 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const right = (
     <>
       <InspectorHeader kind="pdf">PDF</InspectorHeader>
+      <Section title="Edit text">
+        <Button
+          block
+          variant="primary"
+          disabled={!store || !!wordJob}
+          title="Open an editable Word copy of this PDF, with its text, pictures and tables"
+          onClick={() => void usePdfToWord.getState().start(tab.id)}
+        >
+          <FilePen size={14} /> {wordJob ? 'Converting…' : 'Edit as Word document'}
+        </Button>
+        {wordJob ? (
+          <p className="tool-hint faint" role="status">
+            {wordJob.status} <LinkButton onClick={() => usePdfToWord.getState().cancel(tab.id)}>Cancel</LinkButton>
+          </p>
+        ) : (
+          <p className="tool-hint faint">Opens a copy in a new tab. The PDF stays as it is, and the copy may not look exactly like it.</p>
+        )}
+      </Section>
       <Section title="Annotate">
         <div className="tool-grid">
           {TOOLS.map((t) => (

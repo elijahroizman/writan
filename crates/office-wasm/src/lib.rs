@@ -9,6 +9,7 @@ use wasm_bindgen::prelude::*;
 
 mod convert;
 mod ocr_docx;
+mod pdf_docx;
 mod sheets;
 mod slides;
 mod word;
@@ -22,6 +23,13 @@ pub use word::WordDoc;
 #[wasm_bindgen(js_name = ocrToDocx)]
 pub fn ocr_to_docx(json: &str) -> Result<Vec<u8>, JsError> {
     ocr_docx::ocr_document_to_docx(json).map_err(err)
+}
+
+/// Rebuilds an editable Word document from a PDF's page layout (`layout` in the PDF worker),
+/// with the pictures' encoded bytes in `media` at the offsets the layout gives.
+#[wasm_bindgen(js_name = pdfToDocx)]
+pub fn pdf_to_docx(json: &str, media: &[u8]) -> Result<Vec<u8>, JsError> {
+    pdf_docx::pdf_document_to_docx(json, media).map_err(err)
 }
 
 #[wasm_bindgen]

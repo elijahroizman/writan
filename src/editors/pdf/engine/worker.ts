@@ -7,7 +7,7 @@ import { PdfiumNative } from '@embedpdf/engines/pdfium'
 import type { PdfAnnotationObject, PdfDocumentObject, PdfPageObject, PdfBookmarkObject, PdfLinkTarget, PdfWidgetAnnoObject, Rect } from '@embedpdf/models'
 import { AppearanceMode, PDF_FORM_FIELD_FLAG, PDF_FORM_FIELD_TYPE, PdfActionType, PdfAnnotationFlags, PdfAnnotationSubtype, PdfPageFlattenFlag, PdfPageFlattenResult, PdfZoomMode } from '@embedpdf/models'
 import { init } from '@embedpdf/pdfium'
-import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, GrayBitmap, Method, OpenResult, OutlineItem, PageInfo, PageTextStats, Request, Response, TextRun } from './protocol'
+import type { Annot, Api, Band, Bitmap, Boot, Box, DocMeta, Field, GrayBitmap, LayoutFragment, LayoutPicture, LayoutSpan, Method, OpenResult, OutlineItem, PageInfo, PageLayout, PageTextStats, Request, Response, TextRun } from './protocol'
 
 type Module = Awaited<ReturnType<typeof init>>
 
@@ -470,6 +470,489 @@ function textBoxes(key: number, start: number, count: number): Box[] {
   }
 }
 
+// ── Layout, for converting a page to Word
+
+const RTL_CHAR = /[֐-ࣿיִ-﷿ﹰ-﻿]/
+const LTR_CHAR = /[A-Za-z0-9À-ɏͰ-ϿЀ-ӿ]/
+const BOLD_NAME = /bold|black|heavy|semibold|demibold|demi\b|extrabold|ultrabold/i
+const ITALIC_NAME = /italic|oblique|kursiv/i
+/** PDF's 14 standard fonts and common PostScript names, as the fonts Word documents use. */
+const KNOWN_FONTS: Record<string, string> = {
+  helvetica: 'Arial',
+  arial: 'Arial',
+  arialnarrow: 'Arial Narrow',
+  times: 'Times New Roman',
+  timesroman: 'Times New Roman',
+  timesnewroman: 'Times New Roman',
+  courier: 'Courier New',
+  couriernew: 'Courier New',
+  symbol: 'Symbol',
+  zapfdingbats: 'Wingdings',
+  // The metric-compatible stand-ins Linux (and Writan's own PDFs) use for Office's fonts.
+  carlito: 'Calibri',
+  caladea: 'Cambria',
+  liberationsans: 'Arial',
+  liberationserif: 'Times New Roman',
+  liberationmono: 'Courier New',
+  arimo: 'Arial',
+  tinos: 'Times New Roman',
+  cousine: 'Courier New',
+  // Copies of Helvetica, Times and Courier that TeX and Ghostscript embed.
+  nimbussans: 'Arial',
+  nimbussansl: 'Arial',
+  nimbussanl: 'Arial',
+  nimbusroman: 'Times New Roman',
+  nimbusromno9l: 'Times New Roman',
+  nimbusmono: 'Courier New',
+  nimbusmonol: 'Courier New',
+  nimbusmonl: 'Courier New',
+  texgyreheros: 'Arial',
+  texgyretermes: 'Times New Roman',
+  texgyrecursor: 'Courier New',
+}
+
+interface FontStyle {
+  font?: string
+  bold: boolean
+  italic: boolean
+  invisible: boolean
+}
+
+/** A family name from a PDF font's name: `ABCDEF+TimesNewRomanPS-BoldMT` is Times New Roman. */
+function cleanFontName(raw: string): string | undefined {
+  let name = raw.replace(/^[A-Z]{6}\+/, '').trim()
+  if (!name || /^(foxit|chrome)/i.test(name)) return undefined
+  name = name.split(/[,-]/)[0].trim()
+  const compact = name.replace(/\s+/g, '').toLowerCase().replace(/(psmt|ps|mt)$/, '')
+  if (KNOWN_FONTS[compact]) return KNOWN_FONTS[compact]
+  name = name.replace(/(PSMT|PS|MT)$/, '')
+  if (!/\s/.test(name)) {
+    const styleless = name.replace(/(Bold|Italic|Oblique|Regular|Medium|Light|Semibold|SemiBold|Black|Heavy|Book|Condensed)+$/, '')
+    if (styleless.length >= 2) name = styleless
+    if (KNOWN_FONTS[name.toLowerCase()]) return KNOWN_FONTS[name.toLowerCase()]
+    name = name.replace(/([a-z])([A-Z])/g, '$1 $2')
+  } else {
+    name = name.replace(/\s+(Bold|Italic|Oblique|Regular|Medium|Light|Semibold|Black|Heavy)(\s+\w+)*$/i, '')
+  }
+  return name.trim() || undefined
+}
+
+function fontName(read: (buf: number, len: number) => number): string {
+  let len = 256
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const buf = scratch(len)
+    try {
+      const n = read(buf, len)
+      if (n <= 1) return ''
+      if (n > len) {
+        len = n
+        continue
+      }
+      return new TextDecoder().decode(heap().HEAPU8.slice(buf, buf + n - 1))
+    } finally {
+      free(buf)
+    }
+  }
+  return ''
+}
+
+function textStyle(obj: number): FontStyle {
+  const mode = obj ? mod.FPDFTextObj_GetTextRenderMode(obj) : 0
+  const invisible = mode === 3 || mode === 7
+  const font = obj ? mod.FPDFTextObj_GetFont(obj) : 0
+  if (!font) return { bold: false, italic: false, invisible }
+  const base = fontName((buf, len) => mod.FPDFFont_GetBaseFontName(font, buf, len))
+  // An embedded font names its family; a missing one is drawn with PDFium's own stand-ins.
+  const family = mod.FPDFFont_GetIsEmbedded(font) ? fontName((buf, len) => mod.FPDFFont_GetFamilyName(font, buf, len)) : ''
+  const weight = mod.FPDFFont_GetWeight(font)
+  const flags = mod.FPDFFont_GetFlags(font)
+  const anglePtr = scratch(4)
+  const angle = mod.FPDFFont_GetItalicAngle(font, anglePtr) ? mod.pdfium.getValue(anglePtr, 'i32') : 0
+  free(anglePtr)
+  const known = cleanFontName(base)
+  return {
+    font: (known && Object.values(KNOWN_FONTS).includes(known) ? known : cleanFontName(family)) ?? known,
+    // Fill-and-stroke thickens the letters: how PDFs fake bold.
+    bold: weight >= 600 || BOLD_NAME.test(base) || BOLD_NAME.test(family) || (flags & (1 << 18)) !== 0 || mode === 2,
+    italic: ITALIC_NAME.test(base) || ITALIC_NAME.test(family) || (flags & 64) !== 0 || angle !== 0,
+    invisible,
+  }
+}
+
+/** Page-space bounds (left, bottom, right, top) as a box in display points. */
+function displayBox(p: PdfPageObject, l: number, b: number, r: number, t: number): Box {
+  const corners = [
+    internals.convertPagePointToDevicePoint(doc!, p, { x: l, y: t }),
+    internals.convertPagePointToDevicePoint(doc!, p, { x: r, y: b }),
+    internals.convertPagePointToDevicePoint(doc!, p, { x: l, y: b }),
+    internals.convertPagePointToDevicePoint(doc!, p, { x: r, y: t }),
+  ]
+  const xs = corners.map((c) => c.x)
+  const ys = corners.map((c) => c.y)
+  return { x: Math.min(...xs), y: Math.min(...ys), w: Math.max(...xs) - Math.min(...xs), h: Math.max(...ys) - Math.min(...ys) }
+}
+
+/** A region of the page drawn on a transparent background, as RGBA pixels. */
+function renderRegion(pagePtr: number, r: Box, scale: number): { width: number; height: number; data: ArrayBuffer } {
+  const width = Math.max(1, Math.round(r.w * scale))
+  const height = Math.max(1, Math.round(r.h * scale))
+  const bitmap = mod.FPDFBitmap_Create(width, height, 1)
+  const matrix = scratch(24)
+  const clip = scratch(16)
+  try {
+    mod.FPDFBitmap_FillRect(bitmap, 0, 0, width, height, 0x00000000)
+    new Float32Array(heap().HEAPF32.buffer, matrix, 6).set([scale, 0, 0, scale, -scale * r.x, -scale * r.y])
+    new Float32Array(heap().HEAPF32.buffer, clip, 4).set([0, 0, width, height])
+    // FPDF_REVERSE_BYTE_ORDER (RGBA) | FPDF_RENDER_LIMITEDIMAGECACHE
+    mod.FPDF_RenderPageBitmapWithMatrix(bitmap, pagePtr, matrix, clip, 0x10 | 0x200)
+    const stride = mod.FPDFBitmap_GetStride(bitmap)
+    const src = mod.FPDFBitmap_GetBuffer(bitmap)
+    const out = new Uint8Array(width * height * 4)
+    const bytes = heap().HEAPU8
+    for (let y = 0; y < height; y++) out.set(bytes.subarray(src + y * stride, src + y * stride + width * 4), y * width * 4)
+    return { width, height, data: out.buffer }
+  } finally {
+    mod.FPDFBitmap_Destroy(bitmap)
+    free(matrix)
+    free(clip)
+  }
+}
+
+const overlaps = (a: Box, b: Box, pad = 0) => a.x - pad < b.x + b.w && b.x - pad < a.x + a.w && a.y - pad < b.y + b.h && b.y - pad < a.y + a.h
+const unionBox = (a: Box, b: Box): Box => {
+  const x = Math.min(a.x, b.x)
+  const y = Math.min(a.y, b.y)
+  return { x, y, w: Math.max(a.x + a.w, b.x + b.w) - x, h: Math.max(a.y + a.h, b.y + b.h) - y }
+}
+/** Joins boxes that touch (within `pad`) until none do. */
+function mergeBoxes<T extends { box: Box }>(items: T[], pad: number, join: (a: T, b: T) => T): T[] {
+  const out = [...items]
+  for (let merged = true; merged; ) {
+    merged = false
+    for (let i = 0; i < out.length && !merged; i++) {
+      for (let j = i + 1; j < out.length; j++) {
+        if (overlaps(out[i].box, out[j].box, pad)) {
+          out[i] = join(out[i], out[j])
+          out.splice(j, 1)
+          merged = true
+          break
+        }
+      }
+    }
+  }
+  return out
+}
+
+/** Whether text lies in a grid: two rows or more of two cells or more, whose columns line up (left, right or centred). */
+function isGrid(cells: LayoutFragment[]): boolean {
+  const rows: LayoutFragment[][] = []
+  for (const cell of [...cells].sort((a, b) => a.baseline - b.baseline)) {
+    const row = rows.find((r) => Math.abs(r[0].baseline - cell.baseline) < cell.size * 0.5)
+    if (row) row.push(cell)
+    else rows.push([cell])
+  }
+  const full = rows.filter((r) => r.length >= 2)
+  const lined = (a: LayoutFragment[], b: LayoutFragment[]) =>
+    a.filter((x) => b.some((y) => Math.abs(x.x - y.x) < 2 || Math.abs(x.x + x.w - (y.x + y.w)) < 2 || Math.abs(x.x + x.w / 2 - (y.x + y.w / 2)) < 2)).length >= 2
+  return full.some((a, i) => full.slice(i + 1).some((b) => lined(a, b)))
+}
+
+/** Most pixels a picture is drawn with: about 24 MB of RGBA. */
+const MAX_PICTURE_PIXELS = 6_000_000
+
+async function layout(key: number, withPictures: boolean): Promise<PageLayout> {
+  const p = page(key)
+  const links = (await annotations(key).catch(() => [] as Annot[])).flatMap((a) => (a.link?.url ? [{ box: a.box, url: a.link.url }] : []))
+  const pc = ctx().acquirePage(p.index)
+  const rect = scratch(16)
+  const point = scratch(16)
+  const rgba = scratch(16)
+  const matrix = scratch(24)
+  try {
+    const tp = pc.getTextPage()
+    const count = mod.FPDFText_CountChars(tp)
+    const styles = new Map<number, FontStyle>()
+    const fragments: PageLayout['fragments'] = []
+    // Text reads upright on screen when it's turned back against the page's own turn (PDFium
+    // measures the character's angle the other way round from the page's /Rotate).
+    const upright = (-p.rotation * Math.PI) / 2
+    type Building = { x0: number; y0: number; x1: number; y1: number; baseline: number; size: number; rtl: boolean; spans: LayoutSpan[]; lastLeft: number; lastRight: number; key: string; invisible: boolean }
+    let frag: Building | null = null
+    let pendingSpace = false
+    const flush = () => {
+      if (frag) {
+        const last = frag.spans[frag.spans.length - 1]
+        if (last) last.text = last.text.trimEnd()
+        const spans = frag.spans.filter((s) => s.text)
+        if (spans.some((s) => s.text.trim())) {
+          fragments.push({ x: frag.x0, y: frag.y0, w: frag.x1 - frag.x0, h: frag.y1 - frag.y0, baseline: frag.baseline, size: frag.size, rtl: frag.rtl, spans, ...(frag.invisible ? { invisible: true } : {}) })
+        }
+      }
+      frag = null
+    }
+    for (let i = 0; i < count; i++) {
+      const code = mod.FPDFText_GetUnicode(tp, i)
+      if (code === 13 || code === 10 || code === 32 || code === 0xa0 || code === 9 || code === 0x3000) {
+        pendingSpace = true
+        continue
+      }
+      // PDFium reports a hyphen that ends a line as 2: a word broken across lines, or a hyphenated one.
+      if (code === 0xfffe || code === 0xfffd || code === 0xfeff || (code < 0x20 && code !== 2) || (code >= 0x7f && code < 0xa0)) continue
+      const ch = code === 2 ? '-' : String.fromCodePoint(code)
+      if (/\s/.test(ch)) {
+        pendingSpace = true
+        continue
+      }
+      if (!mod.FPDFText_GetLooseCharBox(tp, i, rect)) continue
+      const [l, t, r, b] = [getF(rect), getF(rect + 4), getF(rect + 8), getF(rect + 12)]
+      if (!(r > l && t > b)) continue
+      const box = displayBox(p, l, b, r, t)
+      if (box.x > p.size.width || box.y > p.size.height || box.x + box.w < 0 || box.y + box.h < 0) continue
+      const angle = mod.FPDFText_GetCharAngle(tp, i)
+      if (angle >= 0) {
+        const turn = (((angle - upright) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)
+        if (Math.min(turn, 2 * Math.PI - turn) > 0.2) continue
+      }
+      let baseline = box.y + box.h * 0.8
+      if (mod.FPDFText_GetCharOrigin(tp, i, point, point + 8)) {
+        baseline = internals.convertPagePointToDevicePoint(doc!, p, { x: getD(point), y: getD(point + 8) }).y
+      }
+      // The font's size is set before the text's matrix scales it (Word writes size 1, scaled 12 times).
+      let size = mod.FPDFText_GetFontSize(tp, i)
+      if (mod.FPDFText_GetMatrix(tp, i, matrix)) {
+        const scale = Math.hypot(getF(matrix + 8), getF(matrix + 12))
+        if (scale > 0) size *= scale
+      }
+      if (!(size > 0) || size > box.h * 3 || size < box.h * 0.4) size = box.h / 1.2
+      const obj = mod.FPDFText_GetTextObject(tp, i)
+      let style = styles.get(obj)
+      if (!style) styles.set(obj, (style = textStyle(obj)))
+      let color: string | undefined
+      if (!style.invisible && mod.FPDFText_GetFillColor(tp, i, rgba, rgba + 4, rgba + 8, rgba + 12)) {
+        const [cr, cg, cb] = [0, 4, 8].map((o) => mod.pdfium.getValue(rgba + o, 'i32') & 0xff)
+        color = ((1 << 24) | (cr << 16) | (cg << 8) | cb).toString(16).slice(1).toUpperCase()
+      }
+      const cx = box.x + box.w / 2
+      const cy = box.y + box.h / 2
+      const link = links.find((k) => cx >= k.box.x && cx <= k.box.x + k.box.w && cy >= k.box.y && cy <= k.box.y + k.box.h)?.url
+      const spanKey = `${style.font}|${style.bold}|${style.italic}|${color}|${link}`
+      const isRtl = RTL_CHAR.test(ch)
+      let joined = false
+      if (frag) {
+        const f: Building = frag
+        const s = Math.max(f.size, size)
+        const sameLine = Math.abs(baseline - f.baseline) < 0.35 * s || (cy > f.y0 && cy < f.y1)
+        const ligature = Math.abs(box.x - f.lastLeft) < box.h * 0.05 && Math.abs(box.x + box.w - f.lastRight) < box.h * 0.05
+        const forward = box.x >= f.lastRight - 0.5 * s && box.x - f.lastRight < 0.8 * s
+        const backward = box.x + box.w <= f.lastLeft + 0.5 * s && f.lastLeft - (box.x + box.w) < 0.8 * s
+        const rtlFlow = f.rtl ? backward || (LTR_CHAR.test(ch) && forward) : forward || (isRtl && backward)
+        // Invisible text (a scan's text layer) and visible text never share a fragment.
+        if (sameLine && (ligature || rtlFlow) && f.invisible === style.invisible) {
+          joined = true
+          const gap = ligature ? 0 : backward && (f.rtl || isRtl) ? f.lastLeft - (box.x + box.w) : box.x - f.lastRight
+          let span = f.spans[f.spans.length - 1]
+          const shifted = Math.abs(baseline - span.baseline) > 0.15 * s
+          if (span.text && (spanKey !== f.key || Math.abs(size - span.size) > 0.25 || shifted)) {
+            span = { text: '', x: box.x, w: 0, baseline, size, font: style.font, bold: style.bold, italic: style.italic, color, link }
+            f.spans.push(span)
+            f.key = spanKey
+          }
+          const prev = f.spans.length > 1 && !span.text ? f.spans[f.spans.length - 2] : span
+          if (!ligature && (pendingSpace || gap > 0.25 * s) && !/\s$/.test(prev.text)) span.text = span.text ? `${span.text} ` : ' '
+          if (!ligature || !span.text.endsWith(ch)) span.text += ch
+          const right = Math.max(span.x + span.w, box.x + box.w)
+          span.x = Math.min(span.x, box.x)
+          span.w = right - span.x
+          f.x0 = Math.min(f.x0, box.x)
+          f.y0 = Math.min(f.y0, box.y)
+          f.x1 = Math.max(f.x1, box.x + box.w)
+          f.y1 = Math.max(f.y1, box.y + box.h)
+          if (size > f.size + 0.25) {
+            f.size = size
+            f.baseline = baseline
+          }
+          if (!f.rtl && isRtl && !f.spans.some((sp) => LTR_CHAR.test(sp.text))) f.rtl = true
+          f.lastLeft = box.x
+          f.lastRight = box.x + box.w
+        }
+      }
+      if (!joined) {
+        flush()
+        frag = {
+          x0: box.x,
+          y0: box.y,
+          x1: box.x + box.w,
+          y1: box.y + box.h,
+          baseline,
+          size,
+          rtl: isRtl,
+          spans: [{ text: ch, x: box.x, w: box.w, baseline, size, font: style.font, bold: style.bold, italic: style.italic, color, link }],
+          lastLeft: box.x,
+          lastRight: box.x + box.w,
+          key: spanKey,
+          invisible: style.invisible,
+        }
+      }
+      pendingSpace = false
+    }
+    flush()
+
+    // Lines, pictures and drawings.
+    const rules: Box[] = []
+    const images: { box: Box; scale: number }[] = []
+    const shapes: { box: Box; curved: boolean; parts: number }[] = []
+    const others: number[] = []
+    const pageBox = { x: 0, y: 0, w: p.size.width, h: p.size.height }
+    const seg = scratch(8)
+    const bounds = scratch(24)
+    const visit = (obj: number, toPage: Matrix, depth: number) => {
+      const type = mod.FPDFPageObj_GetType(obj)
+      if (type === 5 /* form */) {
+        if (depth >= 4 || !mod.FPDFPageObj_GetMatrix(obj, bounds)) return
+        const inner = compose(toPage, [0, 4, 8, 12, 16, 20].map((o) => getF(bounds + o)) as Matrix)
+        const n = mod.FPDFFormObj_CountObjects(obj)
+        for (let i = 0; i < n; i++) visit(mod.FPDFFormObj_GetObject(obj, i), inner, depth + 1)
+        return
+      }
+      if (type !== 3) others.push(obj)
+      if ((type !== 2 && type !== 3) || !mod.FPDFPageObj_GetBounds(obj, bounds, bounds + 4, bounds + 8, bounds + 12)) return
+      const [l, bt, r, t] = [getF(bounds), getF(bounds + 4), getF(bounds + 8), getF(bounds + 12)]
+      const [ma, mb, mc, md, me, mf] = toPage
+      const xs = [l * ma + bt * mc + me, r * ma + bt * mc + me, l * ma + t * mc + me, r * ma + t * mc + me]
+      const ys = [l * mb + bt * md + mf, r * mb + bt * md + mf, l * mb + t * md + mf, r * mb + t * md + mf]
+      const box = displayBox(p, Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys))
+      if (!overlaps(box, pageBox)) return
+      if (type === 3) {
+        if (box.w < 4 || box.h < 4) return
+        const px = scratch(8)
+        const pixels = mod.FPDFImageObj_GetImagePixelSize(obj, px, px + 4) ? mod.pdfium.getValue(px, 'i32') : 0
+        free(px)
+        images.push({ box, scale: Math.min(3, Math.max(1.5, pixels / Math.max(1, box.w))) })
+        return
+      }
+      // A path: a rule, a box's sides, or a drawn shape.
+      if (!mod.FPDFPath_GetDrawMode(obj, seg, seg + 4)) return
+      const filled = mod.pdfium.getValue(seg, 'i32') !== 0
+      const stroked = mod.pdfium.getValue(seg + 4, 'i32') !== 0
+      if (!filled && !stroked) return
+      if (filled && !stroked && mod.FPDFPageObj_GetFillColor(obj, seg, seg + 4, rgba, rgba + 4)) {
+        const white = [seg, seg + 4, rgba].every((ptr) => (mod.pdfium.getValue(ptr, 'i32') & 0xff) >= 250)
+        if (white) return
+      }
+      if ((box.h <= 2.5 && box.w >= 4) || (box.w <= 2.5 && box.h >= 4)) {
+        rules.push(box)
+        return
+      }
+      const n = mod.FPDFPath_CountSegments(obj)
+      let curved = false
+      let slanted = false
+      let parts = 0
+      let px: number | null = null
+      let py = 0
+      for (let i = 0; i < n && !(curved && slanted); i++) {
+        const s = mod.FPDFPath_GetPathSegment(obj, i)
+        const kind = mod.FPDFPathSegment_GetType(s)
+        if (kind === 1) curved = true
+        if (kind === 2) parts++
+        if (!mod.FPDFPathSegment_GetPoint(s, rect, rect + 4)) continue
+        const [x, y] = [getF(rect), getF(rect + 4)]
+        if (kind === 0 && px !== null && Math.abs(x - px) > 0.5 && Math.abs(y - py) > 0.5) slanted = true
+        px = x
+        py = y
+      }
+      if (curved || slanted) shapes.push({ box, curved: true, parts: 1 })
+      // Coloured blocks: a chart's bars, often in one path (or a table's shading, which has its text inside).
+      else if (filled && box.w > 2.5 && box.h > 2.5) shapes.push({ box, curved: false, parts: Math.max(1, parts) })
+      if (!curved && !slanted && stroked && n <= 6 && box.w > 4 && box.h > 4) {
+        rules.push({ x: box.x, y: box.y, w: box.w, h: 0.5 }, { x: box.x, y: box.y + box.h - 0.5, w: box.w, h: 0.5 })
+        rules.push({ x: box.x, y: box.y, w: 0.5, h: box.h }, { x: box.x + box.w - 0.5, y: box.y, w: 0.5, h: box.h })
+      }
+    }
+    const n = mod.FPDFPage_CountObjects(pc.pagePtr)
+    for (let i = 0; i < n; i++) visit(mod.FPDFPage_GetObject(pc.pagePtr, i), [1, 0, 0, 1, 0, 0], 0)
+    free(seg)
+    free(bounds)
+
+    // Drawings: shapes with curves or slants close together, with little text inside (a
+    // chart's labels, not a box of text with rounded corners).
+    const pageArea = p.size.width * p.size.height
+    const textIn = (box: Box) =>
+      fragments.reduce((sum, f) => {
+        const inside = f.x + f.w / 2 >= box.x && f.x + f.w / 2 <= box.x + box.w && f.y + f.h / 2 >= box.y && f.y + f.h / 2 <= box.y + box.h
+        return inside ? sum + f.spans.reduce((n, s) => n + s.text.length, 0) * f.size * f.size * 0.5 : sum
+      }, 0)
+    let figures = mergeBoxes(
+      // Lines join a chart's bars to its axes; on their own they make no drawing.
+      [...shapes.map(({ box, curved, parts }) => ({ box, count: curved ? 1 : 0, blocks: curved ? 0 : parts })), ...rules.map((box) => ({ box, count: 0, blocks: 0 }))],
+      8,
+      (a, b) => ({ box: unionBox(a.box, b.box), count: a.count + b.count, blocks: a.blocks + b.blocks }),
+    ).filter((f) => {
+      const area = f.box.w * f.box.h
+      const drawn = f.count >= 3 || (f.count >= 1 && area >= 5000) || f.blocks >= 3
+      // Words in rows and columns inside shaded blocks are a table's cells, kept as text, not a
+      // chart (a bar chart's value labels sit at the heights of its bars, not in rows).
+      const within = (b: Box) => b.x + b.w / 2 >= f.box.x && b.x + b.w / 2 <= f.box.x + f.box.w && b.y + b.h / 2 >= f.box.y && b.y + b.h / 2 <= f.box.y + f.box.h
+      const table = f.count === 0 && isGrid(fragments.filter(within))
+      return area >= 2500 && area <= pageArea * 0.6 && drawn && !table && textIn(f.box) < area * 0.15
+    })
+    // A chart's tick labels and captions sit just outside its lines: short text close by is part of it.
+    // Headings, set larger than the body text, aren't labels.
+    const sizes = fragments.map((t) => t.size).sort((a, b) => a - b)
+    const bodySize = sizes[Math.floor(sizes.length / 2)] ?? 12
+    for (const f of figures) {
+      const lines = f.box
+      for (const t of fragments) {
+        const text = t.spans.reduce((all, sp) => all + sp.text, '').trim()
+        if (text.length <= 24 && t.size <= bodySize * 1.1 && overlaps(lines, t, Math.max(6, t.size * 2))) f.box = unionBox(f.box, t)
+      }
+    }
+    // Pictures drawn in strips, or overlapping, are one picture; one inside a drawing is part of it.
+    let pictures = mergeBoxes(images, 1, (a, b) => ({ box: unionBox(a.box, b.box), scale: Math.max(a.scale, b.scale) }))
+    pictures = pictures.filter((pic) => {
+      const figure = figures.findIndex((f) => overlaps(f.box, pic.box))
+      if (figure === -1) return true
+      figures[figure] = { ...figures[figure], box: unionBox(figures[figure].box, pic.box) }
+      return false
+    })
+    figures = mergeBoxes(figures, 0, (a, b) => ({ box: unionBox(a.box, b.box), count: a.count + b.count, blocks: a.blocks + b.blocks }))
+
+    const out: LayoutPicture[] = []
+    if (withPictures) {
+      const clipToPage = (b: Box): Box => {
+        const x = Math.max(0, b.x)
+        const y = Math.max(0, b.y)
+        return { x, y, w: Math.min(p.size.width, b.x + b.w) - x, h: Math.min(p.size.height, b.y + b.h) - y }
+      }
+      const scaleFor = (b: Box, want: number) => Math.max(0.25, Math.min(want, Math.sqrt(MAX_PICTURE_PIXELS / Math.max(1, b.w * b.h))))
+      for (const f of figures) {
+        const box = clipToPage(f.box)
+        if (box.w < 2 || box.h < 2) continue
+        out.push({ box, figure: true, ...renderRegion(pc.pagePtr, box, scaleFor(box, 2)) })
+      }
+      if (pictures.length) {
+        // Draw only the pictures: the text over them is converted as text.
+        for (const obj of others) mod.FPDFPageObj_SetIsActive(obj, false)
+        try {
+          for (const pic of pictures) {
+            const box = clipToPage(pic.box)
+            if (box.w < 2 || box.h < 2) continue
+            out.push({ box, figure: false, ...renderRegion(pc.pagePtr, box, scaleFor(box, pic.scale)) })
+          }
+        } finally {
+          for (const obj of others) mod.FPDFPageObj_SetIsActive(obj, true)
+        }
+      }
+    }
+    return { width: p.size.width, height: p.size.height, fragments, pictures: out, rules }
+  } finally {
+    free(rect)
+    free(point)
+    free(rgba)
+    free(matrix)
+    pc.release()
+  }
+}
+
 // ── Annotations and forms
 
 const fieldKind: Record<number, Field['kind']> = {
@@ -866,6 +1349,7 @@ const api: { [M in Method]: (...args: never[]) => unknown } = {
   pageTextStatsBatch,
   documentTextStats,
   textBoxes,
+  layout,
   annotations,
   createAnnotation,
   updateAnnotation,
@@ -923,6 +1407,8 @@ async function runNext() {
       for (const band of (result as Bitmap).bands) transfer.push((band.image ?? band.data)!)
     } else if (result && typeof result === 'object' && 'data' in result && result.data instanceof ArrayBuffer) {
       transfer.push(result.data)
+    } else if (result && typeof result === 'object' && 'pictures' in result) {
+      for (const picture of (result as PageLayout).pictures) transfer.push(picture.data)
     }
   } catch (err) {
     const e = err as Error & { code?: number }

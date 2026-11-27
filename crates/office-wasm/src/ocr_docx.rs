@@ -15,6 +15,15 @@ struct OcrDocumentInput {
     #[serde(default)]
     title: Option<String>,
     pages: Vec<OcrPageResult>,
+    /// The page the document is set on, in points: a scanned PDF's own.
+    #[serde(default)]
+    page: Option<PageSize>,
+}
+
+#[derive(Deserialize)]
+struct PageSize {
+    width: f64,
+    height: f64,
 }
 
 #[derive(Deserialize)]
@@ -82,20 +91,20 @@ struct OcrWord {
     font_size_px: Option<f64>,
 }
 
-#[derive(Clone, Copy, Deserialize)]
-struct OcrBBox {
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
+#[derive(Clone, Copy, Debug, Deserialize)]
+pub(crate) struct OcrBBox {
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
 }
 
 impl OcrBBox {
-    fn right(self) -> f64 {
+    pub(crate) fn right(self) -> f64 {
         self.x + self.w
     }
 
-    fn bottom(self) -> f64 {
+    pub(crate) fn bottom(self) -> f64 {
         self.y + self.h
     }
 }
@@ -137,7 +146,7 @@ fn write_document(input: OcrDocumentInput) -> office_core::Result<Vec<u8>> {
     for page in &input.pages {
         let mut content = Vec::new();
         let rtl = page_is_rtl(page);
-        let positioned = page.blocks.iter().map(|block| (page.upright(block.bbox), block)).collect();
+        let positioned: Vec<PositionedBlock<'_>> = page.blocks.iter().map(|block| (page.upright(block.bbox), block)).collect();
         let min_gap = typical_height.map_or(8.0, |height| height / page.points_per_pixel() * 0.6);
         let ordered = reading_order(positioned, rtl, min_gap, 0);
         let paragraphs: Vec<_> = ordered.iter().flat_map(|(_, block)| &block.paragraphs).collect();
@@ -165,6 +174,21 @@ fn write_document(input: OcrDocumentInput) -> office_core::Result<Vec<u8>> {
         blocks.push(Block::Paragraph(Paragraph::default()));
     }
     document.body = Body::Flow { blocks };
+    if let Some(page) = input.page.filter(|p| p.width > 0.0 && p.height > 0.0) {
+        let pt = Emu::from_points;
+        let (x, y) = (pt(72f64.min(page.width * 0.1)), pt(72f64.min(page.height * 0.1)));
+        let section = office_word::Section {
+            page_width: pt(page.width),
+            page_height: pt(page.height),
+            landscape: page.width > page.height,
+            margin_top: y,
+            margin_bottom: y,
+            margin_left: x,
+            margin_right: x,
+            ..Default::default()
+        };
+        office_word::set_section(&mut document, 0, &section);
+    }
 
     let compiler = Compiler::new().with_layer(Words);
     if lists.is_empty() {
@@ -174,7 +198,7 @@ fn write_document(input: OcrDocumentInput) -> office_core::Result<Vec<u8>> {
     compiler.with_layer(OcrNumbering(numbering)).write(&document, Kind::Word)
 }
 
-fn median(values: impl IntoIterator<Item = f64>) -> Option<f64> {
+pub(crate) fn median(values: impl IntoIterator<Item = f64>) -> Option<f64> {
     let mut values: Vec<_> = values.into_iter().filter(|h| h.is_finite() && *h > 0.0).collect();
     values.sort_by(f64::total_cmp);
     let middle = values.len() / 2;
@@ -202,7 +226,9 @@ fn page_is_rtl(page: &OcrPageResult) -> bool {
 
 type PositionedBlock<'a> = (OcrBBox, &'a OcrBlock);
 
-fn reading_order(mut blocks: Vec<PositionedBlock<'_>>, rtl: bool, min_gap: f64, depth: u8) -> Vec<PositionedBlock<'_>> {
+/// Orders boxes for reading: top to bottom, with side-by-side columns one after the other
+/// (right first in right-to-left pages), and a box that spans columns between the bands.
+pub(crate) fn reading_order<T>(mut blocks: Vec<(OcrBBox, T)>, rtl: bool, min_gap: f64, depth: u8) -> Vec<(OcrBBox, T)> {
     blocks.sort_by(|a, b| {
         a.0.y.total_cmp(&b.0.y).then_with(|| if rtl { b.0.right().total_cmp(&a.0.right()) } else { a.0.x.total_cmp(&b.0.x) })
     });
@@ -226,10 +252,10 @@ fn reading_order(mut blocks: Vec<PositionedBlock<'_>>, rtl: bool, min_gap: f64, 
     ordered
 }
 
-fn append_columns<'a>(
-    ordered: &mut Vec<PositionedBlock<'a>>,
-    left: &mut Vec<PositionedBlock<'a>>,
-    right: &mut Vec<PositionedBlock<'a>>,
+fn append_columns<T>(
+    ordered: &mut Vec<(OcrBBox, T)>,
+    left: &mut Vec<(OcrBBox, T)>,
+    right: &mut Vec<(OcrBBox, T)>,
     rtl: bool,
     min_gap: f64,
     depth: u8,
@@ -239,7 +265,7 @@ fn append_columns<'a>(
     ordered.extend(reading_order(std::mem::take(second), rtl, min_gap, depth + 1));
 }
 
-fn column_cut(blocks: &[PositionedBlock<'_>], min_gap: f64) -> Option<f64> {
+pub(crate) fn column_cut<T>(blocks: &[(OcrBBox, T)], min_gap: f64) -> Option<f64> {
     let mut best = None;
     for &(left, _) in blocks.iter().filter(|(b, _)| b.w > 0.0 && b.h > 0.0) {
         let right = blocks
@@ -346,11 +372,11 @@ fn push_joined(lines: &[(&str, bool)], rtl: bool, heading: Option<u8>, out: &mut
     out.push((Block::Paragraph(paragraph), item.map(|(marker, _, _)| marker)));
 }
 
-fn has_rtl(text: &str) -> bool {
+pub(crate) fn has_rtl(text: &str) -> bool {
     text.char_indices().any(|(at, c)| first_strong_rtl(&text[at..at + c.len_utf8()]) == Some(true))
 }
 
-fn xml_text(text: &str) -> String {
+pub(crate) fn xml_text(text: &str) -> String {
     text.chars()
         .filter(|&c| matches!(c, '\t' | '\n' | '\r' | '\u{20}'..='\u{D7FF}' | '\u{E000}'..='\u{FFFD}' | '\u{10000}'..='\u{10FFFF}'))
         .collect()
@@ -373,12 +399,12 @@ enum ListFormat {
 }
 
 #[derive(Clone, Copy)]
-struct ListMarker {
+pub(crate) struct ListMarker {
     format: ListFormat,
     number: u32,
 }
 
-fn list_marker(text: &str) -> Option<(ListMarker, &str, &str)> {
+pub(crate) fn list_marker(text: &str) -> Option<(ListMarker, &str, &str)> {
     let content =
         text.trim_start_matches(|c| matches!(c, '\u{061C}' | '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}'));
     let marks = &text[..text.len() - content.len()];
@@ -412,7 +438,7 @@ fn list_marker(text: &str) -> Option<(ListMarker, &str, &str)> {
     Some((ListMarker { format: ListFormat::Decimal(template), number }, marks, rest))
 }
 
-struct OcrNumbering(XmlDoc);
+pub(crate) struct OcrNumbering(pub XmlDoc);
 
 impl Layer for OcrNumbering {
     fn name(&self) -> &'static str {
@@ -437,7 +463,7 @@ impl Layer for OcrNumbering {
 
 // Like Word's list tools, set numPr through office-word. Supply OCR-specific list
 // definitions so an original counter and punctuation survive in the editable list.
-fn list_numbering(doc: &mut Document, lists: Vec<(usize, ListMarker)>) -> XmlDoc {
+pub(crate) fn list_numbering(doc: &mut Document, lists: Vec<(usize, ListMarker)>) -> XmlDoc {
     let mut xml = numbering::empty();
     let mut id = 0;
     let mut nums = Vec::new();
@@ -793,6 +819,15 @@ mod tests {
         let doc = round_trip(vec![fallback, page(1, vec![]), rotated]);
         assert_eq!(texts(&doc), ["First", "Second", "\u{c}", "Another page"]);
         assert!(matches!(office_word::paragraphs(&doc)[2].content[0], Inline::Break { kind: BreakKind::Page, .. }));
+    }
+
+    #[test]
+    fn sets_the_page_it_is_given() {
+        let input = json!({ "pages": [page(0, vec![])], "page": { "width": 842, "height": 595 } });
+        let bytes = ocr_document_to_docx(&input.to_string()).unwrap();
+        let doc = Compiler::new().with_layer(Words).read(&bytes, Some("ocr.docx")).unwrap();
+        let section = &office_word::sections(&doc)[0];
+        assert_eq!((section.page_width, section.page_height, section.landscape), (Emu::from_points(842.0), Emu::from_points(595.0), true));
     }
 
     #[test]
