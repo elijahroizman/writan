@@ -2,6 +2,20 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 0.19.0 — 2026-11-27
+
+### Edit a PDF as a Word document
+- The PDF inspector has an **Edit as Word document** button (also **File › Edit PDF as Word Document** and the command palette). It rebuilds the PDF as an editable Word document in a new tab, the way Word opens a PDF, and leaves the PDF as it was.
+- Text keeps its fonts, sizes, bold, italic, colours, underlines and links; larger lines become headings, bullets and numbers become lists, aligned cells become tables, and pictures come through as pictures. Two-column text reads one column after the other.
+- Scanned pages are read with the existing offline OCR, and a PDF's own invisible OCR layer is used when it has one. The Convert dialog's PDF → Word uses the same path.
+
+### Themes
+- **Delete** now works on themes an AI agent made in the themes folder, removing the theme's `.json` and any background picture. If the theme was in use, the deck switches back to the default.
+- The folder icon on a theme card shows the theme's file in Finder or File Explorer; the ⋯ menu has the same item.
+
+### Less memory
+- Opening an Office document copies its bytes once instead of several times, and media inside the file is read without keeping an inflated copy. On a 14 MB Word file with eight pictures, the Office engine's own memory after opening fell from 33 MB to 19 MB.
+
 ## 0.18.0 — 2026-11-27
 
 ### Faster
