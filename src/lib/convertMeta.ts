@@ -41,7 +41,11 @@ export function targetsForKind(kind: DocKind): ConvertTarget[] {
   return list.map((format) => ({
     format,
     ...TARGET_INFO[format],
-    ...(usesOcr(kind, format) ? { hint: 'Recognize text with offline OCR' } : {}),
+    ...(kind === 'pdf' && format === 'docx'
+      ? { hint: 'Editable text, pictures and tables; scanned pages are read with offline OCR' }
+      : usesOcr(kind, format)
+        ? { hint: 'Recognize text with offline OCR' }
+        : {}),
   }))
 }
 

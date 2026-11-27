@@ -17,6 +17,7 @@ import {
   CopyPlus,
   Eye,
   FileOutput,
+  FilePen,
   FilePlus,
   FileStack,
   FileText,
@@ -125,6 +126,7 @@ const COMMAND_ICONS: Record<string, LucideIcon> = {
   'save-as': Save,
   revert: RotateCw,
   'convert-file': ArrowRightLeft,
+  'edit-as-word': FilePen,
   'ocr-document': ScanText,
   'copy-markdown': ClipboardCopy,
   'export-markdown': FileText,
@@ -209,6 +211,7 @@ const COMMAND_KEYWORDS: Record<string, string> = {
   'view-split': 'preview source',
   'view-write': 'source',
   'convert-file': 'export transform docx markdown md pdf pptx xlsx csv llm',
+  'edit-as-word': 'convert pdf docx word editable reflow text',
   'ocr-document': 'recognize scan searchable text pdf image offline',
   'copy-markdown': 'llm ai prompt markdown md docx clipboard export',
   'export-markdown': 'llm ai markdown md docx convert',
@@ -217,7 +220,7 @@ const COMMAND_KEYWORDS: Record<string, string> = {
 }
 
 /** Commands that only work on a document. From Home they show greyed out, so searching for one explains itself. */
-const NEEDS_DOCUMENT = new Set(['share', 'save', 'save-as', 'revert', 'convert-file', 'copy-markdown', 'export-markdown', 'export-pdf', 'bundle-pdf', 'print', 'close-tab', 'duplicate-tab', 'version-history', 'find', 'replace', 'split-view', 'toggle-left', 'toggle-right', 'zoom-in', 'zoom-out', 'zoom-reset', 'focus-mode', 'typewriter', 'focus-dim'])
+const NEEDS_DOCUMENT = new Set(['share', 'save', 'save-as', 'revert', 'convert-file', 'edit-as-word', 'copy-markdown', 'export-markdown', 'export-pdf', 'bundle-pdf', 'print', 'close-tab', 'duplicate-tab', 'version-history', 'find', 'replace', 'split-view', 'toggle-left', 'toggle-right', 'zoom-in', 'zoom-out', 'zoom-reset', 'focus-mode', 'typewriter', 'focus-dim'])
 
 const SETTINGS_PAGES: { page: SettingsPage; label: string }[] = [
   { page: 'general', label: 'General' },

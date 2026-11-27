@@ -92,8 +92,9 @@ export function ocrResultsToMarkdown(pages: readonly OcrPageResult[]): string {
   }).filter(Boolean).join('\n\n---\n\n')
 }
 
-export async function ocrResultsToDocx(pages: readonly OcrPageResult[], title?: string): Promise<Uint8Array> {
-  const input: OcrDocumentInput = { title, pages: [...pages] }
+/** `page`: the size in points to set the document on (a scanned PDF's own); Word's default otherwise. */
+export async function ocrResultsToDocx(pages: readonly OcrPageResult[], title?: string, page?: { width: number; height: number }): Promise<Uint8Array> {
+  const input: OcrDocumentInput = { title, pages: [...pages], page }
   const engine = await loadEngine()
   return engine.ocrToDocx(JSON.stringify(input))
 }

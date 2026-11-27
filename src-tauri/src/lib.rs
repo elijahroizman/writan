@@ -257,6 +257,7 @@ pub fn run() {
             themes::themes_read,
             themes::theme_background,
             themes::theme_publish,
+            themes::theme_delete,
         ])
         .build(tauri::generate_context!())
         .expect("error while building Writan");

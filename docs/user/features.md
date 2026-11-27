@@ -7,7 +7,7 @@ Every file opens as a tab across the top. Each kind of document gets its own sid
 | Word | Heading outline, page and word count | Style, font, size, bold/italic/…, color, highlight, alignment, lists, line spacing; insert table, image, link or page break; header and footer with page numbers; comments with replies (rest the pointer on commented text to read one); ⌘-click a link to open it; image size and crop; table rows, columns, shading and borders; page size (A4 for new documents) and margins |
 | PowerPoint | Slide thumbnails (drag to reorder, shift- or ⌘-click to pick several, right-click for more); speaker notes under the slide | Insert text boxes, shapes, tables, images, video links and slides; text formatting for one object or several; table styles; fill and line; position, size, rotation, flip and layer order; crop; group and ungroup; links; align; slide layout; transitions; Present |
 | Excel | Sheets (add, rename, reorder, delete) | Formula bar; typing `=` lists functions and shows what each takes, and clicking or dragging over cells puts their references in the formula (on other sheets too), Shift-click stretches the last one to a range and ⌘-click (Ctrl-click on Windows and Linux) adds another; charts (column, bar, line, area, pie, doughnut, scatter) made from the selected cells, moved and resized by dragging, with type, stacking, title, cells, colors and legend in the inspector; number format, font, size, bold/italic/underline/strikethrough, color, fill, alignment, wrap, borders; insert and delete rows and columns; merge cells; drag a column or row edge to resize; set how many rows and columns a sheet has in the inspector (saved in the file); pinch or ⌘+ and ⌘− to zoom. CSV files open as one sheet and save as CSV |
-| PDF | Page thumbnails (drag to reorder) or the PDF's outline | Highlight, add text, draw, place images; sign with saved signatures and initials, add the date, a check mark or a cross; fill forms (how many fields are filled, jump to the next empty one); save a flattened copy; rotate, move, duplicate, delete, insert and extract pages; document info |
+| PDF | Page thumbnails (drag to reorder) or the PDF's outline | Edit as a Word document; highlight, add text, draw, place images; sign with saved signatures and initials, add the date, a check mark or a cross; fill forms (how many fields are filled, jump to the next empty one); save a flattened copy; rotate, move, duplicate, delete, insert and extract pages; document info |
 | Markdown | Heading outline | Hidden by default. Read / Edit with preview / Edit source switch at the bottom (⌘E). Front matter, such as an Agent Skill's name and description, shows as a table |
 | Text | None | None |
 
@@ -24,6 +24,12 @@ Hebrew, Arabic and other right-to-left text runs right to left in Word documents
 ## Spelling
 
 Misspelled words get a red wavy underline in Word documents and PowerPoint presentations, and on a Mac or Windows in Markdown and text files too. Right-click one for corrections, **Ignore Spelling** (until Writan quits) or **Learn Spelling** (adds it to your dictionary). Writan uses your computer's spell checker in the language you've set: a Mac's (sharing the words you've taught other apps), Windows', or on Linux the Hunspell dictionaries installed (such as `hunspell-en-au`). On Windows and Linux, words in the Hebrew or Arabic alphabet are checked only when that's the language you've set. In Word the word you're typing is checked once you've moved on from it.
+
+## Editing a PDF as a Word document
+
+To change a PDF's text, click **Edit as Word document** at the top of its inspector, or choose **File › Edit PDF as Word Document**. As in Word, Writan rebuilds the PDF as a Word document in a new tab: the text in its fonts, sizes, colours and links, joined back into paragraphs; headings, bulleted and numbered lists, tables, pictures and charts; and the PDF's page size and margins. Text set in two columns reads one column after the other. Page numbers and headers repeated on every page are left out. Scanned pages are read with the offline text recognition below.
+
+The PDF stays open and isn't changed. Save the Word copy where you like; **Export as PDF** turns it back into a PDF. It's meant for editing, so it may not look exactly like the PDF: fonts the computer doesn't have are replaced, and drawn boxes, backgrounds and shapes other than tables and charts are left out.
 
 ## Signing PDFs and filling in forms
 
@@ -43,7 +49,7 @@ Scanned PDFs work like any other PDF. When a page is a picture of text, Writan r
 
 English is built in. If your scans are in other languages, choose them in **Settings › General › Text in scanned PDFs**. Each one downloads once, from a pinned release checked with SHA-256, the first time you choose it. Your documents are never sent anywhere.
 
-**Convert file…** turns a scanned PDF into a Word document. Pictures (PNG, JPEG, HEIC and WebP) open in the Images viewer, where **Find** (⌘F, or Ctrl+F on Windows and Linux) finds the words in the picture and highlights them. Writan reads its text, on your computer, the first time you search it, and the bottom of the window says "Reading the text…" meanwhile. Drawing on the picture keeps the matches; cropping or turning it reads it again. **Show Recognized Text** in the **⋯** menu, or **File › Recognize Text (OCR)…** (`⌥⌘O` on a Mac, `Ctrl+Alt+O` on Windows and Linux), shows the text to copy, or saves it as Word or a searchable PDF.
+**Edit as Word document** (above) and **Convert file…** read a scanned PDF's text into a Word document. Pictures (PNG, JPEG, HEIC and WebP) open in the Images viewer, where **Find** (⌘F, or Ctrl+F on Windows and Linux) finds the words in the picture and highlights them. Writan reads its text, on your computer, the first time you search it, and the bottom of the window says "Reading the text…" meanwhile. Drawing on the picture keeps the matches; cropping or turning it reads it again. **Show Recognized Text** in the **⋯** menu, or **File › Recognize Text (OCR)…** (`⌥⌘O` on a Mac, `Ctrl+Alt+O` on Windows and Linux), shows the text to copy, or saves it as Word or a searchable PDF.
 
 ## Tabs
 

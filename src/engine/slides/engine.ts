@@ -6,6 +6,7 @@ import { expectKind, loadEngine } from '../load'
 import type { PaintItem } from '../paint'
 import { itemsHtml, MediaCache, StyleSheet } from '../paint'
 import { BASE_FONTS } from '../preload'
+import { isLegacyPpt, legacyPptToPptx } from '../ppt/load'
 import { preloadFonts } from '../host'
 import { LATEX_MATH_PREFIX } from '../../math/latexTag'
 import { renderLazyLatexTag } from '../../math/lazyLatex'
@@ -232,8 +233,10 @@ export class SlidesEngine {
 
   /** Opens a PowerPoint file, or a new deck for `null`. */
   static async open(bytes: Uint8Array | null): Promise<SlidesEngine> {
-    const engine = await loadEngine()
+    const engineReady = loadEngine()
     expectKind(bytes, 'slides')
+    if (bytes && isLegacyPpt(bytes)) bytes = await legacyPptToPptx(bytes)
+    const engine = await engineReady
     await preloadFonts(BASE_FONTS)
     const doc = new engine.SlidesDoc(bytes ?? new Uint8Array(), host)
     const e = new SlidesEngine(doc)

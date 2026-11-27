@@ -35,3 +35,4 @@ function build(pkg, output, sources) {
 
 build('office-wasm', 'src/engine/wasm', ['office-core', 'office-engine', 'office-sheets', 'office-slides', 'office-wasm', 'office-word'])
 build('office-pdf-wasm', 'src/lib/pdf/wasm', ['office-pdf', 'office-pdf-wasm'])
+build('office-ppt-wasm', 'src/engine/ppt/wasm', ['office-ppt-wasm'])

@@ -5,11 +5,11 @@ import { canSetDefaults, defaultStatus, makeDefault, openDefaultAppsSettings } f
 import { formatBytes as formatOcrBytes, OCR_PACK_CATALOG } from '../lib/ocr/catalog'
 import { useOcrPacks } from '../lib/ocr/packs'
 import type { CliStatus } from '../lib/platform'
-import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isMac, isTauri, isWindows, openExternal, revealInFinder, saveBytesAs, setCliInstalled, shortcut, showError } from '../lib/platform'
+import { clearAllHistory, cliStatus, confirmDialog, historyUsage, isMac, isTauri, isWindows, openExternal, revealInFinder, revealLabel, saveBytesAs, setCliInstalled, shortcut, showError } from '../lib/platform'
 import type { Appearance, ThemeDef } from '../lib/themes'
 import { orbBackground, themeFile } from '../lib/themes'
 import { PLUGINS, isBuiltIn } from '../plugins/catalog'
-import { allThemes, useAppearance } from '../state/appearance'
+import { allThemes, publishedThemePath, unpublishTheme, useAppearance } from '../state/appearance'
 import { enabledKinds, usePlugins } from '../state/plugins'
 import type { SettingsPage } from '../state/settings'
 import { PREVIEW_DELAYS, RECENT_DAYS, useSettings } from '../state/settings'
@@ -652,24 +652,28 @@ function AppearancePage() {
                 <Orb theme={t} mode="dark" selected={dark === t.id} onSelect={() => use(t.id, 'dark')} />
               </div>
               <div className="theme-card-foot">
-                <button type="button" className="theme-name" title={t.published ? 'From the themes folder. Use for light and dark' : 'Use for light and dark'} onClick={() => use(t.id)}>
+                <button type="button" className="theme-name" title="Use for light and dark" onClick={() => use(t.id)}>
                   {t.name}
-                  {t.published && <FolderOpen size={11} className="faint theme-folder-mark" aria-label="from the themes folder" />}
                 </button>
+                {t.published && isTauri && themesDir && (
+                  <IconButton label={`From the themes folder. ${revealLabel}`} size="sm" onClick={() => void revealTheme(themesDir, t)}>
+                    <FolderOpen size={13} />
+                  </IconButton>
+                )}
                 <ThemeMenu
                   name={t.name}
                   items={[
                     ...(t.custom ? [{ label: 'Edit…', icon: <Pencil size={14} />, onSelect: () => useThemeEditor.getState().open(t, true) }] : []),
                     { label: 'Duplicate and edit…', icon: <Copy size={14} />, onSelect: () => useThemeEditor.getState().open(copyOf(t), false) },
                     { label: 'Export…', icon: <Share size={14} />, onSelect: () => void exportTheme(t) },
-                    ...(t.custom
+                    ...(t.published && isTauri && themesDir ? [{ label: revealLabel, icon: <FolderOpen size={14} />, onSelect: () => void revealTheme(themesDir, t) }] : []),
+                    ...(t.custom || (t.published && isTauri)
                       ? [
                           {
                             label: 'Delete',
                             icon: <Trash2 size={14} />,
                             danger: true,
-                            onSelect: () =>
-                              void confirmDialog('You can’t undo this. If you exported it, you can add it again from its file.', { title: `Delete the theme “${t.name}”?`, okLabel: 'Delete', danger: true }).then((ok) => ok && remove(t.id)),
+                            onSelect: () => void deleteTheme(t, remove),
                           },
                         ]
                       : []),
@@ -700,6 +704,27 @@ function AppearancePage() {
 
 const newThemeId = () => `custom-${Math.random().toString(36).slice(2, 8)}`
 const copyOf = (theme: ThemeDef): ThemeDef => ({ ...structuredClone(theme), id: newThemeId(), name: `${theme.name} copy`.slice(0, 48), custom: true, published: undefined, background: undefined })
+
+async function deleteTheme(theme: ThemeDef, remove: (id: string) => void) {
+  const detail = theme.published
+    ? 'Its file, and any background picture beside it, is deleted from the themes folder. You can’t undo this.'
+    : 'You can’t undo this. If you exported it, you can add it again from its file.'
+  if (!(await confirmDialog(detail, { title: `Delete the theme “${theme.name}”?`, okLabel: 'Delete', danger: true }))) return
+  if (!theme.published) return remove(theme.id)
+  try {
+    await unpublishTheme(theme.id)
+  } catch (err) {
+    await showError(String((err as Error)?.message ?? err), 'Couldn’t delete the theme')
+  }
+}
+
+async function revealTheme(dir: string, theme: ThemeDef) {
+  try {
+    await revealInFinder(publishedThemePath(dir, theme.id))
+  } catch (err) {
+    await showError(String((err as Error)?.message ?? err), 'Couldn’t show the theme’s file')
+  }
+}
 
 /** Saves a theme as a .json file someone can add with Add theme, in Writan or T3 Code’s format. */
 async function exportTheme(theme: ThemeDef) {

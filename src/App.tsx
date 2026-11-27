@@ -375,6 +375,12 @@ export async function runCommand(id: string) {
     case 'convert-file':
       useConvertDialog.getState().openConvert(ws.activeId === HOME_TAB_ID ? null : ws.activeId)
       break
+    case 'edit-as-word':
+      if (commandAvailable(id)) {
+        const { usePdfToWord } = await import('./state/pdfToWord')
+        await usePdfToWord.getState().start(ws.activeId)
+      }
+      break
     case 'ocr-document':
       if (commandAvailable(id)) editor?.actions?.[id]?.()
       break
@@ -578,6 +584,8 @@ export function commandAvailable(command: string) {
       return !!tab
     case 'convert-file':
       return !!tab && targetsForKind(tab.kind).length > 0
+    case 'edit-as-word':
+      return tab?.kind === 'pdf'
     case 'ocr-document':
       return tab?.kind === 'pdf' || tab?.kind === 'image'
     case 'copy-markdown':

@@ -133,6 +133,13 @@ fn build_with<R: Runtime>(app: &AppHandle<R>, keys: &Shortcuts) -> tauri::Result
         .item(&item(
             app,
             keys,
+            "edit-as-word",
+            "Edit PDF as Word Document",
+            None,
+        )?)
+        .item(&item(
+            app,
+            keys,
             "ocr-document",
             "Recognize Text (OCR)…",
             Some("CmdOrCtrl+Alt+O"),

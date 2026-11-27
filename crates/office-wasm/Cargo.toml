@@ -18,4 +18,6 @@ wasm-bindgen = "=0.2.129"
 js-sys = { version = "=0.3.106", default-features = false }
 office-slides.workspace = true
 office-sheets.workspace = true
-office_oxide.workspace = true
+
+[dev-dependencies]
+office-ppt-wasm = { path = "../office-ppt-wasm" }
