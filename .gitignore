@@ -9,4 +9,5 @@ release
 crates/target
 src/engine/wasm
 src/lib/pdf/wasm
+src/engine/ppt/wasm
 .cache

@@ -1,10 +1,13 @@
 // Warms up the document engine while the app is idle: compiles the WebAssembly and loads the
 // fonts nearly every Office document uses, so opening the first one doesn't wait for them.
 
+import { isLinux } from '../lib/platform'
 import { host, preloadFonts } from './host'
 import { loadEngine } from './load'
 
-export const BASE_FONTS = ['"Carlito"', '"Caladea"', '"Liberation Sans"', '"Liberation Serif"']
+// Carlito and Caladea stand in for Calibri and Cambria everywhere. The Liberation fonts only
+// matter where Arial and Times New Roman are missing (usually Linux); macOS and Windows have them.
+export const BASE_FONTS = isLinux ? ['"Carlito"', '"Caladea"', '"Liberation Sans"', '"Liberation Serif"'] : ['"Carlito"', '"Caladea"']
 
 const yieldStep = () => new Promise<void>((r) => globalThis.setTimeout(r, 0))
 

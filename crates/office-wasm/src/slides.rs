@@ -94,29 +94,7 @@ struct TextPatchIn {
 }
 
 fn open_view(bytes: &[u8]) -> office_core::Result<SlidesView> {
-    if is_compound_file(bytes) {
-        let pptx = legacy_ppt_to_pptx(bytes)?;
-        SlidesView::open(&pptx)
-    } else {
-        SlidesView::open(bytes)
-    }
-}
-
-pub(crate) fn is_compound_file(bytes: &[u8]) -> bool {
-    bytes.starts_with(&[0xd0, 0xcf, 0x11, 0xe0])
-}
-
-pub(crate) fn legacy_ppt_to_pptx(bytes: &[u8]) -> office_core::Result<Vec<u8>> {
-    let doc = office_oxide::Document::from_reader(std::io::Cursor::new(bytes.to_vec()), office_oxide::DocumentFormat::Ppt)
-        .map_err(|e| office_core::Error::Invalid(format!("couldn't read this PowerPoint file: {e}")))?;
-    if doc.format() != office_oxide::DocumentFormat::Ppt {
-        return Err(office_core::Error::Invalid("this isn't a PowerPoint file".into()));
-    }
-    let ir = doc.to_ir();
-    let mut out = std::io::Cursor::new(Vec::new());
-    office_oxide::create::create_from_ir_to_writer(&ir, office_oxide::DocumentFormat::Pptx, &mut out)
-        .map_err(|e| office_core::Error::Invalid(format!("couldn't convert this PowerPoint file to .pptx: {e}")))?;
-    Ok(out.into_inner())
+    SlidesView::open(bytes)
 }
 
 #[wasm_bindgen]
@@ -720,9 +698,9 @@ mod tests {
     #[test]
     fn legacy_ppt_converts_to_a_readable_pptx() {
         let ppt = minimal_ppt("Legacy slide");
-        let pptx = legacy_ppt_to_pptx(&ppt).unwrap();
+        let pptx = office_ppt_wasm::convert_legacy_ppt(&ppt).unwrap();
         assert!(pptx.starts_with(b"PK"));
-        let mut view = open_view(&ppt).unwrap();
+        let mut view = open_view(&pptx).unwrap();
         assert_eq!(view.slide_infos().len(), 1);
         let saved = view.save().unwrap();
         assert!(saved.starts_with(b"PK"));

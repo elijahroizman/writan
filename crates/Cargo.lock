@@ -554,6 +554,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "office-ppt-wasm"
+version = "0.1.0"
+dependencies = [
+ "office_oxide",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "office-sheets"
 version = "0.1.0"
 dependencies = [
@@ -580,10 +588,10 @@ version = "0.1.0"
 dependencies = [
  "office-core",
  "office-engine",
+ "office-ppt-wasm",
  "office-sheets",
  "office-slides",
  "office-word",
- "office_oxide",
  "serde",
  "serde_json",
  "wasm-bindgen",
