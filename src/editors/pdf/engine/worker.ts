@@ -643,7 +643,7 @@ function mergeBoxes<T extends { box: Box }>(items: T[], pad: number, join: (a: T
   return out
 }
 
-/** Whether text lies in a grid: two rows or more of two cells or more, whose columns line up. */
+/** Whether text lies in a grid: two rows or more of two cells or more, whose columns line up (left, right or centred). */
 function isGrid(cells: LayoutFragment[]): boolean {
   const rows: LayoutFragment[][] = []
   for (const cell of [...cells].sort((a, b) => a.baseline - b.baseline)) {
@@ -653,7 +653,7 @@ function isGrid(cells: LayoutFragment[]): boolean {
   }
   const full = rows.filter((r) => r.length >= 2)
   const lined = (a: LayoutFragment[], b: LayoutFragment[]) =>
-    a.filter((x) => b.some((y) => Math.abs(x.x - y.x) < 2 || Math.abs(x.x + x.w - (y.x + y.w)) < 2)).length >= 2
+    a.filter((x) => b.some((y) => Math.abs(x.x - y.x) < 2 || Math.abs(x.x + x.w - (y.x + y.w)) < 2 || Math.abs(x.x + x.w / 2 - (y.x + y.w / 2)) < 2)).length >= 2
   return full.some((a, i) => full.slice(i + 1).some((b) => lined(a, b)))
 }
 
