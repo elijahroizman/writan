@@ -586,6 +586,7 @@ dependencies = [
 name = "office-wasm"
 version = "0.1.0"
 dependencies = [
+ "js-sys",
  "office-core",
  "office-engine",
  "office-ppt-wasm",

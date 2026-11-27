@@ -497,7 +497,7 @@ mod tests {
             _ => unreachable!(),
         };
         room.sync();
-        assert_eq!(room.views[1].media(&media).unwrap(), PNG);
+        assert_eq!(&*room.views[1].media(&media).unwrap(), PNG);
         assert!(matches!(room.views[1].slides()[0].frames.last().map(|f| &f.content), Some(FrameContent::Picture { .. })));
     }
 

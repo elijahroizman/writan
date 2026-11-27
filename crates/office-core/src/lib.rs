@@ -28,6 +28,7 @@ pub use layer::Layer;
 pub use model::{Document, Kind};
 
 use std::borrow::Cow;
+use std::sync::Arc;
 
 use formats::Output;
 use opc::Package;
@@ -52,13 +53,29 @@ impl Compiler {
     /// and names a CSV file's sheet.
     pub fn read(&self, bytes: &[u8], name: Option<&str>) -> Result<Document> {
         // A zip is read once, both to tell its kind and for the front end.
-        let mut doc = if is_zip(bytes) {
+        let doc = if is_zip(bytes) {
             let pkg = Package::read(bytes)?;
             let kind = package_kind(&pkg)?;
             formats::read_package(pkg, kind)?
         } else {
             formats::read(bytes, detect(bytes, name)?, name)?
         };
+        self.after_read(doc)
+    }
+
+    /// Reads a document whose bytes are already shared, without copying the zip again.
+    pub fn read_arc(&self, bytes: Arc<[u8]>, name: Option<&str>) -> Result<Document> {
+        let doc = if is_zip(&bytes) {
+            let pkg = Package::read_arc(bytes)?;
+            let kind = package_kind(&pkg)?;
+            formats::read_package(pkg, kind)?
+        } else {
+            formats::read(&bytes, detect(&bytes, name)?, name)?
+        };
+        self.after_read(doc)
+    }
+
+    fn after_read(&self, mut doc: Document) -> Result<Document> {
         for layer in self.layers_for(doc.kind) {
             layer.after_read(&mut doc).map_err(|e| layer_error(layer, e))?;
         }

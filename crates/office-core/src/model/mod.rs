@@ -213,7 +213,7 @@ impl Document {
             MediaData::Bytes(b) => Ok(b.clone()),
             MediaData::InPackage => {
                 let pkg = self.package.as_ref().ok_or_else(|| crate::Error::MissingPart(id.to_string()))?;
-                Ok(Arc::from(pkg.part(id)?))
+                pkg.part_arc(id)
             }
         }
     }

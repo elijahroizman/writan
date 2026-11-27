@@ -67,9 +67,13 @@ impl Package {
     }
 
     pub fn read(bytes: &[u8]) -> Result<Package> {
+        Self::read_arc(Arc::from(bytes))
+    }
+
+    /// Reads a package whose bytes are already shared, without copying them again.
+    pub fn read_arc(data: Arc<[u8]>) -> Result<Package> {
         #[cfg(test)]
         READS.with(|n| n.set(n.get() + 1));
-        let data: Arc<[u8]> = Arc::from(bytes);
         let mut archive = ZipArchive::new(Cursor::new(data))?;
         let mut parts: Vec<Part> = Vec::new();
         let mut index = HashMap::new();
@@ -177,6 +181,18 @@ impl Package {
     /// A part's bytes. Part names compare without case when there's no exact match, as OPC says.
     pub fn part(&self, name: &str) -> Result<&[u8]> {
         self.part_with_limit(name, MAX_SIZE)
+    }
+
+    /// A part's bytes in shared ownership. Unlike [`Package::part`], an unchanged part is
+    /// decompressed for the caller without keeping that inflated copy in the package: large
+    /// pictures are read once for the screen, while saving copies their still-compressed source.
+    pub fn part_arc(&self, name: &str) -> Result<Arc<[u8]>> {
+        let part = &self.parts[self.find(name).ok_or_else(|| Error::MissingPart(name.into()))?];
+        if let Some(data) = part.data.get() {
+            return Ok(Arc::from(&data[..]));
+        }
+        let entry = part.entry.expect("a part without bytes comes from the source zip");
+        Ok(Arc::from(self.decompress(entry, MAX_SIZE)?))
     }
 
     /// XML source bytes, bounded before decompression. Used by streaming readers as well

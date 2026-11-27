@@ -7,7 +7,7 @@ use wasm_bindgen::prelude::*;
 use office_engine::pos::{Path, Pos, Selection};
 
 use crate::word::byte_offset;
-use crate::{err, json, Host, JsMeasurer};
+use crate::{byte_array, err, json, shared_bytes, Host, JsMeasurer};
 
 #[wasm_bindgen]
 pub struct SlidesDoc {
@@ -93,15 +93,16 @@ struct TextPatchIn {
     align: Option<String>,
 }
 
-fn open_view(bytes: &[u8]) -> office_core::Result<SlidesView> {
-    SlidesView::open(bytes)
+fn open_view(bytes: std::sync::Arc<[u8]>) -> office_core::Result<SlidesView> {
+    SlidesView::open_arc(bytes)
 }
 
 #[wasm_bindgen]
 impl SlidesDoc {
     /// Opens a PowerPoint file, or makes a new deck when `bytes` is empty.
     #[wasm_bindgen(constructor)]
-    pub fn new(bytes: &[u8], host: Host) -> Result<SlidesDoc, JsError> {
+    pub fn new(bytes: js_sys::Uint8Array, host: Host) -> Result<SlidesDoc, JsError> {
+        let bytes = shared_bytes(&bytes);
         let view = if bytes.is_empty() { SlidesView::blank() } else { open_view(bytes).map_err(err)? };
         Ok(SlidesDoc { view, host, matches: Vec::new(), query: String::new() })
     }
@@ -594,8 +595,8 @@ impl SlidesDoc {
         self.view.save().map_err(err)
     }
 
-    pub fn media(&self, id: &str) -> Option<Vec<u8>> {
-        self.view.media(id)
+    pub fn media(&self, id: &str) -> Option<js_sys::Uint8Array> {
+        self.view.media(id).map(|b| byte_array(&b))
     }
 
     #[wasm_bindgen(js_name = mediaType)]
@@ -700,7 +701,7 @@ mod tests {
         let ppt = minimal_ppt("Legacy slide");
         let pptx = office_ppt_wasm::convert_legacy_ppt(&ppt).unwrap();
         assert!(pptx.starts_with(b"PK"));
-        let mut view = open_view(&pptx).unwrap();
+        let mut view = open_view(std::sync::Arc::from(pptx)).unwrap();
         assert_eq!(view.slide_infos().len(), 1);
         let saved = view.save().unwrap();
         assert!(saved.starts_with(b"PK"));

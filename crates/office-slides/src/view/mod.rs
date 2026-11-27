@@ -129,7 +129,12 @@ pub struct SlidePaint {
 
 impl SlidesView {
     pub fn open(bytes: &[u8]) -> office_core::Result<SlidesView> {
-        let doc = Compiler::new().with_layer(Decks).read(bytes, Some("deck.pptx"))?;
+        Self::open_arc(std::sync::Arc::from(bytes))
+    }
+
+    /// Opens a PowerPoint file whose bytes are already shared, without copying its zip again.
+    pub fn open_arc(bytes: std::sync::Arc<[u8]>) -> office_core::Result<SlidesView> {
+        let doc = Compiler::new().with_layer(Decks).read_arc(bytes, Some("deck.pptx"))?;
         if doc.kind != Kind::Slides {
             return Err(office_core::Error::Invalid(format!("this is {}, not a PowerPoint presentation", doc.kind.described())));
         }
@@ -305,11 +310,11 @@ impl SlidesView {
 
     /// A picture's bytes: from the presentation's media, or a part in the package (pictures on
     /// layouts, masters and backgrounds).
-    pub fn media(&self, id: &str) -> Option<Vec<u8>> {
+    pub fn media(&self, id: &str) -> Option<std::sync::Arc<[u8]>> {
         if let Ok(b) = self.doc.media_bytes(id) {
-            return Some(b.to_vec());
+            return Some(b);
         }
-        self.doc.package.as_ref()?.part(id).ok().map(<[u8]>::to_vec)
+        self.doc.package.as_ref()?.part_arc(id).ok()
     }
 
     pub fn media_type(&self, id: &str) -> Option<String> {

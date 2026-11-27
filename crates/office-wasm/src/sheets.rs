@@ -6,7 +6,7 @@ use office_sheets::view::{ChartPatch, FormatPatch, SheetsView};
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
 
-use crate::{err, json, Host, JsMeasurer};
+use crate::{byte_array, err, json, shared_bytes, Host, JsMeasurer};
 
 #[wasm_bindgen]
 pub struct SheetsDoc {
@@ -70,18 +70,20 @@ impl SheetsDoc {
     /// Opens a workbook or CSV file (`name` says which), or makes a new one when `bytes` is empty
     /// (`csv` in the name for a CSV file).
     #[wasm_bindgen(constructor)]
-    pub fn new(bytes: &[u8], name: &str, host: Host, now: Option<f64>) -> Result<SheetsDoc, JsError> {
+    pub fn new(bytes: js_sys::Uint8Array, name: &str, host: Host, now: Option<f64>) -> Result<SheetsDoc, JsError> {
         let csv = name.to_ascii_lowercase().ends_with(".csv") || name.to_ascii_lowercase().ends_with(".tsv");
-        let mut view = if bytes.is_empty() {
+        let bytes = shared_bytes(&bytes);
+        let empty = bytes.is_empty();
+        let mut view = if empty {
             let mut v = SheetsView::blank(if csv { Kind::Csv } else { Kind::Sheets });
             if let Some(n) = now {
                 v.set_now(n);
             }
             v
         } else {
-            SheetsView::open_with_now(bytes, name, now).map_err(err)?
+            SheetsView::open_with_now_arc(bytes, name, now).map_err(err)?
         };
-        if view.kind == Kind::Csv && !bytes.is_empty() {
+        if view.kind == Kind::Csv && !empty {
             view.fit_columns(&mut JsMeasurer(&host), 0);
         }
         Ok(SheetsDoc { view, host, matches: Vec::new(), query: String::new() })
@@ -116,14 +118,14 @@ impl SheetsDoc {
     }
 
     /// A picture's bytes, by media id.
-    pub fn media(&self, id: &str) -> Option<Vec<u8>> {
-        self.view.media(id).map(|(b, _)| b.to_vec())
+    pub fn media(&self, id: &str) -> Option<js_sys::Uint8Array> {
+        self.view.media(id).map(|(b, _)| byte_array(&b))
     }
 
     /// A picture's media type.
     #[wasm_bindgen(js_name = mediaType)]
     pub fn media_type(&self, id: &str) -> Option<String> {
-        self.view.media(id).and_then(|(_, t)| t.map(str::to_string))
+        self.view.media_type(id).map(str::to_string)
     }
 
     /// A cell as the formula bar and inspector see it.
