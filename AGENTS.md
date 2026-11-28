@@ -15,18 +15,38 @@ Fable, Opus, Astra and Sol may also commit straight to `main`. Every other chang
 
 ## Pull requests and commits
 
-- The title follows Conventional Commits: `type(scope): summary`, scope optional, type one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` or `style`. For example, `fix(excel): keep column widths when a sheet is renamed`. CI checks the title.
-- The description fills in every section of [the template](.github/pull_request_template.md): what changed, screenshots, evidence and known limitations. Write for a person skimming it, in plain bullets. For any visible change, take cropped 2x screenshots as described under Screenshots below and upload them with `scripts/pr-screenshots.sh`, which prints the Markdown to paste. Evidence is what you ran and what it printed, not a claim that it works. Known limitations names what you couldn't test.
-- The description ends with these three lines, spelled exactly like this, in this order. Give your exact model, the reasoning level you ran at, and your harness, as [CONTRIBUTING.md](CONTRIBUTING.md#pull-request-descriptions) defines them. Reviews end with the same three lines.
+Run the checks in [CONTRIBUTING.md](CONTRIBUTING.md#before-you-open-a-pull-request) before you open a pull request.
 
-  ```
-  Model: Claude Opus 5.5
-  Reasoning: high
-  Harness: Claude Code 2.1 in T3 Code
-  ```
+### Title
 
-- Each commit message ends with a `Co-Authored-By:` trailer for the model that wrote it, such as `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Use the trailer your harness gives you.
-- Run the checks in [CONTRIBUTING.md](CONTRIBUTING.md#before-you-open-a-pull-request) before you open the pull request.
+Conventional Commits: `type(scope): summary`. The scope is optional. The type is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` or `style`. For example, `fix(excel): keep column widths when a sheet is renamed`. CI fails a title that doesn't match.
+
+### Description
+
+Use [the template](.github/pull_request_template.md) and fill in every section. A person reads it, often in a minute or two, so write plain bullets and leave the implementation detail to the diff.
+
+- **What changed.** What someone using Writan or working on it will notice, and why if it isn't obvious.
+- **Screenshots.** Before and after pictures of every visible change, cropped to the part that changed and taken at 2x, as the Screenshots section below describes. Upload them with `scripts/pr-screenshots.sh before.png after.png`, which puts them on the `pr-screenshots` branch and prints the Markdown to paste. If nothing visible changed, write "No visible change."
+- **Evidence.** What you ran and what it printed: typecheck, build, `cargo test`, the browser tests, the files you opened and what you clicked. "Tests pass" without the command isn't evidence.
+- **Known limitations.** What the change doesn't do yet, what you couldn't test, such as Windows, macOS or a real update, and what a reviewer should look at closely. Write "None known." only after you've looked.
+
+The description ends with these three lines, spelled exactly like this, in this order:
+
+```
+Model: Claude Opus 5.5
+Reasoning: high
+Harness: Claude Code 2.1 in T3 Code
+```
+
+- `Model` is the provider's full name for the model you are, with its version, such as `Claude Opus 5.5` or `GPT-6.2 Sol`. Never a nickname like "Opus".
+- `Reasoning` is the effort level you ran at, in your harness's words: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `ultrathink`. Write `default` if none was set, and `n/a` if your model has no setting.
+- `Harness` is the tool that runs you, with its version if it shows one, and the app around it if there is one, such as `Codex 0.172` or `Claude Code 2.1 in T3 Code`.
+
+If several models wrote the change, give each its own three lines. A review ends with the reviewer's own three lines.
+
+### Commits
+
+Each commit message ends with a `Co-Authored-By:` trailer for the model that wrote it, such as `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Use the trailer your harness gives you.
 
 ## Releases
 
