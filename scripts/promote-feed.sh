@@ -14,6 +14,9 @@
 # A read that fails for any reason other than GitHub saying the release isn't there (HTTP 404) is
 # retried, then fails the job, rather than being taken for an empty feed.
 #
+# The tag is a stable release's (v1.0.0) or a nightly's (v1.1.0-nightly-2026-11-28-0930, whose
+# latest.json has the version 1.1.0-nightly.202611280930; scripts/nightly.mjs tag-version).
+#
 # Usage: GH_TOKEN=... GITHUB_REPOSITORY=owner/repo scripts/promote-feed.sh <tag>
 set -euo pipefail
 
@@ -22,9 +25,9 @@ if [ "$#" -ne 1 ]; then
   exit 2
 fi
 tag="$1"
-version="${tag#v}"
 repo="$GITHUB_REPOSITORY"
 scripts="$(cd "$(dirname "$0")" && pwd)"
+version="$(node "$scripts/nightly.mjs" tag-version "$tag")"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 # Seconds between attempts; the tests set it to 0.

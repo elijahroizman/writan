@@ -10,16 +10,21 @@
 # Fails, leaving the release a draft, if the release isn't a draft or a bundle or its signature
 # is missing.
 #
-# Usage: GH_TOKEN=... GITHUB_REPOSITORY=owner/repo scripts/update-feed.sh <tag> <version> <out-dir>
+# <name> is the version as the Windows installer's file name has it, when that isn't <version>: a
+# nightly 1.1.0-nightly.202611280930 has Writan_1.1.0-nightly-2026-11-28-0930_x64-setup.exe
+# (scripts/nightly.mjs names).
+#
+# Usage: GH_TOKEN=... GITHUB_REPOSITORY=owner/repo scripts/update-feed.sh <tag> <version> <out-dir> [<name>]
 set -euo pipefail
 
-if [ "$#" -ne 3 ]; then
-  echo "usage: $0 <tag> <version> <out-dir>" >&2
+if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
+  echo "usage: $0 <tag> <version> <out-dir> [<name>]" >&2
   exit 2
 fi
 tag="$1"
 version="$2"
 out="$(cd "$3" && pwd)"
+name="${4:-$version}"
 base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
@@ -44,7 +49,7 @@ add() {
       '.[$key] = {signature: $sig, url: $url}' <<< "$platforms")"
   done
 }
-add "Writan_${version}_x64-setup.exe" windows-x86_64 windows-x86_64-nsis
+add "Writan_${name}_x64-setup.exe" windows-x86_64 windows-x86_64-nsis
 add Writan_aarch64.app.tar.gz darwin-aarch64 darwin-aarch64-app
 add Writan_x64.app.tar.gz darwin-x86_64 darwin-x86_64-app
 jq -n \

@@ -35,10 +35,10 @@ fi
 
 version="$(dpkg-deb -f "$deb" Version)"
 # pacman versions can't hold a hyphen, and unlike dpkg and rpm, pacman doesn't sort a tilde
-# before the release: 1.0.1~nightly.1 is newer than 1.0.1 to pacman. A letter straight after the
+# before the release: 1.1.0~nightly.1 is newer than 1.1.0 to pacman. A letter straight after the
 # release part is older, so the pre-release's separator (the .deb's tilde, or SemVer's hyphen)
-# goes: 1.0.1nightly.202611280930 sorts after 1.0.0 and before 1.0.1, the way SemVer orders
-# 1.0.1-nightly.202611280930.
+# goes: 1.1.0nightly.202611280930 sorts after 1.0.0 and 1.0.1 and before 1.1.0, the way SemVer
+# orders 1.1.0-nightly.202611280930.
 case "$version" in
   *[-~]*)
     pre="${version#*[-~]}"

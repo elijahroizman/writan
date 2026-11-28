@@ -2,10 +2,10 @@
 # Rewrites a .deb Tauri built for the APT repository, in place.
 #
 # Tauri copies the app's SemVer version into the control file as it is. dpkg reads everything
-# after the last hyphen as the Debian revision, so a nightly's 1.0.1-nightly.202611280930 would be
-# version 1.0.1 revision nightly.202611280930, which sorts after 1.0.1 and turns the next stable
-# release into a downgrade. A pre-release's hyphen becomes a tilde, 1.0.1~nightly.202611280930,
-# which dpkg sorts before 1.0.1. Stable versions have no hyphen and stay as they are.
+# after the last hyphen as the Debian revision, so a nightly's 1.1.0-nightly.202611280930 would be
+# version 1.1.0 revision nightly.202611280930, which sorts after 1.1.0 and turns the next stable
+# release into a downgrade. A pre-release's hyphen becomes a tilde, 1.1.0~nightly.202611280930,
+# which dpkg sorts before 1.1.0. Stable versions have no hyphen and stay as they are.
 #
 # Tauri writes Provides and Replaces but has no Breaks field, so this adds
 # `Breaks: workspace (<< <version>)`: the package renamed from workspace to writan in 0.10.0, and the

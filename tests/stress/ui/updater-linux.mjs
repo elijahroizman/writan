@@ -8,8 +8,8 @@
 import assert from 'node:assert/strict'
 import { launch, start, done, check } from './harness.mjs'
 
-const FIRST = '99.0.1-nightly.209901010000'
-const SECOND = '99.0.1-nightly.209901020000'
+const FIRST = '99.1.0-nightly.209901010000'
+const SECOND = '99.1.0-nightly.209901020000'
 
 const { browser, page, logs } = await launch({ init: () => {
   Object.defineProperty(navigator, 'platform', { value: 'Linux x86_64' })

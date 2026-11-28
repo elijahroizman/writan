@@ -7,11 +7,11 @@ The update button (↑) at the top right shows the release notes, from [CHANGELO
 Writan updates on one of two channels. Pick one in Settings › General › Updates.
 
 - **Stable** gets tested releases. This is where every copy starts, unless you installed a nightly.
-- **Nightly** gets new features as soon as they land, and a nightly may break things. A new nightly comes out whenever something new reaches Writan's main branch. The update button shows one as "Nightly, 28 Nov 2026 09:30", the time it was built, with the changes since the build before it.
+- **Nightly** gets new features as soon as they land, and a nightly may break things. A new nightly comes out whenever something new reaches Writan's main branch. Each one is an early build of the next minor version: after 1.0.0, nightlies are 1.1.0 builds. The update button shows one as "Nightly v1.1.0 2026-11-28 09:30 UTC", the version it leads up to and the time it was built in UTC, with the changes since the build before it. Its release page and its files use the same name.
 
-Switching to nightly checks right away and installs the newest nightly the same way as any update. Switching back to stable never installs an older version: your copy keeps its nightly until a stable release newer than it comes out, which is usually the next one, and then moves onto it. Both channels are the same app with the same settings and files, so nothing else changes.
+Switching to nightly checks right away and installs the newest nightly the same way as any update. Switching back to stable never installs an older version: your copy keeps its nightly until a stable release newer than it comes out, and then moves onto it. For a 1.1.0 nightly that's 1.1.0: a fix release such as 1.0.1 is older than any 1.1.0 nightly. Both channels are the same app with the same settings and files, so nothing else changes.
 
-The release page lists the newest 10 nightlies as pre-releases, with their installers and packages.
+The release page lists the newest 10 nightlies as pre-releases, titled like "Writan Nightly v1.1.0 2026-11-28 09:30 UTC", with their installers and packages, such as `Writan_1.1.0-nightly-2026-11-28-0930_x64.dmg`.
 
 On Linux a nightly installs from its GitHub pre-release rather than from Writan's APT, dnf or pacman repository, which only has stable releases. The update button downloads the package, checks its signature, asks for your password and installs it with apt, dnf or pacman. `apt upgrade`, `dnf upgrade` and `pacman -Syu` don't bring nightlies, but they do bring the next stable release, which replaces the nightly.
 

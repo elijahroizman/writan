@@ -2,16 +2,47 @@
 // Version and release notes for a nightly build (.github/workflows/nightly.yml), and SemVer order
 // for the Release workflow's nightly feed. Run from the repository root with the tags fetched.
 //
-//   node scripts/nightly.mjs version          1.0.1-nightly.202611280930: the latest stable tag's
-//                                             next patch release, with the UTC date and time.
+//   node scripts/nightly.mjs version          1.1.0-nightly.202611280930: the next minor release
+//                                             after the latest published stable release, with
+//                                             the UTC date and time.
+//   node scripts/nightly.mjs names [version]  The names a nightly goes by, as key=value lines for
+//                                             $GITHUB_OUTPUT: version, tag, label (the tag without
+//                                             its v, which the file names use) and title. Without
+//                                             a version, for a nightly built now.
+//   node scripts/nightly.mjs tag-version <tag>
+//                                             The version a release tag stands for: v1.0.0 is
+//                                             1.0.0, v1.1.0-nightly-2026-11-28-0930 is
+//                                             1.1.0-nightly.202611280930.
 //   node scripts/nightly.mjs notes            The pre-release's notes, in Markdown: the PR titles
-//                                             merged since the previous stable or nightly tag,
-//                                             grouped by type, after the NOTES environment variable.
+//                                             merged since the previous nightly of the same minor
+//                                             version, or else the latest published stable
+//                                             release, grouped by type, after the NOTES
+//                                             environment variable.
 //   node scripts/nightly.mjs newer <a> <b>    Exits 0 when version a is newer than b.
 //
-// A nightly sorts after the stable release it follows and before the next one, and nightlies
-// sort by their build time. The stamp is a single number, since SemVer forbids leading zeros in
-// a numeric identifier (0930 alone would be invalid).
+// The latest published stable release comes from STABLE_RELEASES: the tags of the GitHub
+// releases that are public and not pre-releases, which the workflow reads with gh. A stable tag
+// whose release never published doesn't count, so a nightly built while v1.1.0's build is failing
+// stays a 1.1.0 nightly, and 1.1.0 still replaces it in the nightly feed once it's out. Without
+// STABLE_RELEASES, outside GitHub Actions, `version`, `names` and `notes` use the git tags
+// instead, for a dry run.
+//
+// A nightly is a pre-release of the next minor version: after 1.0.0, and after a 1.0.1 hotfix
+// too, it's 1.1.0-nightly.<stamp>. It sorts after the stable release it follows and before the
+// next minor one, and nightlies sort by their build time. The stamp is a single number, since
+// SemVer forbids leading zeros in a numeric identifier (0930 alone would be invalid).
+//
+// That SemVer version is what the updaters compare, and it goes into tauri.conf.json, latest.json
+// and the packages. People see one name built from it, everywhere else:
+//
+//   tag         v1.1.0-nightly-2026-11-28-0930   (a tag can't hold a space or a colon)
+//   title       Writan Nightly v1.1.0 2026-11-28 09:30 UTC
+//   in the app  Nightly v1.1.0 2026-11-28 09:30 UTC   (displayVersion in src/lib/versions.ts)
+//   files       Writan_1.1.0-nightly-2026-11-28-0930_x64.dmg
+//
+// The tag maps one to one back to the version (tagVersion here, version_from_tag in
+// src-tauri/src/update.rs, versionFromTag in src/lib/versions.ts). scripts/check-nightly.mjs
+// tests this script.
 
 import { execFileSync } from 'node:child_process'
 
@@ -53,22 +84,56 @@ export function compareVersions(a, b) {
 
 const STABLE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/
 
-function latestStable() {
-  const versions = git('tag', '--list', 'v*')
-    .split('\n')
+/** The highest stable version among `tags`, or undefined. */
+const highestStable = (tags) =>
+  tags
     .filter((tag) => STABLE_TAG.test(tag))
     .map((tag) => tag.slice(1))
     .sort(compareVersions)
-  const latest = versions.at(-1)
-  if (!latest) throw new Error('No stable vX.Y.Z tag. Fetch the tags (fetch-depth: 0).')
+    .at(-1)
+
+/** The latest published stable release, which the next nightly is the next minor version after. */
+function latestStable() {
+  const published = process.env.STABLE_RELEASES
+  if (published !== undefined) {
+    const latest = highestStable(published.split(/\s+/))
+    if (!latest) throw new Error('No published stable release: STABLE_RELEASES has no vX.Y.Z tag.')
+    return latest
+  }
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    throw new Error("Set STABLE_RELEASES to the published stable releases' tags (gh api repos/<owner>/<repo>/releases).")
+  }
+  const latest = highestStable(git('tag', '--list', 'v*').split('\n'))
+  if (!latest) throw new Error('No stable vX.Y.Z tag. Fetch the tags (git fetch --tags).')
+  console.error(`Dry run: using the highest stable git tag, v${latest}, which may not be published. STABLE_RELEASES sets the published ones.`)
   return latest
 }
 
+/** The nightly built at `now` after the stable release `stable`: the next minor version's pre-release. */
 export function nightlyVersion(stable, now = new Date()) {
-  const [major, minor, patch] = stable.split('.').map(Number)
+  const [major, minor] = stable.split('.').map(Number)
   const pad = (n) => String(n).padStart(2, '0')
   const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}`
-  return `${major}.${minor}.${patch + 1}-nightly.${stamp}`
+  return `${major}.${minor + 1}.0-nightly.${stamp}`
+}
+
+const NIGHTLY_VERSION = /^(\d+\.\d+\.\d+)-nightly\.(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/
+const NIGHTLY_TAG = /^v(\d+\.\d+\.\d+)-nightly-(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})$/
+
+/** The names a nightly version goes by. Throws for anything that isn't a nightly version. */
+export function nightlyNames(version) {
+  const m = NIGHTLY_VERSION.exec(version)
+  if (!m) throw new Error(`not a nightly version: ${version}`)
+  const [, base, y, mo, d, h, mi] = m
+  const label = `${base}-nightly-${y}-${mo}-${d}-${h}${mi}`
+  return { version, tag: `v${label}`, label, title: `Writan Nightly v${base} ${y}-${mo}-${d} ${h}:${mi} UTC` }
+}
+
+/** The version a release tag stands for: the tag without its v, with a nightly's date put back into one stamp. */
+export function tagVersion(tag) {
+  const m = NIGHTLY_TAG.exec(tag)
+  if (m) return `${m[1]}-nightly.${m.slice(2).join('')}`
+  return /^v\d/.test(tag) ? tag.slice(1) : tag
 }
 
 // PR titles follow Conventional Commits (.github/workflows/pr-checks.yml), and squash merges make
@@ -106,15 +171,32 @@ export function groupTitles(subjects) {
   return [...groups].filter(([, lines]) => lines.length).map(([heading, lines]) => `### ${heading}\n\n${lines.join('\n')}`)
 }
 
-function notes() {
-  // The newest stable or nightly tag this commit has. A failed nightly stays a draft, and a draft
-  // has no tag, so its changes show up in the next one.
-  let since = ''
+/**
+ * Where a nightly's list of changes starts: the newest earlier nightly of the same minor version
+ * that this commit has, or else the stable release `stable` it follows. Not simply the newest tag
+ * this commit has: a v1.0.1 hotfix tagged on main after a 1.1.0 nightly would be that, and the
+ * hotfix's changes would be left out of the next 1.1.0 nightly, whose readers never see 1.0.1's
+ * notes, as it's older than their nightly. A failed nightly stays a draft, and a draft has no
+ * tag, so its changes show up in the next one.
+ */
+function notesBaseline(stable) {
+  const series = nightlyVersion(stable).split('-')[0]
+  const nightlies = git('tag', '--merged', 'HEAD', '--list', `v${series}-nightly-*`)
+    .split('\n')
+    .filter((tag) => NIGHTLY_TAG.test(tag))
+    .sort((a, b) => compareVersions(tagVersion(a), tagVersion(b)))
+  if (nightlies.length) return nightlies.at(-1)
   try {
-    since = git('describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*', 'HEAD')
+    git('rev-parse', '--quiet', '--verify', `refs/tags/v${stable}`)
+    return `v${stable}`
   } catch {
-    // No tag yet: every commit is new.
+    // No tag for it here: every commit is new.
+    return ''
   }
+}
+
+function notes() {
+  const since = notesBaseline(latestStable())
   const range = since ? [`${since}..HEAD`] : ['HEAD']
   const subjects = git('log', '--no-merges', '--format=%s', ...range)
     .split('\n')
@@ -133,13 +215,23 @@ function notes() {
 }
 
 const [command, ...args] = process.argv.slice(2)
-if (command === 'version') {
-  process.stdout.write(nightlyVersion(latestStable()) + '\n')
-} else if (command === 'notes') {
-  process.stdout.write(notes())
-} else if (command === 'newer' && args.length === 2) {
-  process.exit(compareVersions(args[0], args[1]) > 0 ? 0 : 1)
-} else if (command !== undefined) {
-  console.error('usage: node scripts/nightly.mjs version | notes | newer <a> <b>')
-  process.exit(2)
+try {
+  if (command === 'version') {
+    process.stdout.write(nightlyVersion(latestStable()) + '\n')
+  } else if (command === 'names' && args.length <= 1) {
+    const names = nightlyNames(args[0] ?? nightlyVersion(latestStable()))
+    process.stdout.write(Object.entries(names).map(([key, value]) => `${key}=${value}\n`).join(''))
+  } else if (command === 'tag-version' && args.length === 1) {
+    process.stdout.write(tagVersion(args[0]) + '\n')
+  } else if (command === 'notes') {
+    process.stdout.write(notes())
+  } else if (command === 'newer' && args.length === 2) {
+    process.exit(compareVersions(args[0], args[1]) > 0 ? 0 : 1)
+  } else if (command !== undefined) {
+    console.error('usage: node scripts/nightly.mjs version | names [version] | tag-version <tag> | notes | newer <a> <b>')
+    process.exit(2)
+  }
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err))
+  process.exit(1)
 }

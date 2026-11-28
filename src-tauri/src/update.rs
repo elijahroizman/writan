@@ -13,7 +13,7 @@ const RELEASES: &str = "https://api.github.com/repos/elijahroizman/writan/releas
 const NIGHTLY_FEED: &str =
     "https://github.com/elijahroizman/writan/releases/download/nightly/latest.json";
 
-/// Where a nightly's files are: the pre-release tagged `v<version>`.
+/// Where a nightly's files are: the pre-release with its tag (`nightly_tag`).
 #[cfg(any(target_os = "linux", test))]
 const DOWNLOADS: &str = "https://github.com/elijahroizman/writan/releases/download";
 
@@ -33,7 +33,7 @@ impl Channel {
     }
 }
 
-/// The date and time part of a nightly version (`1.0.1-nightly.202611280930`), or `None` for
+/// The date and time part of a nightly version (`1.1.0-nightly.202611280930`), or `None` for
 /// any other version. Exactly that shape: the version goes into URLs and a root shell line.
 fn nightly_stamp(version: &str) -> Option<(&str, &str)> {
     let (base, stamp) = version.split_once("-nightly.")?;
@@ -82,11 +82,42 @@ struct GithubRelease {
     prerelease: bool,
 }
 
+/// A nightly's tag: `v1.1.0-nightly-2026-11-28-0930` for `1.1.0-nightly.202611280930`, the same
+/// date and time as its title (scripts/nightly.mjs). A tag can't hold a space or a colon.
+/// `version_from_tag` turns it back.
+#[cfg(any(target_os = "linux", test))]
+fn nightly_tag(version: &str) -> Option<String> {
+    let (base, s) = nightly_stamp(version)?;
+    Some(format!(
+        "v{base}-nightly-{}-{}-{}-{}",
+        &s[..4],
+        &s[4..6],
+        &s[6..8],
+        &s[8..]
+    ))
+}
+
+/// The version a release tag stands for: the tag without its `v`, and a nightly's
+/// `v1.1.0-nightly-2026-11-28-0930` as `1.1.0-nightly.202611280930`, so it orders with the
+/// rest. Nightlies before that were tagged `v<version>`, which reads the same way.
 fn version_from_tag(tag: &str) -> String {
-    match tag.strip_prefix('v') {
-        Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit()) => rest.to_string(),
-        _ => tag.to_string(),
+    let Some(rest) = tag
+        .strip_prefix('v')
+        .filter(|rest| rest.starts_with(|c: char| c.is_ascii_digit()))
+    else {
+        return tag.to_string();
+    };
+    if let Some((base, date)) = rest.split_once("-nightly-") {
+        let parts: Vec<&str> = date.split('-').collect();
+        if let [year, month, day, time] = parts[..] {
+            let sized = year.len() == 4 && month.len() == 2 && day.len() == 2 && time.len() == 4;
+            let version = format!("{base}-nightly.{year}{month}{day}{time}");
+            if sized && nightly_stamp(&version).is_some() {
+                return version;
+            }
+        }
     }
+    rest.to_string()
 }
 
 /// The release's version, for the releases `channel` follows. Drafts never reach the API. The
@@ -111,7 +142,7 @@ fn real_version(release: &GithubRelease, channel: Channel) -> Option<String> {
 }
 
 /// Orders versions the way SemVer does: 0.7.2 is older than 0.7.10, and a pre-release such as
-/// 1.0.1-nightly.202611280930 is older than 1.0.1 and newer than 1.0.0. A missing part of the
+/// 1.1.0-nightly.202611280930 is older than 1.1.0 and newer than 1.0.0. A missing part of the
 /// release counts as 0, so 0.11 is 0.11.0. Build metadata (`+…`) is ignored.
 fn version_cmp(a: &str, b: &str) -> Ordering {
     fn split(v: &str) -> (Vec<u64>, Option<&str>) {
@@ -471,25 +502,31 @@ fn pacman_repo_enabled(conf: &str) -> bool {
     conf.lines().any(|line| line.trim() == "[writan]")
 }
 
-/// The nightly's package file on its pre-release, for this format and machine:
-/// `Writan_1.0.1-nightly.202611280930_amd64.deb`, `Writan-1.0.1-0.nightly.202611280930.x86_64.rpm`
-/// or `writan-1.0.1nightly.202611280930-1-x86_64.pkg.tar.zst`. The versions inside the packages
-/// differ, since dpkg, rpm and pacman each order pre-releases their own way, and each sorts the
-/// nightly before the stable 1.0.1 (docs/internals/releasing.md). `None` for anything that isn't a
-/// nightly version on x86_64 or aarch64.
+/// The nightly's package file on its pre-release, for this format and machine, named like the
+/// rest of its files after its tag: `Writan_1.1.0-nightly-2026-11-28-0930_amd64.deb`,
+/// `Writan_1.1.0-nightly-2026-11-28-0930_x86_64.rpm` or
+/// `Writan_1.1.0-nightly-2026-11-28-0930_x86_64.pkg.tar.zst` (.github/workflows/nightly.yml). The
+/// versions inside the packages differ, since dpkg, rpm and pacman each order pre-releases their
+/// own way, and each sorts the nightly before the stable 1.1.0 (docs/internals/releasing.md).
+/// `None` for anything that isn't a nightly version on x86_64 or aarch64.
 #[cfg(any(target_os = "linux", test))]
 fn nightly_package_url(version: &str, format: &str, arch: &str) -> Option<String> {
-    let (base, stamp) = nightly_stamp(version)?;
+    let tag = nightly_tag(version)?;
+    let name = &tag[1..];
     let file = match (format, arch) {
-        ("deb", "x86_64") => format!("Writan_{version}_amd64.deb"),
-        ("deb", "aarch64") => format!("Writan_{version}_arm64.deb"),
-        ("rpm", "x86_64" | "aarch64") => format!("Writan-{base}-0.nightly.{stamp}.{arch}.rpm"),
-        ("pacman", "x86_64" | "aarch64") => {
-            format!("writan-{base}nightly.{stamp}-1-{arch}.pkg.tar.zst")
+        ("deb", "x86_64") => format!("Writan_{name}_amd64.deb"),
+        ("deb", "aarch64") => format!("Writan_{name}_arm64.deb"),
+        ("rpm" | "pacman", "x86_64" | "aarch64") => {
+            let ext = if format == "rpm" {
+                "rpm"
+            } else {
+                "pkg.tar.zst"
+            };
+            format!("Writan_{name}_{arch}.{ext}")
         }
         _ => return None,
     };
-    Some(format!("{DOWNLOADS}/v{version}/{file}"))
+    Some(format!("{DOWNLOADS}/{tag}/{file}"))
 }
 
 /// The Arch package file for a release, in the pacman repository. Only plain `x.y.z` versions:
@@ -812,6 +849,52 @@ mod tests {
     }
 
     #[test]
+    fn reads_nightly_tags() {
+        assert_eq!(
+            version_from_tag("v1.1.0-nightly-2026-11-28-0930"),
+            "1.1.0-nightly.202611280930"
+        );
+        // The tags nightlies had before.
+        assert_eq!(
+            version_from_tag("v1.0.1-nightly.202611280930"),
+            "1.0.1-nightly.202611280930"
+        );
+        // Not quite a nightly's tag: left as it is, which isn't a nightly version either.
+        for tag in [
+            "v1.1.0-nightly-2026-11-28-093",
+            "v1.1.0-nightly-2026-11-28-09:30",
+            "v1.1.0-nightly-2026-1-28-0930",
+            "v1.1.0-nightly-2026-11-28",
+            "v1.1-nightly-2026-11-28-0930",
+            "v1.1.0-nightly-2026-11-28-0930-x",
+        ] {
+            let version = version_from_tag(tag);
+            assert_eq!(version, &tag[1..]);
+            assert_eq!(nightly_stamp(&version), None, "{tag}");
+        }
+    }
+
+    #[test]
+    fn builds_nightly_tags_that_read_back() {
+        assert_eq!(
+            nightly_tag("1.1.0-nightly.202611280930").as_deref(),
+            Some("v1.1.0-nightly-2026-11-28-0930")
+        );
+        for version in [
+            "1.1.0-nightly.202611280930",
+            "1.2.0-nightly.202701010000",
+            "10.20.0-nightly.209912312359",
+        ] {
+            let tag = nightly_tag(version).unwrap();
+            assert!(!tag.contains([' ', ':']), "{tag}");
+            assert_eq!(version_from_tag(&tag), version);
+            assert_eq!(nightly_tag(&version_from_tag(&tag)), Some(tag));
+        }
+        assert_eq!(nightly_tag("1.1.0"), None);
+        assert_eq!(nightly_tag("1.1.0-beta.1"), None);
+    }
+
+    #[test]
     fn quotes_paths_for_the_shell() {
         assert_eq!(
             sh_quote(std::path::Path::new("/Applications/Writan.app")),
@@ -884,17 +967,34 @@ mod tests {
 
     #[test]
     fn orders_nightlies_between_stable_releases() {
-        let nightly = "1.0.1-nightly.202611280930";
-        assert_eq!(version_cmp(nightly, "1.0.1"), Ordering::Less);
-        assert_eq!(version_cmp("1.0.1", nightly), Ordering::Greater);
+        // After 1.0.0, and after a 1.0.1 hotfix, a nightly is a pre-release of 1.1.0.
+        let nightly = "1.1.0-nightly.202611280930";
+        assert_eq!(version_cmp(nightly, "1.1.0"), Ordering::Less);
+        assert_eq!(version_cmp("1.1.0", nightly), Ordering::Greater);
         assert_eq!(version_cmp(nightly, "1.0.0"), Ordering::Greater);
+        assert_eq!(version_cmp(nightly, "1.0.1"), Ordering::Greater);
+        assert_eq!(version_cmp(nightly, "1.0.9"), Ordering::Greater);
         assert_eq!(version_cmp(nightly, "0.19.0"), Ordering::Greater);
+        // After 1.1.0 they're pre-releases of 1.2.0.
         assert_eq!(
-            version_cmp(nightly, "1.0.1-nightly.202611281200"),
+            version_cmp("1.2.0-nightly.202612010000", "1.1.0"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            version_cmp("1.2.0-nightly.202612010000", "1.2.0"),
+            Ordering::Less
+        );
+        // A nightly tagged the old way, a patch release's pre-release, is older.
+        assert_eq!(
+            version_cmp(nightly, "1.0.1-nightly.202611290000"),
+            Ordering::Greater
+        );
+        assert_eq!(
+            version_cmp(nightly, "1.1.0-nightly.202611281200"),
             Ordering::Less
         );
         assert_eq!(
-            version_cmp("1.0.1-nightly.202612010000", "1.0.1-nightly.202611302359"),
+            version_cmp("1.1.0-nightly.202612010000", "1.1.0-nightly.202611302359"),
             Ordering::Greater
         );
         assert_eq!(version_cmp(nightly, nightly), Ordering::Equal);
@@ -924,39 +1024,46 @@ mod tests {
     #[test]
     fn reads_nightly_versions() {
         assert_eq!(
-            nightly_stamp("1.0.1-nightly.202611280930"),
-            Some(("1.0.1", "202611280930"))
+            nightly_stamp("1.1.0-nightly.202611280930"),
+            Some(("1.1.0", "202611280930"))
         );
-        assert_eq!(nightly_stamp("1.0.1"), None);
-        assert_eq!(nightly_stamp("1.0.1-nightly.2026112809"), None);
-        assert_eq!(nightly_stamp("1.0.1-nightly.20261128093x"), None);
+        assert_eq!(nightly_stamp("1.1.0"), None);
+        assert_eq!(nightly_stamp("1.1.0-nightly.2026112809"), None);
+        assert_eq!(nightly_stamp("1.1.0-nightly.20261128093x"), None);
         assert_eq!(nightly_stamp("1.0-nightly.202611280930"), None);
-        assert_eq!(nightly_stamp("1.0.1-beta.1"), None);
-        assert_eq!(nightly_stamp("1.0.1-nightly.202611280930;id"), None);
+        assert_eq!(nightly_stamp("1.1.0-beta.1"), None);
+        assert_eq!(nightly_stamp("1.1.0-nightly.202611280930;id"), None);
     }
 
     #[test]
     fn builds_the_nightly_package_urls() {
-        let v = "1.0.1-nightly.202611280930";
-        let base =
-            "https://github.com/elijahroizman/writan/releases/download/v1.0.1-nightly.202611280930";
+        let v = "1.1.0-nightly.202611280930";
+        let base = "https://github.com/elijahroizman/writan/releases/download/v1.1.0-nightly-2026-11-28-0930";
         assert_eq!(
             nightly_package_url(v, "deb", "x86_64").unwrap(),
-            format!("{base}/Writan_1.0.1-nightly.202611280930_amd64.deb")
+            format!("{base}/Writan_1.1.0-nightly-2026-11-28-0930_amd64.deb")
         );
         assert_eq!(
             nightly_package_url(v, "deb", "aarch64").unwrap(),
-            format!("{base}/Writan_1.0.1-nightly.202611280930_arm64.deb")
+            format!("{base}/Writan_1.1.0-nightly-2026-11-28-0930_arm64.deb")
+        );
+        assert_eq!(
+            nightly_package_url(v, "rpm", "x86_64").unwrap(),
+            format!("{base}/Writan_1.1.0-nightly-2026-11-28-0930_x86_64.rpm")
         );
         assert_eq!(
             nightly_package_url(v, "rpm", "aarch64").unwrap(),
-            format!("{base}/Writan-1.0.1-0.nightly.202611280930.aarch64.rpm")
+            format!("{base}/Writan_1.1.0-nightly-2026-11-28-0930_aarch64.rpm")
         );
         assert_eq!(
             nightly_package_url(v, "pacman", "x86_64").unwrap(),
-            format!("{base}/writan-1.0.1nightly.202611280930-1-x86_64.pkg.tar.zst")
+            format!("{base}/Writan_1.1.0-nightly-2026-11-28-0930_x86_64.pkg.tar.zst")
         );
-        assert!(nightly_package_url("1.0.1", "deb", "x86_64").is_none());
+        assert_eq!(
+            nightly_package_url(v, "pacman", "aarch64").unwrap(),
+            format!("{base}/Writan_1.1.0-nightly-2026-11-28-0930_aarch64.pkg.tar.zst")
+        );
+        assert!(nightly_package_url("1.1.0", "deb", "x86_64").is_none());
         assert!(nightly_package_url(v, "deb", "riscv64").is_none());
         assert!(nightly_package_url(v, "snap", "x86_64").is_none());
     }
@@ -1143,48 +1250,66 @@ mod tests {
             release("plugin-latex-1.0.2", "Plugin: latex 1.0.2", "zip", true),
             release("dev-0.19.1-dev.4", "Writan Dev 0.19.1-dev.4", "dmg", true),
             release("v1.0.0", "Writan v1.0.0", "- Stable", false),
+            release("v1.0.1", "Writan v1.0.1", "- Hotfix", false),
+            // Tagged the way nightlies were before.
             release(
-                "v1.0.1-nightly.202611280930",
-                "Writan Nightly",
+                "v1.0.1-nightly.202611270930",
+                "Writan nightly 2026-11-27 09:30 UTC",
+                "- Old",
+                true,
+            ),
+            release(
+                "v1.1.0-nightly-2026-11-28-0930",
+                "Writan Nightly v1.1.0 2026-11-28 09:30 UTC",
                 "- First",
                 true,
             ),
             release(
-                "v1.0.1-nightly.202611291015",
-                "Writan Nightly",
+                "v1.1.0-nightly-2026-11-29-1015",
+                "Writan Nightly v1.1.0 2026-11-29 10:15 UTC",
                 "- Second",
                 true,
             ),
         ];
         let stable = notes_from_list("0.19.0", &releases, false, Channel::Stable).unwrap();
-        assert_eq!(stable.version, "1.0.0");
+        assert_eq!(stable.version, "1.0.1");
         let missed: Vec<&str> = stable.releases.iter().map(|r| r.version.as_str()).collect();
-        assert_eq!(missed, ["1.0.0"]);
+        assert_eq!(missed, ["1.0.1", "1.0.0"]);
 
         let nightly = notes_from_list(
-            "1.0.1-nightly.202611280930",
+            "1.1.0-nightly.202611280930",
             &releases,
             false,
             Channel::Nightly,
         )
         .unwrap();
-        assert_eq!(nightly.version, "1.0.1-nightly.202611291015");
+        assert_eq!(nightly.version, "1.1.0-nightly.202611291015");
+        assert_eq!(nightly.name, "Writan Nightly v1.1.0 2026-11-29 10:15 UTC");
         let missed: Vec<&str> = nightly
             .releases
             .iter()
             .map(|r| r.version.as_str())
             .collect();
-        assert_eq!(missed, ["1.0.1-nightly.202611291015"]);
+        assert_eq!(missed, ["1.1.0-nightly.202611291015"]);
+
+        // A copy of the 1.0.1 hotfix that moves to nightly sees the nightlies newer than it, newest
+        // first. The old-style 1.0.1 nightly is older than the hotfix.
+        let hotfix = notes_from_list("1.0.1", &releases, false, Channel::Nightly).unwrap();
+        let missed: Vec<&str> = hotfix.releases.iter().map(|r| r.version.as_str()).collect();
+        assert_eq!(
+            missed,
+            ["1.1.0-nightly.202611291015", "1.1.0-nightly.202611280930"]
+        );
 
         // A nightly user who moved back to stable sees no release newer than their copy.
         let back = notes_from_list(
-            "1.0.1-nightly.202611291015",
+            "1.1.0-nightly.202611291015",
             &releases,
             false,
             Channel::Stable,
         )
         .unwrap();
-        assert_eq!(back.version, "1.0.0");
+        assert_eq!(back.version, "1.0.1");
         assert!(back.releases.is_empty());
     }
 
