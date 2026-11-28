@@ -10,6 +10,7 @@ import { IconButton } from '../../components/ui'
 import { focusReplace } from '../../lib/codemirror'
 import { TextFile } from '../../lib/textcodec'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { documentReady } from '../../lib/analytics/documents'
 import { schedulePrintCleanup } from '../../lib/print'
 import './text.css'
 
@@ -54,6 +55,7 @@ export default function TextEditor({ tab, active }: EditorProps) {
       }),
     })
     viewRef.current = view
+    documentReady(tab.id)
     return () => view.destroy()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

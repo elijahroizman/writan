@@ -15,6 +15,7 @@ import type { SettingsPage } from '../state/settings'
 import { PREVIEW_DELAYS, RECENT_DAYS, useSettings } from '../state/settings'
 import { INSTALL_CHOICES, useTex } from '../state/tex'
 import { useSetup } from '../state/setup'
+import { analyticsShownOn, setAnalytics, useAnalytics } from '../state/analytics'
 import type { ShortcutDef } from '../state/shortcuts'
 import { SHORTCUTS, isValidKeys, keysFor, keysFromEvent, syncMenu, useShortcuts } from '../state/shortcuts'
 import { useFolder } from '../state/folder'
@@ -133,6 +134,8 @@ function GeneralPage() {
 
       <CommandLineRow />
 
+      <UsageDataRow />
+
       <SettingsRow
         label="Welcome tour"
         hint={canSetDefaults ? 'The first-launch tour of the app, with extensions and default apps at the end.' : 'The first-launch tour of the app, with its extensions.'}
@@ -144,6 +147,27 @@ function GeneralPage() {
         <Button onClick={() => setPage('licenses')}>View licenses</Button>
       </SettingsRow>
     </>
+  )
+}
+
+const PRIVACY_URL = 'https://github.com/elijahroizman/writan/blob/main/PRIVACY.md'
+
+/** Anonymous usage analytics (state/analytics.ts). Until someone chooses, it shows the default for where they are. */
+function UsageDataRow() {
+  const choice = useAnalytics((s) => s.choice)
+  const on = analyticsShownOn(choice)
+  return (
+    <SettingsRow
+      label="Help make Writan better"
+      hint={
+        <>
+          Sends anonymous usage data, like which file types and features get used and how fast documents open. It never includes your documents, their names or anything in them.{' '}
+          <LinkButton onClick={() => void openExternal(PRIVACY_URL)}>What Writan collects</LinkButton>
+        </>
+      }
+    >
+      <Switch checked={on} onChange={setAnalytics} label="Help make Writan better" />
+    </SettingsRow>
   )
 }
 

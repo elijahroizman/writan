@@ -41,6 +41,7 @@ import { showDialog } from '../../lib/dialogs'
 import { usePinchZoom } from '../../lib/pinch'
 import { FormulaHelp } from './FormulaHelp'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { documentFailed, documentReady } from '../../lib/analytics/documents'
 import { registerOpenWorkbook, updateOpenWorkbookMeta } from '../../links/excelLinks'
 import './sheets.css'
 import { useShared } from '../../collab/useShared'
@@ -97,8 +98,13 @@ export default function SheetEditor({ tab, active }: EditorProps) {
         opened = e
         if (import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) Object.assign(window, { __sheets: e })
         setEngine(e)
+        documentReady(tab.id)
       })
-      .catch((e) => { if (live) setError(String(e?.message ?? e)) })
+      .catch((e) => {
+        if (!live) return
+        documentFailed(tab.id, 'parse')
+        setError(String(e?.message ?? e))
+      })
     return () => {
       live = false
       if (opened) {

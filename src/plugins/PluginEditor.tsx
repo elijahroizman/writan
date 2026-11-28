@@ -13,6 +13,7 @@ import { installSettled, pluginBaseUrl } from '../state/plugins'
 import { useSettings } from '../state/settings'
 import { forgetTexBuild, texService, texTestHook } from '../state/tex'
 import { registerEditor, useWorkspace } from '../state/workspace'
+import { documentFailed, documentReady } from '../lib/analytics/documents'
 import type { ImageOcrService, PluginEditor as Instance, PdfView, PluginModule, SearchResult } from './api'
 import { PLUGIN_API_VERSION } from './api'
 import { pluginForKind } from './catalog'
@@ -179,8 +180,11 @@ export default function PluginEditor({ tab, active }: EditorProps) {
         instance.current = mounted
         mounted.setView?.(view)
         setReady(true)
+        documentReady(tab.id)
       } catch (err) {
-        if (!cancelled) setError({ stage, message: err instanceof Error ? err.message : String(err) })
+        if (cancelled) return
+        documentFailed(tab.id, stage === 'start' ? 'plugin' : 'parse')
+        setError({ stage, message: err instanceof Error ? err.message : String(err) })
       }
     })()
     return () => {
