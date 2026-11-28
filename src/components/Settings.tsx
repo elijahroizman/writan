@@ -18,6 +18,8 @@ import { useSetup } from '../state/setup'
 import type { ShortcutDef } from '../state/shortcuts'
 import { SHORTCUTS, isValidKeys, keysFor, keysFromEvent, syncMenu, useShortcuts } from '../state/shortcuts'
 import { useFolder } from '../state/folder'
+import { setUpdateChannel, useUpdateChannel } from '../state/updateChannel'
+import { isNightlyVersion } from '../lib/versions'
 import { useWorkspace } from '../state/workspace'
 import { formatVersionSize as formatVersionSize, useThemeEditor } from '../state/modals'
 import { AddTheme } from './AddTheme'
@@ -133,6 +135,8 @@ function GeneralPage() {
 
       <CommandLineRow />
 
+      <UpdatesRow />
+
       <SettingsRow
         label="Welcome tour"
         hint={canSetDefaults ? 'The first-launch tour of the app, with extensions and default apps at the end.' : 'The first-launch tour of the app, with its extensions.'}
@@ -217,6 +221,32 @@ function OfflineOcr() {
         )
       })}
     </section>
+  )
+}
+
+/** Which releases this copy updates to (src/state/updateChannel.ts). */
+function UpdatesRow() {
+  const channel = useUpdateChannel()
+  const onNightly = isNightlyVersion(__APP_VERSION__)
+  return (
+    <SettingsRow
+      label="Updates"
+      hint={
+        <>
+          Stable gets tested releases. Nightly gets new features as soon as they land, and a nightly may break things.
+          {channel === 'stable' && onNightly && ' This copy is a nightly, so it moves to stable at the next stable release newer than it.'}
+        </>
+      }
+    >
+      <Segmented
+        value={channel}
+        options={[
+          { value: 'stable', label: 'Stable' },
+          { value: 'nightly', label: 'Nightly' },
+        ]}
+        onChange={setUpdateChannel}
+      />
+    </SettingsRow>
   )
 }
 

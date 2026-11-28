@@ -3,6 +3,8 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { isLinux, isMac, openExternal } from '../lib/platform'
 import { checkForUpdates, closeUpdatePanel, newer, packageManager, RELEASES_PAGE, toggleUpdatePanel, updatesInstallable, useUpdate, type LinuxPackage, type ReleaseEntry, type UpdatePhase } from '../lib/updater'
+import { displayVersion, isNightlyVersion } from '../lib/versions'
+import { useUpdateChannel, type UpdateChannel } from '../state/updateChannel'
 import { runCommand } from '../App'
 import { Spinner } from './ui'
 
@@ -25,10 +27,10 @@ function heading(phase: UpdatePhase, version: string | null): string {
   if (phase === 'error' && !version) return "Couldn't check for updates"
   if (phase === 'checking' && !version) return 'Checking for updates'
   if (phase === 'current' && updatesInstallable) return "You're up to date"
-  return version ? `Writan ${version}` : 'Updates'
+  return version ? `Writan ${displayVersion(version)}` : 'Updates'
 }
 
-function detail(phase: UpdatePhase, error: string | null, publishedAt: string | null, version: string | null, linux: LinuxPackage | null): string {
+function detail(phase: UpdatePhase, error: string | null, publishedAt: string | null, version: string | null, linux: LinuxPackage | null, channel: UpdateChannel): string {
   const manager = packageManager(linux?.format ?? null)
   const date = formatDate(publishedAt)
   if (phase === 'error') return error ?? "Couldn't check for updates."
@@ -39,9 +41,14 @@ function detail(phase: UpdatePhase, error: string | null, publishedAt: string | 
   if (phase === 'ready' && isLinux) return `Installs with ${manager} after asking for your password`
   if (phase === 'ready') return date ? `Ready to install · ${date}` : 'Ready to install'
   if (isLinux && version && newer(version, __APP_VERSION__)) {
-    return linux?.format
-      ? `Writan ${version} is out. Install the new .${linux.format === 'pacman' ? 'pkg.tar.zst' : linux.format} from GitHub, and later versions come through ${manager}.`
-      : `Writan ${version} is out. Download it from GitHub.`
+    const shown = displayVersion(version)
+    return linux?.format && !isNightlyVersion(version)
+      ? `Writan ${shown} is out. Install the new .${linux.format === 'pacman' ? 'pkg.tar.zst' : linux.format} from GitHub, and later versions come through ${manager}.`
+      : `Writan ${shown} is out. Download it from GitHub.`
+  }
+  // Only a newer version installs, so a nightly stays put until a stable release passes it.
+  if (channel === 'stable' && isNightlyVersion(__APP_VERSION__)) {
+    return 'This copy is a nightly. Writan moves to stable at the next stable release newer than it.'
   }
   if (!updatesInstallable) return date ? `Latest GitHub release · ${date}` : 'Latest GitHub release'
   return date ? `This is the newest release · ${date}` : 'This is the newest release'
@@ -76,6 +83,7 @@ export function UpdateButton() {
   const publishedAt = useUpdate((s) => s.publishedAt)
   const error = useUpdate((s) => s.error)
   const linux = useUpdate((s) => s.linux)
+  const channel = useUpdateChannel()
   const button = useRef<HTMLButtonElement>(null)
   const panel = useRef<HTMLDivElement>(null)
   const [pos, setPos] = useState({ x: 0, y: 0, maxHeight: 420 })
@@ -163,7 +171,7 @@ export function UpdateButton() {
   }
 
   const action = phase === 'error' ? 'Try again' : busy || phase === 'ready' ? label : 'Check again'
-  const title = phase === 'ready' && version ? `Writan ${version} is ready to install` : busy ? label : 'Check for updates'
+  const title = phase === 'ready' && version ? `Writan ${displayVersion(version)} is ready to install` : busy ? label : 'Check for updates'
 
   return (
     <>
@@ -190,7 +198,7 @@ export function UpdateButton() {
           >
             <header className="update-panel-head">
               <h2 id="update-title">{heading(phase, version)}</h2>
-              <p>{detail(phase, error, publishedAt, version, linux)}</p>
+              <p>{detail(phase, error, publishedAt, version, linux, channel)}</p>
             </header>
             <div
               className="update-notes"
@@ -208,7 +216,7 @@ export function UpdateButton() {
                 <>
                   {sections.releases.map((release, i) => (
                     <section key={release.version} className="update-release">
-                      <h3>Changes in {release.version}</h3>
+                      <h3>Changes in {displayVersion(release.version)}</h3>
                       <div dangerouslySetInnerHTML={{ __html: sections.html[i] ?? '' }} />
                       <p className="update-release-link">
                         <a href={release.url}>View on GitHub</a>

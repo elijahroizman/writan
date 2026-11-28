@@ -1,11 +1,12 @@
 name: Release cache
 
-# Keeps the Release workflow's build caches warm. A tag run can only read caches saved on main,
-# so without this every release compiled the document engine and the app's Rust dependencies
-# from scratch on every platform. This builds the same way as release.yml on main and saves:
-# the document engine (src/engine/wasm), the Rust dependencies (rust-cache, shared key
-# "release") and the npm cache. Keep the matrix, toolchain and cache steps in step with
-# release.yml, or the keys stop matching and releases go back to cold builds.
+# Keeps the release builds' caches warm. The Release and Nightly workflows both build with
+# build.yml. A tag run can only read caches saved on main, so without this every release compiled
+# the document engine and the app's Rust dependencies from scratch on every platform. This builds
+# the same way as build.yml on main and saves: the document engine (src/engine/wasm), the Rust
+# dependencies (rust-cache, shared key "release") and the npm cache. Keep the matrix, toolchain
+# and cache steps in step with build.yml, or the keys stop matching and releases go back to cold
+# builds. A nightly runs on main and can read them too.
 #
 # It runs when the Rust code or dependencies change on main, and every few days because GitHub
 # drops a cache nobody has read for 7 days and a new stable Rust changes the rust-cache key.
@@ -17,7 +18,7 @@ on:
       - 'src-tauri/Cargo.toml'
       - 'src-tauri/Cargo.lock'
       - 'package-lock.json'
-      - '.github/workflows/release.yml'
+      - '.github/workflows/build.yml'
       - '.github/workflows/release-cache.yml'
       - '.github/actions/**'
   schedule:
@@ -100,6 +101,6 @@ jobs:
         run: echo "all-hit=${{ steps.node.outputs.cache-hit == 'true' && steps.engine.outputs.cache-hit == 'true' && steps.rust.outputs.cache-hit == 'true' }}" >> "$GITHUB_OUTPUT"
       - if: steps.warm.outputs.all-hit != 'true'
         run: npm ci
-      # The same cargo build the release's tauri-action runs, without bundling or signing.
+      # The same cargo build build.yml's tauri-action runs, without bundling or signing.
       - if: steps.warm.outputs.all-hit != 'true'
         run: npm run tauri build -- --no-bundle ${{ matrix.args }}

@@ -2,6 +2,19 @@
 
 The update button (↑) at the top right shows the release notes, from [CHANGELOG.md](../../CHANGELOG.md), for every version since this copy, and whether there's something newer.
 
+## Stable or nightly
+
+Writan updates on one of two channels. Pick one in Settings › General › Updates.
+
+- **Stable** gets tested releases. This is where every copy starts, unless you installed a nightly.
+- **Nightly** gets new features as soon as they land, and a nightly may break things. A new nightly comes out whenever something new reaches Writan's main branch. The update button shows one as "Nightly, 28 Nov 2026 09:30", the time it was built, with the changes since the build before it.
+
+Switching to nightly checks right away and installs the newest nightly the same way as any update. Switching back to stable never installs an older version: your copy keeps its nightly until a stable release newer than it comes out, which is usually the next one, and then moves onto it. Both channels are the same app with the same settings and files, so nothing else changes.
+
+The release page lists the newest 10 nightlies as pre-releases, with their installers and packages.
+
+On Linux a nightly installs from its GitHub pre-release rather than from Writan's APT, dnf or pacman repository, which only has stable releases. The update button downloads the package, checks its signature, asks for your password and installs it with apt, dnf or pacman. `apt upgrade`, `dnf upgrade` and `pacman -Syu` don't bring nightlies, but they do bring the next stable release, which replaces the nightly.
+
 ## Mac and Windows
 
 New versions download in the background, checked after launch and every four hours, and install when you quit. If the update feed is temporarily unavailable, Writan retries after 5 seconds, then 30 seconds, then 2 minutes. You can still click **Try again**. To install one straight away, click the update button in the tab bar. Updates are signed, and Writan refuses one whose signature doesn't match.

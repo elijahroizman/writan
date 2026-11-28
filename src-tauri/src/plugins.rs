@@ -120,7 +120,7 @@ pub fn remove_plugin<R: Runtime>(app: AppHandle<R>, id: String) -> Result<(), St
 }
 
 /// The updater's public key from tauri.conf.json: base64 of a minisign public key file.
-fn updater_pubkey<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
+pub(crate) fn updater_pubkey<R: Runtime>(app: &AppHandle<R>) -> Result<String, String> {
     app.config()
         .plugins
         .0
@@ -164,33 +164,68 @@ fn download(url: &str, limit: u64, mut progress: impl FnMut(u64, u64)) -> Result
     Ok(bytes)
 }
 
-fn base64_text(value: &str) -> Result<String, String> {
+fn base64_text(value: &str) -> Option<String> {
     use base64::Engine;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(value.trim())
-        .map_err(|_| "The plugin signature is damaged.".to_string())?;
-    String::from_utf8(bytes).map_err(|_| "The plugin signature is damaged.".to_string())
+        .ok()?;
+    String::from_utf8(bytes).ok()
 }
 
-/// Check the archive against the release signing key, as the updater does, and that the
+/// Why a signed download didn't pass [`check_signature`].
+pub(crate) enum SignatureError {
+    /// The signature file or the key can't be read.
+    Damaged,
+    /// The signature doesn't match the file.
+    Mismatch,
+    /// The signature is good, but its trusted comment names another file.
+    OtherFile,
+}
+
+/// Check a download against the release signing key, as the updater does, and that the
 /// signature was made for this file (its trusted comment names it), so an older signed
-/// archive can't stand in for the one asked for.
-fn verify(archive: &[u8], signature: &[u8], pubkey: &str, file_name: &str) -> Result<(), String> {
-    let bad = |_| "The plugin's signature doesn't match. It wasn't installed.".to_string();
-    let key = minisign_verify::PublicKey::decode(&base64_text(pubkey)?).map_err(bad)?;
+/// file can't stand in for the one asked for. Plugin archives and the Linux nightly packages
+/// are signed this way (`tauri signer sign`).
+pub(crate) fn check_signature(
+    bytes: &[u8],
+    signature: &[u8],
+    pubkey: &str,
+    file_name: &str,
+) -> Result<(), SignatureError> {
+    let key = base64_text(pubkey).ok_or(SignatureError::Damaged)?;
+    let key = minisign_verify::PublicKey::decode(&key).map_err(|_| SignatureError::Damaged)?;
     let signature = std::str::from_utf8(signature)
-        .map_err(|_| "The plugin signature is damaged.".to_string())?;
-    let signature = minisign_verify::Signature::decode(&base64_text(signature)?).map_err(bad)?;
-    key.verify(archive, &signature, true).map_err(bad)?;
+        .ok()
+        .and_then(base64_text)
+        .ok_or(SignatureError::Damaged)?;
+    let signature =
+        minisign_verify::Signature::decode(&signature).map_err(|_| SignatureError::Mismatch)?;
+    key.verify(bytes, &signature, true)
+        .map_err(|_| SignatureError::Mismatch)?;
     let signed_for = signature
         .trusted_comment()
         .split('\t')
         .find_map(|part| part.strip_prefix("file:"))
         .unwrap_or_default();
     if signed_for != file_name {
-        return Err("The plugin's signature is for a different file. It wasn't installed.".into());
+        return Err(SignatureError::OtherFile);
     }
     Ok(())
+}
+
+fn verify(archive: &[u8], signature: &[u8], pubkey: &str, file_name: &str) -> Result<(), String> {
+    check_signature(archive, signature, pubkey, file_name).map_err(|e| {
+        match e {
+            SignatureError::Damaged => "The plugin signature is damaged.",
+            SignatureError::Mismatch => {
+                "The plugin's signature doesn't match. It wasn't installed."
+            }
+            SignatureError::OtherFile => {
+                "The plugin's signature is for a different file. It wasn't installed."
+            }
+        }
+        .to_string()
+    })
 }
 
 /// Unpack into a fresh folder beside the old one, then swap it in, so a failed install
