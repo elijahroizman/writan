@@ -8,7 +8,7 @@ import type { Update } from '@tauri-apps/plugin-updater'
 import { create } from 'zustand'
 import { getUpdateChannel, onUpdateChannelChange, type UpdateChannel } from '../state/updateChannel'
 import { isLinux, isMac, isTauri } from './platform'
-import { compareVersions, isNightlyVersion, newer, versionFromTag } from './versions'
+import { compareVersions, isNightlyVersion, newer, tagFromVersion, versionFromTag } from './versions'
 
 export { compareVersions, newer } from './versions'
 
@@ -207,14 +207,37 @@ async function fetchRelease(channel: UpdateChannel): Promise<ReleaseNotes> {
   return releaseNotesFromList(releases, current, url !== null, channel)
 }
 
+/**
+ * What the panel shows. `update` is the version the channel's feed offers and `release` the GitHub
+ * releases list, and the two can name different versions: a nightly's release is public a little
+ * before the feed job points the feed at it, and a stable release reaches the list before the
+ * nightly feed. The list's notes and link only go with the feed's version when they're for it;
+ * otherwise they're the feed's own notes and that version's release page.
+ */
 function remember(release: ReleaseNotes | null, update: Update | null) {
+  if (!update || update.version === release?.version) {
+    return {
+      version: update?.version || release?.version || null,
+      notes: release?.notes || update?.body || '',
+      releases: release?.releases ?? [],
+      truncated: release?.truncated ?? false,
+      url: release?.url ?? null,
+      publishedAt: release?.publishedAt ?? null,
+    }
+  }
+  const version = update.version
+  // The missed versions up to the one that installs, which the list may have under its own heading.
+  const listed = release?.releases.filter((entry) => compareVersions(entry.version, version) <= 0) ?? []
+  const own = listed.find((entry) => entry.version === version)
+  const url = own?.url ?? `${RELEASES_PAGE}/tag/${tagFromVersion(version)}`
+  const notes = own?.notes || update.body || ''
   return {
-    version: update?.version || release?.version || null,
-    notes: release?.notes || update?.body || '',
-    releases: release?.releases ?? [],
+    version,
+    notes,
+    releases: own || !listed.length ? listed : [{ version, notes, url }, ...listed],
     truncated: release?.truncated ?? false,
-    url: release?.url ?? null,
-    publishedAt: release?.publishedAt ?? null,
+    url,
+    publishedAt: update.date ?? null,
   }
 }
 

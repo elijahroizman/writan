@@ -63,6 +63,14 @@ export function versionFromTag(tag: string): string {
   return /^v\d/.test(tag) ? tag.slice(1) : tag
 }
 
+/** The release tag for `version`, which `versionFromTag` turns back: v1.0.0, or a nightly's v1.1.0-nightly-2026-11-28-0930. */
+export function tagFromVersion(version: string): string {
+  const m = NIGHTLY.exec(version)
+  if (!m || !nightlyDate(version)) return `v${version}`
+  const [, base, y, mo, d, h, mi] = m
+  return `v${base}-nightly-${y}-${mo}-${d}-${h}${mi}`
+}
+
 /** When a nightly was built, or null for any other version. */
 export function nightlyDate(version: string): Date | null {
   const m = NIGHTLY.exec(version)
