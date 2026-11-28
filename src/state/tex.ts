@@ -6,6 +6,7 @@
 import { create } from 'zustand'
 import type { TexResult, TexService, TexStatus } from '../plugins/api'
 import { isLinux, isMac, isTauri, isWindows, listen } from '../lib/platform'
+import { track } from './analytics'
 
 const invoke = async <T>(cmd: string, args?: Record<string, unknown>) => (await import('@tauri-apps/api/core')).invoke<T>(cmd, args)
 
@@ -171,6 +172,8 @@ export function texTestHook(): TexFake | undefined {
 /** Compiles one at a time per tab; asking again while one runs replaces the waiting request. */
 export function texService(tabId: string, folder: () => string | null, job: () => string): TexService {
   let running: Promise<unknown> = Promise.resolve()
+  // Compiles run after each pause in typing: count the first one per document.
+  let counted = false
   return {
     status: () => useTex.getState().refresh(),
     install: async () => {
@@ -178,6 +181,10 @@ export function texService(tabId: string, folder: () => string | null, job: () =
       return status.installed ? status : useTex.getState().offerInstall()
     },
     compile: (source, { engine }) => {
+      if (!counted) {
+        counted = true
+        track('feature_used', { feature: 'latex_compile', kind: 'latex' })
+      }
       const next = running.then(async (): Promise<TexResult> => {
         const hook = texTestHook()
         if (hook) return hook.compile(source, { engine })

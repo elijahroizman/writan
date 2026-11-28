@@ -1,4 +1,5 @@
 mod agents;
+mod analytics;
 mod cli;
 /// Public so `examples/collab_relay.rs` can run the relay without the app.
 pub mod collab;
@@ -200,6 +201,7 @@ pub fn run() {
             history::history_usage,
             history::history_clear_all,
             take_pending_opens,
+            analytics::analytics_send,
             cli::cli_status,
             cli::cli_install,
             cli::cli_uninstall,
@@ -287,8 +289,11 @@ pub fn run() {
                 }
             }
         }
-        // Quitting ends what's shared, as stopping would.
-        RunEvent::Exit => collab::end_on_exit(),
+        // Quitting ends what's shared, as stopping would, and lets the last usage events go.
+        RunEvent::Exit => {
+            collab::end_on_exit();
+            analytics::wait_on_exit();
+        }
         _ => {
             let _ = app;
         }

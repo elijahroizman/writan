@@ -45,6 +45,7 @@ src/
   lib/platform.ts         native file dialogs and file I/O (browser fallbacks for dev)
   lib/dialogs.ts          the app's own questions and alerts (components/Dialogs.tsx)
   lib/updater.ts          update checks, the Tauri updater, and apt on Linux
+  lib/analytics/          anonymous usage events and what they may contain (see analytics.md); the consent store is state/analytics.ts
   components/             title bar and tabs, Home, the welcome tour (Setup.tsx), Settings, the three-pane workbench; ui.tsx is the design system the rest are built from
   editors/{docx,pptx,pdf,markdown,text}/   built-in editors, each loaded the first time it's needed
   collab/                 sharing a document for editing together (see collaboration.md)
@@ -58,6 +59,7 @@ src-tauri/
   src/plugins.rs          downloads, checks and serves optional plugins (wsplugin: scheme)
   src/tex.rs              finds, runs, installs and removes the system's TeX
   src/update.rs           the latest release's notes, Mac relaunch, apt updates on Linux
+  src/analytics.rs        posts usage events to PostHog for the page
   windows/hooks.nsh       closes Writan before a Windows install or uninstall
   src/defaults.rs         makes Writan the default app for its file types
   src/collab/             the relay that orders shared documents' changes, its WebSocket server and client, and the MCP server for agents (mcp.rs)

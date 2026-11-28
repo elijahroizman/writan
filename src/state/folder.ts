@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { basename, pickFolder } from '../lib/platform'
+import { track } from './analytics'
 
 /**
  * The open folder, like a VS Code workspace: its files in a sidebar beside the tabs. One folder
@@ -71,6 +72,7 @@ export const useFolder = create<FolderState>((set, get) => ({
   rev: 0,
   open: (path) => {
     const same = get().root === path
+    if (!same) track('feature_used', { feature: 'open_folder' })
     set({
       root: path,
       visible: true,

@@ -33,6 +33,10 @@ import { useAi } from './state/ai'
 import { discardRecovery, resumeRecovery, startRecovery } from './lib/recovery'
 import { installUpdate, openUpdatePanel, startUpdateChecks } from './lib/updater'
 import { startPlugins } from './state/plugins'
+import { flushAnalytics, track } from './state/analytics'
+import { documentFailed, editorShown } from './lib/analytics/documents'
+import { kindOf } from './lib/analytics/events'
+import { appLaunched, startAnalytics, trackError } from './lib/analytics/usage'
 import { dimming, useFocus } from './state/focus'
 import { chooseFolder, useFolder } from './state/folder'
 import { useSettings } from './state/settings'
@@ -133,13 +137,15 @@ function preloadOfficeEditors() {
 const SettingsPanel = lazy(() => import('./components/Settings'))
 const SetupScreen = lazy(() => import('./components/Setup'))
 
-class EditorBoundary extends Component<{ name: string; children: ReactNode }, { error: Error | null }> {
+class EditorBoundary extends Component<{ name: string; tabId: string; kind: DocKind; children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
   static getDerivedStateFromError(error: Error) {
     return { error }
   }
   componentDidCatch(error: Error, info: ErrorInfo) {
     console.error(error, info.componentStack)
+    documentFailed(this.props.tabId, 'render')
+    trackError(error, 'render', kindOf(this.props.kind))
   }
   render() {
     if (!this.state.error) return this.props.children
@@ -170,6 +176,7 @@ const EditorSlot = memo(function EditorSlot({ tab, active, pane }: EditorProps &
   if ((active || visible || woken) && !shown) setShown(true)
   useEffect(() => {
     if (shown && tab.deferred) void ensureTabLoaded(tab.id)
+    if (shown && !tab.deferred) editorShown(tab.id)
   }, [shown, tab.deferred, tab.id])
   return (
     <div
@@ -186,7 +193,7 @@ const EditorSlot = memo(function EditorSlot({ tab, active, pane }: EditorProps &
         (tab.deferred ? (
           <CenterState spinner />
         ) : (
-          <EditorBoundary key={tab.loadId} name={tab.title}>
+          <EditorBoundary key={tab.loadId} name={tab.title} tabId={tab.id} kind={tab.kind}>
             <Suspense fallback={<CenterState spinner />}>
               <Editor key={tab.loadId} tab={tab} active={active} visible={visible} />
             </Suspense>
@@ -346,6 +353,7 @@ function splitChoices(leftId: string): PaletteItem[] {
 export async function runCommand(id: string) {
   const ws = useWorkspace.getState()
   const editor = getEditor(ws.activeId)
+  const activeKind = () => ws.tabs.find((t) => t.id === ws.activeId)?.kind
   switch (id) {
     case 'new-tab':
       ws.activate(HOME_TAB_ID)
@@ -416,6 +424,7 @@ export async function runCommand(id: string) {
       await ws.revert()
       break
     case 'print':
+      if (editor?.print) track('feature_used', { feature: 'print', kind: kindOf(activeKind()) })
       await editor?.print?.()
       break
     case 'version-history':
@@ -442,9 +451,11 @@ export async function runCommand(id: string) {
       await ws.reopenClosed()
       break
     case 'find':
+      if (editor?.find) track('feature_used', { feature: 'find', kind: kindOf(activeKind()) })
       editor?.find?.()
       break
     case 'replace':
+      if (editor?.replace) track('feature_used', { feature: 'find_replace', kind: kindOf(activeKind()) })
       editor?.replace?.()
       break
     case 'split-view':
@@ -523,6 +534,7 @@ export async function runCommand(id: string) {
       try {
         if (await confirmDiscardAll()) {
           await installUpdate({ restart: false })
+          await flushAnalytics({ final: true })
           await platform.quitApp()
         }
       } finally {
@@ -671,6 +683,7 @@ export default function App() {
         // Plugins first: a restored tab may need one.
         await startPlugins()
         await restoreSession()
+        appLaunched()
         await drainPending()
       })().finally(preloadOfficeEditors)
     }
@@ -686,6 +699,7 @@ export default function App() {
       platform.onCloseRequested(async () => {
         if (!(await confirmDiscardAll())) return false
         await installUpdate({ restart: false })
+        await flushAnalytics({ final: true })
         return true
       }),
     )
@@ -699,6 +713,7 @@ export default function App() {
     void import('./collab/agents/bridge').then((m) => {
       if (!disposed) stopAgents = m.followAiSettings(useAi)
     })
+    const stopAnalytics = startAnalytics()
     const stopAutosave = startAutosave()
     const stopRecovery = startRecovery()
     const stopFolderPalette = startFolderPalette()
@@ -712,6 +727,7 @@ export default function App() {
       stopPruneOnChange()
       stopUpdateChecks()
       stopAgents?.()
+      stopAnalytics()
       stopAutosave()
       stopRecovery()
       stopFolderPalette()
