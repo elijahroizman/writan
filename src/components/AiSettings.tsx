@@ -105,26 +105,38 @@ export function AiPage() {
   )
 }
 
-function AgentRow({ id, url, changes, onChange }: { id: AgentId; url: string; changes: number; onChange: () => void }) {
+/** What Writan has put in an agent, and whether the agent is on this computer. */
+export interface AgentInstalled {
+  mcp: boolean
+  skill: boolean
+  /** The agent has run here: its own folder is in the home folder. */
+  present: boolean
+}
+
+/**
+ * One agent's setup, for Settings › AI and the onboarding: what Writan has added to it, and
+ * adding or taking out its MCP server and skill. `url` gives the MCP address to add, with the
+ * agent in it. `changes` counts changes anywhere, as Pi and Codex share one skill file.
+ */
+export function useAgentSetup(id: AgentId, url: () => Promise<string>, changes: number, onChange: () => void) {
   const agent = AGENTS[id]
-  const [installed, setInstalled] = useState<{ mcp: boolean; skill: boolean } | null>(null)
-  const [busy, setBusy] = useState<'mcp' | 'skill' | 'remove' | null>(null)
+  const [installed, setInstalled] = useState<AgentInstalled | null>(null)
+  const [busy, setBusy] = useState<'mcp' | 'skill' | 'connect' | 'remove' | null>(null)
   const [note, setNote] = useState<{ text: string; error: boolean } | null>(null)
 
   const check = async () => {
     if (!isTauri) return
     const { invoke } = await import('@tauri-apps/api/core')
-    setInstalled(await invoke<{ mcp: boolean; skill: boolean }>('agents_installed', { agent: id }).catch(() => null))
+    setInstalled(await invoke<AgentInstalled>('agents_installed', { agent: id }).catch(() => null))
   }
   useEffect(() => void check(), [id, changes])
 
-  const add = async (what: 'mcp' | 'skill') => {
+  const run = async (what: NonNullable<typeof busy>, job: (invoke: typeof import('@tauri-apps/api/core').invoke) => Promise<string>) => {
     setBusy(what)
     setNote(null)
     try {
       const { invoke } = await import('@tauri-apps/api/core')
-      const text = what === 'mcp' ? await invoke<string>('agents_install_mcp', { agent: id, url }) : await invoke<string>('agents_install_skill', { agent: id, skill: SKILL })
-      setNote({ text, error: false })
+      setNote({ text: await job(invoke), error: false })
     } catch (err) {
       setNote({ text: String((err as Error)?.message ?? err), error: true })
     } finally {
@@ -133,20 +145,31 @@ function AgentRow({ id, url, changes, onChange }: { id: AgentId; url: string; ch
     }
   }
 
-  const remove = async () => {
-    if (!(await confirmDialog(`Takes Writan’s MCP server and skill back out of ${agent.product}. Everything else stays.`, { title: `Remove Writan from ${agent.product}?`, okLabel: 'Remove', danger: true }))) return
-    setBusy('remove')
-    setNote(null)
-    try {
-      const { invoke } = await import('@tauri-apps/api/core')
-      setNote({ text: await invoke<string>('agents_remove', { agent: id }), error: false })
-    } catch (err) {
-      setNote({ text: String((err as Error)?.message ?? err), error: true })
-    } finally {
-      setBusy(null)
-      onChange()
-    }
+  const addMcp = async (invoke: typeof import('@tauri-apps/api/core').invoke) => invoke<string>('agents_install_mcp', { agent: id, url: await url() })
+  const addSkill = (invoke: typeof import('@tauri-apps/api/core').invoke) => invoke<string>('agents_install_skill', { agent: id, skill: SKILL })
+
+  return {
+    agent,
+    installed,
+    busy,
+    note,
+    add: (what: 'mcp' | 'skill') => run(what, what === 'mcp' ? addMcp : addSkill),
+    /** Adds both, the MCP server first. */
+    connect: () =>
+      run('connect', async (invoke) => {
+        await addMcp(invoke)
+        await addSkill(invoke)
+        return `Connected ${agent.product}.`
+      }),
+    remove: async () => {
+      if (!(await confirmDialog(`Takes Writan’s MCP server and skill back out of ${agent.product}. Everything else stays.`, { title: `Remove Writan from ${agent.product}?`, okLabel: 'Remove', danger: true }))) return
+      await run('remove', (invoke) => invoke<string>('agents_remove', { agent: id }))
+    },
   }
+}
+
+function AgentRow({ id, url, changes, onChange }: { id: AgentId; url: string; changes: number; onChange: () => void }) {
+  const { agent, installed, busy, note, add, remove } = useAgentSetup(id, async () => url, changes, onChange)
 
   return (
     <div className="plugin-row">

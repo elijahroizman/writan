@@ -23,6 +23,7 @@ You can turn it on or off at any time in Settings › General › Help make Writ
 - Sharing a document: its type, whether you shared it or joined, whether only AI agents were in it, the most people in it at once, and roughly how long it lasted.
 - An AI agent connecting: which product it is, such as Claude Code or Codex, and whether it runs on this computer.
 - Turning the LaTeX plugin on or off.
+- Finishing the welcome screens: whether you skipped ahead, how many of the pages you saw, how many AI agents you connected there, whether LaTeX is on, whether you installed the `writan` command there, and whether this copy ran an earlier version of Writan.
 - An error: which part of the app it happened in, and the kind of error from a fixed list of standard names, such as "TypeError". Never the error's message.
 
 Each of these also carries:

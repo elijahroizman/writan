@@ -214,7 +214,7 @@ async function setupContext(browser, { recordNetwork = false, initExtra } = {}) 
     return route.fulfill({ body: readFileSync(filePath), contentType: 'application/octet-stream' })
   })
 
-  await page.addInitScript(() => localStorage.setItem('workspace.setupDone', '1'))
+  await page.addInitScript(() => localStorage.setItem('workspace.setupDone', '2'))
   await page.addInitScript(fakeTauriInit)
   await page.addInitScript(longTaskInit)
   if (initExtra) await page.addInitScript(initExtra)

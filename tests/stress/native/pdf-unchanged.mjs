@@ -16,7 +16,7 @@ try {
   const errors = []
   page.on('pageerror', e => errors.push(e.message))
   await page.addInitScript(() => {
-    localStorage.setItem('workspace.setupDone', '1')
+    localStorage.setItem('workspace.setupDone', '2')
     localStorage.setItem('workspace.settings', JSON.stringify({ version: 2, autosave: { enabled: false, delay: 1, kinds: {} } }))
   })
   await page.goto(new URL(`?open=${encodeURIComponent(sample)}`, base).href)

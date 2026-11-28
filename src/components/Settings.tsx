@@ -25,7 +25,7 @@ import { useWorkspace } from '../state/workspace'
 import { formatVersionSize as formatVersionSize, useThemeEditor } from '../state/modals'
 import { AddTheme } from './AddTheme'
 import { AiPage } from './AiSettings'
-import { PluginRow } from './PluginList'
+import { disablePlugin, PluginRow } from './PluginList'
 import type { MenuEntry } from './ui'
 import { Button, Checkbox, ChoiceTiles, DocBadge, IconButton, LinkButton, Logo, Modal, PopoverMenu, Segmented, SettingsRow, Spinner, Switch, TextField } from './ui'
 
@@ -137,11 +137,12 @@ function GeneralPage() {
       <CommandLineRow />
 
       <UpdatesRow />
+
       <UsageDataRow />
 
       <SettingsRow
         label="Welcome tour"
-        hint={canSetDefaults ? 'The first-launch tour of the app, with extensions and default apps at the end.' : 'The first-launch tour of the app, with its extensions.'}
+        hint={`The screens from the first launch: sharing, AI agents, extras${canSetDefaults ? ', default apps' : ''} and updates.`}
       >
         <Button onClick={() => (setOpen(false), useSetup.getState().show())}>Show the tour again</Button>
       </SettingsRow>
@@ -469,7 +470,7 @@ function DefaultAppsRow() {
 function OptionalPlugins() {
   const enabled = usePlugins((s) => s.enabled)
   const progress = usePlugins((s) => s.progress)
-  const { enable, disable } = usePlugins.getState()
+  const { enable } = usePlugins.getState()
   return (
     <>
       {PLUGINS.filter((p) => !isBuiltIn(p)).map((p) => (
@@ -480,7 +481,7 @@ function OptionalPlugins() {
             progress[p.id] ? (
               <Spinner size={16} />
             ) : (
-              <Switch label={`Use ${p.name}`} checked={!!enabled[p.id]} onChange={(on) => void (on ? enable(p.id) : disablePlugin(p.id, disable))} />
+              <Switch label={`Use ${p.name}`} checked={!!enabled[p.id]} onChange={(on) => void (on ? enable(p.id) : disablePlugin(p.id))} />
             )
           }
         >
@@ -539,25 +540,6 @@ function TexSettings() {
 function linkText(url: string) {
   const host = new URL(url).hostname.replace(/^www\./, '')
   return host === 'github.com' ? 'Source on GitHub' : host
-}
-
-/** Tabs of a plugin's files have to close first. */
-async function disablePlugin(id: string, disable: (id: string) => Promise<void>) {
-  const plugin = PLUGINS.find((p) => p.id === id)!
-  const kinds = new Set(plugin.kinds.map((k) => k.id))
-  const open = useWorkspace.getState().tabs.filter((t) => kinds.has(t.kind))
-  if (open.length) {
-    const tabs = open.length === 1 ? `“${open[0].title}”` : `${open.length} tabs`
-    const ok = await confirmDialog(`${plugin.name} can’t turn off while ${tabs} ${open.length === 1 ? 'is' : 'are'} open. Writan asks before closing anything with unsaved changes.`, {
-      title: `Close ${tabs} and turn off ${plugin.name}?`,
-      okLabel: open.length === 1 ? 'Close Tab' : 'Close Tabs',
-    })
-    if (!ok) return
-    for (const tab of open) if (!(await useWorkspace.getState().closeTab(tab.id))) return
-  }
-  // LaTeX uses the computer's own TeX; offer to remove that too (unticked unless they choose).
-  if (plugin.services?.includes('tex') && !(await useTex.getState().confirmTurnOff())) return
-  await disable(id)
 }
 
 function AutosavePage() {

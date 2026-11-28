@@ -48,7 +48,7 @@ export async function launch({ scale = Number(process.env.SCALE) || 2, viewport 
     if (!existsSync(filePath)) return route.fulfill({ status: 404, body: 'missing' })
     return route.fulfill({ body: readFileSync(filePath), contentType: 'application/octet-stream' })
   })
-  await page.addInitScript(() => localStorage.getItem('workspace.setupDone') || localStorage.setItem('workspace.setupDone', '1'))
+  await page.addInitScript(() => localStorage.getItem('workspace.setupDone') || localStorage.setItem('workspace.setupDone', '2'))
   if (tauri) await page.addInitScript(fakeTauri)
   if (init) await page.addInitScript(init)
   return { browser, context, page, logs }

@@ -25,6 +25,7 @@ const scripts = [
   'tests/stress/ui/nasty.mjs',
   'tests/stress/ui/new-presentation.mjs',
   'tests/stress/ui/offline-ocr.mjs',
+  'tests/stress/ui/onboarding.mjs',
   'tests/stress/ui/pdf-select-drag-down.mjs',
   'tests/stress/ui/pdf-text-select.mjs',
   'tests/stress/ui/pdf-to-word.mjs',

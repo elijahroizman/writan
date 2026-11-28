@@ -58,7 +58,7 @@ Durations go through `roundMs`, which rounds to 50 ms under a second, 250 ms und
 track<E extends EventName>(event: E, ...[properties]: Props<E>): void
 ```
 
-An event with no properties takes none: `track('onboarding_finished')`.
+An event with no properties takes none: `track('app_active')`.
 
 ## Events
 
@@ -79,7 +79,7 @@ Every event also has the properties listed under "How it fits together".
 | `agent_connected` | `agent`, `local` | The first tool call of each MCP session. |
 | `plugin_enabled`, `plugin_disabled` | `plugin` | The LaTeX plugin is turned on or off. |
 | `error` | `area`, `name`, `source` (`uncaught`, `rejection`, `render`) | Unhandled errors and rejections, and editor crashes. `area` is the editor in front, `home` or `shell`. At most 20 per launch and one per area, name and source every 10 minutes. |
-| `onboarding_finished` | none | Recorded by the welcome screen. |
+| `onboarding_finished` | `skipped`, `steps_seen`, `steps_total`, `agents_connected`, `latex_enabled`, `cli_installed`, `upgraded` | Pressing Start using Writan on the onboarding's last page (`components/Setup.tsx`), after it records the analytics and update channel choices, so `channel` is the one picked there. `skipped` is a Skip on an earlier page. `agents_connected` counts agents connected from its agents page and `cli_installed` the `writan` command installed from it. `upgraded` is a copy that ran an earlier version. |
 
 The features in `feature_used`, and where each is counted:
 
