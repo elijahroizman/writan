@@ -116,8 +116,24 @@ const stored = (page, key) => page.evaluate((k) => localStorage.getItem(k), key)
     const pages = []
     while ((await step(page)) !== 'done') {
       pages.push(await step(page))
+      // Codex was set up before, but agents were turned off in Settings › AI since.
+      if ((await step(page)) === 'collab') {
+        await page.evaluate(() => {
+          window.agentFiles.codex = { mcp: 'http://127.0.0.1:47800/mcp/old', skill: true }
+          window.__ai.useAi.getState().setAgents(false)
+        })
+      }
       if ((await step(page)) === 'agents') {
+        const codex = page.locator('.tour-agent', { hasText: 'Codex' })
+        await codex.getByRole('button', { name: 'Turn on agents for Codex' }).waitFor()
+        check('set up but turned off: says so, and offers Turn on, not Connected', (await codex.getByText('Connected').count()) === 0 && (await codex.getByText('agents are turned off').count()) === 1)
         // As if agents had started: the browser has no MCP server of its own.
+        await page.evaluate(() => window.__ai.useAgentsStatus.setState({ state: 'on', local: 'http://127.0.0.1:47800/mcp/test', network: [], message: null }))
+        await codex.getByRole('button', { name: 'Turn on agents for Codex' }).click()
+        await codex.getByText('Connected').waitFor()
+        check('Turn on turns agents back on', (await page.evaluate(() => window.__ai.useAi.getState().agents)) === true)
+        // Turning agents on tries to start the server, which a browser hasn't got: stand in again.
+        await page.waitForTimeout(300)
         await page.evaluate(() => window.__ai.useAgentsStatus.setState({ state: 'on', local: 'http://127.0.0.1:47800/mcp/test', network: [], message: null }))
         await page.getByRole('button', { name: 'Connect Claude Code' }).click()
         await page.locator('.tour-agent', { hasText: 'Claude Code' }).getByText('Connected').waitFor()

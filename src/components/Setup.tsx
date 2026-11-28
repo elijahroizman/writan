@@ -293,7 +293,23 @@ function listOf(names: string[]) {
 
 function AgentConnect({ id, changes, onChange, onConnected }: { id: AgentId; changes: number; onChange: () => void; onConnected: (id: AgentId) => void }) {
   const { agent, installed, busy, note, connect } = useAgentSetup(id, async () => `${await agentsAddress()}?agent=${id}`, changes, onChange)
-  const connected = !!installed?.mcp && !!installed?.skill
+  // Set up before, but agents are turned off in Settings › AI: it can't connect until they're on.
+  const agentsOn = useAi((s) => s.agents)
+  const configured = !!installed?.mcp && !!installed?.skill
+  const [waking, setWaking] = useState(false)
+  const [wakeError, setWakeError] = useState<string | null>(null)
+  const turnOn = async () => {
+    setWaking(true)
+    setWakeError(null)
+    try {
+      await agentsAddress()
+      onConnected(id)
+    } catch (err) {
+      setWakeError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setWaking(false)
+    }
+  }
   useEffect(() => {
     if (note && !note.error) onConnected(id)
   }, [note, id, onConnected])
@@ -305,11 +321,17 @@ function AgentConnect({ id, changes, onChange, onConnected }: { id: AgentId; cha
       <span className="tour-agent-text">
         <span className="settings-label">{agent.product}</span>
         {note?.error && <span className="settings-hint error">{note.text}</span>}
+        {wakeError && <span className="settings-hint error">{wakeError}</span>}
+        {configured && !agentsOn && !wakeError && <span className="settings-hint">Set up, but agents are turned off.</span>}
       </span>
-      {connected ? (
+      {configured && agentsOn ? (
         <span className="tour-agent-done">
           <Check size={14} /> Connected
         </span>
+      ) : configured ? (
+        <Button disabled={!isTauri || waking} onClick={() => void turnOn()} aria-label={`Turn on agents for ${agent.product}`}>
+          {waking ? <Spinner size={14} /> : null} Turn on
+        </Button>
       ) : (
         <Button disabled={!isTauri || busy !== null} onClick={() => void connect()} aria-label={`Connect ${agent.product}`}>
           {busy ? <Spinner size={14} /> : null} Connect
