@@ -48,6 +48,8 @@ The **Release** workflow (`.github/workflows/release.yml`) calls the build workf
 
 ## Cutting a nightly
 
+Copies older than the stable release that brought in this version scheme can't detect nightlies tagged like `v1.1.0-nightly-…`, so release a stable with it before publishing the first nightly.
+
 Run the **Nightly** workflow (`.github/workflows/nightly.yml`) on `main`:
 
 ```
