@@ -4,6 +4,7 @@
 import { create } from 'zustand'
 import * as platform from '../lib/platform'
 import { useWorkspace } from './workspace'
+import { track } from './analytics'
 
 interface Job {
   status: string
@@ -22,6 +23,7 @@ export const usePdfToWord = create<PdfToWordState>((set, get) => ({
   async start(tabId) {
     const tab = useWorkspace.getState().tabs.find((t) => t.id === tabId)
     if (!tab || tab.kind !== 'pdf' || get().jobs[tabId]) return
+    track('feature_used', { feature: 'pdf_to_word', kind: 'pdf' })
     const abort = new AbortController()
     const update = (status: string) => {
       if (get().jobs[tabId]?.abort === abort) set((s) => ({ jobs: { ...s.jobs, [tabId]: { status, abort } } }))

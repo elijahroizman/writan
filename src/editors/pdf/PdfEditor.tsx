@@ -35,6 +35,7 @@ import { useOcrPacks } from '../../lib/ocr/packs'
 import * as platform from '../../lib/platform'
 import { usePdfToWord } from '../../state/pdfToWord'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { documentFailed, documentReady, documentWaiting } from '../../lib/analytics/documents'
 import { isCancelled, PdfEngine, Priority } from './engine/client'
 import type { Annot, Box, DocMeta, OutlineItem, PageInfo } from './engine/protocol'
 import { DocStore, drawBitmap } from './engine/store'
@@ -49,6 +50,7 @@ import { AnnotationLayer, clearTextSelection, DrawLayer, InkPreview, SearchLayer
 import type { PageSlot, ViewerHandle } from './viewer/Viewer'
 import { Viewer } from './viewer/Viewer'
 import './pdf.css'
+import { track } from '../../state/analytics'
 
 const HIGHLIGHT_COLORS = ['#FFFF98', '#53FFBC', '#80EBFF', '#FFCBE6', '#FF4F5F']
 const INK_COLORS = ['#000000', '#E5484D', '#2F6FED', '#1F9D55', '#F5A524']
@@ -215,6 +217,13 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
   const [, setHistoryVersion] = useState(0)
   const history = useRef(new History())
   const fieldsDirty = useRef(false)
+  /** Features already counted in this tab, so each counts once per document. */
+  const counted = useRef(new Set<'pdf_form_fill' | 'pdf_sign' | 'ocr'>())
+  const countOnce = (feature: 'pdf_form_fill' | 'pdf_sign' | 'ocr') => {
+    if (counted.current.has(feature)) return
+    counted.current.add(feature)
+    track('feature_used', { feature, kind: 'pdf' })
+  }
   const passwordRef = useRef('')
   /** The document as last saved (or as opened), for reopening a suspended engine. */
   const cleanBytes = useRef<Uint8Array | null>(null)
@@ -305,9 +314,12 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
         setMeta(result.meta)
         setHasForm(result.hasForm)
         setStore(s)
+        documentReady(tab.id)
       } catch (err) {
         if (isCancelled(err)) return
         const code = (err as { code?: number }).code
+        if (code === 4) documentWaiting(tab.id)
+        else documentFailed(tab.id, 'parse')
         if (code === 4) setPassword({ retry: pw !== '' })
         else setError(code === 3 || code === 2 ? 'The file is damaged or isn’t a PDF.' : (err as Error).message)
       }
@@ -550,6 +562,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
       },
       setField: (index, annot, value) => {
         const key = keyAt(index)
+        countOnce('pdf_form_fill')
         void run(async () => {
           await call((s) => s.engine.call('setField', [key, annot.raw, value]))
           fieldsDirty.current = true
@@ -693,6 +706,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     const s = storeRef.current
     const target = s?.pages.find((p) => p.key === key)
     if (!s || !target) return
+    countOnce('pdf_sign')
     const index = indexOfKey(key)
     /** w × h placed with its left edge and middle at the click, or centered in a field. */
     const boxFor = (w: number, h: number): Box => {
@@ -1078,6 +1092,7 @@ export default function PdfEditor({ tab, active, visible = false }: EditorProps)
     }
     const job = new AbortController()
     ocrActiveRef.current = true
+    countOnce('ocr')
     void recognizePages({ store, pages: todo, current: () => pageRef.current, signal: job.signal, onProgress: setOcrProgress, onPage: recognizedPage })
       .catch((err) => {
         if (!job.signal.aborted) console.warn('Text recognition stopped', err)

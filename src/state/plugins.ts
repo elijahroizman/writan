@@ -5,6 +5,8 @@ import type { PluginInfo } from '../plugins/catalog'
 import { PLUGINS, isBuiltIn, pluginById, pluginForKind } from '../plugins/catalog'
 import { isTauri, isWindows } from '../lib/platform'
 import { texTestHook, useTex } from './tex'
+import { track } from './analytics'
+import { pluginOf } from '../lib/analytics/events'
 
 const KEY = 'workspace.plugins'
 const RELEASES = 'https://github.com/elijahroizman/writan/releases/download'
@@ -79,6 +81,7 @@ export const usePlugins = create<PluginsState>((set, get) => {
         if (get().progress[id]) return false
         if (!(await install(plugin))) return false
       }
+      if (!get().enabled[id]) track('plugin_enabled', { plugin: pluginOf(id) })
       set({ enabled: { ...get().enabled, [id]: true } })
       save()
       if (plugin.services?.includes('tex') && (isTauri || texTestHook())) void offerTex()
@@ -88,6 +91,7 @@ export const usePlugins = create<PluginsState>((set, get) => {
     disable: async (id) => {
       const plugin = pluginById(id)
       if (!plugin || isBuiltIn(plugin)) return
+      if (get().enabled[id]) track('plugin_disabled', { plugin: pluginOf(id) })
       set({ enabled: { ...get().enabled, [id]: false } })
       save()
       if (downloads(plugin) && get().installed[id]) {

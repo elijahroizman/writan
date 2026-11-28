@@ -6,6 +6,8 @@ import * as platform from '../lib/platform'
 import type { ThemeDef } from '../lib/themes'
 import { useSettings } from './settings'
 import { useWorkspace } from './workspace'
+import { track } from './analytics'
+import { kindOf } from '../lib/analytics/events'
 
 // ── Command palette
 
@@ -38,7 +40,10 @@ export const usePalette = create<{
   open: false,
   query: '',
   picker: null,
-  setOpen: (open, query = '') => set({ open, query, picker: null }),
+  setOpen: (open, query = '') => {
+    if (open) track('feature_used', { feature: 'command_palette' })
+    set({ open, query, picker: null })
+  },
   pick: (picker) => set({ open: true, query: '', picker }),
 }))
 
@@ -80,7 +85,10 @@ export const useConvertDialog = create<ConvertModalState>((set) => ({
 
 export const useVersionHistory = create<{ tabId: string | null; show(tabId: string | null): void }>((set) => ({
   tabId: null,
-  show: (tabId) => set({ tabId }),
+  show: (tabId) => {
+    if (tabId) track('feature_used', { feature: 'version_history', kind: kindOf(useWorkspace.getState().tabs.find((t) => t.id === tabId)?.kind) })
+    set({ tabId })
+  },
 }))
 
 export function showVersionHistory(tabId = useWorkspace.getState().activeId) {
@@ -126,7 +134,10 @@ export interface ThemeEditorSession {
 
 export const useThemeEditor = create<{ session: ThemeEditorSession | null; open(theme: ThemeDef, editing: boolean): void; close(): void }>((set) => ({
   session: null,
-  open: (theme, editing) => set({ session: { theme: structuredClone(theme), editing, key: Date.now() } }),
+  open: (theme, editing) => {
+    track('feature_used', { feature: 'theme_editor' })
+    set({ session: { theme: structuredClone(theme), editing, key: Date.now() } })
+  },
   close: () => set({ session: null }),
 }))
 

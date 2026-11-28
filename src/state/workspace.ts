@@ -7,6 +7,9 @@ import { pluginForKind } from '../plugins/catalog'
 import { useFolder } from './folder'
 import { enabledKinds, kindEnabled, usePlugins } from './plugins'
 import { useSettings } from './settings'
+import { track } from './analytics'
+import { openClock, openFailed, openRead } from '../lib/analytics/documents'
+import { kindOf as usageKind } from '../lib/analytics/events'
 
 export const HOME_TAB_ID = 'home'
 
@@ -99,6 +102,7 @@ export function ensureTabLoaded(tabId: string): Promise<void> {
   const initial = useWorkspace.getState().tabs.find((t) => t.id === tabId)
   if (!initial?.deferred || !initial.path || initial.dirty || initial.recovered) return Promise.resolve()
   const { path, title } = initial
+  const started = openClock()
   const job = (async () => {
     try {
       const bytes = await platform.readFile(path)
@@ -106,6 +110,7 @@ export function ensureTabLoaded(tabId: string): Promise<void> {
       // Recovery may have supplied newer unsaved bytes while this read was in flight.
       if (!now?.deferred || now.path !== path || now.dirty || now.recovered) return
       await remember(tabId, bytes, false)
+      openRead(tabId, path, initial.kind, bytes.length, started, { source: 'restore', background: false })
       useWorkspace.setState((state) => ({
         tabs: state.tabs.map((t) => (t.id === tabId && t.deferred && !t.dirty && !t.recovered ? { ...t, bytes, deferred: false } : t)),
       }))
@@ -121,6 +126,7 @@ export function ensureTabLoaded(tabId: string): Promise<void> {
       const missing = !(await platform.pathExists(path).catch(() => false))
       if (!stillShell()) return
       if (missing) useWorkspace.getState().removeRecent(path)
+      openFailed(path, initial.kind, 'read')
       disk.delete(tabId)
       useWorkspace.setState((s) => ({
         tabs: s.tabs.filter((t) => t.id !== tabId),
@@ -491,6 +497,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
         if (otherTab.deferred) void ensureTabLoaded(other)
       }
       set({ split: [activeId, other], activeId: other, splitPanels: {} })
+      track('feature_used', { feature: 'split_view', kind: usageKind(kindOf(activeId)) })
     },
 
     setSplitRatio: (ratio) => set({ splitRatio: Math.min(0.8, Math.max(0.2, ratio)) }),
@@ -518,6 +525,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
     },
 
     openPaths: async (paths, opts) => {
+      const started = openClock()
       const failures: string[] = []
       const toRead: { path: string; kind: DocKind }[] = []
       const needPlugin: string[] = []
@@ -534,6 +542,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
           continue
         }
         if (!kind) {
+          openFailed(path, null, 'unsupported')
           failures.push(`“${platform.basename(path)}” isn't a file type Writan opens (${openableTypes()}).`)
           continue
         }
@@ -559,6 +568,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
             await remember(id, bytes, false)
             return { id, kind, title, path, bytes, loadId: 0, dirty: false }
           } catch (err) {
+            openFailed(path, kind, 'read')
             failures.push(String(err))
             if (!(await platform.pathExists(path))) get().removeRecent(path)
             return null
@@ -584,6 +594,12 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       if (toAdd.length) {
         addTabs(toAdd, !deferInactive)
         addRecents(recentsToAdd)
+        const { activeId } = get()
+        for (const tab of toAdd) {
+          if (!tab.bytes) continue
+          const background = deferInactive ? tab.path !== opts.lazyExcept : tab.id !== activeId
+          openRead(tab.id, tab.path!, tab.kind, tab.bytes.length, started, { source: deferInactive ? 'restore' : 'open', background })
+        }
       } else if (existingToActivate) {
         get().activate(existingToActivate)
       }
@@ -665,6 +681,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
       while (taken.has(n === 1 ? KINDS[kind].untitled : `${KINDS[kind].untitled} ${n}`)) n++
       const title = n === 1 ? KINDS[kind].untitled : `${KINDS[kind].untitled} ${n}`
       addTab({ id: newId(), kind, title, path: null, bytes: null, loadId: 0, dirty: false })
+      track('feature_used', { feature: 'new_document', kind: usageKind(kind) })
     },
 
     markDirty: (id, dirty) => {
@@ -764,6 +781,7 @@ export const useWorkspace = create<WorkspaceState>((set, get) => {
             if (!dirty) editor.markSaved?.()
             set({ tabs: get().tabs.map((t) => (t.id === tab.id ? { ...t, path: savePath, title, dirty, recovered: dirty && t.recovered } : t)) })
             addRecent(savePath, tab.kind)
+            track('document_saved', { kind: usageKind(tab.kind), autosave: !!opts?.quiet })
             return true
           })
         } catch (err) {

@@ -4,12 +4,14 @@
 import init, * as wasm from './wasm/office_wasm'
 import wasmUrl from './wasm/office_wasm_bg.wasm?url'
 import './fonts/fonts.css'
+import { noteEngineStarted } from '../lib/analytics/documents'
 
 export type Engine = typeof wasm
 
 let ready: Promise<Engine> | null = null
 
 export function loadEngine(): Promise<Engine> {
+  if (!ready) noteEngineStarted()
   ready ??= init({ module_or_path: wasmUrl }).then(() => wasm)
   return ready
 }
