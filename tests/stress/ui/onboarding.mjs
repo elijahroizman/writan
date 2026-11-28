@@ -109,7 +109,7 @@ const stored = (page, key) => page.evaluate((k) => localStorage.getItem(k), key)
 // A copy that finished the 0.x onboarding sees the new one once. Walking every page connects an
 // agent, and turning usage data off is stored too.
 {
-  const { browser, page, logs } = await open({ 'workspace.setupDone': '1', 'workspace.session': '{"tabs":[]}' })
+  const { browser, page, logs } = await open({ 'workspace.setupDone': '1', 'workspace.session': '{"paths":[],"active":null}' })
   try {
     await dialog(page).waitFor()
     check('an upgrader with a finished 0.x setup sees it', (await step(page)) === 'welcome')

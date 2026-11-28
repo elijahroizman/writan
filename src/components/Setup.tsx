@@ -411,7 +411,7 @@ function CommandRow({ onInstalled }: { onInstalled: () => void }) {
           <Button disabled={busy} onClick={() => void install()}>
             {busy ? <Spinner size={14} /> : null} Install
           </Button>
-        ) : status.installed ? (
+        ) : status.supported && status.installed ? (
           <span className="tour-agent-done">
             <Check size={14} /> Installed
           </span>
@@ -571,12 +571,11 @@ function Shot({ name, className = '' }: { name: string; className?: string }) {
   return <img className={`tour-shot ${className}`} src={SHOTS[`./tour/${name}-${theme}.webp`]} alt="" draggable={false} />
 }
 
-/** The welcome page's picture: a PDF, a presentation and a Word document, stacked. */
+/** The welcome page's picture: a presentation behind a Word document. */
 function Collage() {
   return (
     <div className="tour-collage">
-      <Shot name="pdf" className="tour-collage-back" />
-      <Shot name="slides" className="tour-collage-middle" />
+      <Shot name="slides" className="tour-collage-back" />
       <Shot name="word" className="tour-collage-front" />
     </div>
   )

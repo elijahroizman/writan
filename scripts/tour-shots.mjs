@@ -3,11 +3,16 @@
 //
 // Needs a test build being served, Playwright (`npm i --no-save playwright`, then
 // `npx playwright install chromium`), and for `collab` and `agents` the standalone relay with
-// MCP on, which the browser version shares through:
+// MCP on, which the browser version shares through. `extras` needs the LaTeX plugin built
+// (`npm run plugins`) and pdflatex on this computer:
 //   VITE_TEST_HOOKS=1 npx vite build && npx vite preview --port 1420
 //   cd src-tauri && cargo run --example collab_relay -- --port 47812 --mcp tour-token --bridge tour-key
 //   node scripts/tour-shots.mjs http://localhost:1420/ [names…]
-import { readFile, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { promisify } from 'node:util'
 import { chromium } from 'playwright'
 
 const url = process.argv[2] ?? 'http://localhost:1420/'
@@ -24,8 +29,15 @@ const open = async (page, ...names) => {
   }
 }
 
-/** Clicks into the Word page at `y` pixels below its top, `x` from its left. */
-const clickPage = (page, x, y) => page.locator('.docx-content-mount').first().click({ position: { x, y } })
+/** Just the document: the side panels hidden, no arrival notes, and no autosave note
+ * (a browser can't write the file). */
+async function documentOnly(page) {
+  await page.addStyleTag({ content: '.arrivals, .autosave-chip { display: none !important }' })
+  await page.keyboard.press('Alt+Control+\\')
+  await page.waitForTimeout(300)
+  await page.keyboard.press('Control+\\')
+  await page.waitForTimeout(600)
+}
 
 /** An MCP client speaking for `agent`, as the agent would once Settings › AI set it up. */
 async function mcpClient(agent) {
@@ -68,37 +80,55 @@ const SHOTS = {
       await page.waitForTimeout(800)
     },
   },
-  pdf: {
-    viewport: { width: 1100, height: 720 },
-    clip: { x: 310, y: 44, width: 790, height: 620 },
-    async setup(page) {
-      await open(page, 'Lease.pdf')
-    },
   },
   extras: {
-    viewport: { width: 1100, height: 720 },
-    clip: { x: 170, y: 60, width: 760, height: 600 },
-    async setup(page) {
-      await page.keyboard.press('Control+,')
-      await page.waitForTimeout(500)
-      // As in the app: the LaTeX extension under General, turned on.
-      await page.evaluate(() => {
-        const row = document.querySelector('.settings-scroll .plugin-row')
-        if (!row) throw new Error('No plugin row')
-        row.scrollIntoView({ block: 'start' })
-        const sw = row.querySelector('.switch')
-        sw.classList.add('on')
-        sw.setAttribute('aria-checked', 'true')
+    // A LaTeX document beside its PDF, compiled by this computer's pdflatex.
+    viewport: { width: 900, height: 760 },
+    clip: { x: 0, y: 0, width: 900, height: 700 },
+    init: () => {
+      localStorage.setItem('workspace.plugins', JSON.stringify({ latex: true }))
+      window.__texFake = {
+        status: async () => ({ installed: true, distribution: 'TeX Live', engines: ['pdflatex'] }),
+        compile: async (source) => {
+          const { pdf, log } = await window.__compileTex(source)
+          return { pdf: pdf ? Uint8Array.from(atob(pdf), (c) => c.charCodeAt(0)) : null, log, file: 'Orbits.tex' }
+        },
+      }
+    },
+    async prepare(page) {
+      await page.route('**/plugins/latex/**', async (route) => {
+        const file = new URL(route.request().url()).pathname.split('/plugins/latex/')[1]
+        await route.fulfill({ path: new URL(`../plugins/latex/dist/${file}`, import.meta.url).pathname })
       })
-      await page.waitForTimeout(300)
+      await page.exposeFunction('__compileTex', async (source) => {
+        const dir = await mkdtemp(join(tmpdir(), 'tour-tex-'))
+        try {
+          await writeFile(join(dir, 'doc.tex'), source)
+          await promisify(execFile)('pdflatex', ['-interaction=nonstopmode', 'doc.tex'], { cwd: dir }).catch(() => {})
+          const pdf = await readFile(join(dir, 'doc.pdf')).catch(() => null)
+          const log = await readFile(join(dir, 'doc.log'), 'utf8').catch(() => '')
+          return { pdf: pdf?.toString('base64') ?? null, log }
+        } finally {
+          await rm(dir, { recursive: true, force: true })
+        }
+      })
+    },
+    async setup(page) {
+      await open(page, 'Orbits.tex')
+      await page.keyboard.press('Control+\\')
+      await page.getByRole('radio', { name: 'Source and PDF' }).click()
+      await page.waitForTimeout(4000)
+      await page.evaluate(() => document.activeElement?.blur())
     },
   },
   collab: {
-    // Maya shares the lease update and Sam joins: Sam's caret, Maya's share panel with its code.
-    viewport: { width: 1180, height: 760 },
-    clip: { x: 380, y: 0, width: 800, height: 700 },
+    // Maya shares the library update and two people join: their carets, and Maya's share panel
+    // with its code.
+    viewport: { width: 900, height: 800 },
+    clip: { x: 0, y: 0, width: 900, height: 740 },
     async setup(page, { newPage }) {
       await open(page, 'Library Update.docx')
+      await documentOnly(page)
       await page.getByRole('button', { name: 'Share on your network' }).click()
       const panel = page.getByRole('dialog', { name: 'Share on your network' })
       await panel.getByLabel('Your name').fill('Maya')
@@ -106,21 +136,24 @@ const SHOTS = {
       const invite = await page.getByLabel('Invite link').inputValue()
       await page.keyboard.press('Escape')
 
-      const guest = await newPage()
-      await guest.getByRole('tab', { name: 'Home' }).click()
-      await guest.getByRole('button', { name: 'Join a shared document…' }).click()
-      const dialog = guest.getByRole('dialog', { name: 'Join a shared document' })
-      await dialog.getByLabel('Code or link').fill(invite)
-      await dialog.getByLabel('Your name').fill('Sam')
-      await dialog.getByRole('button', { name: 'Join' }).click()
-      await dialog.waitFor({ state: 'detached' })
-      await guest.waitForTimeout(2500)
-      await clickPage(guest, 420, 300)
-      await guest.keyboard.press('End')
-      await guest.keyboard.type(' Sam checked these numbers.', { delay: 20 })
-      await clickPage(page, 300, 180)
-      await page.keyboard.press('End')
-      await page.waitForTimeout(1200)
+      const join = async (name, after, text) => {
+        const guest = await newPage()
+        await guest.getByRole('tab', { name: 'Home' }).click()
+        await guest.getByRole('button', { name: 'Join a shared document…' }).click()
+        const dialog = guest.getByRole('dialog', { name: 'Join a shared document' })
+        await dialog.getByLabel('Code or link').fill(invite)
+        await dialog.getByLabel('Your name').fill(name)
+        await dialog.getByRole('button', { name: 'Join' }).click()
+        await dialog.waitFor({ state: 'detached' })
+        await guest.waitForTimeout(2500)
+        await documentOnly(guest)
+        await guest.locator('.docx-pages').getByText(after).first().click()
+        await guest.keyboard.press('End')
+        await guest.keyboard.type(text, { delay: 20 })
+        return guest
+      }
+      const guests = [await join('Sam', 'A step-free entrance', ' and a ramp'), await join('Lena', 'Twelve bookable study booths', ', two of them quiet')]
+      await page.waitForTimeout(1500)
 
       // The app shows a six-digit code for sharing over the internet; a browser shares on its
       // network with a link, so the code is put in as the app would show it.
@@ -130,21 +163,24 @@ const SHOTS = {
         collab.setState({ [id]: { ...collab.getState()[id], code: '482913', expiresAt: Date.now() + 9 * 60_000 + 41_000, internet: true } })
       })
       await page.getByRole('button', { name: /Shared/ }).click()
+      // Both type once more, so both name tags show.
+      for (const guest of guests) await guest.keyboard.type('.')
       await page.waitForTimeout(600)
       await page.evaluate(() => document.activeElement?.blur())
-      return () => guest.close()
+      return () => Promise.all(guests.map((g) => g.close()))
     },
   },
   agents: {
     // Claude writes in the document, and Codex says what it's doing in the agents' chat.
-    viewport: { width: 1180, height: 760 },
-    clip: { x: 380, y: 0, width: 800, height: 700 },
+    viewport: { width: 900, height: 800 },
+    clip: { x: 0, y: 0, width: 900, height: 740 },
     init: () => {
       localStorage.setItem('workspace.agentsBridgeKey', 'tour-key')
       localStorage.setItem('workspace.ai', JSON.stringify({ agents: true, token: 'tour-token', messages: true }))
     },
     async setup(page) {
       await open(page, 'Library Update.docx')
+      await documentOnly(page)
       await page.evaluate(() => document.activeElement?.blur())
       const claude = await mcpClient('claude')
       const codex = await mcpClient('codex')
@@ -152,9 +188,9 @@ const SHOTS = {
       if (!doc) throw new Error('The agent found no document')
       await claude('read_document', { document: doc })
       await codex('read_document', { document: doc })
-      await claude('insert_paragraphs', { document: doc, after: 2, text: 'The reading room reopens on Monday with longer evening hours.' })
-      await codex('send_message', { document: doc, text: 'I’ll check the budget table while Claude writes the summary.' })
-      await claude('send_message', { document: doc, text: 'Thanks. The summary is in, under the opening paragraph.' })
+      await claude('insert_paragraphs', { document: doc, after: 2, text: 'Evening hours start on Monday.' })
+      await codex('send_message', { document: doc, text: 'I’ll check the budget table against the invoices.' })
+      await claude('send_message', { document: doc, text: 'Done with the opening hours. The summary is next.' })
       await page.waitForTimeout(1200)
       await page.getByRole('button', { name: /Agents’ chat/ }).click()
       await page.waitForTimeout(600)
@@ -180,6 +216,7 @@ async function newPage(shot, theme) {
     localStorage.setItem('workspace.themeMode', JSON.stringify(theme))
   }, theme)
   if (shot.init) await page.addInitScript(shot.init)
+  await shot.prepare?.(page)
   await page.goto(url)
   await page.addStyleTag({ content: '.update-btn { visibility: hidden !important } * { caret-color: transparent !important }' })
   await page.waitForTimeout(800)
@@ -191,7 +228,7 @@ try {
     if (only.length && !only.includes(name)) continue
     for (const theme of ['light', 'dark']) {
       const page = await newPage(shot, theme)
-      const cleanup = await shot.setup(page, { newPage: () => newPage({ ...shot, init: undefined }, theme) })
+      const cleanup = await shot.setup(page, { newPage: () => newPage({ ...shot, init: undefined, prepare: undefined }, theme) })
       const png = await page.screenshot({ clip: shot.clip })
       const webp = await page.evaluate(
         async ([b64, quality]) => {

@@ -1,6 +1,6 @@
 # Plugins
 
-Word, PowerPoint, PDF, Markdown, text and images are built in. LaTeX is optional and off until you turn it on, in the welcome tour on first launch or later in **Settings › General**.
+Word, PowerPoint, PDF, Markdown, text and images are built in. LaTeX is optional and off until you turn it on, in the onboarding on first launch or later in **Settings › General**.
 
 | Plugin | Opens | Size | How it arrives |
 | --- | --- | --- | --- |
