@@ -2,6 +2,39 @@
 
 Every release's notes. The release workflow copies a version's section into its GitHub release, and the app's update panel shows it.
 
+## 1.0.0 — 2026-11-28
+
+Writan 1.0. Everyone sees the new welcome screens once, including people updating from 0.x.
+
+### Welcome screens
+- New first-launch screens show what makes Writan different: editing a document live with other people through a six-digit code, and AI agents that work in the documents you have open.
+- The agents page lists the agents installed on this computer, such as Claude Code and Codex, with a **Connect** button for each.
+- Turn on LaTeX, and on a Mac install the `writan` terminal command, from the extras page. On a Mac or Windows PC you can also pick the file types Writan opens.
+- **Skip** goes to the last page, which picks your update channel and whether to send usage data. **Settings › General › Show the tour again** brings the screens back.
+
+### Stable and nightly
+- **Settings › General › Updates** chooses between Stable, tested releases, and Nightly, a build of the newest code whenever there is one. Nightlies are named by date and time, such as "Nightly, 28 Nov 2026 09:30".
+- Going back from Nightly to Stable never downgrades. Writan moves over at the next stable release newer than the nightly you have.
+- On Linux, nightlies install from GitHub with apt, dnf or pacman after Writan checks their signature, and the next stable release comes from Writan's repository as usual.
+
+### Usage data
+- Writan can send anonymous usage data, such as which file types are opened, how long they take to open and which features get used, so we know what to fix. It never includes your documents, file names, anything you type or error messages.
+- It's on by default, except in the European Union, the EEA, the UK and Switzerland, where it's off until you turn it on. Turn it off on the last welcome screen or with **Help make Writan better** in **Settings › General**. [PRIVACY.md](https://github.com/elijahroizman/writan/blob/main/PRIVACY.md) lists exactly what is sent.
+
+### Updates
+- On the newest version, the update button says **You're on the latest version** instead of showing that version's notes. **What's new in this version** opens them.
+
+### AI agents
+- Agents get 45 tools instead of 50, with one add, edit and delete tool for each kind of object in a document. Every capability stays, and agents can now move and resize charts, delete a chart and replace text in workbooks.
+- An edit that both moves and recolors a shape undoes in one step.
+- The skill that teaches agents to work in Writan was rewritten. It names every tool and lists the traps to avoid.
+
+### LaTeX
+- The LaTeX plugin is now version 1.0. If you use it, Writan downloads the new version the first time 1.0 starts.
+
+### Documentation
+- New README, contributor guide and privacy policy. Windows code signing is coming soon; the Mac app is signed and notarized.
+
 ## 0.19.0 — 2026-11-27
 
 ### Edit a PDF as a Word document
