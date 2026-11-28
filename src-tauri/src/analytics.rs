@@ -89,7 +89,8 @@ fn post(url: &str, body: &[u8]) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// Posts one batch. A failure is retried once after five seconds, then the batch is dropped.
+/// Posts one batch, once. The page retries a failure itself, after checking the person hasn't
+/// turned analytics off meanwhile; this side keeps no consent state, so it never retries.
 #[tauri::command]
 pub async fn analytics_send(
     host: String,
@@ -104,10 +105,6 @@ pub async fn analytics_send(
     let guard = InFlight::start();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = guard;
-        if post(&url, &body).is_ok() {
-            return Ok(());
-        }
-        std::thread::sleep(Duration::from_secs(5));
         post(&url, &body)
     })
     .await

@@ -13,7 +13,7 @@ Writan can send anonymous usage events to PostHog. They answer questions like wh
 | `src/lib/analytics/launch.ts` | Reads what earlier launches saved before this one writes anything. Imported first in `main.tsx`. |
 | `src-tauri/src/analytics.rs` | The `analytics_send` command. Posts a batch to PostHog's `/batch/` endpoint. |
 
-Rust does the posting so the webview's content security policy stays closed to outside hosts. The page owns the queue. It batches in memory, keeps at most 200 events, and flushes every 30 seconds, when the window is hidden and when the app quits. On quit the page waits up to 1.5 seconds, and Rust then holds the exit for up to 2 seconds while a post is still going. A failed post is retried once after 5 seconds, then dropped.
+Rust does the posting so the webview's content security policy stays closed to outside hosts. The page owns the queue. It batches in memory, keeps at most 200 events, and flushes every 30 seconds, when the window is hidden and when the app quits. On quit the page waits up to 1.5 seconds, and Rust then holds the exit for up to 2 seconds while a post is still going. A failed post is retried once after 5 seconds, then dropped. The page does the retry, and it checks before every attempt that the setting is still on, so turning it off mid-send stops the batch and never makes a new ID. Rust posts once and keeps no consent state.
 
 Rust adds `os`, `$os` and `arch` to every event. The page adds `distinct_id`, `$process_person_profile: false`, `$geoip_disable: true`, `$lib: "writan"`, `app_version`, `channel` (from `workspace.updateChannel`) and `language` (`navigator.language`).
 
@@ -28,7 +28,7 @@ All of these must hold:
 
 Without a key, `track()` returns at once. Nothing is queued, no ID is made and no request goes out.
 
-While `choice` is `null`, the person hasn't decided. Events queue in memory and are sent only if they turn it on during that run. Settings shows the switch at `defaultAnalyticsOn()`, which is off when the time zone is in the EU, the EEA, the UK or Switzerland. A placeless zone, such as UTC or `Etc/*`, falls back to the regions of `navigator.languages`. The time zone wins otherwise, because many people outside Europe use en-GB. Turning it off empties the queue and deletes `workspace.analyticsId`. Turning it on again makes a new ID.
+While `choice` is `null`, the person hasn't decided, and `defaultAnalyticsOn()` stands in for it. Where that's true, events go from the first launch. Where it's false, events queue in memory and are sent only if the person turns it on during that run. Settings and the welcome screen's last page show the switch at the same default, which is off when the time zone is in the EU, the EEA, the UK or Switzerland. A placeless zone, such as UTC or `Etc/*`, falls back to the regions of `navigator.languages`. The time zone wins otherwise, because many people outside Europe use en-GB. Turning it off empties the queue and deletes `workspace.analyticsId`. Turning it on again makes a new ID.
 
 ## The rules
 
@@ -113,4 +113,4 @@ Then add the Actions variables `POSTHOG_KEY` (the project API key, which starts 
 
 ## Testing
 
-`tests/stress/ui/analytics.mjs` runs with `npm run test:browser`. A test build reads a stand-in key from `window.__analyticsTest`, and the test records `analytics_send` calls on the fake native bridge. It checks that nothing is sent without a key or before a choice, that a batch has no file names or paths, that off deletes the ID, and the default in Europe. `cargo test analytics` covers the Rust side.
+`tests/stress/ui/analytics.mjs` runs with `npm run test:browser`. A test build reads a stand-in key from `window.__analyticsTest`, and the test records `analytics_send` calls on the fake native bridge. It checks that nothing is sent without a key, that an undecided install sends only where the default is on, that a batch has no file names or paths, that off deletes the ID, and the default in Europe. `cargo test analytics` covers the Rust side.

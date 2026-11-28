@@ -1,9 +1,11 @@
 // Anonymous usage analytics: whether the person allows it, and the events waiting to go.
 //
 // Nothing leaves this computer unless all of these hold: the build has a PostHog key
-// (VITE_POSTHOG_KEY), it's the desktop app and not a dev build, and the person turned the
-// setting on. Until they decide (`choice` is null), events wait in memory and go only if they
-// turn it on; turning it off drops them. Rust posts the batches (src-tauri/src/analytics.rs).
+// (VITE_POSTHOG_KEY), it's the desktop app and not a dev build, and the setting is on. Until the
+// person decides (`choice` is null), the setting is the default for where they are: on outside
+// Europe, so events go from the first launch, and off in Europe and the UK, where events wait in
+// memory and go only if they turn it on. Turning it off drops them. Rust posts the batches
+// (src-tauri/src/analytics.rs).
 // What may be sent is in lib/analytics/events.ts; docs/internals/analytics.md explains it.
 
 import { create } from 'zustand'
@@ -64,7 +66,7 @@ const EUROPE = new Set([
 /** Time zones in those countries outside `Europe/`, and the old names some systems still give. */
 const EUROPEAN_ZONES = new Set([
   'Atlantic/Reykjavik', 'Atlantic/Canary', 'Atlantic/Madeira', 'Atlantic/Azores', 'Atlantic/Faroe', 'Atlantic/Faeroe', 'Atlantic/Jan_Mayen',
-  'Arctic/Longyearbyen', 'Asia/Nicosia', 'Asia/Famagusta',
+  'Arctic/Longyearbyen', 'Asia/Nicosia', 'Asia/Famagusta', 'Africa/Ceuta',
   'America/Cayenne', 'America/Guadeloupe', 'America/Martinique', 'America/Marigot', 'Indian/Reunion', 'Indian/Mayotte',
   'GB', 'GB-Eire', 'Eire', 'Iceland', 'Portugal', 'Poland', 'WET', 'CET', 'MET', 'EET',
 ])
@@ -107,7 +109,7 @@ export function defaultAnalyticsOn(): boolean {
 }
 
 interface AnalyticsState {
-  /** What the person chose; null until they decide, and nothing is sent while it's null. */
+  /** What the person chose; null until they decide, when `defaultAnalyticsOn()` stands in. */
   choice: boolean | null
 }
 
@@ -119,10 +121,19 @@ export function analyticsShownOn(choice: boolean | null): boolean {
 }
 
 /**
+ * Whether events go out now. Outside Europe that's from the first launch, until the person turns
+ * it off on the welcome screen's last page or in Settings. In Europe and the UK it's only after
+ * they turn it on.
+ */
+const sending = () => analyticsShownOn(useAnalytics.getState().choice)
+
+/**
  * Records the person's choice. Off stops sending at once, drops the waiting events and deletes
  * this install's ID; on again starts with a new ID.
  */
 export function setAnalytics(on: boolean): void {
+  // A send that's already under way checks this after each wait, so turning it off stops it.
+  consent++
   try {
     localStorage.setItem(CHOICE_KEY, String(on))
   } catch {
@@ -199,38 +210,61 @@ export function track<E extends EventName>(event: E, ...[properties]: Props<E>):
 }
 
 function scheduleFlush() {
-  if (timer !== null || !config || useAnalytics.getState().choice !== true || !queue.length) return
+  if (timer !== null || !config || !sending() || !queue.length) return
   timer = setTimeout(() => {
     timer = null
     void flushAnalytics()
   }, FLUSH_MS)
 }
 
-async function send(batch: Queued[]): Promise<void> {
+/** Goes up each time the person changes the setting. */
+let consent = 0
+const RETRY_MS = 5_000
+
+/** Whether the person still allows sending, and hasn't changed the setting since `at`. */
+const allowed = (at: number) => consent === at && sending()
+
+/**
+ * Posts a batch, and once more after five seconds if that fails. Every step after a wait checks
+ * that the setting is still on and unchanged, so turning it off part way never sends the batch
+ * or makes a new ID. Rust posts once and keeps no state of its own.
+ */
+async function send(batch: Queued[], retry: boolean): Promise<void> {
+  const at = consent
   const { invoke } = await import('@tauri-apps/api/core')
-  const id = installId()
-  await invoke('analytics_send', {
-    host: config!.host,
-    key: config!.key,
-    events: batch.map((e) => ({
-      event: e.event,
-      timestamp: e.timestamp,
-      properties: { ...e.properties, distinct_id: id, $process_person_profile: false, $geoip_disable: true, $lib: 'writan' },
-    })),
-  })
+  for (let attempt = 0; ; attempt++) {
+    if (!allowed(at)) return
+    const id = installId()
+    try {
+      await invoke('analytics_send', {
+        host: config!.host,
+        key: config!.key,
+        events: batch.map((e) => ({
+          event: e.event,
+          timestamp: e.timestamp,
+          properties: { ...e.properties, distinct_id: id, $process_person_profile: false, $geoip_disable: true, $lib: 'writan' },
+        })),
+      })
+      return
+    } catch (err) {
+      if (!retry || attempt > 0) throw err
+    }
+    await new Promise((r) => setTimeout(r, RETRY_MS))
+  }
 }
 
 /**
- * Sends what's waiting, if the person allowed it. Rust retries a failed batch once and then
- * drops it. With `final` (quitting), waits at most 1.5 seconds.
+ * Sends what's waiting, if the person allowed it. A failed batch is tried once more after five
+ * seconds and then dropped. With `final` (quitting), there's no retry and it waits at most 1.5
+ * seconds.
  */
 export async function flushAnalytics(opts?: { final?: boolean }): Promise<void> {
   if (timer !== null) {
     clearTimeout(timer)
     timer = null
   }
-  if (!config || useAnalytics.getState().choice !== true || !queue.length) return
-  const job = send(queue.splice(0, queue.length)).catch(() => {})
+  if (!config || !sending() || !queue.length) return
+  const job = send(queue.splice(0, queue.length), !opts?.final).catch(() => {})
   if (!opts?.final) return job
   await Promise.race([job, new Promise((r) => setTimeout(r, FINAL_FLUSH_MS))])
 }

@@ -12,8 +12,15 @@ function recordSends() {
   const bridge = window.__TAURI_INTERNALS__
   const invoke = bridge.invoke
   window.sent = []
+  window.attempts = 0
+  window.failNext = false
   bridge.invoke = async (cmd, args, opts) => {
     if (cmd === 'analytics_send') {
+      window.attempts++
+      if (window.failNext) {
+        window.failNext = false
+        throw 'offline'
+      }
       window.sent.push(JSON.parse(JSON.stringify(args)))
       return null
     }
@@ -42,9 +49,27 @@ const flush = (page) => page.evaluate(() => window.__analytics.flushAnalytics())
   }
 }
 
-// With a key: nothing goes until the person turns it on, then the waiting events go.
+// Outside Europe, with a key and no choice yet: events go from the first launch.
 {
-  const { browser, page, logs } = await launch({ init: recordSends })
+  const { browser, page, logs } = await launch({ init: recordSends, timezoneId: 'Australia/Sydney', locale: 'en-AU' })
+  await page.addInitScript(() => {
+    window.__analyticsTest = { key: 'phc_test' }
+  })
+  try {
+    await start(page)
+    assert.equal(await page.evaluate(() => window.__analytics.useAnalytics.getState().choice), null)
+    await flush(page)
+    assert.equal(await sends(page), 1, 'sent before any choice')
+    assert.match(await installId(page), /^[0-9a-f-]{36}$/)
+    check('undecided outside Europe: sent from the first launch', true)
+  } finally {
+    await done(browser, logs)
+  }
+}
+
+// In Europe, with a key: nothing goes until the person turns it on, then the waiting events go.
+{
+  const { browser, page, logs } = await launch({ init: recordSends, timezoneId: 'Europe/Berlin', locale: 'de-DE' })
   await page.addInitScript(() => {
     window.__analyticsTest = { key: 'phc_test' }
   })
@@ -56,7 +81,7 @@ const flush = (page) => page.evaluate(() => window.__analytics.flushAnalytics())
     await flush(page)
     assert.equal(await sends(page), 0, 'nothing is sent before the person chooses')
     assert.equal(await installId(page), null, 'no ID before the person chooses')
-    check('undecided: nothing sent', true)
+    check('undecided in Europe: nothing sent', true)
 
     await page.evaluate(() => window.__analytics.setAnalytics(true))
     await flush(page)
@@ -107,6 +132,22 @@ const flush = (page) => page.evaluate(() => window.__analytics.flushAnalytics())
     assert.deepEqual(again.events.map((e) => e.event), ['feature_used'])
     assert.notEqual(again.events[0].properties.distinct_id, id)
     check('on again: new ID', true)
+
+    // A failed post waits five seconds to retry. Turning it off during the wait stops the retry
+    // and doesn't bring the ID back.
+    const before = await page.evaluate(() => window.attempts)
+    await page.evaluate(() => {
+      window.__analytics.track('feature_used', { feature: 'print' })
+      window.failNext = true
+      void window.__analytics.flushAnalytics()
+    })
+    await page.waitForFunction((n) => window.attempts === n + 1, before)
+    await page.evaluate(() => window.__analytics.setAnalytics(false))
+    await page.waitForTimeout(6_000)
+    assert.equal(await page.evaluate(() => window.attempts), before + 1, 'no retry after turning it off')
+    assert.equal(await sends(page), 2)
+    assert.equal(await installId(page), null, 'the retry made no new ID')
+    check('off during a retry: nothing sent, no new ID', true)
   } finally {
     await done(browser, logs)
   }
@@ -122,6 +163,7 @@ const flush = (page) => page.evaluate(() => window.__analytics.flushAnalytics())
       { timezoneId: 'Europe/Berlin', locale: 'de-DE', on: false },
       { timezoneId: 'Atlantic/Reykjavik', locale: 'en-US', on: false },
       { timezoneId: 'Asia/Nicosia', locale: 'en-US', on: false },
+      { timezoneId: 'Africa/Ceuta', locale: 'es-ES', on: false },
       { timezoneId: 'America/New_York', locale: 'en-GB', on: true },
       { timezoneId: 'Australia/Sydney', locale: 'en-GB', on: true },
       { timezoneId: 'Etc/UTC', locale: 'en-GB', on: false },
