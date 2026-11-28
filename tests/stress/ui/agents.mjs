@@ -85,7 +85,7 @@ try {
   const codex = await mcpClient('codex', 'codex-mcp-client')
   check('initialize names the server and the session', codex.init?.result?.serverInfo?.name === 'writan', JSON.stringify(codex.init))
   const tools = (await codex.list()).result.tools.map((t) => t.name)
-  check('the tools are listed', ['list_documents', 'read_document', 'insert_paragraphs', 'write_cells', 'where_is_everyone'].every((t) => tools.includes(t)), tools.join())
+  check('the tools are listed', ['list_documents', 'read_document', 'insert_paragraphs', 'write_cells', 'wait_for_changes'].every((t) => tools.includes(t)), tools.join())
   check('with nothing open, list_documents says what to do', (await codex.call('list_documents')).text.includes('is open in Writan'))
 
   // ── Word
@@ -128,8 +128,8 @@ try {
   })
   check('the agent has its own color', color === '#0D0D0D', color)
 
-  const style = await codex.call('set_style', { document: docId, from: 1, style: 'Heading 1' })
-  check('set_style works', !style.error, style.text)
+  const style = await codex.call('format_text', { document: docId, from: 1, style: 'Heading 1' })
+  check('format_text sets a style', !style.error, style.text)
   const again = await codex.call('read_document', { document: docId })
   check('the heading reads back as one', again.text.includes('[1] (Heading 1) Meeting notes'), again.text)
 
@@ -141,8 +141,8 @@ try {
   await b.page.locator('.docx-content-mount').click({ position: { x: 200, y: 120 } })
   await b.page.keyboard.press('Control+End')
   await new Promise((r) => setTimeout(r, 300))
-  const where = await codex.call('where_is_everyone', { document: docId })
-  check('where_is_everyone says where Bo is', /Bo: paragraph 4/.test(where.text), where.text)
+  const where = await codex.call('list_documents', { document: docId })
+  check('list_documents with a document says where Bo is', /Bo: paragraph 4/.test(where.text), where.text)
 
   // Waiting hears someone else's change.
   const waiting = codex.call('wait_for_changes', { document: docId, seconds: 10 })

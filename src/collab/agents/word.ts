@@ -6,31 +6,46 @@
 import type { WordEngine } from '../../engine/word/engine'
 import type { Said } from '../session'
 import { ID, IDS_IN, idsOf } from './ids'
-import { type Answer, type Args, bool, canvasPicture, clip, doc, found, foundAnswer, grouped, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
+import { type Answer, type Args, bool, canvasPicture, clip, doc, found, foundAnswer, grouped, hexColor, HIGHLIGHTS, int, need, num, paraRef, plural, str, type Tool, ToolError } from './common'
 import { draw } from './picture'
 import { pictureBytes, pictureType, scaledPicture } from './pictures'
 
-/** A paragraph, by number or id. */
-export const paraRef = (what = 'A paragraph') => ({ type: ['integer', 'string'], description: `${what}: its number, or its id from read_document like "#k3f9x2", which stays the same while others add or delete paragraphs.` })
+const TABLE_ACTIONS: Record<string, string> = {
+  add_row_above: 'insertRowAbove',
+  add_row_below: 'insertRowBelow',
+  delete_row: 'deleteRow',
+  add_column_left: 'insertColumnLeft',
+  add_column_right: 'insertColumnRight',
+  delete_column: 'deleteColumn',
+  borders_all: 'bordersAll',
+  borders_outside: 'bordersOutside',
+  borders_none: 'bordersNone',
+  fill: 'fill',
+  delete_table: 'delete',
+}
+
+const NEW_PARAGRAPHS = {
+  text: { type: 'string', description: 'One paragraph per line.' },
+  paragraphs: {
+    type: 'array',
+    items: { type: 'object', properties: { text: { type: 'string' }, style: { type: 'string' } }, required: ['text'] },
+    description: 'Instead of text, like [{"text": "Results", "style": "Heading 1"}].',
+  },
+}
 
 export const WORD_TOOLS: Tool[] = [
   {
     name: 'insert_paragraphs',
     description:
-      'Word: puts new paragraphs in after paragraph `after` (0 puts them at the start), or after the last one with `at_end`, which stays right even if others add paragraphs meanwhile. Each line of `text` is a paragraph; or give `paragraphs`, each with its own style. `style` sets the style of those without one, like "Heading 2" or "Normal"; otherwise they take the style Word gives a new paragraph after the one before (body text after a heading or title). Answers with their numbers.',
+      'Word: inserts paragraphs after paragraph `after`, or at the end with `at_end`. A paragraph without a style gets `style`, or what Word gives after the one before, like body text after a heading. Returns their numbers.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
-        after: { ...paraRef('The paragraph to put them after'), description: 'The paragraph to put them after: its number (0 for the start) or its id, like "#k3f9x2", which stays right while others add or delete paragraphs.' },
-        at_end: { type: 'boolean', description: 'After the last paragraph, in place of after.' },
-        text: { type: 'string' },
-        paragraphs: {
-          type: 'array',
-          items: { type: 'object', properties: { text: { type: 'string' }, style: { type: 'string' } }, required: ['text'] },
-          description: 'In place of text: each paragraph with its own style, like [{"text": "Results", "style": "Heading 1"}, {"text": "…"}].',
-        },
-        style: { type: 'string' },
+        after: paraRef('0 for the start'),
+        at_end: { type: 'boolean', description: 'Instead of `after`.' },
+        ...NEW_PARAGRAPHS,
+        style: { type: 'string', description: 'Like "Heading 2".' },
       },
       required: ['document'],
     },
@@ -38,90 +53,83 @@ export const WORD_TOOLS: Tool[] = [
   {
     name: 'replace_paragraphs',
     description:
-      'Word: replaces paragraphs `from` to `to` (just `from` if `to` is left out) with `text`, one paragraph per line, or with `paragraphs`, each with its own style. The first keeps the style of paragraph `from`; the rest take the style Word gives a new paragraph after it (body text after a heading or title), unless they name one. Someone else’s paragraphs need `confirm`. Given by id, a paragraph someone else has changed since is refused, so you don’t write over what you haven’t read. Answers with the new paragraphs.',
+      'Word: replaces paragraphs `from` to `to`. The first keeps the style of `from`. Paragraphs someone else wrote need `confirm`. A paragraph given by an id someone else has changed since is refused. Returns the new paragraphs.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
-        from: paraRef('The first paragraph'),
-        to: paraRef('The last paragraph'),
-        text: { type: 'string' },
-        paragraphs: {
-          type: 'array',
-          items: { type: 'object', properties: { text: { type: 'string' }, style: { type: 'string' } }, required: ['text'] },
-          description: 'In place of text: each paragraph with its own style, like [{"text": "Results", "style": "Heading 1"}, {"text": "…"}].',
-        },
-        confirm: { type: 'boolean', description: 'Replace paragraphs someone else wrote, once they or your person agreed.' },
+        from: paraRef('The first'),
+        to: paraRef('Default: `from`'),
+        ...NEW_PARAGRAPHS,
+        confirm: { type: 'boolean', description: 'Once they or your person agreed.' },
       },
       required: ['document', 'from'],
     },
   },
   {
     name: 'delete_paragraphs',
-    description: 'Word: deletes paragraphs `from` to `to` (just `from` if `to` is left out). Someone else’s paragraphs need `confirm`. Given by id, a paragraph someone else has changed since is refused.',
+    description:
+      'Word: deletes paragraphs `from` to `to`. Paragraphs someone else wrote need `confirm`. A paragraph given by an id someone else has changed since is refused.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
-        from: paraRef('The first paragraph'),
-        to: paraRef('The last paragraph'),
-        confirm: { type: 'boolean', description: 'Delete paragraphs someone else wrote, once they or your person agreed.' },
+        from: paraRef('The first'),
+        to: paraRef('Default: `from`'),
+        confirm: { type: 'boolean', description: 'Once they or your person agreed.' },
       },
       required: ['document', 'from'],
     },
   },
   {
-    name: 'set_style',
-    description: 'Word: sets the style of paragraphs `from` to `to` (just `from` if `to` is left out), like "Heading 1", "Title" or "Normal".',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, from: paraRef('The first paragraph'), to: paraRef('The last paragraph'), style: { type: 'string' } },
-      required: ['document', 'from', 'style'],
-    },
-  },
-  {
     name: 'insert_table',
-    description: 'Word: puts a table in after paragraph `after` (or after the last with `at_end`), `rows` by `columns`, filled from `cells` (a list of rows, each a list of cells’ text) if given. Its cells’ paragraphs then read as “(in a table)”, and the paragraph tools work on them.',
+    description:
+      'Word: inserts a table after paragraph `after`, or at the end with `at_end`. Its cells read as paragraphs “(in a table, row 1, column 2)”, which the paragraph tools edit.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
-        after: paraRef('The paragraph to put it after (0 for the start)'),
-        at_end: { type: 'boolean' },
-        rows: { type: 'integer' },
-        columns: { type: 'integer' },
-        cells: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
+        after: paraRef('0 for the start'),
+        at_end: { type: 'boolean', description: 'Instead of `after`.' },
+        rows: { type: 'integer', description: '1 to 200. Default: from `cells`, or 2.' },
+        columns: { type: 'integer', description: '1 to 60. Default: from `cells`, or 2.' },
+        cells: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: 'Rows of cell text, like [["Name", "Role"]].' },
       },
       required: ['document'],
     },
   },
   {
-    name: 'change_table',
+    name: 'edit_table',
     description:
-      'Word: changes the table that paragraph `paragraph` is in, at that paragraph’s cell: `action` is add_row_above, add_row_below, delete_row, add_column_left, add_column_right, delete_column, borders_all, borders_outside, borders_none, fill (with `color`, the cell’s background) or delete_table.',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, paragraph: paraRef('A paragraph in the table'), action: { type: 'string' }, color: { type: 'string' } },
-      required: ['document', 'paragraph', 'action'],
-    },
-  },
-  {
-    name: 'format_picture',
-    description:
-      'Word: resizes or crops a picture in paragraph `paragraph` (the first one in it, or number `picture` from 1). width and height in pixels (96 to an inch); giving just one keeps its proportions. left, top, right and bottom are the share of the picture to cut from each side (0 to 1). `reset` puts it back to its own size, uncropped.',
+      'Word: changes the table that paragraph `paragraph` is in: adds or deletes a row or column at its cell, sets borders, fills the cell, or deletes the table.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
-        paragraph: paraRef('The paragraph with the picture'),
-        picture: { type: 'integer' },
-        width: { type: 'number' },
-        height: { type: 'number' },
-        left: { type: 'number' },
-        top: { type: 'number' },
-        right: { type: 'number' },
-        bottom: { type: 'number' },
-        reset: { type: 'boolean' },
+        paragraph: paraRef('A paragraph in the cell'),
+        action: { type: 'string', enum: Object.keys(TABLE_ACTIONS) },
+        color: { type: 'string', description: 'For fill: like "#DDEBF7", or "none".' },
+      },
+      required: ['document', 'paragraph', 'action'],
+    },
+  },
+  {
+    name: 'edit_picture',
+    description:
+      'Word: resizes or crops a picture in paragraph `paragraph`, or resets it to its own size, uncropped.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        paragraph: paraRef('Its paragraph'),
+        picture: { type: 'integer', description: 'Which one in the paragraph. Default 1.' },
+        width: { type: 'number', description: 'In pixels, 96 to an inch. One alone keeps the proportions.' },
+        height: { type: 'number', description: 'In pixels.' },
+        left: { type: 'number', description: 'The share to crop, 0 to under 1.' },
+        top: { type: 'number', description: 'The share to crop.' },
+        right: { type: 'number', description: 'The share to crop.' },
+        bottom: { type: 'number', description: 'The share to crop.' },
+        reset: { type: 'boolean', description: 'Its own size, uncropped.' },
       },
       required: ['document', 'paragraph'],
     },
@@ -178,6 +186,8 @@ export interface ReadContext {
   chat?: Said[]
   /** The relay's number of the last change this copy has. */
   version?: number
+  /** Whether to explain how to read the answer: the first time only. */
+  legend?: boolean
 }
 
 export function readWord(e: WordEngine, args: Args, ctx: ReadContext = {}): string {
@@ -187,7 +197,10 @@ export function readWord(e: WordEngine, args: Args, ctx: ReadContext = {}): stri
   const at = (k: string) => paraNumber(paras, args, k, history, notes)
   const since = int(args, 'since')
   const v = version !== undefined ? `, version ${version}` : ''
-  const head = `${plural(paras.length, 'paragraph')} on ${plural(e.state.page.total, 'page')}${v}. Each starts [number #id]: the tools take either (an empty paragraph, or one with the same text as another, has no id). An id stays the same while others add or delete paragraphs, so use ids in messages too; a message that names one shows under its paragraph (↳). The style is in brackets, like (Title) or (Heading 1); none is Normal. {by …} says who last changed a paragraph’s text; one without was there before anyone joined. view_document shows a page as a picture.`
+  const legend = ctx.legend === false
+    ? ''
+    : ' Each line starts [number #id], and the tools take either. An id doesn’t change when others add or delete paragraphs, so use ids in messages too. An empty paragraph, or one whose text another paragraph also has, has no id. (Heading 1) is the paragraph’s style; none means Normal. {by …} is who last changed its text; none means it was there before anyone joined. ↳ is a chat message that names the paragraph. view_document shows a page as an image.'
+  const head = `${plural(paras.length, 'paragraph')} on ${plural(e.state.page.total, 'page')}${v}.${legend}`
   const said = ctx.chat ? notesOn(paras, ctx.chat, history) : undefined
   if (since !== undefined) {
     if (!history) throw new ToolError('This document can’t say what changed since.')
@@ -307,7 +320,6 @@ function toggleTo(e: WordEngine, what: 'bold' | 'italic' | 'underline' | 'strike
   if (!on) e.run({ cmd: 'toggle', what })
 }
 
-const HIGHLIGHTS = ['yellow', 'green', 'cyan', 'magenta', 'blue', 'red', 'darkBlue', 'darkCyan', 'darkGreen', 'darkMagenta', 'darkRed', 'darkYellow', 'darkGray', 'lightGray', 'black', 'none']
 
 /** Applies text and paragraph formatting to the selection; `toggles: false` leaves bold and the like. */
 function applyFormat(e: WordEngine, args: Args, toggles = true) {
@@ -340,7 +352,7 @@ function applyFormat(e: WordEngine, args: Args, toggles = true) {
 }
 
 function checkFormat(args: Args) {
-  const keys = ['font', 'size', 'bold', 'italic', 'underline', 'strikethrough', 'color', 'highlight', 'align', 'list', 'line_spacing']
+  const keys = ['style', 'font', 'size', 'bold', 'italic', 'underline', 'strikethrough', 'color', 'highlight', 'align', 'list', 'line_spacing']
   if (!keys.some((k) => args[k] !== undefined)) throw new ToolError(`Give what to change: ${keys.join(', ')}.`)
   const size = num(args, 'size')
   if (size !== undefined && (size < 1 || size > 1638)) throw new ToolError('Give a font size in points, from 1 to 1638.')
@@ -364,8 +376,17 @@ function formatWord(e: WordEngine, args: Args, at: At, history?: History): Answe
   const to = para(paras, toN)
   if (toN < fromN) throw new ToolError('to comes before from.')
   const find = str(args, 'find')
+  const styleName = str(args, 'style')
+  const style = styleName ? styleId(e, styleName) : null
+  // A style goes on whole paragraphs, before the formatting that goes over it.
+  const restyle = () => {
+    if (!style) return
+    select(e, [from.path, 0], [to.path, to.text.length])
+    e.run({ cmd: 'style', id: style })
+  }
   if (!find) {
     grouped(e, () => {
+      restyle()
       select(e, [from.path, 0], [to.path, to.text.length])
       applyFormat(e, args, false)
       // Bold and the like a paragraph at a time: turning one off across paragraphs of different
@@ -382,8 +403,10 @@ function formatWord(e: WordEngine, args: Args, at: At, history?: History): Answe
   }
   // Only the text found, each time it's there: paragraph formatting (align, lists) goes to its paragraph.
   const q = find.toLowerCase()
+  if (!paras.slice(fromN - 1, toN).some((p) => p.text.toLowerCase().includes(q))) throw new ToolError(`“${find}” isn’t in ${fromN === toN ? `paragraph ${fromN}` : `paragraphs ${fromN}–${toN}`}.`)
   let count = 0
   grouped(e, () => {
+    restyle()
     for (let n = fromN; n <= toN; n++) {
       const p = paras[n - 1]
       const low = p.text.toLowerCase()
@@ -394,7 +417,6 @@ function formatWord(e: WordEngine, args: Args, at: At, history?: History): Answe
       }
     }
   })
-  if (!count) throw new ToolError(`“${find}” isn’t in ${fromN === toN ? `paragraph ${fromN}` : `paragraphs ${fromN}–${toN}`}.`)
   return { text: `Formatted ${plural(count, 'match', 'matches')}: ${looks(e)}.`, after: afterParas(e, fromN, toN, history) }
 }
 
@@ -412,19 +434,6 @@ function fillTable(e: WordEngine, table: number[], cells: unknown[][], r0 = 0, c
   )
 }
 
-const TABLE_ACTIONS: Record<string, string> = {
-  add_row_above: 'insertRowAbove',
-  add_row_below: 'insertRowBelow',
-  delete_row: 'deleteRow',
-  add_column_left: 'insertColumnLeft',
-  add_column_right: 'insertColumnRight',
-  delete_column: 'deleteColumn',
-  borders_all: 'bordersAll',
-  borders_outside: 'bordersOutside',
-  borders_none: 'bordersNone',
-  fill: 'fill',
-  delete_table: 'delete',
-}
 
 /** The nth picture in a paragraph, selected, as the editor's state sees it. */
 function selectPicture(e: WordEngine, n: number, which: number) {
@@ -861,16 +870,6 @@ async function wordEdit(e: WordEngine, paras: Para[], at: At, name: string, args
       }
       return { text: `Deleted ${plural(toN - fromN + 1, 'paragraph')}.`, after: afterParas(e, fromN - 1, fromN, history) }
     }
-    case 'set_style': {
-      const fromN = need(at('from'), 'from')
-      const toN = at('to') ?? fromN
-      const from = para(paras, fromN)
-      const to = para(paras, toN)
-      const id = styleId(e, need(str(args, 'style'), 'the style'))
-      select(e, [from.path, 0], [to.path, to.text.length])
-      e.run({ cmd: 'style', id })
-      return { text: 'Done.', after: afterParas(e, fromN, toN, history) }
-    }
     case 'format_text':
       return formatWord(e, args, at, history)
     case 'insert_table': {
@@ -895,7 +894,7 @@ async function wordEdit(e: WordEngine, paras: Para[], at: At, name: string, args
       })
       return { text: `Put in a ${rows} × ${cols} table.`, after: afterParas(e, first + 1, first + rows * cols, history) }
     }
-    case 'change_table': {
+    case 'edit_table': {
       const n = need(at('paragraph'), 'paragraph')
       const p = para(paras, n)
       if (p.path.length < 4) throw new ToolError(`Paragraph ${n} isn’t in a table.`)
@@ -908,7 +907,7 @@ async function wordEdit(e: WordEngine, paras: Para[], at: At, name: string, args
       e.run({ cmd: 'table', op, color: op === 'fill' ? (color!.toLowerCase() === 'none' ? null : hexColor(color!, 'The color')) : null })
       return { text: 'Done.', after: () => `\n${plural(paragraphsOf(e).length, 'paragraph')} now. Read the document again for their numbers.` }
     }
-    case 'format_picture': {
+    case 'edit_picture': {
       const n = need(at('paragraph'), 'paragraph')
       const which = int(args, 'picture') ?? 1
       const img = selectPicture(e, n, which)

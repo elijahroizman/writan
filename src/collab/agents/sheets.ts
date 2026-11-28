@@ -1,6 +1,6 @@
 // What an agent can do in a workbook: read cells with their formulas, and do what people do in
 // the editor: write and clear cells, format them, size columns and rows, insert and delete rows
-// and columns, merge cells, add and edit charts, and add, rename, move and delete sheets. It can
+// and columns, merge cells, add, edit, move and delete charts, and add, rename, move and delete sheets. It can
 // also see a sheet the way people do — cells, pictures and charts — to check how things look.
 
 import { createElement } from 'react'
@@ -9,22 +9,30 @@ import type { PaintItem, PaintStyle } from '../../engine/paint'
 import { type Answer, type Args, bool, canvasPicture, doc, found, foundAnswer, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
 import { draw, mark } from './picture'
 
-const sheet = { type: 'string', description: 'The sheet’s name (the first one if left out).' }
+const sheet = { type: 'string', description: 'Default: the first sheet.' }
 const range = { type: 'string', description: 'Cells like B3, or a range like A1:F40.' }
+const chart = { type: 'integer', description: 'As read_document numbers them.' }
+const CHART_KINDS = ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter']
+const sheetName = { type: 'string', description: '1 to 31 characters, without \\ / ? * [ ] or :.' }
 
 export const SHEETS_TOOLS: Tool[] = [
   {
     name: 'write_cells',
-    description: 'Excel: writes cells, as `{ "A1": "Total", "B1": "=SUM(B2:B9)", "C1": "42" }`: text, numbers, dates or formulas, as typed in a cell. "" empties a cell. Answers with what they show now.',
+    description: 'Excel: writes cells as a person types them: text, numbers, dates or formulas. "" empties a cell, and `clear` empties a range. Returns what the cells show.',
     inputSchema: {
       type: 'object',
-      properties: { document: doc, sheet, cells: { type: 'object', additionalProperties: { type: 'string' } } },
-      required: ['document', 'cells'],
+      properties: {
+        document: doc,
+        sheet,
+        cells: { type: 'object', additionalProperties: { type: 'string' }, description: 'Like { "A1": "Total", "B1": "=SUM(B2:B9)" }.' },
+        clear: { type: 'string', description: 'A range to empty, like A1:F40.' },
+      },
+      required: ['document'],
     },
   },
   {
     name: 'format_cells',
-    description: 'Excel: formats cells `range`. Give only what should change. Colors like "#1F4E79" ("" for automatic text or no fill).',
+    description: 'Excel: formats, merges or unmerges the cells in `range`. Give only what changes.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -35,87 +43,116 @@ export const SHEETS_TOOLS: Tool[] = [
         italic: { type: 'boolean' },
         underline: { type: 'boolean' },
         strikethrough: { type: 'boolean' },
-        font: { type: 'string' },
-        size: { type: 'number', description: 'Points.' },
-        color: { type: 'string', description: 'The text color.' },
-        fill: { type: 'string', description: 'The background color.' },
+        font: { type: 'string', description: 'Like "Arial".' },
+        size: { type: 'number', description: 'In points.' },
+        color: { type: 'string', description: 'Like "#1F4E79", or "" for automatic.' },
+        fill: { type: 'string', description: 'Like "#DDEBF7", or "" for none.' },
         align: { type: 'string', enum: ['left', 'center', 'right', 'general'] },
         vertical_align: { type: 'string', enum: ['top', 'center', 'bottom'] },
-        wrap: { type: 'boolean', description: 'Wraps text onto more lines in the cell.' },
-        number_format: { type: 'string', description: 'An Excel number format, like "0.00", "#,##0", "$#,##0.00", "0%", "yyyy-mm-dd" or "General".' },
+        wrap: { type: 'boolean', description: 'Wrap text in the cell.' },
+        number_format: { type: 'string', description: 'Like "$#,##0.00", "0%" or "yyyy-mm-dd".' },
         borders: { type: 'string', enum: ['all', 'outside', 'bottom', 'none'] },
+        merge: { type: 'boolean', description: 'true merges, keeping the top-left value; false unmerges.' },
       },
       required: ['document', 'range'],
     },
   },
   {
-    name: 'clear_cells',
-    description: 'Excel: empties cells `range`.',
-    inputSchema: { type: 'object', properties: { document: doc, sheet, range }, required: ['document', 'range'] },
-  },
-  {
-    name: 'size_cells',
-    description: 'Excel: sets the width of `columns` (like "B" or "B:D") and the height of `rows` (like "3" or "3:10"), in pixels. "auto" as the size puts them back to the default.',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, sheet, columns: { type: 'string' }, width: { type: ['number', 'string'] }, rows: { type: 'string' }, height: { type: ['number', 'string'] } },
-      required: ['document'],
-    },
-  },
-  {
-    name: 'insert_cells',
-    description: 'Excel: inserts `count` (1 if left out) empty rows before row `row`, or columns before column `column` (like "C"). Formulas that refer past them move along.',
-    inputSchema: { type: 'object', properties: { document: doc, sheet, row: { type: 'integer' }, column: { type: 'string' }, count: { type: 'integer' } }, required: ['document'] },
-  },
-  {
-    name: 'delete_cells',
-    description: 'Excel: deletes whole rows (like "3" or "3:5") or whole columns (like "C" or "C:E"); the ones after move up or left.',
-    inputSchema: { type: 'object', properties: { document: doc, sheet, rows: { type: 'string' }, columns: { type: 'string' } }, required: ['document'] },
-  },
-  {
-    name: 'merge_cells',
-    description: 'Excel: merges cells `range` into one, or splits them again if they’re merged.',
-    inputSchema: { type: 'object', properties: { document: doc, sheet, range }, required: ['document', 'range'] },
-  },
-  {
-    name: 'add_chart',
-    description: 'Excel: adds a chart of cells `range` (labels in the first row and column), of kind column, bar, line, area, pie, doughnut or scatter.',
-    inputSchema: { type: 'object', properties: { document: doc, sheet, range, kind: { type: 'string', enum: ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter'] } }, required: ['document', 'range'] },
-  },
-  {
-    name: 'edit_chart',
-    description:
-      'Excel: changes chart `chart` on `sheet`, numbered as read_document lists them: its title, axis titles, kind, how series stack, the legend, the cells it plots or its series’ colors. Give only what should change; "" as a title removes it.',
+    name: 'insert_rows_columns',
+    description: 'Excel: inserts empty rows before `row`, or columns before `column`. Formulas adjust.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
         sheet,
-        chart: { type: 'integer', description: 'The chart’s number, from 1.' },
-        title: { type: 'string', description: 'The chart’s title.' },
-        x_title: { type: 'string', description: 'The horizontal axis’s title.' },
-        y_title: { type: 'string', description: 'The vertical axis’s title.' },
-        kind: { type: 'string', enum: ['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter'] },
-        grouping: { type: 'string', enum: ['standard', 'stacked', 'percent'], description: 'How series combine: side by side, stacked, or stacked to 100%.' },
-        legend: { type: 'string', enum: ['none', 'right', 'bottom', 'top', 'left'], description: 'Where the legend goes.' },
-        range: { type: 'string', description: 'New cells to plot, like A1:C7 or Sheet2!A1:C7.' },
-        colors: { type: 'array', items: { type: ['string', 'null'] }, description: 'The series’ colors, in order, like "#4472C4"; "auto" or "" for the theme’s color, null to leave one.' },
+        row: { type: 'integer', description: 'A row number.' },
+        column: { type: 'string', description: 'Like "C".' },
+        count: { type: 'integer', description: 'Default 1.' },
+      },
+      required: ['document'],
+    },
+  },
+  {
+    name: 'delete_rows_columns',
+    description: 'Excel: deletes whole rows or columns. Formulas adjust.',
+    inputSchema: {
+      type: 'object',
+      properties: { document: doc, sheet, rows: { type: 'string', description: 'Like "3:5".' }, columns: { type: 'string', description: 'Like "C:E".' } },
+      required: ['document'],
+    },
+  },
+  {
+    name: 'resize_rows_columns',
+    description: 'Excel: sets column widths and row heights, in pixels.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        sheet,
+        columns: { type: 'string', description: 'Like "B:D".' },
+        width: { type: ['number', 'string'], description: 'Pixels, or "auto" for the default.' },
+        rows: { type: 'string', description: 'Like "3:10".' },
+        height: { type: ['number', 'string'], description: 'Pixels, or "auto" for the default.' },
+      },
+      required: ['document'],
+    },
+  },
+  {
+    name: 'add_chart',
+    description: 'Excel: adds a chart of `range`, with labels in its first row and column, and returns its number.',
+    inputSchema: { type: 'object', properties: { document: doc, sheet, range, kind: { type: 'string', enum: CHART_KINDS, description: 'Default column.' } }, required: ['document', 'range'] },
+  },
+  {
+    name: 'edit_chart',
+    description: 'Excel: changes a chart’s titles, kind, stacking, legend, data, colors or position. Give only what changes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        sheet,
+        chart,
+        title: { type: 'string', description: '"" removes it.' },
+        x_title: { type: 'string', description: '"" removes it.' },
+        y_title: { type: 'string', description: '"" removes it.' },
+        kind: { type: 'string', enum: CHART_KINDS },
+        grouping: { type: 'string', enum: ['standard', 'stacked', 'percent'], description: 'percent stacks to 100%.' },
+        legend: { type: 'string', enum: ['none', 'right', 'bottom', 'top', 'left'], description: 'Where it goes.' },
+        range: { type: 'string', description: 'Cells to plot, like Sheet2!A1:C7.' },
+        colors: { type: 'array', items: { type: ['string', 'null'] }, description: 'Per series, like "#4472C4"; "" for automatic, null to leave it.' },
+        x: { type: 'number', description: 'In pixels.' },
+        y: { type: 'number', description: 'In pixels.' },
+        width: { type: 'number', description: 'In pixels.' },
+        height: { type: 'number', description: 'In pixels.' },
       },
       required: ['document', 'chart'],
     },
   },
   {
+    name: 'delete_chart',
+    description: 'Excel: deletes a chart. The charts after it are numbered one lower.',
+    inputSchema: { type: 'object', properties: { document: doc, sheet, chart }, required: ['document', 'chart'] },
+  },
+  {
+    name: 'add_sheet',
+    description: 'Excel: adds a sheet at the end.',
+    inputSchema: { type: 'object', properties: { document: doc, name: sheetName }, required: ['document'] },
+  },
+  {
     name: 'edit_sheet',
-    description: 'Excel: `action` "add" adds a sheet at the end (named `name` if given); "rename" renames `sheet` to `name`; "move" moves `sheet` to position `to` (from 1); "delete" deletes `sheet`.',
+    description: 'Excel: renames or moves a sheet.',
     inputSchema: {
       type: 'object',
-      properties: { document: doc, action: { type: 'string', enum: ['add', 'rename', 'move', 'delete'] }, sheet, name: { type: 'string' }, to: { type: 'integer' } },
-      required: ['document', 'action'],
+      properties: { document: doc, sheet: { type: 'string', description: 'Its name now.' }, name: { ...sheetName, description: `New name, ${sheetName.description}` }, to: { type: 'integer', description: 'Its new position.' } },
+      required: ['document', 'sheet'],
     },
+  },
+  {
+    name: 'delete_sheet',
+    description: 'Excel: deletes a sheet.',
+    inputSchema: { type: 'object', properties: { document: doc, sheet: { type: 'string', description: 'Its name.' } }, required: ['document', 'sheet'] },
   },
 ]
 
-/** `B3` as [row, column], from 0. */
 function cellRef(ref: string): [number, number] {
   const m = /^\$?([A-Za-z]{1,3})\$?(\d{1,7})$/.exec(ref.trim())
   if (!m) throw new ToolError(`“${ref}” isn’t a cell like B3.`)
@@ -166,7 +203,7 @@ function sheetIndex(e: SheetsEngine, name: string | undefined): number {
   return i
 }
 
-const cellOf = (e: SheetsEngine, s: number, r: number, c: number) => JSON.parse(e.doc.cell(s, r, c)) as { input: string; display: string }
+const cellOf = (e: SheetsEngine, s: number, r: number, c: number) => JSON.parse(e.doc.cell(s, r, c)) as { input: string; display: string; merged?: boolean }
 
 function cellText(e: SheetsEngine, s: number, r: number, c: number): string | null {
   const cell = cellOf(e, s, r, c)
@@ -259,12 +296,22 @@ const afterCells = (e: SheetsEngine, s: number, refs: [number, number][]) => () 
 const ALIGN: Record<string, string> = { left: 'left', center: 'center', right: 'right', general: '' }
 
 export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
-  if (name === 'edit_sheet') return editSheet(e, args)
+  if (name === 'add_sheet' || name === 'edit_sheet' || name === 'delete_sheet') return editSheet(e, name, args)
   const s = sheetIndex(e, str(args, 'sheet'))
   switch (name) {
     case 'write_cells': {
-      const cells = args.cells as Record<string, unknown> | undefined
-      if (!cells || typeof cells !== 'object' || Array.isArray(cells)) throw new ToolError('Give cells, like { "A1": "Total" }.')
+      const clear = str(args, 'clear')
+      const given = args.cells as Record<string, unknown> | undefined
+      // Some clients send every property: an empty cells beside clear isn't both.
+      const cells = given && typeof given === 'object' && !Object.keys(given).length && clear !== undefined ? undefined : given
+      if (clear !== undefined) {
+        if (cells !== undefined) throw new ToolError('Give cells or clear, not both.')
+        const r = rangeOf(clear)
+        e.run({ cmd: 'clear', sheet: s, range: r })
+        selectRange(e, s, r)
+        return { text: `Emptied ${refName(r.r0, r.c0)}${r.r1 > r.r0 || r.c1 > r.c0 ? `:${refName(r.r1, r.c1)}` : ''}.` }
+      }
+      if (!cells || typeof cells !== 'object' || Array.isArray(cells)) throw new ToolError('Give cells, like { "A1": "Total" }, or clear, like "A1:F40".')
       const entries = Object.entries(cells).map(([ref, v]) => [cellRef(ref), String(v ?? '')] as const)
       if (!entries.length) return { text: 'Nothing to write.' }
       // Each cell is its own change (workbooks have no grouping), so undo takes back the last one.
@@ -316,21 +363,23 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
         if (!['all', 'outside', 'bottom', 'none'].includes(borders)) throw new ToolError('borders is all, outside, bottom or none.')
         patch.borders = borders
       }
-      if (!Object.keys(patch).length) throw new ToolError('Give what to change: bold, italic, underline, strikethrough, font, size, color, fill, align, vertical_align, wrap, number_format or borders.')
-      e.run({ cmd: 'format', sheet: s, range: r, patch })
+      const merge = bool(args, 'merge')
+      if (!Object.keys(patch).length && merge === undefined) throw new ToolError('Give what to change: bold, italic, underline, strikethrough, font, size, color, fill, align, vertical_align, wrap, number_format, borders or merge.')
+      if (Object.keys(patch).length) e.run({ cmd: 'format', sheet: s, range: r, patch })
+      if (merge !== undefined) {
+        // The engine's merge is a toggle: it unmerges what the range touches, or else merges it.
+        let touches = false
+        for (let row = r.r0; row <= r.r1 && !touches; row++) for (let c = r.c0; c <= r.c1 && !touches; c++) touches = cellOf(e, s, row, c).merged === true
+        if (touches) e.run({ cmd: 'merge', sheet: s, range: r })
+        if (merge && (r.r1 > r.r0 || r.c1 > r.c0)) e.run({ cmd: 'merge', sheet: s, range: r })
+      }
       selectRange(e, s, r)
       // A number format changes what cells show, so the answer shows them.
       const refs: [number, number][] = []
       if (nf !== undefined) for (let row = r.r0; row <= r.r1 && refs.length < 41; row++) for (let c = r.c0; c <= r.c1 && refs.length < 41; c++) if (cellOf(e, s, row, c).input) refs.push([row, c])
       return { text: `Formatted ${refName(r.r0, r.c0)}${r.r1 > r.r0 || r.c1 > r.c0 ? `:${refName(r.r1, r.c1)}` : ''}.`, after: refs.length ? afterCells(e, s, refs) : undefined }
     }
-    case 'clear_cells': {
-      const r = rangeOf(need(str(args, 'range'), 'the range'))
-      e.run({ cmd: 'clear', sheet: s, range: r })
-      selectRange(e, s, r)
-      return { text: 'Cleared.' }
-    }
-    case 'size_cells': {
+    case 'resize_rows_columns': {
       const cols = str(args, 'columns')
       const rows = str(args, 'rows')
       if (!cols && !rows) throw new ToolError('Give columns (like "B:D") with width, or rows (like "3:10") with height.')
@@ -354,7 +403,7 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
       }
       return { text: `Set ${[cols && `columns ${cols}`, rows && `rows ${rows}`].filter(Boolean).join(' and ')}.` }
     }
-    case 'insert_cells': {
+    case 'insert_rows_columns': {
       const count = int(args, 'count') ?? 1
       if (count < 1 || count > 1000) throw new ToolError('count is from 1 to 1000.')
       const row = int(args, 'row')
@@ -369,7 +418,7 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
       e.run({ cmd: 'shiftCols', sheet: s, at: c, n: count })
       return { text: `Inserted ${plural(count, 'column')} at column ${columnName(c)}.` }
     }
-    case 'delete_cells': {
+    case 'delete_rows_columns': {
       const rows = str(args, 'rows') ?? (int(args, 'rows') !== undefined ? String(int(args, 'rows')) : undefined)
       const cols = str(args, 'columns')
       if ((rows === undefined) === (cols === undefined)) throw new ToolError('Give rows (like "3:5") or columns (like "C:E"), not both.')
@@ -382,19 +431,12 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
       e.run({ cmd: 'shiftCols', sheet: s, at: a, n: -(b - a + 1) })
       return { text: `Deleted ${plural(b - a + 1, 'column')}.` }
     }
-    case 'merge_cells': {
-      const r = rangeOf(need(str(args, 'range'), 'the range'))
-      e.run({ cmd: 'merge', sheet: s, range: r })
-      selectRange(e, s, r)
-      const merged = (JSON.parse(e.doc.cell(s, r.r0, r.c0)) as { merged?: boolean }).merged
-      return { text: merged ? `Merged ${refName(r.r0, r.c0)}:${refName(r.r1, r.c1)}.` : `${refName(r.r0, r.c0)}:${refName(r.r1, r.c1)} isn’t merged now.` }
-    }
     case 'add_chart': {
       const r = rangeOf(need(str(args, 'range'), 'the range'))
       const kind = str(args, 'kind') ?? 'column'
       if (!['column', 'bar', 'line', 'area', 'pie', 'doughnut', 'scatter'].includes(kind)) throw new ToolError('kind is column, bar, line, area, pie, doughnut or scatter.')
       if (e.run<number | null>({ cmd: 'addChart', sheet: s, range: r, kind }) == null) throw new ToolError('Those cells can’t make that chart. Give a range with numbers in it, labels in its first row or column.')
-      return { text: `Added a ${kind} chart of ${refName(r.r0, r.c0)}:${refName(r.r1, r.c1)} on ${e.sheets[s].name}.` }
+      return { text: `Added chart ${e.chartsOf(s).length}, a ${kind} chart of ${refName(r.r0, r.c0)}:${refName(r.r1, r.c1)} on ${e.sheets[s].name}.` }
     }
     case 'edit_chart': {
       const i = need(int(args, 'chart'), 'the chart’s number')
@@ -429,49 +471,67 @@ export function sheetsTool(e: SheetsEngine, name: string, args: Args): Answer {
           return hexColor(t, `Series ${n + 1}’s color`).toUpperCase()
         })
       }
-      if (!Object.keys(patch).length) throw new ToolError('Give what to change: title, x_title, y_title, kind, grouping, legend, range or colors.')
-      e.run({ cmd: 'setChart', sheet: s, index: i - 1, patch })
+      const place = (['x', 'y', 'width', 'height'] as const).map((k) => num(args, k))
+      if (place.some((v) => v !== undefined && v < 0)) throw new ToolError('x, y, width and height are 0 or more pixels.')
+      const moving = place.some((v) => v !== undefined)
+      if (!Object.keys(patch).length && !moving) throw new ToolError('Give what to change: title, x_title, y_title, kind, grouping, legend, range, colors, x, y, width or height.')
+      if (Object.keys(patch).length) e.run({ cmd: 'setChart', sheet: s, index: i - 1, patch })
+      if (moving) {
+        const [x, y, w, h] = place
+        e.run({ cmd: 'moveChart', sheet: s, index: i - 1, x: Math.round(x ?? c.x), y: Math.round(y ?? c.y), w: Math.round(Math.max(20, w ?? c.w)), h: Math.round(Math.max(20, h ?? c.h)) })
+      }
       const now = e.chartsOf(s)[i - 1] ?? c
       return { text: `Changed ${describeChart(now, i)}.` }
+    }
+    case 'delete_chart': {
+      const i = need(int(args, 'chart'), 'the chart’s number')
+      chartAt(e, s, i)
+      e.run({ cmd: 'deleteChart', sheet: s, index: i - 1 })
+      const left = e.chartsOf(s).length
+      return { text: `Deleted chart ${i}. ${e.sheets[s].name} has ${plural(left, 'chart')} now.` }
     }
   }
   throw new ToolError(`${name} isn’t for workbooks.`)
 }
 
-function editSheet(e: SheetsEngine, args: Args): Answer {
-  const action = need(str(args, 'action'), 'the action')
+function editSheet(e: SheetsEngine, tool: string, args: Args): Answer {
   const name = str(args, 'name')?.trim()
   const list = () => `\nSheets now: ${e.sheets.map((x) => x.name).join(', ')}.`
   if (name !== undefined && (!name || name.length > 31 || /[\\/?*[\]:]/.test(name))) throw new ToolError('A sheet’s name is 1 to 31 characters, without \\ / ? * [ ] or :.')
-  switch (action) {
-    case 'add': {
-      if (name && e.sheets.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new ToolError(`There’s a sheet “${name}” already.`)
-      e.run({ cmd: 'addSheet' })
-      if (name) e.run({ cmd: 'renameSheet', sheet: e.sheets.length - 1, name })
-      return { text: 'Added.', after: list }
-    }
-    case 'rename': {
-      const s = sheetIndex(e, need(str(args, 'sheet'), 'the sheet'))
-      if (!name) throw new ToolError('Give the new name.')
-      if (e.sheets.some((x, i) => i !== s && x.name.toLowerCase() === name.toLowerCase())) throw new ToolError(`There’s a sheet “${name}” already.`)
-      e.run({ cmd: 'renameSheet', sheet: s, name })
-      return { text: 'Renamed.', after: list }
-    }
-    case 'move': {
-      const s = sheetIndex(e, need(str(args, 'sheet'), 'the sheet'))
-      const to = need(int(args, 'to'), 'to')
-      if (to < 1 || to > e.sheets.length) throw new ToolError(`to is from 1 to ${e.sheets.length}.`)
-      e.run({ cmd: 'moveSheet', from: s, to: to - 1 })
-      return { text: 'Moved.', after: list }
-    }
-    case 'delete': {
-      const s = sheetIndex(e, need(str(args, 'sheet'), 'the sheet'))
-      if (e.sheets.filter((x) => !x.hidden).length <= 1 && !e.sheets[s].hidden) throw new ToolError('That’s the only sheet showing; a workbook needs one.')
-      e.run({ cmd: 'deleteSheet', sheet: s })
-      return { text: 'Deleted.', after: list }
-    }
+  if (tool === 'add_sheet') {
+    if (name && e.sheets.some((x) => x.name.toLowerCase() === name.toLowerCase())) throw new ToolError(`There’s a sheet “${name}” already.`)
+    e.run({ cmd: 'addSheet' })
+    if (name) e.run({ cmd: 'renameSheet', sheet: e.sheets.length - 1, name })
+    return { text: 'Added.', after: list }
   }
-  throw new ToolError('action is add, rename, move or delete.')
+  const s = sheetIndex(e, need(str(args, 'sheet'), 'the sheet'))
+  if (tool === 'delete_sheet') {
+    if (e.sheets.filter((x) => !x.hidden).length <= 1 && !e.sheets[s].hidden) throw new ToolError('That’s the only sheet showing; a workbook needs one.')
+    e.run({ cmd: 'deleteSheet', sheet: s })
+    return { text: 'Deleted.', after: list }
+  }
+  const to = int(args, 'to')
+  if (!name && to === undefined) throw new ToolError('Give name, to, or both.')
+  if (to !== undefined && (to < 1 || to > e.sheets.length)) throw new ToolError(`to is from 1 to ${e.sheets.length}.`)
+  if (name && e.sheets.some((x, i) => i !== s && x.name.toLowerCase() === name.toLowerCase())) throw new ToolError(`There’s a sheet “${name}” already.`)
+  if (name) e.run({ cmd: 'renameSheet', sheet: s, name })
+  if (to !== undefined) e.run({ cmd: 'moveSheet', from: s, to: to - 1 })
+  return { text: 'Done.', after: list }
+}
+
+/** replace_text in a workbook: in cell values on every sheet, whatever their case; formulas stay. */
+export function replaceInSheets(e: SheetsEngine, find: string, by: string): string {
+  if (!find) throw new ToolError('Give the text to find.')
+  const found = e.run<{ sheet: number; row: number; col: number }[]>({ cmd: 'find', query: find })
+  const values = found.filter((m) => !cellOf(e, m.sheet, m.row, m.col).input.startsWith('='))
+  if (!values.length) {
+    e.run({ cmd: 'find', query: '' })
+    return found.length ? `“${find}” is only in formulas, which replace_text leaves as they are. Use write_cells.` : `“${find}” isn’t in the workbook.`
+  }
+  e.run({ cmd: 'replaceAll', text: by })
+  e.run({ cmd: 'find', query: '' })
+  const left = found.length - values.length
+  return `Replaced in ${plural(values.length, 'cell')}.${left ? ` ${plural(left, 'more match', 'more matches')} ${left === 1 ? 'is' : 'are'} in formulas, which replace_text leaves as they are.` : ''}`
 }
 
 /** The column and row headers' size in grid pixels, as the editor draws them (Grid.tsx). */

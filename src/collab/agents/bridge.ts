@@ -32,7 +32,7 @@ interface Call {
 }
 
 async function answer(call: Call): Promise<unknown> {
-  const { AgentSession, listTools, runTool, ToolError, TOOLS } = await loadTools()
+  const { AgentSession, listTools, RENAMED, runTool, ToolError, TOOLS } = await loadTools()
   if (call.method === 'tools/list') return { tools: listTools() }
   let session = sessions.get(call.session)
   if (!session) {
@@ -40,7 +40,7 @@ async function answer(call: Call): Promise<unknown> {
     sessions.set(call.session, session)
   }
   const name = call.params?.name ?? ''
-  if (!TOOLS.some((t) => t.name === name)) return { content: [{ type: 'text', text: `Writan has no tool ${name}.` }], isError: true }
+  if (!TOOLS.some((t) => t.name === name)) return { content: [{ type: 'text', text: `Writan has no tool ${name}.${RENAMED[name] ? ` Use ${RENAMED[name]}.` : ''}` }], isError: true }
   try {
     const { text, pictures = [] } = await runTool(session, name, call.params?.arguments ?? {}, call.local === true)
     return { content: [{ type: 'text', text }, ...pictures.map((p) => ({ type: 'image', data: p.data, mimeType: p.mimeType }))] }

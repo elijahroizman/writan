@@ -8,30 +8,33 @@ import { DEFAULT_THEME_ID, isThemeId, parseThemeFile, PRESET_THEMES, THEME_GUIDE
 import { isTauri } from '../../lib/platform'
 import { allThemes, publishTheme, refreshPublished, useAppearance } from '../../state/appearance'
 import { useWorkspace } from '../../state/workspace'
-import { type Answer, type Args, str, type Tool, ToolError } from './common'
+import { type Answer, type Args, bool, str, type Tool, ToolError } from './common'
 
 export const THEME_TOOLS: Tool[] = [
   {
-    name: 'read_theme',
+    name: 'read_app_theme',
     description:
-      'Reads Writan’s own look: the themes in use for light and dark, every theme there is, where the themes folder is, and the guide to restyling Writan (color roles, CSS rules and selectors). Call it before set_theme. Give theme_id to also get that theme’s file.',
-    inputSchema: {
-      type: 'object',
-      properties: { theme_id: { type: 'string', description: 'Also return this theme’s file.' } },
-    },
-  },
-  {
-    name: 'set_theme',
-    description:
-      'Restyles Writan itself, only when the person asks you to. With `theme`, publishes it to the themes folder as `theme_id` (the same id updates it) and switches Writan to it for light and dark. Without `theme`, switches to an existing theme. `appearance` sets light, dark or system mode. Only for agents on this computer.',
+      'Reads how Writan itself looks: the themes in use, every theme, and the themes folder. Agents on this computer only.',
     inputSchema: {
       type: 'object',
       properties: {
-        theme_id: { type: 'string', description: 'Lowercase letters, digits and hyphens, like "nightfall". Not a built-in theme’s id when publishing.' },
+        theme_id: { type: 'string', description: 'Also returns its file.' },
+        guide: { type: 'boolean', description: 'The guide to writing one. Read it before publishing.' },
+      },
+    },
+  },
+  {
+    name: 'set_app_theme',
+    description:
+      'Changes how Writan itself looks, only when your person asks. Publishes `theme` as `theme_id` and switches to it, switches to an existing `theme_id`, or sets `appearance`. Agents on this computer only.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        theme_id: { type: 'string', description: 'Like "nightfall".' },
         theme: {
           type: 'object',
           description:
-            'The theme: { "name", "accent", "light", "dark" (hex colors), optional "variants": { "light": { role: color }, "dark": { role: color } }, optional "css" }. read_theme’s guide lists the roles.',
+            '{ "name", "accent", "light", "dark", "variants"?, "css"? }, as the guide says.',
         },
         appearance: { type: 'string', enum: ['light', 'dark', 'system'] },
       },
@@ -44,11 +47,11 @@ const describe = (t: ThemeDef) => `- ${t.id}: ${t.name}${t.published ? ' (themes
 export async function runThemeTool(name: string, args: Args, local: boolean): Promise<Answer> {
   if (!local) throw new ToolError('Only an agent on the computer Writan runs on can change how it looks.')
   await refreshPublished()
-  if (name === 'read_theme') return { text: readTheme(str(args, 'theme_id')) }
+  if (name === 'read_app_theme') return { text: readTheme(str(args, 'theme_id'), bool(args, 'guide') === true) }
   return { text: await setTheme(args) }
 }
 
-function readTheme(themeId: string | undefined): string {
+function readTheme(themeId: string | undefined, guide: boolean): string {
   const { light, dark, themesDir } = useAppearance.getState()
   const { themeMode, theme } = useWorkspace.getState()
   const themes = allThemes()
@@ -58,14 +61,14 @@ function readTheme(themeId: string | undefined): string {
     'Themes:',
     ...themes.map(describe),
     '',
-    isTauri && themesDir ? `Themes folder: ${themesDir}` : 'There’s no themes folder in the browser version; set_theme keeps the theme until the page reloads.',
+    isTauri && themesDir ? `Themes folder: ${themesDir}` : 'There’s no themes folder in the browser version; set_app_theme keeps the theme until the page reloads.',
   ]
   if (themeId) {
     const t = themes.find((x) => x.id === themeId)
     if (!t) throw new ToolError(`There’s no theme “${themeId}”. The themes are: ${themes.map((x) => x.id).join(', ')}.`)
     lines.push('', `Theme "${t.id}":`, JSON.stringify(themeFile(t), null, 2))
   }
-  lines.push('', 'Guide:', THEME_GUIDE)
+  lines.push('', guide ? `Guide:\n${THEME_GUIDE}` : 'guide: true returns the guide to writing a theme.')
   return lines.join('\n')
 }
 
