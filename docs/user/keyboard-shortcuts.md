@@ -1,6 +1,6 @@
 # Keyboard shortcuts
 
-These are the defaults. **Settings › Keyboard Shortcuts** (⌘,) lists every shortcut, including the document and presentation ones, and lets you change any of them: click it and press the new keys.
+These are the defaults. **Settings › Keyboard Shortcuts** (⌘,) lists every shortcut, including the document and presentation ones. Click one and press new keys to change it. A few can't be changed, and the list marks them: undo, redo, cut, copy, paste, select all, ⌘1 to ⌘9 for tabs, and ⌃⌘F for full screen on a Mac.
 
 On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. There, Ctrl+Tab and Ctrl+Shift+Tab go to the next and previous tab, and F11 toggles full screen. On a Mac, full screen is ⌃⌘F.
 
@@ -31,7 +31,7 @@ On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. There, Ct
 | Word: add comment | ⌥⌘A (Ctrl+Alt+M on Windows and Linux) |
 | Word: open a link in the browser | ⌘-click (Ctrl+click on Windows and Linux) |
 | Word, PowerPoint: insert LaTeX math | ⌥= |
-| PowerPoint: new slide / duplicate | ⌘M / ⌘D |
+| PowerPoint: duplicate | ⌘D |
 | PowerPoint: bring to front / send to back | ⇧⌘F / ⇧⌘B |
 | PowerPoint: bring forward / send backward | ⌥⇧⌘F / ⌥⇧⌘B |
 | PowerPoint: group / ungroup | ⌘G / ⇧⌘G |

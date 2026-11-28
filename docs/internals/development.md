@@ -4,7 +4,7 @@ AI agents: also read [AGENTS.md](../../AGENTS.md). It has the rules for pull req
 
 ## Setup
 
-You need [Node.js](https://nodejs.org) 20 or newer and [Rust](https://rustup.rs), plus your system's build tools:
+You need [Node.js](https://nodejs.org) 20.19 or a later 20.x release, or 22.12 or newer, which is what Vite asks for. CI uses Node 22. You also need [Rust](https://rustup.rs) and your system's build tools:
 
 - Mac: `xcode-select --install`
 - Windows: [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++". WebView2 already comes with Windows 10 and 11.
@@ -68,7 +68,7 @@ Playwright can drive that build. To test code that only runs in the app (saving,
 
 On a pull request, CI checks the parts that changed. The Office engine gets format, Clippy, tests, WebAssembly builds and LibreOffice samples. The native app gets Linux Clippy and tests. The frontend gets a build, a type check and regression tests in headless Chromium. An engine change checks the frontend too. Pushes to `main` and manual runs check everything. The `ci` check fails when any job fails or is cancelled, and passes when a part that didn't change skips its jobs.
 
-To run the browser tests yourself, install Node 22, Rust's `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.129, then:
+To run the browser tests yourself, install Node 22, which CI uses, along with Rust's `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.129. `npm ci` installs Playwright, but its Chromium downloads separately. On Linux, `--with-deps` also installs the system packages Chromium needs. Then run:
 
 ```sh
 npm ci

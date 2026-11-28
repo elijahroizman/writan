@@ -12,20 +12,20 @@ Each pull request does one thing: a fix, a feature or a cleanup. If you find an 
 
 ## Pull request titles
 
-Titles follow [Conventional Commits](https://www.conventionalcommits.org), as T3 Code's do: `type(scope): summary`. The scope is optional. The type is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` or `style`. For example:
+Titles follow [Conventional Commits](https://www.conventionalcommits.org), as T3 Code's do: `type(scope): summary`. The type is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` or `style`. The scope is optional. It has only lowercase letters, digits and hyphens, and starts with a letter or digit, such as `excel` or `pdf-export`. A `!` before the colon marks a breaking change. One space follows the colon, then the summary, which can't be blank. For example:
 
 - `fix(excel): keep column widths when a sheet is renamed`
 - `perf(collaboration): send each picture once`
 - `docs: explain release channels`
 
-CI checks the title, and the check fails until it matches.
+The **PR title** check in CI fails until the title matches.
 
 ## Pull request descriptions
 
 A reviewer should understand a pull request in a minute or two, so keep each description simple. The [template](.github/pull_request_template.md) has these four sections, and every pull request fills in all of them:
 
 - **What changed.** A few plain bullets on what someone using Writan or working on it will notice, and why if it isn't obvious. Skip the implementation detail the diff already shows.
-- **Screenshots.** Before and after pictures of anything you can see, cropped to the part that changed and taken at 2x. `scripts/pr-screenshots.sh before.png after.png` uploads them to the `pr-screenshots` branch and prints the Markdown to paste. If nothing visible changed, write "No visible change."
+- **Screenshots.** Before and after pictures of anything you can see, cropped to the part that changed and taken at 2x. The easiest way is to drag them into the description box on GitHub, which uploads them. If you can push to this repository, `scripts/pr-screenshots.sh before.png after.png` uploads them to its `pr-screenshots` branch instead and prints the Markdown to paste. It needs git and push access, and its links point at the commit that added the pictures, so they never change. From a fork, set `PR_SCREENSHOTS_REMOTE` to your fork's remote to upload there. If nothing visible changed, write "No visible change."
 - **Evidence.** How you know it works: the commands you ran and what they printed, the tests you added, the files you opened and what you clicked.
 - **Known limitations.** What the change doesn't do yet, what you couldn't test, such as Windows or a real update, and anything a reviewer should look at closely. Write "None known." only after you've looked.
 
@@ -43,6 +43,8 @@ Harness: Claude Code 2.1 in T3 Code
 
 If several models wrote the change, give each its own three lines. If you wrote the change yourself without a model, write `Model: none` and leave out the other two. A reviewer puts the same three lines at the end of the review.
 
+The **PR description** check in CI fails until the description has all four `## ` headings, each with at least one line of its own under it. HTML comments, code blocks, blank lines and a lone `-` don't count as that line, so the untouched template fails. The model lines must be the last lines of the description: either `Model: none` alone, or one or more complete sets of `Model:`, `Reasoning:` and `Harness:`, each with a value. Blank lines and the `🤖 Generated with` line some tools add may follow them. Pull requests opened by bots, such as Dependabot, skip this check.
+
 ## Before you open a pull request
 
 - `npm run typecheck` passes after building the engine with `npm run engine` or `npm run build`. It runs [tsc-rs](https://github.com/pingdotgg/ts-rust), not Microsoft's `tsc`.
@@ -56,9 +58,9 @@ If several models wrote the change, give each its own three lines. If you wrote 
 
 Fable, Opus, Astra and Sol can commit straight to `main`.
 
-Every other model must open a pull request and wait until a different model has reviewed it. A model can't review its own pull request. Don't merge until the review is done and its comments have been addressed.
+Any other model on [AGENTS.md](AGENTS.md#which-models-may-open-a-pull-request)'s list opens a pull request and waits until a different model has reviewed it. A model can't review its own pull request. Don't merge until the review is done and its comments have been addressed.
 
-AI agents: [AGENTS.md](AGENTS.md) says which models may open a pull request at all.
+A model that isn't on that list doesn't open a pull request. It hands its work to the maintainer, who decides what happens to it.
 
 ## Releases
 

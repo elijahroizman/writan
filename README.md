@@ -22,14 +22,14 @@
 
 Writan opens the documents most people actually use: Word, PowerPoint, Excel, CSV, PDF, Markdown, plain text and images. Each one is a tab in a single window, and an optional plugin adds LaTeX.
 
-It runs on macOS, Windows and Linux. The installer is about 25 MB, there's no account to make, and your documents stay on your computer unless you choose to share one.
+It runs on macOS, Windows and Linux. The installer is about 25 MB and there's no account to make. Your documents stay on your computer unless you share one with other people or let an AI agent work in it.
 
 ## What you get
 
-- **Fast.** Writan is built on [Tauri](https://tauri.app), so it uses the system's web view instead of shipping a browser. Each document engine loads the first time you open that kind of file, so someone who only writes Markdown never loads the Office engine.
+- **Fast.** Writan is built on [Tauri](https://tauri.app), so it uses the system's web view instead of shipping a browser. Each document engine loads when you first open that kind of file. Writan also loads the Office engine in the background after it starts, but only on a new install or when Office files are open or in your recent files. If your open and recent files are all Markdown, the Office engine never loads.
 - **Edit together, live.** Share a Word document, presentation or workbook, and other people join with a six-digit code. Everyone sees each other's changes, carets and selections as they type. The file stays on the sharer's computer, and what crosses the internet is encrypted.
-- **AI agents inside your documents.** Claude Code, Codex, Antigravity, Grok Build, Hermes Agent and Pi can join a document you have open and work in it beside you. An agent writes and formats text, builds slides and fills in cells and charts, then looks at the pages as pictures to check its work. Its caret and name show up like a person's. **Settings › AI** connects each agent in one click.
-- **Its own Office engine.** Word, PowerPoint and Excel files open in an engine written in Rust in this repository and compiled to WebAssembly. It keeps the parts of a file it doesn't edit, so saving never drops them, and it calculates about 140 Excel functions itself.
+- **AI agents inside your documents.** Claude Code, Codex, Antigravity, Grok Build, Hermes Agent and Pi can join a document you have open and work in it beside you. An agent writes and formats text, builds slides and fills in cells and charts, then looks at the pages as pictures to check its work. Its caret and name show up like a person's. In **Settings › AI**, **Add MCP server** sets up an agent on this computer and **Add skill** teaches it how to work with people.
+- **Its own Office engine.** Word, PowerPoint and Excel files open in an engine written in Rust in this repository and compiled to WebAssembly. Parts of a file that Writan doesn't edit are saved back unchanged. A part you do edit, such as an Excel chart, is rebuilt, and whatever Writan doesn't model in it gets Writan's defaults. The engine calculates about 140 Excel functions itself.
 - **PDFs you can work with.** Edit a PDF as a Word document. Sign it with a signature you draw, type or photograph, fill in its forms, and move, rotate, insert or extract pages. Scanned pages are read with offline OCR, so Find works on them too.
 - **LaTeX when you want it.** The plugin compiles `.tex` files with the TeX on your computer and shows the PDF beside the source. If TeX isn't installed, Writan offers to install it.
 - **Open.** The source code is MIT licensed, and you can build every part of it yourself.
@@ -52,11 +52,11 @@ Writan updates itself. On a Mac or Windows PC, a new version downloads in the ba
 
 ### Command line
 
-The `writan` command opens files and folders from a terminal: `writan .` opens the folder you're in, and `writan notes.md` opens a file. The Linux packages install it. On a Mac, turn it on in **Settings › General › Command line**.
+The `writan` command opens files and folders from a terminal: `writan .` opens the folder you're in, and `writan notes.md` opens a file. The Linux packages install it. On a Mac, turn it on in **Settings › General › Command line**. On Windows, `writan.exe` opens the files you pass it, but the installer doesn't put a `writan` command on your PATH.
 
 ### Connect an agent
 
-Install an agent such as [Claude Code](https://claude.com/product/claude-code) or [Codex](https://developers.openai.com/codex/cli) and sign in to it. Then open **Settings › AI** in Writan and connect it. Any other agent that takes a remote MCP server can use the address shown there.
+Install an agent such as [Claude Code](https://claude.com/product/claude-code) or [Codex](https://developers.openai.com/codex/cli) and sign in to it. Then open **Settings › AI** in Writan, click **Add MCP server** and **Add skill** next to the agent, and start a new session in it. Any other agent that takes a remote MCP server can use the address shown there.
 
 ## Why another document app?
 
@@ -66,7 +66,9 @@ Collaboration and AI agents are part of the app rather than an add-on to a cloud
 
 ## Privacy
 
-Writan sends anonymous usage data, such as which file types are opened and how long they take, so we know what to fix. It never sends your documents, file names or anything you type. You can turn it off in Settings, and it starts off in Europe and the UK. [PRIVACY.md](./PRIVACY.md) lists exactly what is sent.
+Sharing a document sends it to the people who join. An AI agent you connect can read the Word documents, presentations and workbooks you have open, and what it sends to its own provider is up to the agent.
+
+Writan can also send anonymous usage data to PostHog, such as which file types are opened and how long they take, so we know what to fix. It sends it only from a build made with Writan's PostHog key, and only while **Help make Writan better** in **Settings › General** is on. Until you choose, Writan sends nothing. The switch starts off in the European Union, the EEA, the UK and Switzerland, which Writan judges from the computer's time zone without looking up where you are. Usage data never includes your documents, file names or anything you type. [PRIVACY.md](./PRIVACY.md) lists exactly what is sent.
 
 ## Documentation
 
