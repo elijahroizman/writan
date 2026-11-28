@@ -9,7 +9,9 @@
 #   the signatures on the database and the package;
 # - the app's update command, `pacman -U <package URL>`, installs a signed package and refuses a
 #   package whose signature doesn't match;
-# - removing Writan takes its lines out of pacman.conf and leaves the rest as it was.
+# - removing Writan takes its lines out of pacman.conf and leaves the rest as it was;
+# - a nightly's package (arch-package.sh turns 0.10.13~nightly.<stamp> into 0.10.13nightly.<stamp>)
+#   upgrades the stable release before it, and the stable release after it upgrades the nightly.
 #
 # The packages and the repository are signed with a throwaway key, which the container also trusts.
 # The dependencies are skipped (-dd): they're the real Arch packages, not what's under test.
@@ -42,11 +44,20 @@ CONTROL
 }
 fake_deb 0.10.11
 fake_deb 0.10.12
+# The nightly's version as scripts/debian-repack.sh leaves it, and the stable release after it.
+fake_deb 0.10.13~nightly.202611280930
+fake_deb 0.10.13
 
 old="$("$scripts/arch-package.sh" "$work/Writan_0.10.11_amd64.deb" "$work/old")"
 repo="$work/repo"
 new="$("$scripts/arch-package.sh" "$work/Writan_0.10.12_amd64.deb" "$repo")"
 tar --zstd -tf "$new" | grep -qx 'usr/share/pacman/keyrings/writan.gpg'
+nightly="$("$scripts/arch-package.sh" "$work/Writan_0.10.13~nightly.202611280930_amd64.deb" "$work/nightly")"
+stable="$("$scripts/arch-package.sh" "$work/Writan_0.10.13_amd64.deb" "$work/stable")"
+if [ "$(basename "$nightly")" != writan-0.10.13nightly.202611280930-1-x86_64.pkg.tar.zst ]; then
+  echo "the nightly's Arch package is $(basename "$nightly")" >&2
+  exit 1
+fi
 if tar --zstd -tf "$new" | grep -Eq '^usr/(bin/workspace|share/keyrings/)'; then
   echo "the Arch package kept the APT keyring or the workspace wrapper" >&2
   exit 1
@@ -72,6 +83,8 @@ docker run --rm \
   -e OLD="/work/old/$(basename "$old")" \
   -e NEW="$(basename "$new")" \
   -e FINGERPRINT="$fingerprint" \
+  -e NIGHTLY="/work/nightly/$(basename "$nightly")" \
+  -e STABLE="/work/stable/$(basename "$stable")" \
   ghcr.io/archlinux/archlinux:latest bash -euo pipefail -c '
     pacman-key --init > /dev/null 2>&1
     # The container has no sync databases for core and extra; their warnings are noise here.
@@ -104,6 +117,21 @@ docker run --rm \
     [ "$(writan)" = 0.10.12 ]
     [ "$(grep -c "^\[writan\]" /etc/pacman.conf)" = 1 ]
     echo "pacman -U installs the signed package and refuses a bad signature"
+
+    # pacman has no tilde rule: the nightly has to sort before the release it leads up to.
+    [ "$(vercmp 0.10.13nightly.202611280930-1 0.10.13-1)" = -1 ]
+    [ "$(vercmp 0.10.13nightly.202611280930-1 0.10.12-1)" = 1 ]
+    [ "$(vercmp 0.10.13nightly.202611280930-1 0.10.13nightly.202611281200-1)" = -1 ]
+    pacman -U --noconfirm -dd "$NIGHTLY" > /tmp/nightly.log 2>&1
+    pacman -Q writan | grep -qx "writan 0.10.13nightly.202611280930-1"
+    pacman -U --noconfirm -dd "$STABLE" > /tmp/stable.log 2>&1
+    if grep -qi downgrad /tmp/nightly.log /tmp/stable.log; then
+      cat /tmp/nightly.log /tmp/stable.log >&2
+      echo "pacman took a nightly or the release after it as a downgrade" >&2
+      exit 1
+    fi
+    [ "$(writan)" = 0.10.13 ]
+    echo "a nightly upgrades the release before it, and the next release upgrades the nightly"
 
     pacman -U --noconfirm -dd "$OLD" > /dev/null
     sed -i "s|^Server = https://github.com/elijahroizman/writan/releases/download/arch/\$arch\$|Server = file:///work/repo|" /etc/pacman.conf

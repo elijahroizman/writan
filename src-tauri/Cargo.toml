@@ -30,6 +30,8 @@ minisign-verify = "0.3"
 base64 = "0.22"
 # Checks the MiKTeX installer against the checksum MiKTeX publishes (it isn't code-signed).
 sha2 = "0.10"
+# The date in an update check's reply, formatted the way the updater plugin's own check sends it.
+time = { version = "0.3", features = ["formatting"] }
 # Exclusive temporary files, removed even when a save fails.
 tempfile = "3"
 # Co-editing over the LAN (collab/): a blocking WebSocket server and client, wss:// through native TLS.
