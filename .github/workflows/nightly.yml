@@ -1,16 +1,22 @@
 name: Nightly
 
-# A nightly: main built for every platform the Release workflow builds (build.yml), as version
-# <latest stable tag's next patch>-nightly.<UTC date and time>, for example
-# 1.0.1-nightly.202611280930. That sorts after the stable release it follows and before the next
-# one, so a nightly copy moves onto the next stable release by itself. Same app ID and signing as
-# a stable release, so a copy switches channel in place.
+# A nightly: main built for every platform the Release workflow builds (build.yml), as a
+# pre-release of the next minor version, <major>.<minor + 1>.0-nightly.<UTC date and time> after
+# the latest stable tag, for example 1.1.0-nightly.202611280930 after 1.0.0 or a 1.0.1 hotfix.
+# That sorts after the stable release it follows and before the next minor one, so a nightly copy
+# moves onto that release by itself. Same app ID and signing as a stable release, so a copy
+# switches channel in place.
+#
+# The updaters compare that version, so it goes into tauri.conf.json, latest.json and the
+# packages. Everything people see uses one name built from it (scripts/nightly.mjs): the tag
+# v1.1.0-nightly-2026-11-28-0930, the title "Writan Nightly v1.1.0 2026-11-28 09:30 UTC", and
+# file names like Writan_1.1.0-nightly-2026-11-28-0930_x64.dmg.
 #
 # Run it whenever something new lands on main:
 #
 #   gh workflow run nightly.yml --ref main
 #
-# It publishes a GitHub pre-release tagged v<version> holding the installers, the update bundles
+# It publishes a GitHub pre-release with that tag holding the installers, the update bundles
 # and the Linux packages, with notes listing the PR titles merged since the previous nightly or
 # stable tag, grouped by type (scripts/nightly.mjs), after the "notes" input, and deletes all but
 # the newest 10 nightlies. Then the feed job points the nightly update feed (latest.json on the
@@ -45,6 +51,8 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
+      label: ${{ steps.version.outputs.label }}
       release_id: ${{ steps.draft.outputs.id }}
     steps:
       - name: Only from main
@@ -64,13 +72,13 @@ jobs:
           NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
-          version="$(node scripts/nightly.mjs version)"
+          # version, tag, label and title, all from the same minute.
+          node scripts/nightly.mjs names > "$RUNNER_TEMP/names"
+          cat "$RUNNER_TEMP/names"
+          cat "$RUNNER_TEMP/names" >> "$GITHUB_OUTPUT"
+          grep -E '^(tag|title)=' "$RUNNER_TEMP/names" | sed -E 's/^tag=/TAG=/; s/^title=/TITLE=/' >> "$GITHUB_ENV"
           node scripts/nightly.mjs notes > "$RUNNER_TEMP/notes.md"
           cat "$RUNNER_TEMP/notes.md"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          stamp="${version##*.}"
-          echo "TITLE=Writan nightly ${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:8:2}:${stamp:10:2} UTC" >> "$GITHUB_ENV"
-          echo "TAG=v$version" >> "$GITHUB_ENV"
       - name: Create the draft
         id: draft
         if: inputs.publish
@@ -111,7 +119,9 @@ jobs:
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       VERSION: ${{ needs.prepare.outputs.version }}
-      TAG: v${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
+      LABEL: ${{ needs.prepare.outputs.label }}
+      RELEASE_ID: ${{ needs.prepare.outputs.release_id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -129,30 +139,37 @@ jobs:
           pattern: linux-*
           path: ${{ runner.temp }}/packages
           merge-multiple: true
-      - name: Check the Linux packages
+      - name: Name the Linux packages
         if: steps.state.outputs.draft == 'true'
-        # The names src-tauri/src/update.rs (nightly_package_url) downloads.
+        # From the names the build gives them, which hold each format's own version, to the
+        # nightly's name, which src-tauri/src/update.rs (nightly_package_url) downloads. Before
+        # signing: the app checks the file name a signature was made for.
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/packages"
           ls -l
           base="${VERSION%%-*}"
           stamp="${VERSION##*.}"
+          # Built name, then published name.
           files=(
-            "Writan_${VERSION}_amd64.deb"
-            "Writan_${VERSION}_arm64.deb"
-            "Writan-${base}-0.nightly.${stamp}.x86_64.rpm"
-            "Writan-${base}-0.nightly.${stamp}.aarch64.rpm"
-            "writan-${base}nightly.${stamp}-1-x86_64.pkg.tar.zst"
-            "writan-${base}nightly.${stamp}-1-aarch64.pkg.tar.zst"
+            "Writan_${VERSION}_amd64.deb" "Writan_${LABEL}_amd64.deb"
+            "Writan_${VERSION}_arm64.deb" "Writan_${LABEL}_arm64.deb"
+            "Writan-${base}-0.nightly.${stamp}.x86_64.rpm" "Writan_${LABEL}_x86_64.rpm"
+            "Writan-${base}-0.nightly.${stamp}.aarch64.rpm" "Writan_${LABEL}_aarch64.rpm"
+            "writan-${base}nightly.${stamp}-1-x86_64.pkg.tar.zst" "Writan_${LABEL}_x86_64.pkg.tar.zst"
+            "writan-${base}nightly.${stamp}-1-aarch64.pkg.tar.zst" "Writan_${LABEL}_aarch64.pkg.tar.zst"
           )
-          for file in "${files[@]}"; do
-            if [ ! -s "$file" ]; then
-              echo "::error::Missing $file"
+          for ((i = 0; i < ${#files[@]}; i += 2)); do
+            if [ ! -s "${files[i]}" ]; then
+              echo "::error::Missing ${files[i]}"
               exit 1
             fi
           done
           [ "$(dpkg-deb -f "Writan_${VERSION}_amd64.deb" Version)" = "${base}~nightly.${stamp}" ]
+          for ((i = 0; i < ${#files[@]}; i += 2)); do
+            mv -- "${files[i]}" "${files[i + 1]}"
+          done
+          ls -l
       - name: Sign the .deb and .rpm packages
         if: steps.state.outputs.draft == 'true'
         # With the updater key, which the app checks them against before apt or dnf installs one.
@@ -187,22 +204,50 @@ jobs:
           set -euo pipefail
           cd "$RUNNER_TEMP/packages"
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" ./*.deb ./*.rpm ./*.pkg.tar.zst ./*.sig --clobber
+      - name: Name the Mac and Windows files
+        # tauri-action names them after the SemVer version (Writan_1.1.0-nightly.202611280930_x64.dmg);
+        # they take the nightly's name instead (Writan_1.1.0-nightly-2026-11-28-0930_x64.dmg).
+        # The Windows installer and its signature go together, and latest.json lists the new
+        # names. A build job rerun after this uploads under the old name again, and that newer
+        # copy replaces the renamed one. The update bundles' signatures don't hold a file name the
+        # updater checks, so renaming leaves them valid.
+        if: steps.state.outputs.draft == 'true'
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" \
+            --jq '.[] | [.id, .name] | @tsv' > "$RUNNER_TEMP/assets.tsv"
+          mapfile -t assets < "$RUNNER_TEMP/assets.tsv"
+          for asset in "${assets[@]}"; do
+            IFS=$'\t' read -r id name <<< "$asset"
+            case "$name" in
+              *"_${VERSION}_"*) ;;
+              *) continue ;;
+            esac
+            new="${name/"_${VERSION}_"/"_${LABEL}_"}"
+            old="$(awk -F '\t' -v n="$new" '$2 == n { print $1 }' "$RUNNER_TEMP/assets.tsv")"
+            if [ -n "$old" ]; then
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$old"
+            fi
+            echo "$name -> $new"
+            gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/assets/$id" -f name="$new" --silent
+          done
       - name: Publish the nightly
         # Its latest.json goes up first, and the feed job copies it to the nightly feed once the
         # pre-release is public, since the URLs in it only download then.
         if: steps.state.outputs.draft == 'true'
         run: |
           set -euo pipefail
-          scripts/update-feed.sh "$TAG" "$VERSION" "$RUNNER_TEMP"
+          scripts/update-feed.sh "$TAG" "$VERSION" "$RUNNER_TEMP" "$LABEL"
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "$RUNNER_TEMP/latest.json" --clobber
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
       - name: Keep the newest 10 nightlies
         # Older nightlies and their tags go, along with drafts left by runs that failed. The
-        # stamp orders them by build time.
+        # stamp orders them by build time. Tags like v1.1.0-nightly-2026-11-28-0930, and the
+        # earlier v1.0.1-nightly.202611280930, whose stamp is the same 12 digits.
         run: |
           set -euo pipefail
           gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
-            --jq '.[] | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{12}$")) | [(.tag_name | split(".") | last), .tag_name, .draft] | @tsv' \
+            --jq '.[] | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly(\\.[0-9]{12}|-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4})$")) | [(.tag_name | sub("^.*-nightly[-.]"; "") | gsub("-"; "")), .tag_name, .draft] | @tsv' \
             | sort -r > "$RUNNER_TEMP/nightlies.tsv"
           kept=0
           while IFS=$'\t' read -r _ tag draft; do
@@ -230,7 +275,7 @@ jobs:
       cancel-in-progress: false
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      TAG: v${{ needs.prepare.outputs.version }}
+      TAG: ${{ needs.prepare.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:

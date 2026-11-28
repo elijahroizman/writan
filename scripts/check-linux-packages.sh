@@ -11,8 +11,9 @@
 #   Writan's key, and refuses one with no signature, a signature of another file, or a signature
 #   from another key pacman trusts, on a pacman.conf that lets pacman install unsigned files;
 # - removing Writan takes its lines out of pacman.conf and leaves the rest as it was;
-# - a nightly's package (arch-package.sh turns 0.10.13~nightly.<stamp> into 0.10.13nightly.<stamp>)
-#   upgrades the stable release before it, and the stable release after it upgrades the nightly.
+# - a nightly's package (arch-package.sh turns 0.11.0~nightly.<stamp> into 0.11.0nightly.<stamp>),
+#   under the name the nightly workflow publishes it with, upgrades the stable release before it,
+#   and the next minor release after it upgrades the nightly.
 #
 # The packages and the repository are signed with a throwaway key, which the container also trusts.
 # The dependencies are skipped (-dd): they're the real Arch packages, not what's under test.
@@ -46,20 +47,25 @@ CONTROL
 }
 fake_deb 0.10.11
 fake_deb 0.10.12
-# The nightly's version as scripts/debian-repack.sh leaves it, and the stable release after it.
-fake_deb 0.10.13~nightly.202611280930
-fake_deb 0.10.13
+# The nightly after 0.10.12, a pre-release of the next minor version, as scripts/debian-repack.sh
+# leaves it, and that release.
+fake_deb 0.11.0~nightly.202611280930
+fake_deb 0.11.0
 
 old="$("$scripts/arch-package.sh" "$work/Writan_0.10.11_amd64.deb" "$work/old")"
 repo="$work/repo"
 new="$("$scripts/arch-package.sh" "$work/Writan_0.10.12_amd64.deb" "$repo")"
 tar --zstd -tf "$new" | grep -qx 'usr/share/pacman/keyrings/writan.gpg'
-nightly="$("$scripts/arch-package.sh" "$work/Writan_0.10.13~nightly.202611280930_amd64.deb" "$work/nightly")"
-stable="$("$scripts/arch-package.sh" "$work/Writan_0.10.13_amd64.deb" "$work/stable")"
-if [ "$(basename "$nightly")" != writan-0.10.13nightly.202611280930-1-x86_64.pkg.tar.zst ]; then
+nightly="$("$scripts/arch-package.sh" "$work/Writan_0.11.0~nightly.202611280930_amd64.deb" "$work/nightly")"
+stable="$("$scripts/arch-package.sh" "$work/Writan_0.11.0_amd64.deb" "$work/stable")"
+if [ "$(basename "$nightly")" != writan-0.11.0nightly.202611280930-1-x86_64.pkg.tar.zst ]; then
   echo "the nightly's Arch package is $(basename "$nightly")" >&2
   exit 1
 fi
+# The nightly workflow publishes it under the nightly's name, which the app downloads
+# (nightly_package_url in src-tauri/src/update.rs).
+mv "$nightly" "$work/nightly/Writan_0.11.0-nightly-2026-11-28-0930_x86_64.pkg.tar.zst"
+nightly="$work/nightly/Writan_0.11.0-nightly-2026-11-28-0930_x86_64.pkg.tar.zst"
 if tar --zstd -tf "$new" | grep -Eq '^usr/(bin/workspace|share/keyrings/)'; then
   echo "the Arch package kept the APT keyring or the workspace wrapper" >&2
   exit 1
@@ -145,18 +151,20 @@ docker run --rm \
     echo "the update command installs the signed package and refuses no signature, a bad one and another key'\''s"
 
     # pacman has no tilde rule: the nightly has to sort before the release it leads up to.
-    [ "$(vercmp 0.10.13nightly.202611280930-1 0.10.13-1)" = -1 ]
-    [ "$(vercmp 0.10.13nightly.202611280930-1 0.10.12-1)" = 1 ]
-    [ "$(vercmp 0.10.13nightly.202611280930-1 0.10.13nightly.202611281200-1)" = -1 ]
+    # A hotfix of the release before (0.10.13) comes before the nightly too.
+    [ "$(vercmp 0.11.0nightly.202611280930-1 0.11.0-1)" = -1 ]
+    [ "$(vercmp 0.11.0nightly.202611280930-1 0.10.12-1)" = 1 ]
+    [ "$(vercmp 0.11.0nightly.202611280930-1 0.10.13-1)" = 1 ]
+    [ "$(vercmp 0.11.0nightly.202611280930-1 0.11.0nightly.202611281200-1)" = -1 ]
     pacman -U --noconfirm -dd "$NIGHTLY" > /tmp/nightly.log 2>&1
-    pacman -Q writan | grep -qx "writan 0.10.13nightly.202611280930-1"
+    pacman -Q writan | grep -qx "writan 0.11.0nightly.202611280930-1"
     pacman -U --noconfirm -dd "$STABLE" > /tmp/stable.log 2>&1
     if grep -qi downgrad /tmp/nightly.log /tmp/stable.log; then
       cat /tmp/nightly.log /tmp/stable.log >&2
       echo "pacman took a nightly or the release after it as a downgrade" >&2
       exit 1
     fi
-    [ "$(writan)" = 0.10.13 ]
+    [ "$(writan)" = 0.11.0 ]
     echo "a nightly upgrades the release before it, and the next release upgrades the nightly"
 
     pacman -U --noconfirm -dd "$OLD" > /dev/null

@@ -37,12 +37,14 @@ with tempfile.TemporaryDirectory(prefix='writan-deb-repack-') as folder:
     assert repack(folder, '0.10.5') == ('0.10.5', 'workspace (<< 0.10.5)')
 
 # Tauri writes a nightly's SemVer version as it is. The repack turns the hyphen into a tilde, so
-# dpkg sorts the nightly after the stable release before it and before the next one.
+# dpkg sorts the nightly, a pre-release of the next minor version, after the stable release
+# before it (and a hotfix of it) and before the next minor one.
 with tempfile.TemporaryDirectory(prefix='writan-deb-repack-') as folder:
-    nightly = '1.0.1~nightly.202611280930'
-    assert repack(folder, '1.0.1-nightly.202611280930') == (nightly, f'workspace (<< {nightly})')
-    assert older('1.0.0', nightly) and older(nightly, '1.0.1')
-    assert older(nightly, '1.0.1~nightly.202611281200')
-    # What dpkg would make of the version Tauri wrote: newer than 1.0.1.
-    assert not older('1.0.1-nightly.202611280930', '1.0.1')
+    nightly = '1.1.0~nightly.202611280930'
+    assert repack(folder, '1.1.0-nightly.202611280930') == (nightly, f'workspace (<< {nightly})')
+    assert older('1.0.0', nightly) and older('1.0.1', nightly) and older(nightly, '1.1.0')
+    assert older(nightly, '1.1.0~nightly.202611281200')
+    assert older('1.1.0', '1.2.0~nightly.202612010000')
+    # What dpkg would make of the version Tauri wrote: newer than 1.1.0.
+    assert not older('1.1.0-nightly.202611280930', '1.1.0')
 print('Debian release repack preserves root ownership and the versioned migration break, and orders nightlies before the next release')

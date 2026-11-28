@@ -21,8 +21,9 @@ on:
         type: boolean
         default: false
   push:
-    # Nightly pre-releases are tagged v<version>-nightly.<stamp> by the Nightly workflow.
-    tags: ['v*', '!v*-nightly.*']
+    # Nightly pre-releases are tagged v1.1.0-nightly-2026-11-28-0930 by the Nightly workflow
+    # (v1.1.0-nightly.202611280930 before).
+    tags: ['v*', '!v*-nightly-*', '!v*-nightly.*']
 
 permissions:
   contents: write

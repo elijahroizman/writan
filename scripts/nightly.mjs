@@ -2,16 +2,37 @@
 // Version and release notes for a nightly build (.github/workflows/nightly.yml), and SemVer order
 // for the Release workflow's nightly feed. Run from the repository root with the tags fetched.
 //
-//   node scripts/nightly.mjs version          1.0.1-nightly.202611280930: the latest stable tag's
-//                                             next patch release, with the UTC date and time.
+//   node scripts/nightly.mjs version          1.1.0-nightly.202611280930: the next minor release
+//                                             after the latest stable tag, with the UTC date and
+//                                             time.
+//   node scripts/nightly.mjs names [version]  The names a nightly goes by, as key=value lines for
+//                                             $GITHUB_OUTPUT: version, tag, label (the tag without
+//                                             its v, which the file names use) and title. Without
+//                                             a version, for a nightly built now.
+//   node scripts/nightly.mjs tag-version <tag>
+//                                             The version a release tag stands for: v1.0.0 is
+//                                             1.0.0, v1.1.0-nightly-2026-11-28-0930 is
+//                                             1.1.0-nightly.202611280930.
 //   node scripts/nightly.mjs notes            The pre-release's notes, in Markdown: the PR titles
 //                                             merged since the previous stable or nightly tag,
 //                                             grouped by type, after the NOTES environment variable.
 //   node scripts/nightly.mjs newer <a> <b>    Exits 0 when version a is newer than b.
 //
-// A nightly sorts after the stable release it follows and before the next one, and nightlies
-// sort by their build time. The stamp is a single number, since SemVer forbids leading zeros in
-// a numeric identifier (0930 alone would be invalid).
+// A nightly is a pre-release of the next minor version: after 1.0.0, and after a 1.0.1 hotfix
+// too, it's 1.1.0-nightly.<stamp>. It sorts after the stable release it follows and before the
+// next minor one, and nightlies sort by their build time. The stamp is a single number, since
+// SemVer forbids leading zeros in a numeric identifier (0930 alone would be invalid).
+//
+// That SemVer version is what the updaters compare, and it goes into tauri.conf.json, latest.json
+// and the packages. People see one name built from it, everywhere else:
+//
+//   tag         v1.1.0-nightly-2026-11-28-0930   (a tag can't hold a space or a colon)
+//   title       Writan Nightly v1.1.0 2026-11-28 09:30 UTC
+//   in the app  Nightly v1.1.0 2026-11-28 09:30 UTC   (displayVersion in src/lib/versions.ts)
+//   files       Writan_1.1.0-nightly-2026-11-28-0930_x64.dmg
+//
+// The tag maps one to one back to the version (tagVersion here, version_from_tag in
+// src-tauri/src/update.rs, versionFromTag in src/lib/versions.ts).
 
 import { execFileSync } from 'node:child_process'
 
@@ -64,11 +85,31 @@ function latestStable() {
   return latest
 }
 
+/** The nightly built at `now` after the stable release `stable`: the next minor version's pre-release. */
 export function nightlyVersion(stable, now = new Date()) {
-  const [major, minor, patch] = stable.split('.').map(Number)
+  const [major, minor] = stable.split('.').map(Number)
   const pad = (n) => String(n).padStart(2, '0')
   const stamp = `${now.getUTCFullYear()}${pad(now.getUTCMonth() + 1)}${pad(now.getUTCDate())}${pad(now.getUTCHours())}${pad(now.getUTCMinutes())}`
-  return `${major}.${minor}.${patch + 1}-nightly.${stamp}`
+  return `${major}.${minor + 1}.0-nightly.${stamp}`
+}
+
+const NIGHTLY_VERSION = /^(\d+\.\d+\.\d+)-nightly\.(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})$/
+const NIGHTLY_TAG = /^v(\d+\.\d+\.\d+)-nightly-(\d{4})-(\d{2})-(\d{2})-(\d{2})(\d{2})$/
+
+/** The names a nightly version goes by. Throws for anything that isn't a nightly version. */
+export function nightlyNames(version) {
+  const m = NIGHTLY_VERSION.exec(version)
+  if (!m) throw new Error(`not a nightly version: ${version}`)
+  const [, base, y, mo, d, h, mi] = m
+  const label = `${base}-nightly-${y}-${mo}-${d}-${h}${mi}`
+  return { version, tag: `v${label}`, label, title: `Writan Nightly v${base} ${y}-${mo}-${d} ${h}:${mi} UTC` }
+}
+
+/** The version a release tag stands for: the tag without its v, with a nightly's date put back into one stamp. */
+export function tagVersion(tag) {
+  const m = NIGHTLY_TAG.exec(tag)
+  if (m) return `${m[1]}-nightly.${m.slice(2).join('')}`
+  return /^v\d/.test(tag) ? tag.slice(1) : tag
 }
 
 // PR titles follow Conventional Commits (.github/workflows/pr-checks.yml), and squash merges make
@@ -135,11 +176,16 @@ function notes() {
 const [command, ...args] = process.argv.slice(2)
 if (command === 'version') {
   process.stdout.write(nightlyVersion(latestStable()) + '\n')
+} else if (command === 'names' && args.length <= 1) {
+  const names = nightlyNames(args[0] ?? nightlyVersion(latestStable()))
+  process.stdout.write(Object.entries(names).map(([key, value]) => `${key}=${value}\n`).join(''))
+} else if (command === 'tag-version' && args.length === 1) {
+  process.stdout.write(tagVersion(args[0]) + '\n')
 } else if (command === 'notes') {
   process.stdout.write(notes())
 } else if (command === 'newer' && args.length === 2) {
   process.exit(compareVersions(args[0], args[1]) > 0 ? 0 : 1)
 } else if (command !== undefined) {
-  console.error('usage: node scripts/nightly.mjs version | notes | newer <a> <b>')
+  console.error('usage: node scripts/nightly.mjs version | names [version] | tag-version <tag> | notes | newer <a> <b>')
   process.exit(2)
 }

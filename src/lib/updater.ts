@@ -8,7 +8,7 @@ import type { Update } from '@tauri-apps/plugin-updater'
 import { create } from 'zustand'
 import { getUpdateChannel, onUpdateChannelChange, type UpdateChannel } from '../state/updateChannel'
 import { isLinux, isMac, isTauri } from './platform'
-import { compareVersions, isNightlyVersion, newer } from './versions'
+import { compareVersions, isNightlyVersion, newer, versionFromTag } from './versions'
 
 export { compareVersions, newer } from './versions'
 
@@ -117,8 +117,6 @@ interface GithubRelease {
   draft?: boolean
   prerelease?: boolean
 }
-
-const versionFromTag = (tag: string) => (/^v\d/.test(tag) ? tag.slice(1) : tag)
 
 // The release's version, for the releases `channel` follows. Drafts never reach the API. The
 // other pre-releases are the APT, dnf and pacman repositories, the nightly feed, plugins and old

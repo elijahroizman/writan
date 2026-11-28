@@ -203,10 +203,10 @@ jobs:
           # A nightly's .rpm comes from the next step: rpm can't hold its version.
           args: ${{ (runner.os == 'Linux' && env.NIGHTLY == 'true') && '--bundles deb' || matrix.args }}
       - name: Nightly rpm
-        # rpm forbids a hyphen in Version, and it would sort 1.0.1.nightly after 1.0.1 anyway. The
-        # nightly's rpm is Version 1.0.1, Release 0.nightly.<stamp>, which rpm sorts after 1.0.0-1
-        # and before the stable 1.0.1-1. `tauri bundle` packages the binary just built, without
-        # building it again, so the app inside still reports its SemVer version.
+        # rpm forbids a hyphen in Version, and it would sort 1.1.0.nightly after 1.1.0 anyway. The
+        # nightly's rpm is Version 1.1.0, Release 0.nightly.<stamp>, which rpm sorts after 1.0.0-1
+        # (and a 1.0.1-1 hotfix) and before the stable 1.1.0-1. `tauri bundle` packages the binary
+        # just built, without building it again, so the app inside still reports its SemVer version.
         if: runner.os == 'Linux' && env.NIGHTLY == 'true'
         env:
           VERSION: ${{ inputs.version }}
@@ -296,6 +296,7 @@ jobs:
           [ "$stapled" -eq 1 ]
           xcrun stapler validate "$dmg"
           if [ "$PUBLISH" = "true" ]; then
-            version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
-            gh release upload "v${version}" "$dmg" --clobber
+            # The draft's own tag: a nightly's isn't v<version> (scripts/nightly.mjs).
+            tag="$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" --jq .tag_name)"
+            gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$dmg" --clobber
           fi
