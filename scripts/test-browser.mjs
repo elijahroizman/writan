@@ -43,6 +43,7 @@ const scripts = [
   'tests/stress/ui/themes-folder.mjs',
   'tests/stress/ui/tracked-changes.mjs',
   'tests/stress/ui/updater.mjs',
+  'tests/stress/ui/updater-linux.mjs',
   'tests/stress/ui/ux-regressions.mjs',
   'tests/stress/ui/version-history.mjs',
   'tests/stress/native/pdf-page-select.mjs',

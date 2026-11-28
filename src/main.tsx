@@ -6,6 +6,8 @@ import { startAppearance } from './state/appearance'
 import { getEditor, useWorkspace } from './state/workspace'
 import { useChat, useCollab } from './collab/session'
 import { useAi } from './state/ai'
+import { useUpdate } from './lib/updater'
+import { setUpdateChannel } from './state/updateChannel'
 import { isTauri, isWindows } from './lib/platform'
 import { stopWindowZoom } from './lib/pinch'
 // Inter, the UI font where the system has no San Francisco (Windows, Linux). Only declares the
@@ -26,6 +28,7 @@ if (import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) {
     __workspace: { useWorkspace, getEditor },
     __collab: { useCollab, useChat },
     __ai: { useAi },
+    __updates: { useUpdate, setUpdateChannel },
     __loadPdfOcrTestApi: async () => {
       const [pdfOcr, packs, toDocx, exporter, pdfClient, ocrClient, preprocess, catalog, convert, pdfEngine] =
         await Promise.all([
