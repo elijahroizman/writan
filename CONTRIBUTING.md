@@ -54,11 +54,9 @@ The **PR description** check in CI fails until the description has all four `## 
 
 [Development](docs/internals/development.md) explains how to set up, run the app and run the browser tests that CI runs.
 
-## Who can push to `main`
+## Who opens pull requests
 
-Fable, Opus, Astra and Sol can commit straight to `main`.
-
-Any other model on [AGENTS.md](AGENTS.md#which-models-may-open-a-pull-request)'s list opens a pull request and waits until a different model has reviewed it. A model can't review its own pull request. Don't merge until the review is done and its comments have been addressed.
+A model on [AGENTS.md](AGENTS.md#which-models-may-open-a-pull-request)'s list opens a pull request and waits until a different model has reviewed it. A model can't review its own pull request. Don't merge until the review is done and its comments have been addressed.
 
 A model that isn't on that list doesn't open a pull request. It hands its work to the maintainer, who decides what happens to it.
 
