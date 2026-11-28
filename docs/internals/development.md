@@ -1,6 +1,40 @@
 # Development
 
-Setup for each system is in the [README](../../README.md#run-it-locally). This page covers the rest. AI agents: also read [AGENTS.md](../../AGENTS.md), which explains why documents on Linux show look-alike fonts.
+AI agents: also read [AGENTS.md](../../AGENTS.md). It has the rules for pull requests and explains why documents on Linux show look-alike fonts.
+
+## Setup
+
+You need [Node.js](https://nodejs.org) 20.19 or a later 20.x release, or 22.12 or newer, which is what Vite asks for. CI uses Node 22. You also need [Rust](https://rustup.rs) and your system's build tools:
+
+- Mac: `xcode-select --install`
+- Windows: [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++". WebView2 already comes with Windows 10 and 11.
+- Debian, Ubuntu: `sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf`
+
+Then, from the repository's root:
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install wasm-bindgen-cli --version 0.2.129 --locked
+npm install
+npm run dev        # the UI in your browser at http://localhost:1420
+npm run app:dev    # the real app, with hot reload
+```
+
+Both `npm run dev` and `npm run build` compile the document engine to WebAssembly. The wasm-bindgen CLI version must match the one in `crates/office-wasm/Cargo.toml`.
+
+The browser version uses file pickers and downloads in place of the native file dialogs, which is enough for most UI work.
+
+## Building an installer
+
+To build an installer for your own machine:
+
+```sh
+npm run app:build                   # Mac: .app and .dmg
+npx tauri build --bundles nsis      # Windows: setup .exe
+npx tauri build --bundles deb       # Debian, Ubuntu: .deb
+```
+
+The output goes in `src-tauri/target/release/bundle/`. A copy you build yourself isn't signed and doesn't update itself. On a Mac, open it the first time by right-clicking it and choosing **Open**. Release builds are signed in GitHub Actions, and [releases and signing](releasing.md) lists every key.
 
 ## Commands
 
@@ -29,6 +63,21 @@ npx vite preview --port 1420
 ```
 
 Playwright can drive that build. To test code that only runs in the app (saving, autosave), fake `window.__TAURI_INTERNALS__` in `addInitScript`. Test builds also accept `window.__texFake` in place of the system's TeX, and `window.__fsFake` (`{ list(path), isDir(path) }`) as the file system behind Open Folder.
+
+## CI and browser tests
+
+On a pull request, CI checks the parts that changed. The Office engine gets format, Clippy, tests, WebAssembly builds and LibreOffice samples. The native app gets Linux Clippy and tests. The frontend gets a build, a type check and regression tests in headless Chromium. An engine change checks the frontend too. Pushes to `main` and manual runs check everything. The `ci` check fails when any job fails or is cancelled, and passes when a part that didn't change skips its jobs.
+
+To run the browser tests yourself, install Node 22, which CI uses, along with Rust's `wasm32-unknown-unknown` target and `wasm-bindgen-cli` 0.2.129. `npm ci` installs Playwright, but its Chromium downloads separately. On Linux, `--with-deps` also installs the system packages Chromium needs. Then run:
+
+```sh
+npm ci
+npx playwright install --with-deps chromium
+VITE_TEST_HOOKS=1 npm run build
+npm run test:browser
+```
+
+The runner starts and stops its own preview on `127.0.0.1:4173`, so leave that port free. It runs a chosen set of tests on local files a few at a time, and `BROWSER_TEST_JOBS=1` runs them one by one with live output. A test fails on a failed assertion or when it runs past its time limit. The tests use a fake native bridge, not the installed desktop app. [The stress suite](../../tests/stress/README.md) covers more, and says what it can't test.
 
 ## Native code
 
@@ -85,7 +134,7 @@ The runtime choices in Settings use `Logo` in `src/components/ui.tsx` as their s
 
 ## The onboarding's pictures
 
-`src/components/tour/*.webp` are screenshots of the app, in light and dark, opened on the sample documents in `scripts/tour/`. The `collab` and `agents` pictures need the standalone relay with MCP on: a second window joins the shared document, and two MCP clients write in it as Claude Code and Codex. The `extras` picture compiles `scripts/tour/Orbits.tex` with this computer's pdflatex and needs the LaTeX plugin built with `npm run plugins`. After a change that shows in them, serve a test build and run the script (it needs Playwright, which isn't a dependency: `npm i --no-save playwright`):
+`src/components/tour/*.webp` are screenshots of the app, in light and dark, opened on the sample documents in `scripts/tour/`. The `collab` and `agents` pictures need the standalone relay with MCP on: a second window joins the shared document, and two MCP clients write in it as Claude Code and Codex. The `extras` picture compiles `scripts/tour/Orbits.tex` with this computer's pdflatex and needs the LaTeX plugin built with `npm run plugins`. After a change that shows in them, serve a test build and run the script (it uses Playwright, which `npm ci` installs; the first time, also run `npx playwright install chromium` to download the browser):
 
 ```sh
 VITE_TEST_HOOKS=1 npx vite build && npx vite preview --port 1420

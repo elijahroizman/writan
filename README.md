@@ -1,91 +1,97 @@
-<img src="assets/app-icon.svg" width="72" height="72" alt="">
+<p align="center">
+  <img src="./assets/app-icon.svg" width="80" height="80" alt="Writan logo" />
+</p>
 
-# Writan
+<h1 align="center">Writan</h1>
 
-A small, fast app for the documents most people actually open: **Word, PowerPoint, Excel, CSV, PDF, Markdown, plain text and images**, each in a tab of one window. An optional plugin adds **LaTeX**.
+<p align="center">A fast, local app for Word, PowerPoint, Excel, PDF and Markdown, with live collaboration and AI agents built in.</p>
 
-Runs on macOS (Apple silicon and Intel), Windows (x64), and Debian/Ubuntu, Fedora and Arch Linux (x64 and ARM64). Everything runs locally: no accounts, nothing uploaded, works offline.
+<p align="center">
+  <a href="https://github.com/elijahroizman/writan/releases/latest"><strong>Download</strong></a> ·
+  <a href="./docs/README.md">Docs</a> ·
+  <a href="./CHANGELOG.md">Changelog</a> ·
+  <a href="https://github.com/elijahroizman/writan/issues">Issues</a>
+</p>
 
-## Why
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./.github/readme/hero-dark.webp" />
+    <img src="./.github/readme/hero-light.webp" width="100%" alt="Writan with a Word document and a signed PDF lease side by side in split view" />
+  </picture>
+</p>
 
-Word, PowerPoint and Preview are slow to open and heavy to keep running. Writan is built on [Tauri](https://tauri.app), so it uses the system's own web view instead of shipping a browser. It launches quickly, and each document engine loads only when you first open that kind of file.
+Writan opens the documents most people actually use: Word, PowerPoint, Excel, CSV, PDF, Markdown, plain text and images. Each one is a tab in a single window, and an optional plugin adds LaTeX.
+
+It runs on macOS, Windows and Linux. The installer is about 25 MB and there's no account to make. Your documents stay on your computer unless you share one with other people or let an AI agent work in it.
+
+## What you get
+
+- **Fast.** Writan is built on [Tauri](https://tauri.app), so it uses the system's web view instead of shipping a browser. Each document engine loads when you first open that kind of file. Writan also loads the Office engine in the background after it starts, but only on a new install or when Office files are open or in your recent files. If your open and recent files are all Markdown, the Office engine never loads.
+- **Edit together, live.** Share a Word document, presentation or workbook, and other people join with a six-digit code. Everyone sees each other's changes, carets and selections as they type. The file stays on the sharer's computer, and what crosses the internet is encrypted.
+- **AI agents inside your documents.** Claude Code, Codex, Antigravity, Grok Build, Hermes Agent and Pi can join a document you have open and work in it beside you. An agent writes and formats text, builds slides and fills in cells and charts, then looks at the pages as pictures to check its work. Its caret and name show up like a person's. In **Settings › AI**, **Add MCP server** sets up an agent on this computer and **Add skill** teaches it how to work with people.
+- **Its own Office engine.** Word, PowerPoint and Excel files open in an engine written in Rust in this repository and compiled to WebAssembly. Parts of a file that Writan doesn't edit are saved back unchanged. A part you do edit, such as an Excel chart, is rebuilt, and whatever Writan doesn't model in it gets Writan's defaults. The engine calculates about 140 Excel functions itself.
+- **PDFs you can work with.** Edit a PDF as a Word document. Sign it with a signature you draw, type or photograph, fill in its forms, and move, rotate, insert or extract pages. Scanned pages are read with offline OCR, so Find works on them too.
+- **LaTeX when you want it.** The plugin compiles `.tex` files with the TeX on your computer and shows the PDF beside the source. If TeX isn't installed, Writan offers to install it.
+- **Open.** The source code is MIT licensed, and you can build every part of it yourself.
 
 ## Install
 
+### Desktop app
+
 Download the latest build from [Releases](https://github.com/elijahroizman/writan/releases/latest).
 
-| | |
+| Platform | What to do |
 | --- | --- |
-| **Mac** | Open `Writan_…_aarch64.dmg` (Apple silicon: M1 and later) or `Writan_…_x64.dmg` (Intel) and drag Writan to Applications. |
-| **Windows** | Run `Writan_…_x64-setup.exe`. If Windows says it protected your PC, click **More info → Run anyway** (the app isn't code-signed for Windows yet). |
-| **Debian, Ubuntu** | `sudo apt install ./Writan_…_amd64.deb`, or `Writan_…_arm64.deb` on ARM (Ubuntu 22.04 or Debian 12 and newer). |
-| **Fedora** | `sudo dnf install ./Writan-…x86_64.rpm`, or `Writan-…aarch64.rpm` on ARM (Asahi) |
-| **Arch Linux, Omarchy** | `sudo pacman -U ./writan-…-x86_64.pkg.tar.zst`, or `writan-…-aarch64.pkg.tar.zst` on ARM (Arch Linux ARM, Asahi) |
+| macOS | Open `Writan_…_aarch64.dmg` on Apple silicon, or `Writan_…_x64.dmg` on Intel, and drag Writan to Applications. The app is signed and notarized by Apple, so it opens without a warning. |
+| Windows | Run `Writan_…_x64-setup.exe`. Windows code signing is coming soon. Until then, Windows may say it protected your PC the first time: click **More info**, then **Run anyway**. Updates are signed and checked either way. |
+| Debian, Ubuntu | `sudo apt install ./Writan_…_amd64.deb`, or `Writan_…_arm64.deb` on ARM. Needs Ubuntu 22.04 or Debian 12 or newer. |
+| Fedora | `sudo dnf install ./Writan-…x86_64.rpm`, or `Writan-…aarch64.rpm` on ARM. |
+| Arch Linux | `sudo pacman -U ./writan-…-x86_64.pkg.tar.zst`, or `writan-…-aarch64.pkg.tar.zst` on ARM. |
 
-The package name and the terminal command are `writan`. A machine that already has the `workspace` package picks up `writan` on its next system update. The command `workspace` remains and runs `writan`.
+Writan updates itself. On a Mac or Windows PC, a new version downloads in the background and installs when you quit. On Linux, the package adds Writan's APT, dnf or pacman repository, so new versions arrive with your other system updates. You can choose between the stable channel and nightly builds of the newest code. [Updating](./docs/user/updating.md) explains both.
 
-Writan keeps itself up to date. On Mac and Windows, new versions download in the background and install when you quit. On Linux, the .deb adds Writan's APT repository and the .rpm its dnf repository, so updates come with your system's other updates. On Arch, the package adds Writan's pacman repository, so `pacman -Syu` brings new versions. Every Linux package comes for x86_64 and ARM64 (`arm64` in the .deb's name, `aarch64` in the others). See [Updating](docs/user/updating.md).
+### Command line
 
-## Some notes
+The `writan` command opens files and folders from a terminal: `writan .` opens the folder you're in, and `writan notes.md` opens a file. The Linux packages install it. On a Mac, turn it on in **Settings › General › Command line**. On Windows, `writan.exe` opens the files you pass it, but the installer doesn't put a `writan` command on your PATH.
 
-This is early software, mostly written by AI models, and it has bugs. LaTeX on Windows in particular is still being tested. Please [open an issue](https://github.com/elijahroizman/writan/issues) when something breaks.
+### Connect an agent
+
+Install an agent such as [Claude Code](https://claude.com/product/claude-code) or [Codex](https://developers.openai.com/codex/cli) and sign in to it. The first time Writan opens, its welcome screens list the agents on your computer with a **Connect** button for each. Later, open **Settings › AI**, click **Add MCP server** and **Add skill** next to the agent, and start a new session in it. Any other agent that takes a remote MCP server can use the address shown there.
+
+## Why another document app?
+
+Word, PowerPoint and Preview take seconds to open and a lot of memory to keep running, and most of the time you only need them to read a file, change a paragraph or sign a page. Writan was built for those moments. It opens fast, keeps every document in one window and works offline.
+
+Collaboration and AI agents are part of the app rather than an add-on to a cloud service. You don't upload a file to a website to edit it with someone, and an agent edits the same document you're looking at instead of handing you a copy.
+
+## Privacy
+
+Sharing a document sends it to the people who join. An AI agent you connect can read the Word documents, presentations and workbooks you have open, and what it sends to its own provider is up to the agent.
+
+Writan also sends anonymous usage data to PostHog, such as which file types are opened and how long they take, so we know what to fix. It's on by default, and you can turn it off on the last page of the welcome screen or at any time with **Help make Writan better** in **Settings › General**. In the European Union, the EEA, the UK and Switzerland it starts off, and nothing is sent unless you turn it on. Writan judges where you are from the computer's time zone, without looking anything up. Usage data never includes your documents, file names or anything you type. [PRIVACY.md](./PRIVACY.md) lists exactly what is sent.
 
 ## Documentation
 
-- [What each editor can do](docs/user/features.md)
-- [Keyboard shortcuts](docs/user/keyboard-shortcuts.md)
-- [Plugins: images and LaTeX](docs/user/plugins.md)
-- [Updating, and the APT repository](docs/user/updating.md)
-- [What it doesn't do yet](docs/user/limitations.md)
-- [Changelog](CHANGELOG.md)
+- [What each editor can do](./docs/user/features.md)
+- [Keyboard shortcuts](./docs/user/keyboard-shortcuts.md)
+- [Plugins: images and LaTeX](./docs/user/plugins.md)
+- [Updating and release channels](./docs/user/updating.md)
+- [What it doesn't do yet](./docs/user/limitations.md)
 
-Working on the code: [development](docs/internals/development.md), [releases and signing](docs/internals/releasing.md), [writing a plugin](plugins/README.md).
+[All docs](./docs/README.md) has the full list.
 
-## Run it locally
+## Contributing
 
-You need [Node.js](https://nodejs.org) 20 or newer and [Rust](https://rustup.rs), plus your system's build tools:
+Bug reports and ideas are welcome in [issues](https://github.com/elijahroizman/writan/issues). Pull requests are welcome too, but there's no guarantee one gets merged, so open an issue first for anything large.
 
-- **Mac:** `xcode-select --install`
-- **Windows:** [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with "Desktop development with C++". WebView2 already comes with Windows 10 and 11.
-- **Debian, Ubuntu:** `sudo apt install build-essential pkg-config libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev libssl-dev libxdo-dev patchelf`
+- Read [CONTRIBUTING.md](./CONTRIBUTING.md) before you open a pull request.
+- Build from source with the [development guide](./docs/internals/development.md).
+- AI agents must follow [AGENTS.md](./AGENTS.md), which lists the models allowed to open a pull request.
 
-Then, from this folder:
+## License
 
-```sh
-rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.129 --locked
-npm install
-npm run dev        # the UI in your browser at http://localhost:1420
-npm run app:dev    # the real app, with hot reload
-```
+The source code is licensed under the [MIT License](./LICENSE).
 
-Both `npm run dev` and `npm run build` compile the document engine to WebAssembly. The wasm-bindgen CLI version must match `crates/office-wasm/Cargo.toml`.
+Writan is built on open-source engines and fonts, including [PDFium](https://pdfium.googlesource.com/pdfium/) through [EmbedPDF](https://github.com/embedpdf/embed-pdf-viewer), [CodeMirror](https://codemirror.net), [markdown-it](https://github.com/markdown-it/markdown-it) and the Carlito, Caladea and Liberation fonts. **Settings › General › Open-source licenses** lists every one with its license.
 
-The browser version uses file pickers and downloads in place of the native file dialogs, so it's enough for most UI work.
-
-To build an installer for your own machine:
-
-```sh
-npm run app:build                   # Mac: .app and .dmg
-npx tauri build --bundles nsis      # Windows: setup .exe
-npx tauri build --bundles deb       # Debian, Ubuntu: .deb
-```
-
-The output lands in `src-tauri/target/release/bundle/`. A copy you build yourself isn't signed and doesn't update itself. On a Mac, open it the first time with right-click → **Open**.
-
-Before opening a pull request, run `npm run typecheck`, `npm run build` and, if you changed Rust, `cargo check` in `src-tauri`. Read [CONTRIBUTING.md](CONTRIBUTING.md) first.
-
-## Signing
-
-Release builds are signed in GitHub Actions. Nothing secret lives in the repository.
-
-- **Updates** are signed with a minisign key (`TAURI_SIGNING_PRIVATE_KEY`). Installed copies check it against the public key in `src-tauri/tauri.conf.json`. Plugin downloads are checked against the same key.
-- **The Mac app** is signed with a Developer ID certificate and notarized by Apple.
-- **The APT and dnf repositories** are signed with a GPG key (`APT_SIGNING_KEY`). The .deb and .rpm install the public half.
-- **Windows** builds aren't code-signed yet.
-
-[Releases and signing](docs/internals/releasing.md) lists every secret and what breaks if one is lost.
-
-## Thanks
-
-Word, PowerPoint and Excel files run on Writan's own engine, written in Rust ([crates](crates)). Writan is also built on open-source engines and fonts: [PDFium](https://pdfium.googlesource.com/pdfium/) through [EmbedPDF](https://github.com/embedpdf/embed-pdf-viewer), [CodeMirror](https://codemirror.net), [markdown-it](https://github.com/markdown-it/markdown-it), the Carlito, Caladea and Liberation fonts, and many more. **Settings › General › Open-source licenses** lists every one with its license. Writan's themes follow [T3 Code](https://github.com/pingdotgg/t3code)'s, by T3 Tools Inc.: the theme picker, the theme editor and its color picker, custom CSS and how it's kept from loading files, the Open VSX theme search, and the tools that let an agent restyle the app. Parts of that code are adapted from T3 Code under its MIT license ([assets/third-party/T3-Code-LICENSE.txt](assets/third-party/T3-Code-LICENSE.txt)).
+Writan's themes follow [T3 Code](https://github.com/pingdotgg/t3code)'s, by T3 Tools Inc. That covers the theme picker, the theme editor and its color picker, custom CSS and how it's kept from loading files, the Open VSX theme search, and the tools that let an agent restyle the app. Parts of that code are adapted from T3 Code under its MIT license ([assets/third-party/T3-Code-LICENSE.txt](./assets/third-party/T3-Code-LICENSE.txt)).
