@@ -3,8 +3,8 @@
 // for the Release workflow's nightly feed. Run from the repository root with the tags fetched.
 //
 //   node scripts/nightly.mjs version          1.1.0-nightly.202611280930: the next minor release
-//                                             after the latest stable tag, with the UTC date and
-//                                             time.
+//                                             after the latest published stable release, with
+//                                             the UTC date and time.
 //   node scripts/nightly.mjs names [version]  The names a nightly goes by, as key=value lines for
 //                                             $GITHUB_OUTPUT: version, tag, label (the tag without
 //                                             its v, which the file names use) and title. Without
@@ -17,6 +17,13 @@
 //                                             merged since the previous stable or nightly tag,
 //                                             grouped by type, after the NOTES environment variable.
 //   node scripts/nightly.mjs newer <a> <b>    Exits 0 when version a is newer than b.
+//
+// The latest published stable release comes from STABLE_RELEASES: the tags of the GitHub
+// releases that are public and not pre-releases, which the workflow reads with gh. A stable tag
+// whose release never published doesn't count, so a nightly built while v1.1.0's build is failing
+// stays a 1.1.0 nightly, and 1.1.0 still replaces it in the nightly feed once it's out. Without
+// STABLE_RELEASES, outside GitHub Actions, `version` and `names` use the git tags
+// instead, for a dry run.
 //
 // A nightly is a pre-release of the next minor version: after 1.0.0, and after a 1.0.1 hotfix
 // too, it's 1.1.0-nightly.<stamp>. It sorts after the stable release it follows and before the
@@ -74,14 +81,28 @@ export function compareVersions(a, b) {
 
 const STABLE_TAG = /^v(\d+)\.(\d+)\.(\d+)$/
 
-function latestStable() {
-  const versions = git('tag', '--list', 'v*')
-    .split('\n')
+/** The highest stable version among `tags`, or undefined. */
+const highestStable = (tags) =>
+  tags
     .filter((tag) => STABLE_TAG.test(tag))
     .map((tag) => tag.slice(1))
     .sort(compareVersions)
-  const latest = versions.at(-1)
-  if (!latest) throw new Error('No stable vX.Y.Z tag. Fetch the tags (fetch-depth: 0).')
+    .at(-1)
+
+/** The latest published stable release, which the next nightly is the next minor version after. */
+function latestStable() {
+  const published = process.env.STABLE_RELEASES
+  if (published !== undefined) {
+    const latest = highestStable(published.split(/\s+/))
+    if (!latest) throw new Error('No published stable release: STABLE_RELEASES has no vX.Y.Z tag.')
+    return latest
+  }
+  if (process.env.GITHUB_ACTIONS === 'true') {
+    throw new Error("Set STABLE_RELEASES to the published stable releases' tags (gh api repos/<owner>/<repo>/releases).")
+  }
+  const latest = highestStable(git('tag', '--list', 'v*').split('\n'))
+  if (!latest) throw new Error('No stable vX.Y.Z tag. Fetch the tags (git fetch --tags).')
+  console.error(`Dry run: using the highest stable git tag, v${latest}, which may not be published. STABLE_RELEASES sets the published ones.`)
   return latest
 }
 
@@ -174,18 +195,23 @@ function notes() {
 }
 
 const [command, ...args] = process.argv.slice(2)
-if (command === 'version') {
-  process.stdout.write(nightlyVersion(latestStable()) + '\n')
-} else if (command === 'names' && args.length <= 1) {
-  const names = nightlyNames(args[0] ?? nightlyVersion(latestStable()))
-  process.stdout.write(Object.entries(names).map(([key, value]) => `${key}=${value}\n`).join(''))
-} else if (command === 'tag-version' && args.length === 1) {
-  process.stdout.write(tagVersion(args[0]) + '\n')
-} else if (command === 'notes') {
-  process.stdout.write(notes())
-} else if (command === 'newer' && args.length === 2) {
-  process.exit(compareVersions(args[0], args[1]) > 0 ? 0 : 1)
-} else if (command !== undefined) {
-  console.error('usage: node scripts/nightly.mjs version | names [version] | tag-version <tag> | notes | newer <a> <b>')
-  process.exit(2)
+try {
+  if (command === 'version') {
+    process.stdout.write(nightlyVersion(latestStable()) + '\n')
+  } else if (command === 'names' && args.length <= 1) {
+    const names = nightlyNames(args[0] ?? nightlyVersion(latestStable()))
+    process.stdout.write(Object.entries(names).map(([key, value]) => `${key}=${value}\n`).join(''))
+  } else if (command === 'tag-version' && args.length === 1) {
+    process.stdout.write(tagVersion(args[0]) + '\n')
+  } else if (command === 'notes') {
+    process.stdout.write(notes())
+  } else if (command === 'newer' && args.length === 2) {
+    process.exit(compareVersions(args[0], args[1]) > 0 ? 0 : 1)
+  } else if (command !== undefined) {
+    console.error('usage: node scripts/nightly.mjs version | names [version] | tag-version <tag> | notes | newer <a> <b>')
+    process.exit(2)
+  }
+} catch (err) {
+  console.error(err instanceof Error ? err.message : String(err))
+  process.exit(1)
 }

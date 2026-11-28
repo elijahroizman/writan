@@ -11,7 +11,9 @@ Both channels build with the same workflow (`.github/workflows/build.yml`), app 
 
 ## Version scheme
 
-A stable release is `X.Y.Z`. A nightly is a pre-release of the next minor version after the latest stable tag, `<major>.<minor + 1>.0`, with the build's UTC date and time: after `v1.0.0`, a nightly built on 28 November 2026 at 09:30 UTC is `1.1.0-nightly.202611280930`. After a `v1.0.1` hotfix it's still a 1.1.0 nightly, and after `v1.1.0` nightlies are 1.2.0. SemVer sorts it after 1.0.0 and 1.0.1, before 1.1.0, and before any later nightly. The stamp is one number because SemVer forbids leading zeros in a numeric identifier, which `nightly.20261128.0930` would have.
+A stable release is `X.Y.Z`. A nightly is a pre-release of the next minor version after the latest published stable release, `<major>.<minor + 1>.0`, with the build's UTC date and time: after `v1.0.0`, a nightly built on 28 November 2026 at 09:30 UTC is `1.1.0-nightly.202611280930`. After a `v1.0.1` hotfix it's still a 1.1.0 nightly, and after `v1.1.0` nightlies are 1.2.0. SemVer sorts it after 1.0.0 and 1.0.1, before 1.1.0, and before any later nightly. The stamp is one number because SemVer forbids leading zeros in a numeric identifier, which `nightly.20261128.0930` would have.
+
+The stable release a nightly follows is the highest `vX.Y.Z` GitHub release that's public and not a pre-release, which the workflow reads with `gh` and hands to `scripts/nightly.mjs` as `STABLE_RELEASES`. A stable tag whose release is still a draft doesn't count. Otherwise a nightly built while `v1.1.0`'s build was failing would be a 1.2.0 nightly, the nightly feed would keep it over 1.1.0 once that published, and nightly copies would skip 1.1.0. Run on its own, `node scripts/nightly.mjs version` reads the git tags instead, as a dry run.
 
 That version is what the updaters compare. It goes into `tauri.conf.json` at build time, `latest.json`'s `version` and the Linux packages (below). Everything people read uses one name built from it, with the same date and time in UTC. `scripts/nightly.mjs names` makes them:
 

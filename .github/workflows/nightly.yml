@@ -2,10 +2,12 @@ name: Nightly
 
 # A nightly: main built for every platform the Release workflow builds (build.yml), as a
 # pre-release of the next minor version, <major>.<minor + 1>.0-nightly.<UTC date and time> after
-# the latest stable tag, for example 1.1.0-nightly.202611280930 after 1.0.0 or a 1.0.1 hotfix.
-# That sorts after the stable release it follows and before the next minor one, so a nightly copy
-# moves onto that release by itself. Same app ID and signing as a stable release, so a copy
-# switches channel in place.
+# the latest published stable release, for example 1.1.0-nightly.202611280930 after 1.0.0 or a
+# 1.0.1 hotfix. That sorts after the stable release it follows and before the next minor one, so
+# a nightly copy moves onto that release by itself. A stable tag whose release hasn't published
+# doesn't count: a nightly built while v1.1.0's build is failing stays a 1.1.0 nightly, which
+# 1.1.0 replaces in the nightly feed once it's out. Same app ID and signing as a stable release,
+# so a copy switches channel in place.
 #
 # The updaters compare that version, so it goes into tauri.conf.json, latest.json and the
 # packages. Everything people see uses one name built from it (scripts/nightly.mjs): the tag
@@ -20,10 +22,11 @@ name: Nightly
 # and the Linux packages, with notes listing the PR titles merged since the previous nightly or
 # stable tag, grouped by type (scripts/nightly.mjs), after the "notes" input, and deletes all but
 # the newest 10 nightlies. Then the feed job points the nightly update feed (latest.json on the
-# pre-release tagged "nightly") at it, unless the feed already has a newer version. It never touches the stable feed or the APT, dnf and pacman
-# repositories. Linux copies on the nightly channel install the packages from the pre-release:
-# the .deb and .rpm are signed with the updater key (`tauri signer sign`), the Arch package with
-# the repositories' key (APT_SIGNING_KEY), as pacman expects.
+# pre-release tagged "nightly") at it, unless the feed already has a newer version. It never
+# touches the stable feed or the APT, dnf and pacman repositories. Linux copies on the nightly
+# channel install the packages from the pre-release: the .deb and .rpm are signed with the
+# updater key (`tauri signer sign`), the Arch package with the repositories' key
+# (APT_SIGNING_KEY), as pacman expects.
 #
 # Untick "publish" to build without publishing anything.
 on:
@@ -63,15 +66,21 @@ jobs:
           exit 1
       - uses: actions/checkout@v4
         with:
-          # The tags give the version and where the list of changes starts.
+          # The tags give where the list of changes starts.
           fetch-depth: 0
           persist-credentials: false
       - name: Version and notes
         id: version
         env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES: ${{ inputs.notes }}
         run: |
           set -euo pipefail
+          # The published stable releases, which the version follows: a stable tag whose release
+          # is still a draft, or failed, doesn't count (scripts/nightly.mjs).
+          STABLE_RELEASES="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select((.draft | not) and (.prerelease | not)) | .tag_name')"
+          export STABLE_RELEASES
           # version, tag, label and title, all from the same minute.
           node scripts/nightly.mjs names > "$RUNNER_TEMP/names"
           cat "$RUNNER_TEMP/names"
