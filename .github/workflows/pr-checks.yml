@@ -1,0 +1,74 @@
+name: PR checks
+
+# Every pull request has a Conventional Commits title and a description in the shape of
+# .github/pull_request_template.md. CONTRIBUTING.md explains both.
+#
+# The title is `type(scope): summary` or `type: summary`, with a `!` before the colon for a
+# breaking change: `fix(excel): keep merged cells on paste`, `feat(pdf)!: drop the old signature
+# format`. The scope is optional and lowercase. Pull requests are squash-merged with the title as
+# the commit subject, and the nightly notes group those subjects by type. Release pull requests
+# are `chore(release): 1.0.0`.
+#
+# The description has the four sections What changed, Screenshots, Evidence and Known
+# limitations, and ends with the Model, Reasoning and Harness lines in that order. Someone who
+# wrote the change without a model writes `Model: none` instead of the three lines.
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions: {}
+
+jobs:
+  title:
+    name: PR title
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check the title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          types='feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style'
+          if printf '%s' "$TITLE" | grep -Eqx "($types)(\([a-z0-9][a-z0-9-]*\))?!?: [^ ].*"; then
+            echo "OK: $TITLE"
+            exit 0
+          fi
+          echo "::error::The PR title must be 'type(scope): summary' or 'type: summary', with type one of ${types//|/, } and an optional lowercase scope, for example 'fix(excel): keep merged cells on paste'. It is: $TITLE"
+          exit 1
+
+  description:
+    name: PR description
+    runs-on: ubuntu-24.04
+    # Dependabot and other bots don't fill in the template.
+    if: github.event.pull_request.user.type != 'Bot'
+    steps:
+      - name: Check the description
+        env:
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          body="$(printf '%s\n' "$BODY" | tr -d '\r')"
+          missing=()
+          for heading in 'What changed' 'Screenshots' 'Evidence' 'Known limitations'; do
+            printf '%s\n' "$body" | grep -Eqx "## $heading[[:space:]]*" || missing+=("a '## $heading' section")
+          done
+          # The model lines, in order: Model, Reasoning, Harness, each with a value. `Model: none`
+          # stands alone. Several models give several sets.
+          lines="$(printf '%s\n' "$body" | grep -E '^(Model|Reasoning|Harness):' || true)"
+          if ! printf '%s\n' "$lines" | grep -Eq '^Model: [^ ]'; then
+            missing+=("the 'Model:', 'Reasoning:' and 'Harness:' lines")
+          elif ! printf '%s\n' "$lines" | awk '
+              /^Model: none[[:space:]]*$/ { if (want != "" && want != "Model") bad = 1; want = "Model"; next }
+              /^Model: [^ ]/ { if (want != "" && want != "Model") bad = 1; want = "Reasoning"; next }
+              /^Reasoning: [^ ]/ { if (want != "Reasoning") bad = 1; want = "Harness"; next }
+              /^Harness: [^ ]/ { if (want != "Harness") bad = 1; want = "Model"; next }
+              { bad = 1 }
+              END { exit (bad || want != "Model") }'; then
+            missing+=("'Model:', 'Reasoning:' and 'Harness:' lines, each filled in and in that order")
+          fi
+          if [ "${#missing[@]}" -eq 0 ]; then
+            echo "OK"
+            exit 0
+          fi
+          for m in "${missing[@]}"; do
+            echo "::error::The PR description needs $m. See .github/pull_request_template.md and CONTRIBUTING.md."
+          done
+          exit 1
