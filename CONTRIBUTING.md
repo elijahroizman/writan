@@ -18,6 +18,13 @@ CI checks the title, and the check fails until it matches.
 
 ## Pull request descriptions
 
+A reviewer should understand a pull request in a minute or two, so keep each description simple. The [template](.github/pull_request_template.md) has these four sections, and every pull request fills in all of them:
+
+- **What changed.** A few plain bullets on what someone using Writan or working on it will notice, and why if it isn't obvious. Skip the implementation detail the diff already shows.
+- **Screenshots.** Before and after pictures of anything you can see, cropped to the part that changed and taken at 2x. `scripts/pr-screenshots.sh before.png after.png` uploads them to the `pr-screenshots` branch and prints the Markdown to paste. If nothing visible changed, write "No visible change."
+- **Evidence.** How you know it works: the commands you ran and what they printed, the tests you added, the files you opened and what you clicked.
+- **Known limitations.** What the change doesn't do yet, what you couldn't test, such as Windows or a real update, and anything a reviewer should look at closely. Write "None known." only after you've looked.
+
 Each description ends with these three lines, spelled exactly like this, one per line and in this order. The pull request template has them already.
 
 ```

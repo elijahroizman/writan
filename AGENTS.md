@@ -16,6 +16,7 @@ Fable, Opus, Astra and Sol may also commit straight to `main`. Every other chang
 ## Pull requests and commits
 
 - The title follows Conventional Commits: `type(scope): summary`, scope optional, type one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` or `style`. For example, `fix(excel): keep column widths when a sheet is renamed`. CI checks the title.
+- The description fills in every section of [the template](.github/pull_request_template.md): what changed, screenshots, evidence and known limitations. Write for a person skimming it, in plain bullets. For any visible change, take cropped 2x screenshots as described under Screenshots below and upload them with `scripts/pr-screenshots.sh`, which prints the Markdown to paste. Evidence is what you ran and what it printed, not a claim that it works. Known limitations names what you couldn't test.
 - The description ends with these three lines, spelled exactly like this, in this order. Give your exact model, the reasoning level you ran at, and your harness, as [CONTRIBUTING.md](CONTRIBUTING.md#pull-request-descriptions) defines them. Reviews end with the same three lines.
 
   ```
