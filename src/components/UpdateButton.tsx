@@ -23,10 +23,13 @@ function buttonLabel(phase: UpdatePhase): string {
   }
 }
 
+/** The check finished and found nothing newer than this copy. */
+const onLatest = (phase: UpdatePhase, version: string | null) => phase === 'current' && !(version && newer(version, __APP_VERSION__))
+
 function heading(phase: UpdatePhase, version: string | null): string {
   if (phase === 'error' && !version) return "Couldn't check for updates"
   if (phase === 'checking' && !version) return 'Checking for updates'
-  if (phase === 'current' && updatesInstallable) return "You're up to date"
+  if (onLatest(phase, version)) return "You're on the latest version"
   return version ? `Writan ${displayVersion(version)}` : 'Updates'
 }
 
@@ -50,6 +53,7 @@ function detail(phase: UpdatePhase, error: string | null, publishedAt: string | 
   if (channel === 'stable' && isNightlyVersion(__APP_VERSION__)) {
     return 'This copy is a nightly. Writan moves to stable at the next stable release newer than it.'
   }
+  if (onLatest(phase, version)) return `Writan ${displayVersion(__APP_VERSION__)}`
   if (!updatesInstallable) return date ? `Latest GitHub release · ${date}` : 'Latest GitHub release'
   return date ? `This is the newest release · ${date}` : 'This is the newest release'
 }
@@ -93,6 +97,10 @@ export function UpdateButton() {
   const [sections, setSections] = useState<{ releases: ReleaseEntry[]; html: string[] } | null>(null)
 
   const busy = phase === 'checking' || phase === 'downloading' || phase === 'installing'
+  // Up to date: say so, and leave the notes one click away. The link is for this version's own
+  // notes, so a nightly waiting for the next stable release, whose latest release is older, has none.
+  const latest = onLatest(phase, version)
+  const ownNotes = !!version && version === __APP_VERSION__
   const label = buttonLabel(phase)
 
   useEffect(() => {
@@ -200,45 +208,47 @@ export function UpdateButton() {
               <h2 id="update-title">{heading(phase, version)}</h2>
               <p>{detail(phase, error, publishedAt, version, linux, channel)}</p>
             </header>
-            <div
-              className="update-notes"
-              onClick={(e) => {
-                const link = (e.target as HTMLElement).closest('a')
-                const href = link?.getAttribute('href')
-                if (!link || !href || href.startsWith('#')) return
-                e.preventDefault()
-                void openExternal(href)
-              }}
-            >
-              {phase === 'checking' && !html && !sections ? (
-                <p className="update-notes-empty">Fetching the release notes…</p>
-              ) : sections ? (
-                <>
-                  {sections.releases.map((release, i) => (
-                    <section key={release.version} className="update-release">
-                      <h3>Changes in {displayVersion(release.version)}</h3>
-                      <div dangerouslySetInnerHTML={{ __html: sections.html[i] ?? '' }} />
+            {!latest && (
+              <div
+                className="update-notes"
+                onClick={(e) => {
+                  const link = (e.target as HTMLElement).closest('a')
+                  const href = link?.getAttribute('href')
+                  if (!link || !href || href.startsWith('#')) return
+                  e.preventDefault()
+                  void openExternal(href)
+                }}
+              >
+                {phase === 'checking' && !html && !sections ? (
+                  <p className="update-notes-empty">Fetching the release notes…</p>
+                ) : sections ? (
+                  <>
+                    {sections.releases.map((release, i) => (
+                      <section key={release.version} className="update-release">
+                        <h3>Changes in {displayVersion(release.version)}</h3>
+                        <div dangerouslySetInnerHTML={{ __html: sections.html[i] ?? '' }} />
+                        <p className="update-release-link">
+                          <a href={release.url}>View on GitHub</a>
+                        </p>
+                      </section>
+                    ))}
+                    {truncated && (
                       <p className="update-release-link">
-                        <a href={release.url}>View on GitHub</a>
+                        <a href={RELEASES_PAGE}>Earlier versions on GitHub</a>
                       </p>
-                    </section>
-                  ))}
-                  {truncated && (
-                    <p className="update-release-link">
-                      <a href={RELEASES_PAGE}>Earlier versions on GitHub</a>
-                    </p>
-                  )}
-                </>
-              ) : html ? (
-                <div dangerouslySetInnerHTML={{ __html: html }} />
-              ) : (
-                <p className="update-notes-empty">{error ? 'The release notes couldn’t be loaded.' : 'This release has no notes.'}</p>
-              )}
-            </div>
+                    )}
+                  </>
+                ) : html ? (
+                  <div dangerouslySetInnerHTML={{ __html: html }} />
+                ) : (
+                  <p className="update-notes-empty">{error ? 'The release notes couldn’t be loaded.' : 'This release has no notes.'}</p>
+                )}
+              </div>
+            )}
             <footer className="update-panel-foot">
-              {url && !sections && (
+              {url && !sections && (!latest || ownNotes) && (
                 <button type="button" className="update-link" onClick={() => void openExternal(url)}>
-                  View on GitHub
+                  {latest ? 'What’s new in this version' : 'View on GitHub'}
                 </button>
               )}
               <button type="button" className="update-go" disabled={busy} onClick={primary}>
