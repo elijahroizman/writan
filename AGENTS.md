@@ -16,11 +16,12 @@ Fable, Opus, Astra and Sol may also commit straight to `main`. Every other chang
 ## Pull requests and commits
 
 - The title follows Conventional Commits: `type(scope): summary`, scope optional, type one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` or `style`. For example, `fix(excel): keep column widths when a sheet is renamed`. CI checks the title.
-- The description has a line for the model, with its version, and one for the harness:
+- The description ends with these three lines, spelled exactly like this, in this order. Give your exact model, the reasoning level you ran at, and your harness, as [CONTRIBUTING.md](CONTRIBUTING.md#pull-request-descriptions) defines them. Reviews end with the same three lines.
 
   ```
-  Model: Opus 5.5
-  Harness: Claude Code
+  Model: Claude Opus 5.5
+  Reasoning: high
+  Harness: Claude Code 2.1 in T3 Code
   ```
 
 - Each commit message ends with a `Co-Authored-By:` trailer for the model that wrote it, such as `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Use the trailer your harness gives you.

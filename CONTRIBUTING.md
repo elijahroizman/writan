@@ -18,14 +18,19 @@ CI checks the title, and the check fails until it matches.
 
 ## Pull request descriptions
 
-Each description names the model that wrote the change, with its version, and the harness it ran in:
+Each description ends with these three lines, spelled exactly like this, one per line and in this order. The pull request template has them already.
 
 ```
-Model: Opus 5.5
-Harness: Claude Code
+Model: Claude Opus 5.5
+Reasoning: high
+Harness: Claude Code 2.1 in T3 Code
 ```
 
-If you wrote the change yourself without a model, say that instead. A reviewer names their model and harness in the review too.
+- **Model** is the provider's full name for the model, with its version: `Claude Opus 5.5`, `GPT-6.2 Sol`, `Gemini 4 Neon`. Not a nickname like "Opus" or "the latest Claude".
+- **Reasoning** is the effort level the model ran at, in the words the harness uses for it: `none`, `minimal`, `low`, `medium`, `high`, `xhigh`, `max` or `ultrathink`. Write `default` if you didn't set one, and `n/a` if the model has no setting.
+- **Harness** is the tool that ran the model, with its version if it shows one, and the app around it if there is one: `Codex 0.172`, `Claude Code 2.1 in T3 Code`, `Devin`.
+
+If several models wrote the change, give each its own three lines. If you wrote the change yourself without a model, write `Model: none` and leave out the other two. A reviewer puts the same three lines at the end of the review.
 
 ## Before you open a pull request
 
