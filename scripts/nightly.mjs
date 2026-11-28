@@ -14,15 +14,17 @@
 //                                             1.0.0, v1.1.0-nightly-2026-11-28-0930 is
 //                                             1.1.0-nightly.202611280930.
 //   node scripts/nightly.mjs notes            The pre-release's notes, in Markdown: the PR titles
-//                                             merged since the previous stable or nightly tag,
-//                                             grouped by type, after the NOTES environment variable.
+//                                             merged since the previous nightly of the same minor
+//                                             version, or else the latest published stable
+//                                             release, grouped by type, after the NOTES
+//                                             environment variable.
 //   node scripts/nightly.mjs newer <a> <b>    Exits 0 when version a is newer than b.
 //
 // The latest published stable release comes from STABLE_RELEASES: the tags of the GitHub
 // releases that are public and not pre-releases, which the workflow reads with gh. A stable tag
 // whose release never published doesn't count, so a nightly built while v1.1.0's build is failing
 // stays a 1.1.0 nightly, and 1.1.0 still replaces it in the nightly feed once it's out. Without
-// STABLE_RELEASES, outside GitHub Actions, `version` and `names` use the git tags
+// STABLE_RELEASES, outside GitHub Actions, `version`, `names` and `notes` use the git tags
 // instead, for a dry run.
 //
 // A nightly is a pre-release of the next minor version: after 1.0.0, and after a 1.0.1 hotfix
@@ -39,7 +41,8 @@
 //   files       Writan_1.1.0-nightly-2026-11-28-0930_x64.dmg
 //
 // The tag maps one to one back to the version (tagVersion here, version_from_tag in
-// src-tauri/src/update.rs, versionFromTag in src/lib/versions.ts).
+// src-tauri/src/update.rs, versionFromTag in src/lib/versions.ts). scripts/check-nightly.mjs
+// tests this script.
 
 import { execFileSync } from 'node:child_process'
 
@@ -168,15 +171,32 @@ export function groupTitles(subjects) {
   return [...groups].filter(([, lines]) => lines.length).map(([heading, lines]) => `### ${heading}\n\n${lines.join('\n')}`)
 }
 
-function notes() {
-  // The newest stable or nightly tag this commit has. A failed nightly stays a draft, and a draft
-  // has no tag, so its changes show up in the next one.
-  let since = ''
+/**
+ * Where a nightly's list of changes starts: the newest earlier nightly of the same minor version
+ * that this commit has, or else the stable release `stable` it follows. Not simply the newest tag
+ * this commit has: a v1.0.1 hotfix tagged on main after a 1.1.0 nightly would be that, and the
+ * hotfix's changes would be left out of the next 1.1.0 nightly, whose readers never see 1.0.1's
+ * notes, as it's older than their nightly. A failed nightly stays a draft, and a draft has no
+ * tag, so its changes show up in the next one.
+ */
+function notesBaseline(stable) {
+  const series = nightlyVersion(stable).split('-')[0]
+  const nightlies = git('tag', '--merged', 'HEAD', '--list', `v${series}-nightly-*`)
+    .split('\n')
+    .filter((tag) => NIGHTLY_TAG.test(tag))
+    .sort((a, b) => compareVersions(tagVersion(a), tagVersion(b)))
+  if (nightlies.length) return nightlies.at(-1)
   try {
-    since = git('describe', '--tags', '--abbrev=0', '--match', 'v[0-9]*', 'HEAD')
+    git('rev-parse', '--quiet', '--verify', `refs/tags/v${stable}`)
+    return `v${stable}`
   } catch {
-    // No tag yet: every commit is new.
+    // No tag for it here: every commit is new.
+    return ''
   }
+}
+
+function notes() {
+  const since = notesBaseline(latestStable())
   const range = since ? [`${since}..HEAD`] : ['HEAD']
   const subjects = git('log', '--no-merges', '--format=%s', ...range)
     .split('\n')

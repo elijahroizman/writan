@@ -22,6 +22,7 @@ jobs:
       app: ${{ steps.filter.outputs.app }}
       frontend: ${{ steps.filter.outputs.frontend }}
       packaging: ${{ steps.filter.outputs.packaging }}
+      release: ${{ steps.filter.outputs.release }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,6 +51,10 @@ jobs:
               - 'scripts/check-linux-packages.sh'
               - 'scripts/check-debian-repack.py'
               - 'src-tauri/linux/**'
+              - '.github/workflows/ci.yml'
+            release:
+              - 'scripts/nightly.mjs'
+              - 'scripts/check-nightly.mjs'
               - '.github/workflows/ci.yml'
             frontend:
               - 'src/**'
@@ -303,9 +308,20 @@ jobs:
           persist-credentials: false
       - run: scripts/check-linux-packages.sh
 
+  release:
+    name: Nightly scripts
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.release == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: node scripts/check-nightly.mjs
+
   ci:
     name: ci
-    needs: [changes, engine, engine-samples, engine-windows, app, app-native, frontend, packaging]
+    needs: [changes, engine, engine-samples, engine-windows, app, app-native, frontend, packaging, release]
     if: always()
     runs-on: ubuntu-24.04
     steps:

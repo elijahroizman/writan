@@ -19,14 +19,15 @@ name: Nightly
 #   gh workflow run nightly.yml --ref main
 #
 # It publishes a GitHub pre-release with that tag holding the installers, the update bundles
-# and the Linux packages, with notes listing the PR titles merged since the previous nightly or
-# stable tag, grouped by type (scripts/nightly.mjs), after the "notes" input, and deletes all but
-# the newest 10 nightlies. Then the feed job points the nightly update feed (latest.json on the
-# pre-release tagged "nightly") at it, unless the feed already has a newer version. It never
-# touches the stable feed or the APT, dnf and pacman repositories. Linux copies on the nightly
-# channel install the packages from the pre-release: the .deb and .rpm are signed with the
-# updater key (`tauri signer sign`), the Arch package with the repositories' key
-# (APT_SIGNING_KEY), as pacman expects.
+# and the Linux packages, with notes listing the PR titles merged since the previous nightly of
+# the same minor version, or else the stable release it follows, grouped by type
+# (scripts/nightly.mjs), after the "notes" input, and deletes all but the newest 10 nightlies.
+# Then the feed job points the nightly update feed (latest.json on the pre-release tagged
+# "nightly") at it, unless the feed already has a newer version. It never touches the stable
+# feed or the APT, dnf and pacman repositories. Linux copies on the nightly channel install the
+# packages from the pre-release: the .deb and .rpm are signed with the updater key
+# (`tauri signer sign`), the Arch package with the repositories' key (APT_SIGNING_KEY), as pacman
+# expects.
 #
 # Untick "publish" to build without publishing anything.
 on:
