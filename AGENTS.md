@@ -11,8 +11,6 @@ Only these models may open a pull request: Opus, Fable, Sonnet, Sol, Astra, Muse
 - Muse Wonder Full is a model of its own. Other Muse models aren't on the list.
 - If you aren't sure which model you are, don't open a pull request.
 
-Fable, Opus, Astra and Sol may also commit straight to `main`. Every other change from a model on the list goes through a pull request that a different model reviews. CONTRIBUTING.md has the review rules.
-
 ## Pull requests and commits
 
 One pull request does one thing. Don't fold an unrelated fix, refactor or cleanup into it, even a small one you noticed on the way. Open a separate pull request for it, or tell the maintainer, or open an issue. If the title needs "and" to describe the change, split it. A pull request that mixes unrelated changes gets sent back.
