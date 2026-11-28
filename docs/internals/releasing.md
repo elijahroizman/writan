@@ -62,7 +62,7 @@ The **Prepare nightly** job works out the version, tag and title with `scripts/n
 2. signs the .deb and .rpm files with the updater key (`tauri signer sign`, giving `<file>.sig`) and the Arch packages with `APT_SIGNING_KEY` (a GPG `<file>.sig`, which the app downloads beside the package), and uploads them. The renaming comes first because the app checks the file name a .deb or .rpm signature was made for;
 3. renames the Mac and Windows files on the draft from the SemVer version tauri-action names them after to the nightly's name, the Windows installer together with its `.sig`. The updater doesn't check a file name in those signatures;
 4. writes `latest.json` from the draft's update bundles, under their new names, uploads it to the draft and publishes the pre-release;
-5. deletes every nightly pre-release and its tag except the newest 10, along with drafts that failed runs left. It matches both tag shapes, ordered by their stamp.
+5. deletes every nightly pre-release and its tag except the newest 10, along with drafts that failed runs left. It matches both tag shapes, ordered by their stamp, and only pre-releases, so a nightly someone marked as a full release stays.
 
 Once the pre-release is public, a rerun of the job skips the first four steps. The **Nightly feed** job after it copies the pre-release's `latest.json` to the `nightly` pre-release, unless the feed already has a newer version, such as a stable release published during the build.
 
