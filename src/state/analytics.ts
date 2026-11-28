@@ -80,18 +80,24 @@ function regionOf(tag: string): string | null {
   return match ? match[1].toUpperCase() : null
 }
 
+/** Zones that say nothing about where the computer is. */
+const placeless = (zone: string) => !zone || zone === 'UTC' || zone === 'GMT' || zone.startsWith('Etc/') || zone === 'Universal' || zone === 'Zulu'
+
 /**
  * Whether the setting starts on: everywhere but the EU, the EEA, the UK and Switzerland, where
- * the law asks for agreement first. Worked out on this computer from its time zone and its
- * languages' regions; nothing is looked up.
+ * the law asks for agreement first. Worked out on this computer, and nothing is looked up. The
+ * time zone decides when it names a place. The languages' regions decide only when it doesn't,
+ * because many people outside Europe use British English: Chromium on an Australian system
+ * reports en-GB.
  */
 export function defaultAnalyticsOn(): boolean {
+  let zone = ''
   try {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''
-    if (zone.startsWith('Europe/') || EUROPEAN_ZONES.has(zone)) return false
+    zone = Intl.DateTimeFormat().resolvedOptions().timeZone ?? ''
   } catch {
     // No time zone: go by the languages.
   }
+  if (!placeless(zone)) return !(zone.startsWith('Europe/') || EUROPEAN_ZONES.has(zone))
   const languages = typeof navigator === 'undefined' ? [] : navigator.languages?.length ? navigator.languages : [navigator.language]
   for (const tag of languages) {
     const region = tag ? regionOf(tag) : null

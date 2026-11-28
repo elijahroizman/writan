@@ -28,7 +28,7 @@ All of these must hold:
 
 Without a key, `track()` returns at once. Nothing is queued, no ID is made and no request goes out.
 
-While `choice` is `null`, the person hasn't decided. Events queue in memory and are sent only if they turn it on during that run. Settings shows the switch at `defaultAnalyticsOn()`, which is off when the time zone or a language's region is in the EU, the EEA, the UK or Switzerland. Turning it off empties the queue and deletes `workspace.analyticsId`. Turning it on again makes a new ID.
+While `choice` is `null`, the person hasn't decided. Events queue in memory and are sent only if they turn it on during that run. Settings shows the switch at `defaultAnalyticsOn()`, which is off when the time zone is in the EU, the EEA, the UK or Switzerland. A placeless zone, such as UTC or `Etc/*`, falls back to the regions of `navigator.languages`. The time zone wins otherwise, because many people outside Europe use en-GB. Turning it off empties the queue and deletes `workspace.analyticsId`. Turning it on again makes a new ID.
 
 ## The rules
 

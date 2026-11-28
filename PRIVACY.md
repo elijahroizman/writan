@@ -49,7 +49,7 @@ Like every server you connect to, PostHog receives your IP address. Writan asks 
 
 Until you choose, Writan sends nothing. What happens in the meantime waits in memory and goes only if you turn usage data on; it's dropped if you turn it off or quit.
 
-The switch starts on everywhere except the European Union, the European Economic Area, the United Kingdom and Switzerland, where it starts off. Writan decides this on your computer from its time zone and language settings, without looking anything up.
+The switch starts on everywhere except the European Union, the European Economic Area, the United Kingdom and Switzerland, where it starts off. Writan decides this on your computer from its time zone, without looking anything up. If the time zone is set to UTC and so names no place, it goes by your language settings instead.
 
 Turning it off stops sending at once, drops anything not yet sent and deletes the install ID from your computer. Events sent before can't be linked to you after that. If you turn it on again, Writan makes a new ID.
 

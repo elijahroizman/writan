@@ -122,7 +122,11 @@ const flush = (page) => page.evaluate(() => window.__analytics.flushAnalytics())
       { timezoneId: 'Europe/Berlin', locale: 'de-DE', on: false },
       { timezoneId: 'Atlantic/Reykjavik', locale: 'en-US', on: false },
       { timezoneId: 'Asia/Nicosia', locale: 'en-US', on: false },
-      { timezoneId: 'America/New_York', locale: 'en-GB', on: false },
+      { timezoneId: 'America/New_York', locale: 'en-GB', on: true },
+      { timezoneId: 'Australia/Sydney', locale: 'en-GB', on: true },
+      { timezoneId: 'Etc/UTC', locale: 'en-GB', on: false },
+      { timezoneId: 'Etc/UTC', locale: 'de-DE', on: false },
+      { timezoneId: 'Etc/UTC', locale: 'en-US', on: true },
     ]
     for (const c of cases) {
       const context = await browser.newContext({ timezoneId: c.timezoneId, locale: c.locale })
