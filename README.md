@@ -68,7 +68,7 @@ Collaboration and AI agents are part of the app rather than an add-on to a cloud
 
 Sharing a document sends it to the people who join. An AI agent you connect can read the Word documents, presentations and workbooks you have open, and what it sends to its own provider is up to the agent.
 
-Writan can also send anonymous usage data to PostHog, such as which file types are opened and how long they take, so we know what to fix. It sends it only from a build made with Writan's PostHog key, and only while **Help make Writan better** in **Settings › General** is on. Until you choose, Writan sends nothing. The switch starts off in the European Union, the EEA, the UK and Switzerland, which Writan judges from the computer's time zone without looking up where you are. Usage data never includes your documents, file names or anything you type. [PRIVACY.md](./PRIVACY.md) lists exactly what is sent.
+Writan also sends anonymous usage data to PostHog, such as which file types are opened and how long they take, so we know what to fix. It's on by default, and you can turn it off on the last page of the welcome screen or at any time with **Help make Writan better** in **Settings › General**. In the European Union, the EEA, the UK and Switzerland it starts off, and nothing is sent unless you turn it on. Writan judges where you are from the computer's time zone, without looking anything up. Usage data never includes your documents, file names or anything you type. [PRIVACY.md](./PRIVACY.md) lists exactly what is sent.
 
 ## Documentation
 
