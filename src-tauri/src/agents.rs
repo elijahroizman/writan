@@ -51,21 +51,38 @@ fn places(agent: &str) -> Option<(Option<&'static str>, &'static str)> {
     })
 }
 
+/// The folder an agent makes in the home folder when it first runs, which says it's installed.
+fn own_folder(agent: &str) -> Option<&'static str> {
+    Some(match agent {
+        "claude" => ".claude",
+        "codex" => ".codex",
+        "antigravity" => ".gemini",
+        "grok" => ".grok",
+        "hermes" => ".hermes",
+        "pi" => ".pi",
+        _ => return None,
+    })
+}
+
 #[derive(Serialize)]
 pub struct Installed {
     pub mcp: bool,
     pub skill: bool,
+    /// The agent has run on this computer: its own folder is in the home folder.
+    pub present: bool,
 }
 
-/// Whether Writan's MCP server and skill are set up in `agent`.
+/// Whether Writan's MCP server and skill are set up in `agent`, and whether the agent is there.
 #[tauri::command]
 pub fn agents_installed(agent: String) -> Result<Installed, String> {
     let (config, skills) = places(&agent).ok_or("Writan doesn't know that agent.")?;
     let home = home()?;
     let skill = home.join(skills).join(NAME).join("SKILL.md").is_file();
+    let present = own_folder(&agent).is_some_and(|dir| home.join(dir).is_dir());
     Ok(Installed {
         mcp: has_mcp(&home, config),
         skill,
+        present,
     })
 }
 

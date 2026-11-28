@@ -29,7 +29,7 @@ for (const kind of engines) {
     })
     page.on('pageerror', e => result.pageErrors.push(String(e)))
     await page.addInitScript(() => {
-      localStorage.setItem('workspace.setupDone', '1')
+      localStorage.setItem('workspace.setupDone', '2')
       localStorage.setItem('workspace.theme', 'light')
       localStorage.setItem('workspace.themeMode', 'light')
       localStorage.setItem('workspace.engineTiming', '1')

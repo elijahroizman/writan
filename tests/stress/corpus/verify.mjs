@@ -11,7 +11,7 @@ for (const [kind, type] of Object.entries({ chromium, webkit })) {
   for (const name of names) {
     const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } })
     const page = await context.newPage()
-    await page.addInitScript(() => localStorage.setItem('workspace.setupDone', '1'))
+    await page.addInitScript(() => localStorage.setItem('workspace.setupDone', '2'))
     const row = { name, browser: kind }
     try {
       await page.goto('http://127.0.0.1:1443/?open=' + encodeURIComponent('/dev-samples/' + name))

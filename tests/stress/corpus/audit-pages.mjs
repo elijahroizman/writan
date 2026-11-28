@@ -13,7 +13,7 @@ const results = []
 for (const name of names) {
   const context = await browser.newContext({ viewport: { width: 1440, height: 1100 } })
   const page = await context.newPage()
-  await page.addInitScript(() => { localStorage.setItem('workspace.setupDone', '1'); localStorage.setItem('workspace.themeMode', 'light') })
+  await page.addInitScript(() => { localStorage.setItem('workspace.setupDone', '2'); localStorage.setItem('workspace.themeMode', 'light') })
   const result = { name, browser: kind, pages: [] }
   try {
     await page.goto(`${base}/?open=${encodeURIComponent('/dev-samples/' + name)}`)

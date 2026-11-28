@@ -3629,12 +3629,12 @@ button.section-title:hover {
   cursor: default;
 }
 
-/* ── The welcome tour (components/Setup.tsx) */
+/* ── The onboarding (components/Setup.tsx) */
 
 .welcome {
   display: flex;
   flex-direction: column;
-  width: min(840px, 100%);
+  width: min(880px, 100%);
   max-height: calc(100vh - 48px);
   border-radius: 16px;
   background: var(--panel);
@@ -3650,37 +3650,17 @@ button.section-title:hover {
   line-height: 1.2;
 }
 
-.welcome-hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 14px;
-  padding: 56px 48px 44px;
-  text-align: center;
-}
-
-.welcome-hero .logo {
-  margin-bottom: 6px;
-}
-
-.welcome-hero h1 {
-  font-size: 28px;
-}
-
-.welcome-hero p {
-  margin: 0;
-  max-width: 420px;
-  font-size: 15px;
-  line-height: 1.45;
+.welcome .btn {
+  height: 32px;
 }
 
 .welcome-kinds {
   display: flex;
   flex-wrap: wrap;
-  justify-content: center;
-  gap: 8px 16px;
-  margin: 10px 0 8px;
+  gap: 8px 14px;
+  margin: 6px 0 0;
   color: var(--fg-muted);
+  font-size: 13px;
 }
 
 .welcome-kind {
@@ -3689,19 +3669,9 @@ button.section-title:hover {
   gap: 6px;
 }
 
-.welcome-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-}
-
-.welcome .btn {
-  height: 32px;
-}
-
 .tour {
   display: grid;
-  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
   min-height: 0;
   flex: 1;
 }
@@ -3710,7 +3680,7 @@ button.section-title:hover {
   position: relative;
   display: grid;
   place-items: center;
-  min-height: 380px;
+  min-height: 420px;
   padding: 28px;
   background: var(--canvas);
   border-right: 1px solid var(--line);
@@ -3752,6 +3722,7 @@ button.section-title:hover {
   gap: 12px;
   min-height: 34px;
   border-top: 1px solid var(--line-soft);
+  border-bottom: 1px solid var(--line-soft);
 }
 
 .tour-keys .kbd {
@@ -3762,8 +3733,114 @@ button.section-title:hover {
   font-size: 11.5px;
 }
 
+/* The share button, as it looks in the title bar, in a sentence. */
+.tour-inline-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 20px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--raised);
+  color: var(--fg);
+  vertical-align: -4px;
+}
+
+.tour-facts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.tour-facts li {
+  position: relative;
+  padding-left: 18px;
+}
+
+.tour-facts li::before {
+  content: '';
+  position: absolute;
+  left: 3px;
+  top: 0.5em;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--accent);
+}
+
 .tour-extensions {
   margin-top: 6px;
+}
+
+.tour-agents {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+}
+
+.tour-agent {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 44px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.tour-agent .agent-logo {
+  margin-top: 0;
+}
+
+.tour-agent-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+}
+
+.tour-agent-done {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 4px;
+  color: var(--fg-muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.tour-agent-done svg {
+  color: var(--accent);
+}
+
+.tour-agents-more {
+  padding-top: 10px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.tour-tex {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 10px;
+  margin-top: 6px;
+}
+
+.tour-terminal {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  margin-top: 2px;
+  border-radius: 7px;
+  background: #1d1d1f;
+  color: #f5f5f7;
+  font: 600 11px/1 ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
 .tour-footer {
@@ -3826,7 +3903,112 @@ button.section-title:hover {
   flex: 1;
 }
 
-/* The tour's pictures: screenshots of the app, in the theme's mode. */
+/* The last page: the update channel and usage data. */
+.welcome-done {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 48px 28px;
+  text-align: center;
+  overflow: auto;
+}
+
+.welcome-done .logo {
+  margin-bottom: 4px;
+}
+
+.welcome-done h1 {
+  font-size: 26px;
+}
+
+.welcome-done > p {
+  max-width: 440px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.welcome-choices {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: min(560px, 100%);
+  margin-top: 14px;
+  text-align: left;
+}
+
+.welcome-choice {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--raised);
+}
+
+fieldset.welcome-choice legend {
+  float: left;
+  width: 100%;
+  margin-bottom: 10px;
+  padding: 0;
+}
+
+.welcome-usage {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.welcome-usage .link-btn {
+  font-size: inherit;
+}
+
+.channel-tiles {
+  clear: both;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.channel-tile {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.channel-tile:hover {
+  background: var(--field-hover);
+}
+
+.channel-tile:has(input:checked) {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+.channel-tile:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.channel-tile input {
+  flex: none;
+  margin: 2px 0 0;
+  accent-color: var(--accent);
+}
+
+.channel-tile-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* The pictures: screenshots of the app, in the theme's mode. */
 .tour-shot {
   display: block;
   width: 100%;
@@ -3841,6 +4023,34 @@ button.section-title:hover {
   box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
 }
 
+/* The welcome page's three documents, stacked. */
+.tour-collage {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  max-height: 100%;
+}
+
+.tour-collage .tour-shot {
+  position: absolute;
+  width: 74%;
+}
+
+.tour-collage-back {
+  top: 0;
+  left: 0;
+}
+
+.tour-collage-middle {
+  top: 22%;
+  right: 0;
+}
+
+.tour-collage-front {
+  bottom: 0;
+  left: 9%;
+}
+
 @media (max-width: 720px) {
   .tour {
     grid-template-columns: 1fr;
@@ -3848,6 +4058,10 @@ button.section-title:hover {
 
   .tour-art {
     display: none;
+  }
+
+  .channel-tiles {
+    grid-template-columns: 1fr;
   }
 }
 

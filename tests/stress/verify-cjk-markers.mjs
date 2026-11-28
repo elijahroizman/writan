@@ -9,7 +9,7 @@ for (const [kind, engine] of Object.entries({ chromium, webkit })) {
   try {
     for (const [name, sequence] of [['lo-cjklist30.docx', '甲乙丙丁戊己庚辛壬癸'], ['lo-cjklist31.docx', '子丑寅卯辰巳午未申酉戌亥']]) {
       const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } })
-      await page.addInitScript(() => localStorage.setItem('workspace.setupDone', '1'))
+      await page.addInitScript(() => localStorage.setItem('workspace.setupDone', '2'))
       await page.goto(`${base}/?open=${encodeURIComponent('/dev-samples/' + name)}`)
       await page.waitForFunction(() => !!window.__docxEditor, null, { timeout: 45000 })
       const expected = [...sequence].map(c => c + '.')

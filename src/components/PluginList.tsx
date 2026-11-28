@@ -1,6 +1,10 @@
 import type { ReactNode } from 'react'
+import { confirmDialog } from '../lib/platform'
 import type { PluginInfo } from '../plugins/catalog'
+import { PLUGINS } from '../plugins/catalog'
 import { formatSize, usePlugins } from '../state/plugins'
+import { useTex } from '../state/tex'
+import { useWorkspace } from '../state/workspace'
 import { DocBadge } from './ui'
 
 /** SPDX ids as words: “MIT, (MPL-2.0 OR Apache-2.0)” reads “Licenses: MIT and (MPL-2.0 or Apache-2.0)”. */
@@ -39,4 +43,23 @@ export function PluginRow({ plugin, control, children }: { plugin: PluginInfo; c
       <span className="plugin-control">{control}</span>
     </div>
   )
+}
+
+/** Turns a plugin off, from Settings or the onboarding. Tabs of its files have to close first. */
+export async function disablePlugin(id: string) {
+  const plugin = PLUGINS.find((p) => p.id === id)!
+  const kinds = new Set(plugin.kinds.map((k) => k.id))
+  const open = useWorkspace.getState().tabs.filter((t) => kinds.has(t.kind))
+  if (open.length) {
+    const tabs = open.length === 1 ? `“${open[0].title}”` : `${open.length} tabs`
+    const ok = await confirmDialog(`${plugin.name} can’t turn off while ${tabs} ${open.length === 1 ? 'is' : 'are'} open. Writan asks before closing anything with unsaved changes.`, {
+      title: `Close ${tabs} and turn off ${plugin.name}?`,
+      okLabel: open.length === 1 ? 'Close Tab' : 'Close Tabs',
+    })
+    if (!ok) return
+    for (const tab of open) if (!(await useWorkspace.getState().closeTab(tab.id))) return
+  }
+  // LaTeX uses the computer's own TeX; offer to remove that too (unticked unless they choose).
+  if (plugin.services?.includes('tex') && !(await useTex.getState().confirmTurnOff())) return
+  await usePlugins.getState().disable(id)
 }

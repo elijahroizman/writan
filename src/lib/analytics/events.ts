@@ -119,8 +119,21 @@ export interface Events {
   plugin_enabled: { plugin: PluginId }
   plugin_disabled: { plugin: PluginId }
   error: { area: ErrorArea; name: ErrorName; source: ErrorSource }
-  /** Recorded by the welcome screen when someone finishes it. */
-  onboarding_finished: Record<never, never>
+  /** When someone finishes the onboarding (components/Setup.tsx). `channel` is the one they picked there. */
+  onboarding_finished: {
+    /** They pressed Skip on a page before the last. */
+    skipped: boolean
+    /** How many of its pages they saw, the last one included, out of `steps_total` on this system. */
+    steps_seen: number
+    steps_total: number
+    /** Agents connected from its AI agents page. */
+    agents_connected: number
+    latex_enabled: boolean
+    /** They installed the `writan` command from it (macOS). */
+    cli_installed: boolean
+    /** This copy had run an earlier version of Writan. */
+    upgraded: boolean
+  }
 }
 
 export type EventName = keyof Events
