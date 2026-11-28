@@ -252,6 +252,11 @@ export async function checkForUpdates(): Promise<void> {
     const releaseError = release.status === 'rejected' ? "Couldn't reach GitHub. Check your connection and try again." : null
 
     const linux = await linuxPackage()
+    // The channel can change while the first probe runs; this check's result is the old channel's.
+    if (stale()) {
+      void update?.close()
+      return
+    }
     if (isLinux) useUpdate.setState({ linux })
     if (release.status === 'fulfilled' && newer(release.value.version, __APP_VERSION__) && linuxCanInstall(linux, release.value.version)) {
       packageReady = true
@@ -394,14 +399,31 @@ export async function installUpdate({ restart }: { restart: boolean }): Promise<
   }
 }
 
+/** How `package_upgrade` says the password prompt was dismissed (`pkexec` in src-tauri/src/tex.rs). */
+const cancelled = (message: string) => message.endsWith(' was cancelled.')
+
 async function installPackage(): Promise<void> {
+  const version = useUpdate.getState().version
   useUpdate.setState({ phase: 'installing', error: null })
   const { invoke } = await import('@tauri-apps/api/core')
   try {
-    await invoke('package_upgrade', { version: useUpdate.getState().version })
+    await invoke('package_upgrade', { version })
   } catch (err) {
     console.warn('Package upgrade failed', err)
-    useUpdate.setState({ phase: 'ready', error: String(err) })
+    const error = String(err)
+    // A dismissed password prompt leaves the same version ready to try again.
+    if (cancelled(error)) {
+      useUpdate.setState({ phase: 'ready', error })
+      return
+    }
+    // Anything else may mean the version is gone: only the newest nightlies are kept, so a nightly
+    // that was ready a while ago can 404. Check again, which finds what's there now, and show the
+    // error only if the same version comes back.
+    packageReady = false
+    useUpdate.setState({ phase: 'error', error })
+    await checkForUpdates()
+    const now = useUpdate.getState()
+    if (now.phase === 'ready' && now.version === version) useUpdate.setState({ error })
     return
   }
   packageReady = false

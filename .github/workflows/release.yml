@@ -7,8 +7,8 @@ name: Release
 # Actions tab only builds (and signs and notarizes), unless "publish" is ticked. The builds are
 # build.yml, which the Nightly workflow (nightly.yml) calls too.
 # Once the builds are done the updater-feed job publishes latest.json, which installed copies
-# check for updates (see plugins.updater in src-tauri/tauri.conf.json), and writes it to the
-# nightly feed too when it's newer. Linux packages have no update bundle (Tauri's updater can't
+# check for updates (see plugins.updater in src-tauri/tauri.conf.json), and the nightly-feed job
+# writes it to the nightly feed too when it's newer. Linux packages have no update bundle (Tauri's updater can't
 # replace a package-managed install), so latest.json doesn't list them. Once both have built, the
 # linux-repos job publishes an APT, a dnf and a pacman repository holding both architectures,
 # which the packages add to the system. Nightlies never go into those repositories.
@@ -86,12 +86,14 @@ jobs:
     # latest.json, the feed installed Mac and Windows copies check (plugins.updater.endpoints in
     # src-tauri/tauri.conf.json), written once from the update bundles and signatures the build
     # jobs uploaded (scripts/update-feed.sh). A failed build leaves the draft private and the
-    # previous feed live. The same file goes to the nightly feed when this release is newer than
-    # the nightly there, so copies on the nightly channel move onto it.
+    # previous feed live. Once the release is public a rerun leaves it alone, so the nightly-feed
+    # job after it can be rerun on its own.
     name: Update feed
     needs: build
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.publish.outputs.tag }}
     env:
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
     steps:
@@ -99,34 +101,43 @@ jobs:
         with:
           persist-credentials: false
       - name: Upload the complete feed, then publish the release
+        id: publish
         run: |
           set -euo pipefail
           version="$(node -p "require('./src-tauri/tauri.conf.json').version")"
           tag="v$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$(gh release view "$tag" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)" != true ]; then
+            echo "$tag is public already; leaving its feed as it is."
+            exit 0
+          fi
           scripts/update-feed.sh "$tag" "$version" "$RUNNER_TEMP"
           gh release upload "$tag" -R "$GITHUB_REPOSITORY" "$RUNNER_TEMP/latest.json" --clobber
           gh release edit "$tag" -R "$GITHUB_REPOSITORY" --draft=false
-          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+  nightly-feed:
+    # The release's latest.json goes to the nightly feed too when this release is newer than the
+    # version there, so copies on the nightly channel move onto it (scripts/promote-feed.sh). Only
+    # when it's newer: a maintenance release for an older version would otherwise take nightly
+    # copies off their newer build, though the updater wouldn't install it. The Nightly workflow's
+    # feed job shares the concurrency group, so a nightly that finishes after this can't put an
+    # older version back. Each workflow runs one at a time, so the group holds one job from each at
+    # most, and a waiting one is never replaced by a newer one. Rerunning it is safe.
+    name: Nightly feed
+    needs: updater-feed
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: writan-update-feed
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: ${{ needs.updater-feed.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: Point the nightly feed at this release
-        # Only when it's newer than the nightly in the feed: a maintenance release for an older
-        # version would otherwise take nightly copies off their newer build, though the updater
-        # wouldn't install it. The URLs in latest.json point at this release's assets.
-        run: |
-          set -euo pipefail
-          cd "$RUNNER_TEMP"
-          mkdir -p nightly-feed
-          if ! gh release view nightly -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release create nightly -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false --title "Nightly update feed" \
-              --notes "The update feed copies on the nightly channel check. Nothing here needs downloading by hand."
-          fi
-          if gh release download nightly -R "$GITHUB_REPOSITORY" -p latest.json -D nightly-feed 2> /dev/null; then
-            current="$(jq -r .version nightly-feed/latest.json)"
-            if ! node "$GITHUB_WORKSPACE/scripts/nightly.mjs" newer "$VERSION" "$current"; then
-              echo "The nightly feed has $current, which isn't older than $VERSION; leaving it."
-              exit 0
-            fi
-          fi
-          gh release upload nightly -R "$GITHUB_REPOSITORY" latest.json --clobber
+        run: scripts/promote-feed.sh "$TAG"
 
   linux-repos:
     # Publishes the APT, dnf and pacman repositories once both Linux jobs have built. It runs when
@@ -298,7 +309,8 @@ jobs:
         # writan.db there. The Arch package's install script adds that section and puts the key in
         # pacman's keyring, and `SigLevel = Required` makes pacman check the detached signature
         # (<file>.sig) on the database and on each package. scripts/pacman-repo.sh writes the
-        # database. The app's Update button installs the package file with `pacman -U`.
+        # database. The app's Update button downloads the package file and its signature, checks
+        # them against the key, and installs the file with `pacman -U` (src-tauri/linux/pacman-install.sh).
         run: |
           set -euo pipefail
           for arch in x86_64 aarch64; do

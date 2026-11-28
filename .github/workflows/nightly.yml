@@ -12,9 +12,9 @@ name: Nightly
 #
 # It publishes a GitHub pre-release tagged v<version> holding the installers, the update bundles
 # and the Linux packages, with notes listing the PR titles merged since the previous nightly or
-# stable tag, grouped by type (scripts/nightly.mjs), after the "notes" input. Then it points the
-# nightly update feed (latest.json on the pre-release tagged "nightly") at it, and deletes all but
-# the newest 10 nightlies. It never touches the stable feed or the APT, dnf and pacman
+# stable tag, grouped by type (scripts/nightly.mjs), after the "notes" input, and deletes all but
+# the newest 10 nightlies. Then the feed job points the nightly update feed (latest.json on the
+# pre-release tagged "nightly") at it, unless the feed already has a newer version. It never touches the stable feed or the APT, dnf and pacman
 # repositories. Linux copies on the nightly channel install the packages from the pre-release:
 # the .deb and .rpm are signed with the updater key (`tauri signer sign`), the Arch package with
 # the repositories' key (APT_SIGNING_KEY), as pacman expects.
@@ -102,7 +102,8 @@ jobs:
 
   publish:
     # Runs only when every build passed. A failed build leaves the draft private and the feed
-    # on the previous nightly; rerun the failed jobs.
+    # on the previous nightly; rerun the failed jobs. Once the nightly is public, a rerun skips
+    # straight to the pruning, so a later step or the feed job can be rerun on its own.
     name: Publish nightly
     needs: [prepare, build]
     if: inputs.publish
@@ -115,12 +116,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Draft or public
+        id: state
+        run: |
+          set -euo pipefail
+          draft="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
+          [ "$draft" = true ] || echo "$TAG is public already; leaving its files as they are."
       - uses: actions/download-artifact@v4
+        if: steps.state.outputs.draft == 'true'
         with:
           pattern: linux-*
           path: ${{ runner.temp }}/packages
           merge-multiple: true
       - name: Check the Linux packages
+        if: steps.state.outputs.draft == 'true'
         # The names src-tauri/src/update.rs (nightly_package_url) downloads.
         run: |
           set -euo pipefail
@@ -144,6 +154,7 @@ jobs:
           done
           [ "$(dpkg-deb -f "Writan_${VERSION}_amd64.deb" Version)" = "${base}~nightly.${stamp}" ]
       - name: Sign the .deb and .rpm packages
+        if: steps.state.outputs.draft == 'true'
         # With the updater key, which the app checks them against before apt or dnf installs one.
         env:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -155,8 +166,9 @@ jobs:
             npx --yes "@tauri-apps/cli@$cli" signer sign "$file"
           done
       - name: Sign the Arch packages
-        # With the repositories' key, which the Arch package added to pacman's keyring.
-        # `pacman -U <url>` fetches <url>.sig and checks it.
+        if: steps.state.outputs.draft == 'true'
+        # With the repositories' key, which the Arch package installs. The app downloads <file>.sig
+        # with the package and checks it against that key (src-tauri/linux/pacman-install.sh).
         env:
           APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
         run: |
@@ -170,31 +182,20 @@ jobs:
           gpgconf --kill gpg-agent 2> /dev/null || true
           rm -rf "$GNUPGHOME"
       - name: Upload the Linux packages
+        if: steps.state.outputs.draft == 'true'
         run: |
           set -euo pipefail
           cd "$RUNNER_TEMP/packages"
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" ./*.deb ./*.rpm ./*.pkg.tar.zst ./*.sig --clobber
-      - name: Publish the nightly, then point the feed at it
-        # The feed's URLs only download once the pre-release is public, so it goes first.
+      - name: Publish the nightly
+        # Its latest.json goes up first, and the feed job copies it to the nightly feed once the
+        # pre-release is public, since the URLs in it only download then.
+        if: steps.state.outputs.draft == 'true'
         run: |
           set -euo pipefail
           scripts/update-feed.sh "$TAG" "$VERSION" "$RUNNER_TEMP"
           gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "$RUNNER_TEMP/latest.json" --clobber
           gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
-          if ! gh release view nightly -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
-            gh release create nightly -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --prerelease --latest=false --title "Nightly update feed" \
-              --notes "The update feed copies on the nightly channel check. Nothing here needs downloading by hand."
-          fi
-          # A stable release published while this built can be newer; then the feed keeps it.
-          mkdir -p "$RUNNER_TEMP/feed"
-          if gh release download nightly -R "$GITHUB_REPOSITORY" -p latest.json -D "$RUNNER_TEMP/feed" 2> /dev/null; then
-            current="$(jq -r .version "$RUNNER_TEMP/feed/latest.json")"
-            if ! node scripts/nightly.mjs newer "$VERSION" "$current"; then
-              echo "The nightly feed has $current, which is newer than $VERSION; leaving it."
-              exit 0
-            fi
-          fi
-          gh release upload nightly -R "$GITHUB_REPOSITORY" "$RUNNER_TEMP/latest.json" --clobber
       - name: Keep the newest 10 nightlies
         # Older nightlies and their tags go, along with drafts left by runs that failed. The
         # stamp orders them by build time.
@@ -213,3 +214,26 @@ jobs:
               gh release delete "$tag" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
             fi
           done < "$RUNNER_TEMP/nightlies.tsv"
+
+  feed:
+    # Points the nightly feed at this nightly unless it has a newer version, such as a stable
+    # release published while this built (scripts/promote-feed.sh). The Release workflow's feed
+    # job shares the concurrency group, so the two never read and write the feed at once. Each
+    # workflow runs one at a time, so the group holds one job from each at most, and a waiting one
+    # is never replaced by a newer one. Rerunning it is safe.
+    name: Nightly feed
+    needs: [prepare, publish]
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: writan-update-feed
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: v${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Point the nightly feed at this nightly
+        run: scripts/promote-feed.sh "$TAG"

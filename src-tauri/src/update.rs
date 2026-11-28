@@ -362,6 +362,28 @@ const PACMAN_CONF: &str = "/etc/pacman.conf";
 #[cfg(target_os = "linux")]
 const PACMAN_REPO: &str = "https://github.com/elijahroizman/writan/releases/download/arch";
 
+/// Writan's signing key as the Arch package installs it (scripts/arch-package.sh), for
+/// `pacman-key --populate`. pacman-install.sh checks every package against this key alone.
+#[cfg(target_os = "linux")]
+const PACMAN_KEYRING: &str = "/usr/share/pacman/keyrings/writan.gpg";
+
+/// The root shell script that downloads an Arch package and its signature, checks them against
+/// Writan's key with gpgv, and installs the file with `pacman -U`.
+#[cfg(any(target_os = "linux", test))]
+const PACMAN_INSTALL: &str = include_str!("../linux/pacman-install.sh");
+
+/// The command pkexec runs to install the Arch package at `url`, checked against `keyring`.
+/// `pacman -U <url>` checks a download's signature at pacman.conf's RemoteFileSigLevel, which can
+/// be Optional, and against any key pacman trusts, so the script checks it itself first.
+#[cfg(any(target_os = "linux", test))]
+fn pacman_install_line(url: &str, keyring: &std::path::Path) -> String {
+    format!(
+        "set -- {} {}\n{PACMAN_INSTALL}",
+        sh_quote(std::path::Path::new(url)),
+        sh_quote(keyring)
+    )
+}
+
 /// Prefer the renamed repository file, while accepting an installation not yet migrated.
 #[cfg(target_os = "linux")]
 fn existing_file<'a>(primary: &'a str, legacy: &'a str) -> &'a str {
@@ -552,12 +574,14 @@ pub async fn linux_package() -> LinuxPackage {
 /// A stable version comes from Writan's APT, dnf or pacman repository. Only Writan's own
 /// repository is read, so a broken or slow mirror elsewhere can't stop it. pacman has no way to
 /// refresh one repository, and `pacman -Sy writan` would leave the rest of an Arch system partly
-/// upgraded, so it installs `version`'s package file from Writan's repository with `pacman -U`,
-/// which checks its signature against the key the package added to pacman's keyring.
-/// `pacman -Syu` brings the same package with the system's other updates.
+/// upgraded, so it installs `version`'s package file from Writan's repository with `pacman -U`.
+/// The root shell downloads the package and its signature first and checks them against Writan's
+/// key alone (linux/pacman-install.sh), since pacman's own check of a URL follows
+/// RemoteFileSigLevel, which can be Optional. `pacman -Syu` brings the same package with the
+/// system's other updates.
 ///
 /// A nightly comes from its pre-release, since the repositories only hold stable releases.
-/// pacman installs it by URL the same way, checking the signature beside it. For a .deb or .rpm
+/// pacman installs it the same way, from beside its signature. For a .deb or .rpm
 /// this downloads the package and checks its signature against the updater key (the one Mac and
 /// Windows updates are checked against). The root shell copies the file somewhere only root can
 /// write and checks its SHA-256 again before apt or dnf installs it, so nothing can swap it on
@@ -602,7 +626,7 @@ pub async fn package_upgrade(app: tauri::AppHandle, version: Option<String>) -> 
                         .ok_or("There's no nightly package for this machine.")?;
                     (
                         "pacman",
-                        format!("pacman -U --noconfirm {url}"),
+                        pacman_install_line(&url, std::path::Path::new(PACMAN_KEYRING)),
                         "The nightly didn't install. Try again in a few minutes.",
                     )
                 }
@@ -627,7 +651,7 @@ pub async fn package_upgrade(app: tauri::AppHandle, version: Option<String>) -> 
                         .as_deref()
                         .and_then(|v| pacman_package_url(v, arch))
                         .ok_or("pacman can't install this version from Writan's repository.")?;
-                    ("pacman", format!("pacman -U --noconfirm {url}"), "The new version isn't in Writan's pacman repository yet. Try again in a few minutes.")
+                    ("pacman", pacman_install_line(&url, std::path::Path::new(PACMAN_KEYRING)), "The new version isn't in Writan's pacman repository yet. Try again in a few minutes.")
                 }
                 _ => return Err("This copy of Writan didn't come with its update repository.".into()),
             };
@@ -935,6 +959,180 @@ mod tests {
         assert!(nightly_package_url("1.0.1", "deb", "x86_64").is_none());
         assert!(nightly_package_url(v, "deb", "riscv64").is_none());
         assert!(nightly_package_url(v, "snap", "x86_64").is_none());
+    }
+
+    #[test]
+    fn builds_the_pacman_install_command() {
+        let line = pacman_install_line(
+            "https://example.com/it's/writan-1.0.0-1-x86_64.pkg.tar.zst",
+            std::path::Path::new("/usr/share/pacman/keyrings/writan.gpg"),
+        );
+        let (args, script) = line.split_once('\n').unwrap();
+        assert_eq!(
+            args,
+            "set -- 'https://example.com/it'\\''s/writan-1.0.0-1-x86_64.pkg.tar.zst' '/usr/share/pacman/keyrings/writan.gpg'"
+        );
+        assert_eq!(script, PACMAN_INSTALL);
+        // Never a URL straight to pacman, which would check it at RemoteFileSigLevel.
+        assert!(!line.contains("pacman -U --noconfirm \"$url\""));
+        assert!(line.contains("gpgv --homedir"));
+    }
+
+    /// Runs linux/pacman-install.sh with a stand-in for pacman, a throwaway Writan key and
+    /// file:// URLs: it installs a package signed with that key, and refuses one with no
+    /// signature, a signature of another file, or a good signature from a key that isn't Writan's.
+    /// scripts/check-linux-packages.sh runs the same script on a real pacman. Needs gpg and curl.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pacman_install_checks_the_signature_against_writans_key() {
+        use std::path::Path;
+        use std::process::Command;
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let home = root.join("gnupg");
+        std::fs::create_dir(&home).unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&home, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let gpg = |args: &[&str]| {
+            let status = Command::new("gpg")
+                .arg("--homedir")
+                .arg(&home)
+                .args(["--batch", "--quiet", "--passphrase", ""])
+                .args(args)
+                .status()
+                .expect("this test needs gpg");
+            assert!(status.success(), "gpg {args:?} failed");
+        };
+        gpg(&[
+            "--quick-gen-key",
+            "Writan test <writan@example.com>",
+            "ed25519",
+            "sign",
+            "never",
+        ]);
+        gpg(&[
+            "--quick-gen-key",
+            "Someone else <other@example.com>",
+            "ed25519",
+            "sign",
+            "never",
+        ]);
+        let keyring = root.join("writan.gpg");
+        gpg(&[
+            "--armor",
+            "--output",
+            keyring.to_str().unwrap(),
+            "--export",
+            "writan@example.com",
+        ]);
+        let name = "writan-1.0.0-1-x86_64.pkg.tar.zst";
+        let make = |case: &str, signer: Option<&str>, signed: &[u8]| {
+            let case_dir = root.join(case);
+            std::fs::create_dir(&case_dir).unwrap();
+            let package = case_dir.join(name);
+            std::fs::write(&package, b"the package").unwrap();
+            if let Some(signer) = signer {
+                let other = case_dir.join("signed");
+                std::fs::write(&other, signed).unwrap();
+                let sig = case_dir.join(format!("{name}.sig"));
+                gpg(&[
+                    "--local-user",
+                    signer,
+                    "--output",
+                    sig.to_str().unwrap(),
+                    "--detach-sign",
+                    other.to_str().unwrap(),
+                ]);
+            }
+            format!("file://{}", package.display())
+        };
+        let good = make("good", Some("writan@example.com"), b"the package");
+        let unsigned = make("unsigned", None, b"");
+        let wrong = make("wrong", Some("writan@example.com"), b"another package");
+        let stranger = make("stranger", Some("other@example.com"), b"the package");
+        let _ = Command::new("gpgconf")
+            .arg("--homedir")
+            .arg(&home)
+            .args(["--kill", "gpg-agent"])
+            .status();
+
+        // pacman, standing in: it notes what it was asked to install.
+        let bin = root.join("bin");
+        std::fs::create_dir(&bin).unwrap();
+        let log = root.join("pacman.log");
+        std::fs::write(
+            bin.join("pacman"),
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PACMAN_LOG\"\ncmp -s \"$3\" \"$PACKAGE\"\n",
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(bin.join("pacman"), std::fs::Permissions::from_mode(0o755))
+                .unwrap();
+        }
+        let path = format!(
+            "{}:{}",
+            bin.display(),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        let run = |url: &str| {
+            let _ = std::fs::remove_file(&log);
+            let output = Command::new("sh")
+                .arg("-c")
+                .arg(pacman_install_line(url, &keyring))
+                .env("PATH", &path)
+                .env("PACMAN_LOG", &log)
+                .env("PACKAGE", root.join("good").join(name))
+                .output()
+                .unwrap();
+            let installed = std::fs::read_to_string(&log).ok();
+            (
+                output.status.success(),
+                installed,
+                String::from_utf8_lossy(&output.stderr).into_owned(),
+            )
+        };
+
+        let (ok, installed, err) = run(&good);
+        assert!(ok, "the signed package didn't install: {err}");
+        let installed = installed.unwrap();
+        assert!(installed.starts_with("-U --noconfirm /"), "{installed}");
+        assert!(
+            installed.trim_end().ends_with(&format!("/{name}")),
+            "{installed}"
+        );
+        assert!(
+            !installed.contains("file://"),
+            "pacman got the URL: {installed}"
+        );
+        // The download's directory is gone afterwards.
+        let downloaded = installed.trim_end().trim_start_matches("-U --noconfirm ");
+        assert!(!Path::new(downloaded).exists());
+
+        for (case, url, says) in [
+            (
+                "no signature",
+                &unsigned,
+                "Couldn't download the update or its signature",
+            ),
+            (
+                "a signature of another file",
+                &wrong,
+                "doesn't match Writan's key",
+            ),
+            (
+                "another key's signature",
+                &stranger,
+                "doesn't match Writan's key",
+            ),
+        ] {
+            let (ok, installed, err) = run(url);
+            assert!(!ok, "a package with {case} installed");
+            assert_eq!(installed, None, "pacman ran for a package with {case}");
+            assert!(err.contains(says), "{case}: {err}");
+        }
     }
 
     #[test]
