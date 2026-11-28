@@ -1,6 +1,6 @@
 <!--
 Title: type(scope): summary, for example fix(excel): keep column widths when a sheet is renamed.
-Write for a person skimming this in a minute. Fill in every section. CONTRIBUTING.md explains each one.
+One pull request does one thing; put unrelated changes in their own. Write for a person skimming this in a minute. Fill in every section. CONTRIBUTING.md explains each one.
 -->
 
 ## What changed

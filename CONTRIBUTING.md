@@ -6,6 +6,10 @@ Pull requests from outside the project are welcome. Opening one doesn't mean it 
 
 Report bugs and suggest features in [GitHub issues](https://github.com/elijahroizman/writan/issues). For a bug, say which version of Writan and which system you're on, and attach the file that shows it if you can share it.
 
+## One change per pull request
+
+Each pull request does one thing: a fix, a feature or a cleanup. If you find an unrelated bug on the way, open a separate pull request or an issue for it. A pull request that mixes unrelated changes is hard to review and hard to revert, and it gets sent back to be split. A single title that has to say "and" to describe it is a sign it should be two.
+
 ## Pull request titles
 
 Titles follow [Conventional Commits](https://www.conventionalcommits.org), as T3 Code's do: `type(scope): summary`. The scope is optional. The type is one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` or `style`. For example:

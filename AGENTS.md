@@ -15,6 +15,8 @@ Fable, Opus, Astra and Sol may also commit straight to `main`. Every other chang
 
 ## Pull requests and commits
 
+One pull request does one thing. Don't fold an unrelated fix, refactor or cleanup into it, even a small one you noticed on the way. Open a separate pull request for it, or tell the maintainer, or open an issue. If the title needs "and" to describe the change, split it. A pull request that mixes unrelated changes gets sent back.
+
 Run the checks in [CONTRIBUTING.md](CONTRIBUTING.md#before-you-open-a-pull-request) before you open a pull request.
 
 ### Title
