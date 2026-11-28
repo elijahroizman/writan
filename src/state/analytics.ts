@@ -165,11 +165,14 @@ function installId(): string {
 }
 let sessionId: string | undefined
 
+/** The person's pick, or else the channel this build came from: a nightly follows nightly until someone picks. */
 function channel(): 'stable' | 'nightly' {
+  const built = __APP_VERSION__.includes('-nightly') ? 'nightly' : 'stable'
   try {
-    return localStorage.getItem(CHANNEL_KEY) === 'nightly' ? 'nightly' : 'stable'
+    const picked = localStorage.getItem(CHANNEL_KEY)
+    return picked === 'nightly' || picked === 'stable' ? picked : built
   } catch {
-    return 'stable'
+    return built
   }
 }
 
