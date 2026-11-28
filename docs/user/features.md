@@ -190,4 +190,4 @@ On a Mac, install it from **Settings › General › Command line** or **Writan 
 
 ## Default apps
 
-The welcome tour on first launch ends by asking which file types Writan should open, and **Settings › General › Default apps** can change that later. On Windows, each one is confirmed in Windows' own Default apps settings. Writan also appears in every Open With menu.
+On a Mac or Windows, the onboarding on first launch asks which file types Writan should open, and **Settings › General › Default apps** can change that later. On Windows, each one is confirmed in Windows' own Default apps settings. Writan also appears in every Open With menu.

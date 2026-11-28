@@ -7,16 +7,16 @@ import tarfile
 import tempfile
 
 root = Path(__file__).resolve().parents[1]
-with tempfile.TemporaryDirectory(prefix='writan-deb-repack-') as folder:
+def repack(folder, version):
     base = Path(folder)
     tree = base / 'package'
     (tree / 'DEBIAN').mkdir(parents=True)
-    (tree / 'DEBIAN/control').write_text('Package: writan\nVersion: 0.10.5\nArchitecture: amd64\nMaintainer: Test <test@example.com>\nReplaces: workspace\nDescription: Repack regression fixture\n')
+    (tree / 'DEBIAN/control').write_text(f'Package: writan\nVersion: {version}\nArchitecture: amd64\nMaintainer: Test <test@example.com>\nReplaces: workspace\nDescription: Repack regression fixture\n')
     for name in ['usr/bin/writan', 'usr/share/keyrings/writan-archive-keyring.gpg']:
         path = tree / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b'fixture\n')
-    deb = base / 'Writan_0.10.5_amd64.deb'
+    deb = base / f'Writan_{version}_amd64.deb'
     subprocess.run(['dpkg-deb', '--root-owner-group', '--build', str(tree), str(deb)], check=True, capture_output=True)
     subprocess.run([str(root / 'scripts/debian-repack.sh'), str(deb)], check=True)
     data = subprocess.check_output(['dpkg-deb', '--fsys-tarfile', str(deb)])
@@ -25,5 +25,24 @@ with tempfile.TemporaryDirectory(prefix='writan-deb-repack-') as folder:
         assert entries and all(m.uid == 0 and m.gid == 0 for m in entries)
         assert archive.getmember('./usr/bin/writan').uid == 0
         assert archive.getmember('./usr/share/keyrings/writan-archive-keyring.gpg').uid == 0
-    assert subprocess.check_output(['dpkg-deb', '-f', str(deb), 'Breaks'], text=True).strip() == 'workspace (<< 0.10.5)'
-print('Debian release repack preserves root ownership and the versioned migration break')
+    field = lambda name: subprocess.check_output(['dpkg-deb', '-f', str(deb), name], text=True).strip()
+    return field('Version'), field('Breaks')
+
+
+def older(a, b):
+    return subprocess.run(['dpkg', '--compare-versions', a, 'lt', b]).returncode == 0
+
+
+with tempfile.TemporaryDirectory(prefix='writan-deb-repack-') as folder:
+    assert repack(folder, '0.10.5') == ('0.10.5', 'workspace (<< 0.10.5)')
+
+# Tauri writes a nightly's SemVer version as it is. The repack turns the hyphen into a tilde, so
+# dpkg sorts the nightly after the stable release before it and before the next one.
+with tempfile.TemporaryDirectory(prefix='writan-deb-repack-') as folder:
+    nightly = '1.0.1~nightly.202611280930'
+    assert repack(folder, '1.0.1-nightly.202611280930') == (nightly, f'workspace (<< {nightly})')
+    assert older('1.0.0', nightly) and older(nightly, '1.0.1')
+    assert older(nightly, '1.0.1~nightly.202611281200')
+    # What dpkg would make of the version Tauri wrote: newer than 1.0.1.
+    assert not older('1.0.1-nightly.202611280930', '1.0.1')
+print('Debian release repack preserves root ownership and the versioned migration break, and orders nightlies before the next release')

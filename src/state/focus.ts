@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { track } from './analytics'
 
 /**
  * Focus mode hides everything but the document. Typewriter scrolling keeps the line you're
@@ -34,9 +35,13 @@ const persist = () => {
 export const useFocus = create<FocusState>((set, get) => ({
   on: false,
   ...load(),
-  toggle: () => set({ on: !get().on }),
+  toggle: () => {
+    if (!get().on) track('feature_used', { feature: 'focus_mode' })
+    set({ on: !get().on })
+  },
   setOn: (on) => set({ on }),
   toggleTypewriter: () => {
+    if (!get().typewriter) track('feature_used', { feature: 'typewriter_scrolling' })
     set({ typewriter: !get().typewriter })
     persist()
   },

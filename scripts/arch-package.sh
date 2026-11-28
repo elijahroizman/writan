@@ -34,9 +34,30 @@ if [ -z "$fingerprint" ]; then
 fi
 
 version="$(dpkg-deb -f "$deb" Version)"
-# pacman versions can't hold a hyphen. SemVer's pre-release separator becomes a tilde, which
-# pacman sorts before the release the way SemVer does.
-pkgver="${version//-/~}"
+# pacman versions can't hold a hyphen, and unlike dpkg and rpm, pacman doesn't sort a tilde
+# before the release: 1.0.1~nightly.1 is newer than 1.0.1 to pacman. A letter straight after the
+# release part is older, so the pre-release's separator (the .deb's tilde, or SemVer's hyphen)
+# goes: 1.0.1nightly.202611280930 sorts after 1.0.0 and before 1.0.1, the way SemVer orders
+# 1.0.1-nightly.202611280930.
+case "$version" in
+  *[-~]*)
+    pre="${version#*[-~]}"
+    case "$pre" in
+      [A-Za-z]*) pkgver="${version%%[-~]*}${pre}" ;;
+      *)
+        echo "can't map the pre-release version $version to pacman: it must start with a letter" >&2
+        exit 1
+        ;;
+    esac
+    ;;
+  *) pkgver="$version" ;;
+esac
+case "$pkgver" in
+  *[-~:/]*)
+    echo "pacman can't use the version $pkgver" >&2
+    exit 1
+    ;;
+esac
 pkgrel=1
 case "$(dpkg-deb -f "$deb" Architecture)" in
   amd64) arch=x86_64 ;;

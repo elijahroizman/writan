@@ -54,7 +54,7 @@ try {
   const errors = []
   page.on('pageerror', (e) => errors.push(e.message))
   await page.addInitScript((b64) => {
-    localStorage.setItem('workspace.setupDone', '1')
+    localStorage.setItem('workspace.setupDone', '2')
     localStorage.setItem('workspace.settings', JSON.stringify({ version: 2, autosave: { enabled: false, delay: 1, kinds: {} }, history: false }))
     const bin = atob(b64)
     const files = new Map([['/docs/three.pdf', { bytes: Uint8Array.from(bin, (c) => c.charCodeAt(0)), mtime: 1000 }]])

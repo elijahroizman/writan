@@ -10,6 +10,8 @@ import { getEditor, useWorkspace } from '../state/workspace'
 import type { ConvertFormat, ConvertTarget } from './convertMeta'
 import { canExportMarkdown, canIncludeInPdfBundle, TARGET_INFO, targetsForKind, usesOcr } from './convertMeta'
 import { convertDocumentOffThread, markdownOffThread } from './convertClient'
+import { track } from '../state/analytics'
+import { kindOf } from './analytics/events'
 
 export { canExportMarkdown, canIncludeInPdfBundle, targetsForKind, usesOcr, type ConvertFormat, type ConvertTarget }
 
@@ -80,6 +82,7 @@ export function pdfOcrStatus(progress: PdfOcrProgress): string {
 }
 
 export async function recognizeImage(bytes: Uint8Array, name: string, signal?: AbortSignal, status?: OcrStatus) {
+  track('feature_used', { feature: 'ocr', kind: 'image' })
   const { useOcrPacks } = await import('./ocr/packs')
   const langs = useOcrPacks.getState().selectedLangs
   await prepareOcrPacks(langs, signal, status)
@@ -194,14 +197,15 @@ export async function convertAndDeliver(tabId: string | undefined, target: Conve
     const { bytes, name } = await convertTab(tab, target, options)
     options?.signal?.throwIfAborted()
     const save = usesOcr(tab.kind, target) ? saveOcrCopy : platform.saveBytesAs
-    if (mode === 'save') {
-      return await save(name, bytes, options?.signal)
+    const exported = (delivery: 'open' | 'save') => track('document_exported', { from_kind: kindOf(tab.kind), to_format: target, delivery })
+    const opened = mode === 'open' && ws.openUnsaved(bytes, name)
+    if (opened) {
+      exported('open')
+      return true
     }
-    const opened = ws.openUnsaved(bytes, name)
-    if (!opened) {
-      return await save(name, bytes, options?.signal)
-    }
-    return true
+    const saved = await save(name, bytes, options?.signal)
+    if (saved) exported('save')
+    return saved
   } catch (err) {
     if (options?.signal?.aborted || (err instanceof DOMException && err.name === 'AbortError')) return false
     if (options) throw err
@@ -217,6 +221,7 @@ export async function copyTabAsMarkdown(tabId?: string): Promise<string | null> 
   if (!tab || !canExportMarkdown(tab.kind)) return null
   const md = await tabToMarkdown(tab)
   await navigator.clipboard.writeText(md)
+  track('document_exported', { from_kind: kindOf(tab.kind), to_format: 'md', delivery: 'copy' })
   return md
 }
 
@@ -299,6 +304,7 @@ export async function bundleTabsToPdf(
   onProgress?: (done: number, total: number, currentTitle: string) => void,
 ): Promise<Uint8Array> {
   if (!tabs.length) throw new Error('Choose at least one open file to bundle.')
+  track('feature_used', { feature: 'bundle_pdf' })
   const pdfs: PdfInput[] = []
   for (let i = 0; i < tabs.length; i++) {
     onProgress?.(i, tabs.length, tabs[i].title)

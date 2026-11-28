@@ -81,6 +81,7 @@ import { usePinchZoom } from '../../lib/pinch'
 import { isMac, openExternal, shortcut } from '../../lib/platform'
 import { withKeys } from '../../state/shortcuts'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { documentFailed, documentReady } from '../../lib/analytics/documents'
 import { useShared } from '../../collab/useShared'
 import { CommentPeek, CommentStore, CommentsSection } from './Comments'
 import { TrackedChangesSection } from './TrackedChanges'
@@ -111,7 +112,9 @@ export default function DocxTab({ tab, active }: EditorProps) {
         commentsChanged.current = false
         docChanged.current = false
         comments.load(commentEditor(editor), tab.bytes)
+        documentReady(tab.id)
       }}
+      onError={() => documentFailed(tab.id, 'parse')}
       onChange={(change) => {
         if (change.source === 'load') return
         docChanged.current = change.revision !== 0

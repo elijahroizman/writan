@@ -14,7 +14,7 @@ try {
     window.feedChecks = 0
     window.downloads = 0
     bridge.invoke = async (cmd, ...args) => {
-      if (cmd === 'plugin:updater|check') {
+      if (cmd === 'check_update') {
         window.feedChecks++
         if (window.feedChecks === 1) await new Promise((resolve) => { window.finishLaunchCheck = resolve })
         if (!window.feedAvailable) throw 'Could not fetch a valid release JSON'

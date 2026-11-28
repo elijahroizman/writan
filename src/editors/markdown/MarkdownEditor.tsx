@@ -17,6 +17,7 @@ import { kindFromPath } from '../../lib/kinds'
 import { TextFile } from '../../lib/textcodec'
 import * as platform from '../../lib/platform'
 import { getEditor, registerEditor, useWorkspace } from '../../state/workspace'
+import { documentReady } from '../../lib/analytics/documents'
 import { schedulePrintCleanup } from '../../lib/print'
 import type { Heading } from './render'
 import { renderMarkdown } from './render'
@@ -108,6 +109,7 @@ export default function MarkdownEditor({ tab, active }: EditorProps) {
       }),
     })
     viewRef.current = view
+    documentReady(tab.id)
     return () => view.destroy()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])

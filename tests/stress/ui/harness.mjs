@@ -16,10 +16,10 @@ export const TMP = join(tmpdir(), 'writan-stress')
 // `scrollbars` shows classic scrollbars, which take room as on a Mac with a mouse or on Windows.
 // `scale` is 2, as on a Retina Mac, so screenshots are sharp: at 1x a line of the document is 11
 // pixels tall and looks faint and blurred on the screen of whoever reads it. SCALE=1 overrides it.
-export async function launch({ scale = Number(process.env.SCALE) || 2, viewport = { width: 1400, height: 900 }, tauri = true, init, scrollbars = false } = {}) {
+export async function launch({ scale = Number(process.env.SCALE) || 2, viewport = { width: 1400, height: 900 }, tauri = true, init, scrollbars = false, timezoneId, locale } = {}) {
   const browser = await (ENGINE === 'webkit' ? webkit : chromium).launch(ENGINE === 'webkit' ? {} : { args: ['--no-sandbox', '--enable-precise-memory-info'], ignoreDefaultArgs: scrollbars ? ['--hide-scrollbars'] : [] })
   mkdirSync(TMP, { recursive: true })
-  const context = await browser.newContext({ viewport, deviceScaleFactor: scale })
+  const context = await browser.newContext({ viewport, deviceScaleFactor: scale, timezoneId, locale })
   const page = await context.newPage()
   page.setDefaultTimeout(15000)
   const logs = []
@@ -48,7 +48,7 @@ export async function launch({ scale = Number(process.env.SCALE) || 2, viewport 
     if (!existsSync(filePath)) return route.fulfill({ status: 404, body: 'missing' })
     return route.fulfill({ body: readFileSync(filePath), contentType: 'application/octet-stream' })
   })
-  await page.addInitScript(() => localStorage.getItem('workspace.setupDone') || localStorage.setItem('workspace.setupDone', '1'))
+  await page.addInitScript(() => localStorage.getItem('workspace.setupDone') || localStorage.setItem('workspace.setupDone', '2'))
   if (tauri) await page.addInitScript(fakeTauri)
   if (init) await page.addInitScript(init)
   return { browser, context, page, logs }
@@ -143,6 +143,7 @@ function fakeTauri() {
           return []
         case 'release_notes':
         case 'plugin:updater|check':
+        case 'check_update':
           throw 'offline'
         default:
           return null

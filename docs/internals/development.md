@@ -94,7 +94,8 @@ src/
   lib/platform.ts         native file dialogs and file I/O (browser fallbacks for dev)
   lib/dialogs.ts          the app's own questions and alerts (components/Dialogs.tsx)
   lib/updater.ts          update checks, the Tauri updater, and apt on Linux
-  components/             title bar and tabs, Home, the welcome tour (Setup.tsx), Settings, the three-pane workbench; ui.tsx is the design system the rest are built from
+  lib/analytics/          anonymous usage events and what they may contain (see analytics.md); the consent store is state/analytics.ts
+  components/             title bar and tabs, Home, the onboarding (Setup.tsx), Settings, the three-pane workbench; ui.tsx is the design system the rest are built from
   editors/{docx,pptx,pdf,markdown,text}/   built-in editors, each loaded the first time it's needed
   collab/                 sharing a document for editing together (see collaboration.md)
   collab/agents/          AI agents in shared documents: their tools, the MCP bridge, names and logos, the skill
@@ -107,6 +108,7 @@ src-tauri/
   src/plugins.rs          downloads, checks and serves optional plugins (wsplugin: scheme)
   src/tex.rs              finds, runs, installs and removes the system's TeX
   src/update.rs           the latest release's notes, Mac relaunch, apt updates on Linux
+  src/analytics.rs        posts usage events to PostHog for the page
   windows/hooks.nsh       closes Writan before a Windows install or uninstall
   src/defaults.rs         makes Writan the default app for its file types
   src/collab/             the relay that orders shared documents' changes, its WebSocket server and client, and the MCP server for agents (mcp.rs)
@@ -130,14 +132,15 @@ cp /tmp/icons/{32x32.png,128x128.png,128x128@2x.png,icon.icns,icon.ico,icon.png}
 
 The runtime choices in Settings use `Logo` in `src/components/ui.tsx` as their source. After changing its artwork, run `node scripts/app-icons.mjs` to regenerate `src-tauri/icons/variants/*.png`. The script needs the npm dependencies; it renders with the Tauri CLI, as for the bundled icons, and puts each tile on the bundled icon's grid with its margin and shadow, so the Dock and taskbar show every choice at the same size. These variants change the running app's icon; the bundled icon stays the default.
 
-## The welcome tour's pictures
+## The onboarding's pictures
 
-`src/components/tour/*.webp` are screenshots of the app, in light and dark, opened on the sample documents in `scripts/tour/`. The palette's comes twice, with Mac and with Windows/Linux shortcuts. After a change that shows in them, serve a test build and run the script (it needs Playwright, which isn't a dependency: `npm i --no-save playwright`):
+`src/components/tour/*.webp` are screenshots of the app, in light and dark, opened on the sample documents in `scripts/tour/`. The `collab` and `agents` pictures need the standalone relay with MCP on: a second window joins the shared document, and two MCP clients write in it as Claude Code and Codex. The `extras` picture compiles `scripts/tour/Orbits.tex` with this computer's pdflatex and needs the LaTeX plugin built with `npm run plugins`. After a change that shows in them, serve a test build and run the script (it uses Playwright, which `npm ci` installs; the first time, also run `npx playwright install chromium` to download the browser):
 
 ```sh
 VITE_TEST_HOOKS=1 npx vite build && npx vite preview --port 1420
-node scripts/tour-shots.mjs http://localhost:1420/          # every picture
-node scripts/tour-shots.mjs http://localhost:1420/ palette  # just some
+(cd src-tauri && cargo run --example collab_relay -- --port 47812 --mcp tour-token --bridge tour-key)
+node scripts/tour-shots.mjs http://localhost:1420/                # every picture
+node scripts/tour-shots.mjs http://localhost:1420/ collab agents  # just some
 ```
 
 ## Windows installer hooks

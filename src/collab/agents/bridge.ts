@@ -6,6 +6,8 @@
 import { isTauri } from '../../lib/platform'
 import { browserRelay, connect, resetNative, type Transport } from '../transport'
 import { agentFrom } from './identity'
+import { track } from '../../state/analytics'
+import { agentOf } from '../../lib/analytics/events'
 import { useAgentsStatus, type AgentsStatus } from './status'
 import type { AgentSession } from './tools'
 
@@ -36,8 +38,10 @@ async function answer(call: Call): Promise<unknown> {
   if (call.method === 'tools/list') return { tools: listTools() }
   let session = sessions.get(call.session)
   if (!session) {
-    session = new AgentSession(agentFrom(call.agent, call.client))
+    const agent = agentFrom(call.agent, call.client)
+    session = new AgentSession(agent)
     sessions.set(call.session, session)
+    track('agent_connected', { agent: agentOf(agent.id), local: call.local === true })
   }
   const name = call.params?.name ?? ''
   if (!TOOLS.some((t) => t.name === name)) return { content: [{ type: 'text', text: `Writan has no tool ${name}.${RENAMED[name] ? ` Use ${RENAMED[name]}.` : ''}` }], isError: true }

@@ -10,7 +10,7 @@ const errors = []
 page.on('pageerror', (e) => errors.push(e.message))
 page.on('requestfailed', (r) => errors.push(`request failed: ${r.url()} ${r.failure()?.errorText}`))
 await page.addInitScript(() => {
-  localStorage.setItem('workspace.setupDone', '1')
+  localStorage.setItem('workspace.setupDone', '2')
   localStorage.setItem('workspace.settings', JSON.stringify({ version: 2, autosave: { enabled: true, delay: 1, kinds: {} }, history: true }))
   const enc = new TextEncoder()
   const files = new Map([['/docs/notes.md', { bytes: enc.encode('# Notes\n\nFirst.\n'), mtime: 1000 }]])

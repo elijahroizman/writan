@@ -2,6 +2,7 @@ import { resolveTransitionDurationMs } from './transitions'
 import type { ReactNode } from 'react'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import * as platform from '../../lib/platform'
+import { track } from '../../state/analytics'
 import { SlideImage } from '../../engine/slides/SlideImage'
 import { SlideSwap } from './SlideSwap'
 import type { Element, SlideInfo, SlidesEngine } from '../../engine/slides/engine'
@@ -40,6 +41,8 @@ export function PresentMode({
   const exitRef = useRef(onExit)
   exitRef.current = onExit
   const elementsCacheRef = useRef(new Map<string, Element[]>())
+
+  useEffect(() => track('feature_used', { feature: 'present_slides', kind: 'pptx' }), [])
 
   // Pre-warm the next slide in idle time so advancing is instant.
   useEffect(() => {

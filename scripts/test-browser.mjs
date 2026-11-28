@@ -14,6 +14,7 @@ const timeout = 180_000
 // Each test opens its own browser, so several run at once. BROWSER_TEST_JOBS=1 runs them in turn.
 const jobs = Math.max(1, Number(process.env.BROWSER_TEST_JOBS) || Math.min(4, availableParallelism() - 1))
 const scripts = [
+  'tests/stress/ui/analytics.mjs',
   'tests/stress/ui/circular-reference.mjs',
   'tests/stress/ui/css-fonts.mjs',
   'tests/stress/ui/datasafety.mjs',
@@ -24,6 +25,7 @@ const scripts = [
   'tests/stress/ui/nasty.mjs',
   'tests/stress/ui/new-presentation.mjs',
   'tests/stress/ui/offline-ocr.mjs',
+  'tests/stress/ui/onboarding.mjs',
   'tests/stress/ui/pdf-select-drag-down.mjs',
   'tests/stress/ui/pdf-text-select.mjs',
   'tests/stress/ui/pdf-to-word.mjs',
@@ -43,6 +45,8 @@ const scripts = [
   'tests/stress/ui/themes-folder.mjs',
   'tests/stress/ui/tracked-changes.mjs',
   'tests/stress/ui/updater.mjs',
+  'tests/stress/ui/updater-linux.mjs',
+  'tests/stress/ui/update-latest.mjs',
   'tests/stress/ui/ux-regressions.mjs',
   'tests/stress/ui/version-history.mjs',
   'tests/stress/native/pdf-page-select.mjs',

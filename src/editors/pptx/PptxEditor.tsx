@@ -40,6 +40,7 @@ import { usePinchZoom } from '../../lib/pinch'
 import * as platform from '../../lib/platform'
 import { keysFor, withKeys } from '../../state/shortcuts'
 import { registerEditor, useWorkspace } from '../../state/workspace'
+import { documentFailed, documentReady } from '../../lib/analytics/documents'
 import { LinkExcelModal } from '../../links/LinkExcelModal'
 import type { ExcelLink, LinkedDocumentTarget } from '../../links/excelLinks'
 import { findOpenWorkbook, useExcelLinks } from '../../links/excelLinks'
@@ -74,8 +75,12 @@ export default function PptxEditor({ tab, active }: EditorProps) {
         opened = e
         if (import.meta.env.DEV || import.meta.env.VITE_TEST_HOOKS) Object.assign(window, { __slides: e })
         setEngine(e)
+        documentReady(tab.id)
       })
-      .catch((e) => setError(String(e?.message ?? e)))
+      .catch((e) => {
+        documentFailed(tab.id, 'parse')
+        setError(String(e?.message ?? e))
+      })
     return () => {
       live = false
       if (opened) {
