@@ -4,60 +4,108 @@
 // answers with the shape or slide as it is once everyone has the change.
 
 import type { Element, SlidesEngine } from '../../engine/slides/engine'
-import { type Answer, type Args, bool, canvasPicture, clip, doc, found, foundAnswer, grouped, hexColor, int, need, num, plural, str, type Tool, ToolError } from './common'
+import { type Answer, type Args, bool, BOX, canvasPicture, clip, doc, found, foundAnswer, grouped, hexColor, int, need, num, plural, str, TEXT_FORMAT, type Tool, ToolError } from './common'
 import { draw, type Mark, naturalSize } from './picture'
 import { pictureBytes, pictureType, scaledPicture } from './pictures'
 
-const slide = { type: 'integer', description: 'The slide’s number, from 1.' }
-const shape = { type: 'string', description: 'The shape’s id from read_document, like "4".' }
-const box = {
-  x: { type: 'number', description: 'Left edge, in slide pixels (96 to an inch) from the slide’s left.' },
-  y: { type: 'number', description: 'Top edge, in slide pixels from the slide’s top.' },
-  width: { type: 'number', description: 'In slide pixels.' },
-  height: { type: 'number', description: 'In slide pixels.' },
+const slide = { type: 'integer', description: 'From 1.' }
+const shape = { type: 'string', description: 'Its id, like "4".' }
+const shapes = { type: 'array', items: { type: 'string' }, description: 'Ids, like ["4", "7"].' }
+const fill = { type: 'string', description: 'Like "#1F4E79", or "none".' }
+const outline = { type: 'string', description: 'Like "#1F4E79", or "none".' }
+const cropSides = {
+  left: { type: 'number', description: 'The share to crop, 0 to under 1.' },
+  top: { type: 'number', description: 'The share to crop.' },
+  right: { type: 'number', description: 'The share to crop.' },
+  bottom: { type: 'number', description: 'The share to crop.' },
 }
-const textFormat = {
-  font: { type: 'string', description: 'A font family, like "Georgia".' },
-  size: { type: 'number', description: 'Font size in points.' },
-  bold: { type: 'boolean' },
-  italic: { type: 'boolean' },
-  underline: { type: 'boolean' },
-  strikethrough: { type: 'boolean' },
-  color: { type: 'string', description: 'Text color, like "#1F4E79".' },
-  align: { type: 'string', enum: ['left', 'center', 'right', 'justify'] },
-}
+const box = { x: BOX.x, y: BOX.y, width: BOX.width, height: BOX.height }
 
 export const SLIDES_TOOLS: Tool[] = [
   {
-    name: 'set_shape_text',
-    description: 'PowerPoint: replaces the text of shape `shape` on slide `slide`. Each line is a paragraph. The new text keeps the shape’s formatting. Answers with the shape as it is now.',
-    inputSchema: { type: 'object', properties: { document: doc, slide, shape, text: { type: 'string' } }, required: ['document', 'slide', 'shape', 'text'] },
+    name: 'add_slide',
+    description:
+      'PowerPoint: adds a slide after `after`, or at the end, and returns its number and shapes. With `copy`, copies that slide and its notes to right after it instead.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        after: { type: 'integer', description: '0 for the start. Default: the end.' },
+        layout: { type: 'string', description: 'As read_document lists them.' },
+        title: { type: 'string', description: 'For the title placeholder.' },
+        body: { type: 'string', description: 'For the body placeholder.' },
+        copy: { type: 'integer', description: 'A slide to copy instead.' },
+      },
+      required: ['document'],
+    },
   },
   {
-    name: 'format_text',
+    name: 'edit_slide',
+    description: 'PowerPoint: changes a slide’s layout, whether the slideshow skips it, its notes, or its position. Give only what changes.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        slide,
+        layout: { type: 'string', description: 'As read_document lists them.' },
+        hidden: { type: 'boolean', description: 'Skipped in the slideshow.' },
+        notes: { type: 'string', description: 'Replaces the speaker notes.' },
+        to: { type: 'integer', description: 'Its new number.' },
+      },
+      required: ['document', 'slide'],
+    },
+  },
+  {
+    name: 'delete_slide',
+    description: 'PowerPoint: deletes a slide.',
+    inputSchema: { type: 'object', properties: { document: doc, slide }, required: ['document', 'slide'] },
+  },
+  {
+    name: 'add_shape',
     description:
-      'Word and PowerPoint: formats text. PowerPoint: all of shape `shape`’s text on slide `slide`, or just paragraphs `from` to `to` of it (numbered from 1), or just where `find` is in it. Word: paragraphs `from` to `to` (just `from` if `to` is left out), or just where `find` is in them. Give only what should change.',
+      'PowerPoint: adds a text box, shape or table in front of the others, and returns its id. It goes in the middle unless x and y are given.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        slide,
+        kind: { type: 'string', enum: ['text box', 'rectangle', 'rounded rectangle', 'oval', 'triangle', 'diamond', 'star', 'arrow', 'line', 'table'] },
+        text: { type: 'string', description: 'Not for a line or table.' },
+        rows: { type: 'integer', description: 'Table: 1 to 50. Default 2.' },
+        columns: { type: 'integer', description: 'Table: 1 to 20. Default 2.' },
+        ...box,
+        ...TEXT_FORMAT,
+        fill,
+        outline,
+      },
+      required: ['document', 'slide', 'kind'],
+    },
+  },
+  {
+    name: 'set_shape_text',
+    description: 'PowerPoint: replaces a shape’s text, keeping its formatting.',
+    inputSchema: { type: 'object', properties: { document: doc, slide, shape, text: { type: 'string', description: 'One paragraph per line.' } }, required: ['document', 'slide', 'shape', 'text'] },
+  },
+  {
+    name: 'set_table_text',
+    description: 'PowerPoint: writes cells of table `shape` from `row` and `column` on. The table grows to fit.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
         slide,
         shape,
-        from: { type: ['integer', 'string'], description: 'The first paragraph to format (Word: its number or id, as read_document gives them; PowerPoint: within the shape, from 1).' },
-        to: { type: ['integer', 'string'], description: 'The last paragraph to format.' },
-        find: { type: 'string', description: 'Format only this text where it appears (every time).' },
-        ...textFormat,
-        highlight: { type: 'string', description: 'Word: a highlight color: yellow, green, cyan, magenta, blue, red, darkBlue, darkCyan, darkGreen, darkMagenta, darkRed, darkYellow, darkGray, lightGray, black, or none.' },
-        list: { type: 'string', enum: ['bullet', 'numbered', 'none'], description: 'Word: makes the paragraphs a list, or not.' },
-        line_spacing: { type: 'number', description: 'Word: line spacing as a multiple, like 1, 1.15 or 2.' },
+        row: { type: 'integer', description: 'Default 1.' },
+        column: { type: 'integer', description: 'Default 1.' },
+        cells: { type: 'array', items: { type: 'array', items: { type: 'string' } }, description: 'Rows of cell text, like [["Dish", "Price"]].' },
       },
-      required: ['document'],
+      required: ['document', 'slide', 'shape', 'cells'],
     },
   },
   {
-    name: 'move_shape',
+    name: 'edit_shape',
     description:
-      'PowerPoint: moves, resizes, turns, flips or restacks shape `shape` on slide `slide` (a picture, text box, shape, table or group). Give only what should change. Giving just width or just height scales the other to keep its proportions, unless keep_proportions is false. Answers with where it is now and what it overlaps.',
+      'PowerPoint: moves, resizes, rotates, flips or restacks a shape, sets its fill and outline, or sets its slideshow link. Give only what changes. Returns where it is and what it overlaps.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -65,11 +113,15 @@ export const SLIDES_TOOLS: Tool[] = [
         slide,
         shape,
         ...box,
-        keep_proportions: { type: 'boolean', description: 'Whether giving one of width and height scales the other too (true unless set).' },
+        keep_proportions: { type: 'boolean', description: 'With only width or height, scale the other. Default true.' },
         rotation: { type: 'number', description: 'Degrees clockwise.' },
-        flip_horizontal: { type: 'boolean' },
-        flip_vertical: { type: 'boolean' },
-        layer: { type: 'string', enum: ['front', 'forward', 'backward', 'back'], description: 'Brings it to the front, one step forward, one step back, or sends it to the back.' },
+        flip_horizontal: { type: 'boolean', description: 'Mirrored left to right.' },
+        flip_vertical: { type: 'boolean', description: 'Upside down.' },
+        layer: { type: 'string', enum: ['front', 'forward', 'backward', 'back'], description: 'forward and backward move one step.' },
+        fill,
+        outline,
+        outline_width: { type: 'number', description: 'In points.' },
+        link: { type: 'string', description: 'A web address, or "" for none.' },
       },
       required: ['document', 'slide', 'shape'],
     },
@@ -77,7 +129,7 @@ export const SLIDES_TOOLS: Tool[] = [
   {
     name: 'crop_picture',
     description:
-      'PowerPoint: crops picture `shape` on slide `slide`. `fit: "fill"` crops it to fill its frame without stretching (keep says which part stays); `fit: "fit"` shows the whole picture, uncropped, its frame shrunk to the picture’s proportions; or give left, top, right and bottom as the share of the picture to cut from each side (0 to 1, like 0.1), and the visible part stays where it is.',
+      'PowerPoint: crops a picture. `fit: "fill"` fills its frame without stretching. `fit: "fit"` shows it whole and shrinks the frame to match. Or give left, top, right and bottom.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -85,143 +137,35 @@ export const SLIDES_TOOLS: Tool[] = [
         slide,
         shape,
         fit: { type: 'string', enum: ['fill', 'fit'] },
-        keep: { type: 'string', enum: ['center', 'top', 'bottom', 'left', 'right'], description: 'With fit "fill": the part of the picture to keep (the middle unless set).' },
-        left: { type: 'number' },
-        top: { type: 'number' },
-        right: { type: 'number' },
-        bottom: { type: 'number' },
+        keep: { type: 'string', enum: ['center', 'top', 'bottom', 'left', 'right'], description: 'With fit "fill": the part to keep.' },
+        ...cropSides,
       },
       required: ['document', 'slide', 'shape'],
     },
-  },
-  {
-    name: 'format_shape',
-    description: 'PowerPoint: a shape’s fill and outline, and the link it opens in a slideshow. Colors like "#1F4E79", or "none". Give only what should change.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        document: doc,
-        slide,
-        shape,
-        fill: { type: 'string', description: 'The fill color, or "none".' },
-        outline: { type: 'string', description: 'The outline color, or "none".' },
-        outline_width: { type: 'number', description: 'The outline’s width in points (0 for none).' },
-        link: { type: 'string', description: 'A web address it opens when clicked in a slideshow, or "" for none.' },
-      },
-      required: ['document', 'slide', 'shape'],
-    },
-  },
-  {
-    name: 'add_shape',
-    description:
-      'PowerPoint: adds a text box, a shape or a table to slide `slide`, in front of the others, and answers with its id. `kind`: "text box", "rectangle", "rounded rectangle", "oval", "triangle", "diamond", "star", "arrow", "line" or "table". It goes in the middle of the slide unless x, y, width and height say where.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        document: doc,
-        slide,
-        kind: { type: 'string' },
-        text: { type: 'string', description: 'Its text, one paragraph per line (not for a line or a table).' },
-        rows: { type: 'integer', description: 'A table’s rows.' },
-        columns: { type: 'integer', description: 'A table’s columns.' },
-        ...box,
-        ...textFormat,
-        fill: { type: 'string', description: 'The fill color, or "none".' },
-        outline: { type: 'string', description: 'The outline color, or "none".' },
-      },
-      required: ['document', 'slide', 'kind'],
-    },
-  },
-  {
-    name: 'add_picture',
-    description:
-      'PowerPoint: adds a picture (PNG, JPEG, GIF, WebP or SVG) to slide `slide`, from `path` (a file on the computer Writan runs on), `url`, or `data` (base64). It goes in the middle of the slide unless x, y, width and height say where; giving just width or just height keeps its proportions. Answers with its id.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        document: doc,
-        slide,
-        path: { type: 'string', description: 'An absolute path on the computer Writan runs on.' },
-        url: { type: 'string', description: 'An https address.' },
-        data: { type: 'string', description: 'The picture’s bytes, base64.' },
-        name: { type: 'string', description: 'Its name, like "Pad thai".' },
-        ...box,
-      },
-      required: ['document', 'slide'],
-    },
-  },
-  {
-    name: 'delete_shapes',
-    description: 'PowerPoint: deletes shapes from slide `slide`.',
-    inputSchema: { type: 'object', properties: { document: doc, slide, shapes: { type: 'array', items: { type: 'string' }, description: 'The shapes’ ids.' } }, required: ['document', 'slide', 'shapes'] },
   },
   {
     name: 'copy_shapes',
-    description: 'PowerPoint: copies shapes from slide `slide` onto slide `to_slide` (the same slide if left out), in front of the others, and answers with the copies’ ids. On the same slide, the copies sit a little down and to the right.',
+    description: 'PowerPoint: copies shapes to `to_slide`, or onto the same slide, and returns the copies’ ids.',
     inputSchema: {
       type: 'object',
-      properties: { document: doc, slide, shapes: { type: 'array', items: { type: 'string' } }, to_slide: { type: 'integer' } },
+      properties: { document: doc, slide, shapes, to_slide: { type: 'integer', description: 'Default: the same slide.' } },
       required: ['document', 'slide', 'shapes'],
     },
   },
   {
     name: 'group_shapes',
-    description: 'PowerPoint: groups shapes on slide `slide` into one, so they move and resize together, and answers with the group’s id. Or, with `ungroup` and one group’s id, takes it apart again.',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, slide, shapes: { type: 'array', items: { type: 'string' } }, ungroup: { type: 'boolean' } },
-      required: ['document', 'slide', 'shapes'],
-    },
+    description: 'PowerPoint: groups shapes so they move together, and returns the group’s id.',
+    inputSchema: { type: 'object', properties: { document: doc, slide, shapes: { ...shapes, description: 'At least two.' } }, required: ['document', 'slide', 'shapes'] },
   },
   {
-    name: 'set_table_text',
-    description: 'PowerPoint: writes cells of table `shape` on slide `slide`, from row `row` and column `column` (1 and 1 if left out): `cells` is a list of rows, each a list of cells’ text. The table grows to fit.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        document: doc,
-        slide,
-        shape,
-        row: { type: 'integer' },
-        column: { type: 'integer' },
-        cells: { type: 'array', items: { type: 'array', items: { type: 'string' } } },
-      },
-      required: ['document', 'slide', 'shape', 'cells'],
-    },
+    name: 'ungroup_shapes',
+    description: 'PowerPoint: splits a group into its shapes and returns their ids.',
+    inputSchema: { type: 'object', properties: { document: doc, slide, group: { type: 'string', description: 'The group’s id.' } }, required: ['document', 'slide', 'group'] },
   },
   {
-    name: 'add_slide',
-    description: 'PowerPoint: adds a slide after slide `after` (at the end if left out), with a layout by name if given, and puts `title` and `body` in its placeholders. Answers with the new slide’s number and shapes.',
-    inputSchema: {
-      type: 'object',
-      properties: { document: doc, after: { type: 'integer' }, layout: { type: 'string' }, title: { type: 'string' }, body: { type: 'string' } },
-      required: ['document'],
-    },
-  },
-  {
-    name: 'delete_slide',
-    description: 'PowerPoint: deletes slide `slide`.',
-    inputSchema: { type: 'object', properties: { document: doc, slide }, required: ['document', 'slide'] },
-  },
-  {
-    name: 'duplicate_slide',
-    description: 'PowerPoint: copies slide `slide`, with its notes, as the slide after it.',
-    inputSchema: { type: 'object', properties: { document: doc, slide }, required: ['document', 'slide'] },
-  },
-  {
-    name: 'move_slide',
-    description: 'PowerPoint: moves slide `slide` so it becomes slide number `to`.',
-    inputSchema: { type: 'object', properties: { document: doc, slide, to: { type: 'integer' } }, required: ['document', 'slide', 'to'] },
-  },
-  {
-    name: 'set_slide',
-    description: 'PowerPoint: puts slide `slide` on another layout (by name), or hides it from the slideshow or shows it again.',
-    inputSchema: { type: 'object', properties: { document: doc, slide, layout: { type: 'string' }, hidden: { type: 'boolean' } }, required: ['document', 'slide'] },
-  },
-  {
-    name: 'set_notes',
-    description: 'PowerPoint: replaces slide `slide`’s speaker notes.',
-    inputSchema: { type: 'object', properties: { document: doc, slide, text: { type: 'string' } }, required: ['document', 'slide', 'text'] },
+    name: 'delete_shapes',
+    description: 'PowerPoint: deletes shapes.',
+    inputSchema: { type: 'object', properties: { document: doc, slide, shapes }, required: ['document', 'slide', 'shapes'] },
   },
 ]
 
@@ -336,7 +280,7 @@ function findShape(e: SlidesEngine, i: number, id: string): { el: Element; group
 /** A shape that isn't inside a group: the ones that move, restack and get deleted on their own. */
 function topShape(e: SlidesEngine, i: number, id: string, doing: string): Element {
   const { el, group } = findShape(e, i, id)
-  if (group) throw new ToolError(`Shape "${id}" is inside group "${group.id}". To ${doing} it on its own, ungroup the group first (group_shapes with ungroup), or ${doing} the whole group.`)
+  if (group) throw new ToolError(`Shape "${id}" is inside group "${group.id}". To ${doing} it on its own, ungroup the group first (ungroup_shapes), or ${doing} the whole group.`)
   return el
 }
 
@@ -545,6 +489,8 @@ interface ParaText {
 const textsOf = (e: SlidesEngine, id: string) => (JSON.parse(e.doc.slideText()) as ParaText[]).filter((t) => t.frame === id)
 
 function formatText(e: SlidesEngine, args: Args): Answer {
+  const wordOnly = ['style', 'highlight', 'list', 'line_spacing'].filter((k) => args[k] !== undefined)
+  if (wordOnly.length) throw new ToolError(`${wordOnly.join(', ')} ${wordOnly.length === 1 ? 'is' : 'are'} for Word documents. In a presentation, format_text sets font, size, bold, italic, underline, strikethrough, color and align.`)
   const i = slideIndex(e, int(args, 'slide'))
   const id = need(str(args, 'shape'), 'the shape')
   e.run({ cmd: 'setActive', index: i })
@@ -648,45 +594,39 @@ async function cropPicture(e: SlidesEngine, args: Args): Promise<Answer> {
   return { text: 'Cropped.', after: afterShape(e, i, id, true) }
 }
 
-function moveShape(e: SlidesEngine, args: Args): Answer {
-  const i = slideIndex(e, int(args, 'slide'))
-  const id = need(str(args, 'shape'), 'the shape')
-  e.run({ cmd: 'setActive', index: i })
-  const el = topShape(e, i, id, 'move')
+/** edit_shape's moving, resizing, turning, flipping and restacking, checked; null if there's none. */
+function planMove(e: SlidesEngine, id: string, el: Element, args: Args): (() => void) | null {
+  const fh = bool(args, 'flip_horizontal')
+  const fv = bool(args, 'flip_vertical')
+  const layer = str(args, 'layer')
+  if (!['x', 'y', 'width', 'height', 'rotation'].some((k) => num(args, k) !== undefined) && fh === undefined && fv === undefined && layer === undefined) return null
   checkSize(args)
   const b = boxFrom(args, el, args.keep_proportions !== false)
   const rot = num(args, 'rotation') ?? el.rotation
-  const layer = str(args, 'layer')
   if (layer && !['front', 'forward', 'backward', 'back'].includes(layer)) throw new ToolError('layer is front, forward, backward or back.')
-  grouped(e, () => {
+  return () => {
     // Moving alone keeps the size as it is: a line's box has no height, which a new box can't have.
     if (b.w === el.width && b.h === el.height && rot === el.rotation) {
       if (b.x !== el.x || b.y !== el.y) e.run({ cmd: 'moveFrames', ids: [Number(id)], dx: b.x - el.x, dy: b.y - el.y })
     } else e.run({ cmd: 'setBox', id: Number(id), x: b.x, y: b.y, w: b.w, h: b.h, rot })
     pick(e, [id])
-    const fh = bool(args, 'flip_horizontal')
-    const fv = bool(args, 'flip_vertical')
     if (fh !== undefined && fh !== el.flipHorizontal) e.run({ cmd: 'flip', horizontal: true })
     if (fv !== undefined && fv !== el.flipVertical) e.run({ cmd: 'flip', horizontal: false })
     if (layer) e.run({ cmd: 'restack', how: layer })
-  })
-  return { text: 'Moved.', after: afterShape(e, i, id, true) }
+  }
 }
 
-function formatShape(e: SlidesEngine, args: Args): Answer {
-  const i = slideIndex(e, int(args, 'slide'))
-  const id = need(str(args, 'shape'), 'the shape')
-  e.run({ cmd: 'setActive', index: i })
-  const el = topShape(e, i, id, 'format')
+/** edit_shape's fill, outline and link, checked; null if there's none. */
+function planFormat(e: SlidesEngine, id: string, el: Element, args: Args): (() => void) | null {
   const fill = str(args, 'fill')
   const outline = str(args, 'outline')
   const width = num(args, 'outline_width')
   const link = str(args, 'link')
-  if (fill === undefined && outline === undefined && width === undefined && link === undefined) throw new ToolError('Give what to change: fill, outline, outline_width or link.')
-  if ((fill !== undefined || outline !== undefined || width !== undefined) && el.type === 'image') throw new ToolError('A picture has no fill or outline here; format_shape can set its link.')
+  if (fill === undefined && outline === undefined && width === undefined && link === undefined) return null
+  if ((fill !== undefined || outline !== undefined || width !== undefined) && el.type === 'image') throw new ToolError('A picture has no fill or outline here. Its link can be set.')
   const fillHex = colorArg(args, 'fill', 'The fill')
   const lineHex = colorArg(args, 'outline', 'The outline')
-  grouped(e, () => {
+  return () => {
     pick(e, [id])
     if (fill !== undefined) e.run({ cmd: 'fill', hex: fillHex })
     if (outline !== undefined || width !== undefined) {
@@ -694,8 +634,23 @@ function formatShape(e: SlidesEngine, args: Args): Answer {
       e.run({ cmd: 'line', hex: lineHex ?? null, width: none ? 0 : (width ?? (outline ? Math.max(1, el.shapeStyle?.strokeWidth ?? 1) : null)) })
     }
     if (link !== undefined) e.run({ cmd: 'link', id: Number(id), url: link.trim() || null })
+  }
+}
+
+/** edit_shape: everything given, checked before anything changes, as one change. */
+function editShape(e: SlidesEngine, args: Args): Answer {
+  const i = slideIndex(e, int(args, 'slide'))
+  const id = need(str(args, 'shape'), 'the shape')
+  e.run({ cmd: 'setActive', index: i })
+  const el = topShape(e, i, id, 'change')
+  const move = planMove(e, id, el, args)
+  const format = planFormat(e, id, el, args)
+  if (!move && !format) throw new ToolError('Give what to change: x, y, width, height, rotation, flip_horizontal, flip_vertical, layer, fill, outline, outline_width or link.')
+  grouped(e, () => {
+    move?.()
+    format?.()
   })
-  return { text: 'Formatted.', after: afterShape(e, i, id) }
+  return { text: move ? 'Moved.' : 'Formatted.', after: afterShape(e, i, id, true) }
 }
 
 function addShape(e: SlidesEngine, args: Args): Answer {
@@ -817,12 +772,10 @@ export async function slidesTool(e: SlidesEngine, name: string, args: Args, loca
     }
     case 'format_text':
       return formatText(e, args)
-    case 'move_shape':
-      return moveShape(e, args)
+    case 'edit_shape':
+      return editShape(e, args)
     case 'crop_picture':
       return cropPicture(e, args)
-    case 'format_shape':
-      return formatShape(e, args)
     case 'add_shape':
       return addShape(e, args)
     case 'add_picture':
@@ -865,21 +818,31 @@ export async function slidesTool(e: SlidesEngine, name: string, args: Args, loca
       const ids = shapeIds(args)
       e.run({ cmd: 'setActive', index: i })
       for (const id of ids) topShape(e, i, id, 'group')
-      if (args.ungroup === true) {
-        if (ids.length !== 1) throw new ToolError('Give one group to take apart.')
-        if (findShape(e, i, ids[0]).el.type !== 'group') throw new ToolError(`Shape "${ids[0]}" isn’t a group.`)
-        pick(e, ids)
-        e.run({ cmd: 'ungroup' })
-        const parts = [...e.state.frames]
-        return { text: `Ungrouped into ${parts.map((m) => `"${m}"`).join(', ')}.`, after: () => parts.map((m) => afterShape(e, i, m)()).join('') }
-      }
       if (ids.length < 2) throw new ToolError('Give at least two shapes to group.')
       pick(e, ids)
       e.run({ cmd: 'group' })
       const id = e.state.frames[0]
       return { text: `Grouped as shape "${id}".`, after: afterShape(e, i, id) }
     }
+    case 'ungroup_shapes': {
+      const i = slideIndex(e, int(args, 'slide'))
+      const id = need(str(args, 'group'), 'the group')
+      e.run({ cmd: 'setActive', index: i })
+      if (topShape(e, i, id, 'ungroup').type !== 'group') throw new ToolError(`Shape "${id}" isn’t a group.`)
+      pick(e, [id])
+      e.run({ cmd: 'ungroup' })
+      const parts = [...e.state.frames]
+      return { text: `Ungrouped into ${parts.map((m) => `"${m}"`).join(', ')}.`, after: () => parts.map((m) => afterShape(e, i, m)()).join('') }
+    }
     case 'add_slide': {
+      const copy = int(args, 'copy')
+      if (copy !== undefined) {
+        const given = ['after', 'layout', 'title', 'body'].filter((k) => args[k] !== undefined)
+        if (given.length) throw new ToolError(`With copy, leave out ${given.join(', ')}: the copy goes after the slide it copies, as it is. Change it afterwards.`)
+        const i = slideIndex(e, copy)
+        e.run({ cmd: 'duplicateSlides', indexes: [i] })
+        return { text: `Copied slide ${i + 1} as slide ${i + 2}.`, after: () => (i + 1 < e.slides.length ? `\n${slideLines(e, i + 1).join('\n')}` : '') }
+      }
       const after = int(args, 'after') === undefined ? e.slides.length - 1 : int(args, 'after') === 0 ? -1 : slideIndex(e, int(args, 'after'))
       const layoutName = str(args, 'layout')
       const layout = layoutName ? e.layouts.find((l) => l.name.toLowerCase() === layoutName.toLowerCase()) : null
@@ -916,35 +879,27 @@ export async function slidesTool(e: SlidesEngine, name: string, args: Args, loca
       e.run({ cmd: 'deleteSlides', indexes: [i] })
       return { text: `Deleted slide ${i + 1}. The slides after it moved up one.`, after: () => `\n${plural(e.slides.length, 'slide')} now.` }
     }
-    case 'duplicate_slide': {
-      const i = slideIndex(e, int(args, 'slide'))
-      e.run({ cmd: 'duplicateSlides', indexes: [i] })
-      return { text: `Copied slide ${i + 1} as slide ${i + 2}.`, after: () => (i + 1 < e.slides.length ? `\n${slideLines(e, i + 1).join('\n')}` : '') }
-    }
-    case 'move_slide': {
-      const i = slideIndex(e, int(args, 'slide'))
-      const to = slideIndex(e, int(args, 'to'))
-      e.run({ cmd: 'moveSlide', from: i, to })
-      return { text: i === to ? 'It’s already there.' : `Moved slide ${i + 1} to ${to + 1}.` }
-    }
-    case 'set_slide': {
-      const i = slideIndex(e, int(args, 'slide'))
+    case 'edit_slide': {
+      let i = slideIndex(e, int(args, 'slide'))
       const layoutName = str(args, 'layout')
       const hidden = bool(args, 'hidden')
-      if (layoutName === undefined && hidden === undefined) throw new ToolError('Give layout or hidden.')
+      const notes = str(args, 'notes')
+      const to = int(args, 'to') === undefined ? undefined : slideIndex(e, int(args, 'to'))
+      if (layoutName === undefined && hidden === undefined && notes === undefined && to === undefined) throw new ToolError('Give what to change: layout, hidden, notes or to.')
       const layout = layoutName ? e.layouts.find((l) => l.name.toLowerCase() === layoutName.toLowerCase()) : null
       if (layoutName && !layout) throw new ToolError(`No layout “${layoutName}”. Layouts: ${e.layouts.map((l) => l.name).join(', ')}.`)
       grouped(e, () => {
         e.run({ cmd: 'setActive', index: i })
         if (layout) e.run({ cmd: 'applyLayout', layout: layout.path })
         if (hidden !== undefined && hidden !== e.slides[i].hidden) e.run({ cmd: 'toggleHidden', indexes: [i] })
+        if (notes !== undefined) e.run({ cmd: 'notes', index: i, text: notes })
+        if (to !== undefined && to !== i) {
+          e.run({ cmd: 'moveSlide', from: i, to })
+          i = to
+        }
       })
-      return { text: 'Done.', after: () => (i < e.slides.length ? `\n${slideLines(e, i).join('\n')}` : '') }
-    }
-    case 'set_notes': {
-      const i = slideIndex(e, int(args, 'slide'))
-      e.run({ cmd: 'notes', index: i, text: need(str(args, 'text'), 'the text') })
-      return { text: 'Done.', after: () => (i < e.slides.length ? `\nSlide ${i + 1}’s notes now: ${clip(e.slides[i].notes, 400) || '(none)'}` : '') }
+      const moved = to !== undefined ? ` It’s slide ${i + 1} now.` : ''
+      return { text: `Done.${moved}`, after: () => (i < e.slides.length ? `\n${slideLines(e, i).join('\n')}` : '') }
     }
   }
   throw new ToolError(`${name} isn’t for presentations.`)

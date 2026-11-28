@@ -28,7 +28,33 @@ export interface Tool {
   inputSchema: Record<string, unknown>
 }
 
-export const doc = { type: 'string', description: 'The document, as list_documents gives it.' }
+export const doc = { type: 'string', description: 'From list_documents.' }
+
+/** A Word paragraph, by number or id. */
+export const paraRef = (what: string) => ({ type: ['integer', 'string'], description: `${what}. A number, or an id like "#k3f9x2".` })
+
+/** Where a shape goes on a slide. */
+export const BOX = {
+  x: { type: 'number', description: 'The left edge in pixels, 96 to an inch.' },
+  y: { type: 'number', description: 'The top edge in pixels.' },
+  width: { type: 'number', description: 'In pixels.' },
+  height: { type: 'number', description: 'In pixels.' },
+}
+
+/** How text looks, in Word and PowerPoint. */
+export const TEXT_FORMAT = {
+  font: { type: 'string', description: 'Like "Georgia".' },
+  size: { type: 'number', description: 'In points.' },
+  bold: { type: 'boolean' },
+  italic: { type: 'boolean' },
+  underline: { type: 'boolean' },
+  strikethrough: { type: 'boolean' },
+  color: { type: 'string', description: 'Like "#1F4E79".' },
+  align: { type: 'string', enum: ['left', 'center', 'right', 'justify'] },
+}
+
+/** Word's highlight colors. */
+export const HIGHLIGHTS = ['yellow', 'green', 'cyan', 'magenta', 'blue', 'red', 'darkBlue', 'darkCyan', 'darkGreen', 'darkMagenta', 'darkRed', 'darkYellow', 'darkGray', 'lightGray', 'black', 'none']
 
 export const str = (a: Args, k: string) => (typeof a[k] === 'string' ? (a[k] as string) : undefined)
 export const num = (a: Args, k: string) => {
@@ -55,13 +81,19 @@ export function need<T>(v: T | undefined, what: string): T {
   return v
 }
 
-/** Runs commands as one change, which undo takes back at once. */
+/** How deep each engine is in `grouped`: the engines' groups don't nest, so only the outermost one begins and ends. */
+const groupDepth = new WeakMap<object, number>()
+
+/** Runs commands as one change, which undo takes back at once. Inside another `grouped`, they're part of that one. */
 export function grouped<T>(e: { run(c: { cmd: string }): unknown }, f: () => T): T {
-  e.run({ cmd: 'beginGroup' })
+  const depth = groupDepth.get(e) ?? 0
+  if (!depth) e.run({ cmd: 'beginGroup' })
+  groupDepth.set(e, depth + 1)
   try {
     return f()
   } finally {
-    e.run({ cmd: 'endGroup' })
+    groupDepth.set(e, depth)
+    if (!depth) e.run({ cmd: 'endGroup' })
   }
 }
 
@@ -125,10 +157,10 @@ export const MAX_FOUND = 60
 export const findTool: Tool = {
   name: 'find_text',
   description:
-    'Finds text without reading the whole document, and says where each match is: the paragraph numbers in Word, the slide and shape (or notes) in PowerPoint, the cells on every sheet in Excel (by what they show or their formula). Case doesn’t matter unless match_case is true.',
+    'Finds text and says where each match is: paragraph numbers in Word, slide and shape in PowerPoint, cells in Excel. Ignores case unless `match_case`.',
   inputSchema: {
     type: 'object',
-    properties: { document: doc, text: { type: 'string', description: 'The text to find.' }, match_case: { type: 'boolean' } },
+    properties: { document: doc, text: { type: 'string', description: 'The text to find.' }, match_case: { type: 'boolean', description: 'Match upper and lower case exactly.' } },
     required: ['document', 'text'],
   },
 }

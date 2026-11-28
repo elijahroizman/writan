@@ -95,7 +95,7 @@ try {
   const codex = await mcpClient(MCP_A, 'codex', 'codex-mcp-client')
   const claude = await mcpClient(MCP_B, 'claude', 'claude-code')
   const tools = await codex.tools()
-  check('the new tools are listed', ['send_message', 'read_messages', 'find_text', 'redo', 'open_document', 'save_document'].every((t) => tools.includes(t)), tools.join())
+  check('the new tools are listed', ['send_message', 'wait_for_changes', 'find_text', 'redo', 'open_document', 'save_document'].every((t) => tools.includes(t)), tools.join())
   const docA = await docIn(codex)
   const docB = await docIn(claude)
   await codex.call('read_document', { document: docA })
@@ -118,7 +118,7 @@ try {
   await new Promise((r) => setTimeout(r, 300))
   const next = await claude.call('find_text', { document: docB, text: 'Intro' })
   check('another tool’s answer brings the new message', next.text.includes('1 new message in the document’s chat') && next.text.includes('Ada’s Codex, just now: I’ll take the intro; can you do the budget paragraph?') && next.text.includes('colleague'), next.text)
-  check('once seen, they aren’t shown again', (await claude.call('read_messages', { document: docB })).text === 'No new messages.')
+  check('once seen, they aren’t shown again', (await claude.call('wait_for_changes', { document: docB, seconds: 0 })).text === 'Nothing new since your last call.')
 
   // The people see the chat, without a note popping up for each message.
   await b.page.waitForFunction(() => window.__collab.useChat.getState()[window.__workspace.useWorkspace.getState().activeId]?.said.length === 2)
@@ -152,11 +152,11 @@ try {
   const pending = await codex.call('wait_for_changes', { document: docA, seconds: 20 })
   check('a message not seen yet ends wait_for_changes at once', Date.now() - t0 < 2000 && pending.text.includes('Starting on it now.'), `${Date.now() - t0} ms: ${pending.text}`)
 
-  // read_messages waits for one, and no longer than a client waits for an answer.
-  const waitingRead = codex.call('read_messages', { document: docA, seconds: 20 })
+  // messages_only waits for one, and no longer than a client waits for an answer.
+  const waitingRead = codex.call('wait_for_changes', { document: docA, seconds: 20, messages_only: true })
   await new Promise((r) => setTimeout(r, 300))
   await claude.call('send_message', { document: docB, text: 'Done with the budget.' })
-  check('read_messages with seconds waits for the next', (await waitingRead).text.includes('Done with the budget.'))
+  check('wait_for_changes with messages_only waits for the next', (await waitingRead).text.includes('Done with the budget.'))
 
   // Messages that crossed: the sender sees what it hadn't before sending.
   await claude.call('send_message', { document: docB, text: 'Want me to do the summary too?' })
@@ -174,7 +174,7 @@ try {
   await setMessages(b.page, false)
   await a.page.waitForFunction(() => window.__collab.useCollab.getState()[window.__workspace.useWorkspace.getState().activeId].peers.some((p) => p.agent === 'claude' && !p.listens))
   const offTools = await claude.tools()
-  check('with messages off, the tools aren’t listed', !offTools.includes('send_message') && !offTools.includes('read_messages') && offTools.includes('find_text'), offTools.join())
+  check('with messages off, the tools aren’t listed', !offTools.includes('send_message') && offTools.includes('find_text'), offTools.join())
   const offCall = await claude.call('send_message', { document: docB, text: 'hi' })
   check('with messages off, send_message is refused', offCall.error && offCall.text.includes('turned off messages'), offCall.text)
   const toDeaf = await codex.call('send_message', { document: docA, text: 'Still there?' })
@@ -186,7 +186,7 @@ try {
   const back = await codex.call('send_message', { document: docA, text: 'Welcome back.' })
   check('turned on again, messages reach it', !back.error, back.text)
   await new Promise((r) => setTimeout(r, 300))
-  check('and it reads them', (await claude.call('read_messages', { document: docB })).text.includes('Welcome back.'))
+  check('and it reads them', (await claude.call('wait_for_changes', { document: docB, seconds: 0 })).text.includes('Welcome back.'))
 
   // A person typing with pauses between words: the wait reports what they wrote once they've
   // stopped, not half of it.

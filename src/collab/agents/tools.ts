@@ -11,11 +11,11 @@ import type { WordEngine } from '../../engine/word/engine'
 import { stripExtension } from '../../lib/kinds'
 import { useWorkspace } from '../../state/workspace'
 import { appliedSeq, attach, chatOf, clientOf, comings, followAsAgent, inviteOf, keeperOf, leaveAsAgent, nameOf, onApplied, onComing, onOthersChange, openToAgents, SHAREABLE, unread, useCollab, usePresence, type Opened, type Peer } from '../session'
-import { type Answer, type Args, bool, doc, findTool, need, plural, str, type Tool, ToolError } from './common'
+import { type Answer, type Args, BOX, bool, doc, findTool, HIGHLIGHTS, need, num, paraRef, plural, str, TEXT_FORMAT, type Tool, ToolError } from './common'
 import { FILE_TOOLS, openDocument, saveDocument } from './files'
 import { AGENTS, type Agent, type OtherAgent } from './identity'
 import { ago, MAX_WAIT, MESSAGE_TOOL_NAMES, MESSAGE_TOOLS, messagesOn, newMessages, nextMessage, OFF, readMessages, sendMessage } from './messages'
-import { describeSheetsPlace, findInSheets, readSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
+import { describeSheetsPlace, findInSheets, readSheets, replaceInSheets, SHEETS_TOOLS, sheetsTool, viewSheet } from './sheets'
 import { findInSlides, readSlides, SLIDES_TOOLS, slidesChanges, slidesTool, snapshotSlides, viewSlide } from './slides'
 import { runThemeTool, THEME_TOOLS } from './theme'
 import { findInWord, History, readWord, snapshotWord, viewPage, WORD_TOOLS, wordChanges, wordTool } from './word'
@@ -34,6 +34,8 @@ interface Copy {
   engine: Promise<Engine>
   /** In a Word document, each paragraph's past: who wrote it, when, and what its id was. */
   history?: History
+  /** Whether the agent has read it through this copy yet. */
+  read?: boolean
 }
 
 /** Each Word copy's history, by its engine, from before the relay's changes are applied. */
@@ -246,23 +248,23 @@ export function documents(): { document: string; title: string; kind: 'docx' | '
 const SHARED_TOOLS: Tool[] = [
   {
     name: 'list_documents',
-    description: 'The Word documents, presentations and workbooks open in Writan that you can work on, shared or not, with who is in each.',
-    inputSchema: { type: 'object', properties: {} },
+    description:
+      'Lists the documents open in Writan that you can work on, with their ids and who is in each. With `document`, joins it and says where each person is.',
+    inputSchema: { type: 'object', properties: { document: { type: 'string', description: 'Joins it and says where everyone is.' } } },
   },
   {
     name: 'read_document',
-    description:
-      'Reads a document, joining it first if you haven’t (people then see you in it). Word: paragraphs by number and id, with styles, table cells, who wrote each, and the chat’s messages that name one; use from/to for part of a long one, and since to catch up on what changed after an earlier reading. PowerPoint: each slide’s layout, shapes back to front (by id) with where each is, its size, look and text, and notes; use slide for one. Excel: a sheet’s cells as A1 references with values and formulas; use sheet and range (like A1:F40) for part.',
+    description: 'Reads a document, joining it on the first call.\nWord: paragraphs as [number #id], with style and author. `from` and `to` read part; `since` returns only what changed after a version.\nPowerPoint: each slide’s layout, its shapes back to front with id, position, size, look and text, and its notes.\nExcel: a sheet’s cells with values and formulas, and its charts.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
-        from: { type: ['integer', 'string'], description: 'Word: the first paragraph to read, by number or id.' },
-        to: { type: ['integer', 'string'], description: 'Word: the last paragraph to read, by number or id.' },
-        since: { type: 'integer', description: 'Word: only the paragraphs whose text changed after this version (each reading says which version it is), who changed them, and who deleted any.' },
-        slide: { type: 'integer', description: 'PowerPoint: one slide’s number.' },
-        sheet: { type: 'string', description: 'Excel: the sheet’s name (the first one if left out).' },
-        range: { type: 'string', description: 'Excel: the cells to read, like A1:F40.' },
+        from: paraRef('Word: the first'),
+        to: paraRef('Word: the last'),
+        since: { type: 'integer', description: 'Word: a version from an earlier answer.' },
+        slide: { type: 'integer', description: 'PowerPoint: one slide.' },
+        sheet: { type: 'string', description: 'Excel. Default: the first sheet.' },
+        range: { type: 'string', description: 'Excel: cells like A1:F40.' },
       },
       required: ['document'],
     },
@@ -270,95 +272,142 @@ const SHARED_TOOLS: Tool[] = [
   {
     name: 'view_document',
     description:
-      'Shows a slide (PowerPoint), a page (Word) or a sheet (Excel) as a picture, the way people see it — use it to check how things look, like cells showing #### because a column is too narrow. On a slide, each shape is outlined with its id so you can tell which is which and see what overlaps; `shape` shows just that shape, closer up. On a sheet, each chart is outlined with its number; `chart` shows just that chart, and `range` shows those cells (the content if left out). `labels: false` leaves the outlines off. Look before and after changing how something looks.',
+      'Returns an image of a Word page, PowerPoint slide or Excel sheet as people see it, with shape ids and chart numbers labeled. Use it to check layout, like #### in a column that’s too narrow.',
     inputSchema: {
       type: 'object',
       properties: {
         document: doc,
-        slide: { type: 'integer', description: 'PowerPoint: the slide’s number.' },
-        shape: { type: 'string', description: 'PowerPoint: just this shape, closer up.' },
-        labels: { type: 'boolean', description: 'Outline each shape or chart with its id (true unless set).' },
-        page: { type: 'integer', description: 'Word: the page’s number (1 if left out).' },
-        sheet: { type: 'string', description: 'Excel: the sheet’s name (the first one if left out).' },
-        range: { type: 'string', description: 'Excel: the cells to show, like A1:F40 (the sheet’s content if left out).' },
-        chart: { type: 'integer', description: 'Excel: just this chart, closer up, numbered as read_document lists them.' },
-        width: { type: 'integer', description: 'The picture’s width in pixels (1280 for a slide, 1000 for a page and 1400 for a sheet unless set; 200 to 2400).' },
+        page: { type: 'integer', description: 'Word. Default 1.' },
+        slide: { type: 'integer', description: 'PowerPoint. Required.' },
+        shape: { type: 'string', description: 'PowerPoint: only this shape, closer up.' },
+        sheet: { type: 'string', description: 'Excel. Default: the first sheet.' },
+        range: { type: 'string', description: 'Excel: these cells, like A1:F40.' },
+        chart: { type: 'integer', description: 'Excel: only this chart, closer up.' },
+        labels: { type: 'boolean', description: 'Default true.' },
+        width: { type: 'integer', description: 'In pixels, 200 to 2000.' },
+      },
+      required: ['document'],
+    },
+  },
+  findTool,
+  {
+    name: 'replace_text',
+    description:
+      'Replaces every `find` with `replace` and says how many. Ignores case, except in Word with `match_case`. In Excel, formulas are left alone.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        find: { type: 'string', description: 'Text to replace.' },
+        replace: { type: 'string', description: '"" deletes it.' },
+        match_case: { type: 'boolean', description: 'Word only.' },
+      },
+      required: ['document', 'find', 'replace'],
+    },
+  },
+  {
+    name: 'format_text',
+    description: 'Word and PowerPoint: formats text. Give only what changes.\nWord: paragraphs `from` to `to`, or only `find` in them.\nPowerPoint: all of shape `shape`, its paragraphs `from` to `to`, or only `find`.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        document: doc,
+        slide: { type: 'integer', description: 'PowerPoint.' },
+        shape: { type: 'string', description: 'PowerPoint.' },
+        from: { type: ['integer', 'string'], description: 'Word: a number or an id like "#k3f9x2"; required. PowerPoint: a number within the shape.' },
+        to: { type: ['integer', 'string'], description: 'Default: `from`.' },
+        find: { type: 'string', description: 'Only this text, each time it occurs.' },
+        ...TEXT_FORMAT,
+        style: { type: 'string', description: 'Word: like "Heading 1" or "Normal".' },
+        highlight: { type: 'string', enum: HIGHLIGHTS, description: 'Word.' },
+        list: { type: 'string', enum: ['bullet', 'numbered', 'none'], description: 'Word.' },
+        line_spacing: { type: 'number', description: 'Word: a multiple, like 1.15.' },
       },
       required: ['document'],
     },
   },
   {
-    name: 'where_is_everyone',
-    description: 'Who is in a shared document and where: the paragraph and text each person has selected in Word, the slide and shapes in PowerPoint, the sheet and cells in Excel. Use it to work where someone asks, or to stay out of their way.',
-    inputSchema: { type: 'object', properties: { document: doc }, required: ['document'] },
-  },
-  {
-    name: 'replace_text',
-    description: 'Word and PowerPoint: replaces every occurrence of `find` with `replace`. Says how many it replaced.',
+    name: 'add_picture',
+    description: 'Word and PowerPoint: adds a PNG, JPEG, GIF, WebP or SVG from `path`, `url` or `data`. Giving only width or height keeps its proportions.\nWord: as its own paragraph after `after`.\nPowerPoint: on slide `slide`, in the middle unless x and y are given. Returns its id.',
     inputSchema: {
       type: 'object',
-      properties: { document: doc, find: { type: 'string' }, replace: { type: 'string' }, match_case: { type: 'boolean', description: 'Word only.' } },
-      required: ['document', 'find', 'replace'],
+      properties: {
+        document: doc,
+        path: { type: 'string', description: 'An absolute path. Agents on this computer only.' },
+        url: { type: 'string', description: 'Agents on this computer only.' },
+        data: { type: 'string', description: 'Base64.' },
+        after: paraRef('Word: 0 for the start'),
+        slide: { type: 'integer', description: 'PowerPoint.' },
+        x: BOX.x,
+        y: BOX.y,
+        width: { type: 'number', description: 'In pixels.' },
+        height: { type: 'number', description: 'In pixels.' },
+        name: { type: 'string', description: 'PowerPoint.' },
+      },
+      required: ['document'],
     },
   },
 ]
 
 const AFTER_TOOLS: Tool[] = [
-  findTool,
   {
     name: 'undo',
-    description: 'Takes back your last change in a document (only yours, never someone else’s). In a workbook, that’s the last cell you wrote.',
+    description: 'Undoes your last change, never anyone else’s. In Excel, that’s one cell.',
     inputSchema: { type: 'object', properties: { document: doc }, required: ['document'] },
   },
   {
     name: 'redo',
-    description: 'Puts back the change your last undo took back, if nobody has changed that part since.',
+    description: 'Redoes what your last undo removed, unless someone has changed it since.',
     inputSchema: { type: 'object', properties: { document: doc }, required: ['document'] },
   },
   {
     name: 'wait_for_changes',
-    description:
-      `Waits until someone else changes the document, up to \`seconds\` (${MAX_WAIT} at most), and says who changed what once they've stopped for a moment: the paragraphs in Word, the slides and shapes in PowerPoint, where they were in Excel. A message in the document's chat ends the wait too, and so does someone coming in or leaving; either comes with the answer, and one you haven't heard of yet ends it at once.`,
+    description: 'Waits up to `seconds` for someone to edit the document, post in its chat, or come in or leave, then says who changed what. Returns at once if something you haven’t seen is waiting.',
     inputSchema: {
       type: 'object',
-      properties: { document: doc, seconds: { type: 'number' }, full: { type: 'boolean', description: 'Word: the changed paragraphs whole, up to 500 of them, rather than the start of the first 12.' } },
+      properties: {
+        document: doc,
+        seconds: { type: 'number', description: `0 to ${MAX_WAIT}. Default 30.` },
+        messages_only: { type: 'boolean', description: 'Ignore edits.' },
+        full: { type: 'boolean', description: 'Word: whole paragraphs, up to 500.' },
+      },
       required: ['document'],
     },
   },
   {
     name: 'leave_document',
-    description: 'Leaves a document, so people stop seeing you in it.',
+    description: 'Leaves a document. Its tab stays open.',
     inputSchema: { type: 'object', properties: { document: doc }, required: ['document'] },
   },
 ]
 
-/** add_picture is both PowerPoint's (on a slide) and Word's (after a paragraph). */
-function merged(tools: Tool[]): Tool[] {
-  const out = new Map<string, Tool>()
-  for (const t of tools) {
-    const was = out.get(t.name)
-    if (!was) {
-      out.set(t.name, t)
-      continue
-    }
-    const a = was.inputSchema as { properties: Record<string, unknown>; required: string[] }
-    const b = t.inputSchema as { properties: Record<string, unknown>; required: string[] }
-    out.set(t.name, {
-      name: t.name,
-      description: `${was.description} ${t.description}`,
-      inputSchema: { type: 'object', properties: { ...a.properties, ...b.properties }, required: a.required.filter((k) => b.required.includes(k)) },
-    })
-  }
-  return [...out.values()]
+export const TOOLS: Tool[] = [...SHARED_TOOLS, ...WORD_TOOLS, ...SLIDES_TOOLS, ...SHEETS_TOOLS, ...AFTER_TOOLS, ...MESSAGE_TOOLS, ...FILE_TOOLS, ...THEME_TOOLS]
+
+/** Tools Writan had before, and what does their work now, for an agent that still calls them. */
+export const RENAMED: Record<string, string> = {
+  where_is_everyone: 'list_documents with document',
+  read_messages: 'wait_for_changes with messages_only, or seconds: 0',
+  set_style: 'format_text with style',
+  change_table: 'edit_table',
+  format_picture: 'edit_picture',
+  move_shape: 'edit_shape',
+  format_shape: 'edit_shape',
+  duplicate_slide: 'add_slide with copy',
+  move_slide: 'edit_slide with to',
+  set_slide: 'edit_slide',
+  set_notes: 'edit_slide with notes',
+  clear_cells: 'write_cells with clear',
+  merge_cells: 'format_cells with merge',
+  size_cells: 'resize_rows_columns',
+  insert_cells: 'insert_rows_columns',
+  delete_cells: 'delete_rows_columns',
+  read_theme: 'read_app_theme',
+  set_theme: 'set_app_theme',
 }
 
-const WORD_PICTURE: Tool = {
-  name: 'add_picture',
-  description: 'Word: puts the picture in as a paragraph of its own after paragraph `after` (0 for the start), as wide as width says if given (in pixels).',
-  inputSchema: { type: 'object', properties: { document: doc, after: { type: ['integer', 'string'], description: 'Word: the paragraph to put it after, by number or id.' } }, required: ['document'] },
-}
-
-export const TOOLS: Tool[] = [...merged([...SHARED_TOOLS, ...WORD_TOOLS, ...SLIDES_TOOLS, WORD_PICTURE, ...SHEETS_TOOLS, ...AFTER_TOOLS]), ...MESSAGE_TOOLS, ...FILE_TOOLS, ...THEME_TOOLS]
+/** Which kind of document each kind's own tools are for, to say so when one is called on another. */
+const KIND_OF = new Map<string, string>([...WORD_TOOLS.map((t) => [t.name, 'Word documents'] as const), ...SLIDES_TOOLS.map((t) => [t.name, 'presentations'] as const), ...SHEETS_TOOLS.map((t) => [t.name, 'workbooks'] as const)])
+const KIND_NAME = { docx: 'a Word document', pptx: 'a presentation', xlsx: 'a workbook' } as const
 
 /** The tools as an agent here sees them: without messages when Settings › AI turned them off. */
 export function listTools(): Tool[] {
@@ -372,7 +421,7 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
   // Waiting counts from here, so joining first (which can wait for the host to let the agent in)
   // doesn't make the answer too late for the agent's client.
   const began = Date.now()
-  if (name === 'list_documents') return { text: listDocuments(session) }
+  if (name === 'list_documents' && !str(args, 'document')) return { text: listDocuments(session) }
   if (THEME_TOOLS.some((t) => t.name === name)) return runThemeTool(name, args, local)
   if (name === 'open_document') return { text: await openDocument(args, local, documents) }
   if (MESSAGE_TOOL_NAMES.has(name) && !messagesOn()) throw new ToolError(OFF)
@@ -418,27 +467,36 @@ export async function runTool(session: AgentSession, name: string, args: Args, l
 async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: string, args: Args, local: boolean, began: number): Promise<Answer> {
   let answer: Answer
   /** The seconds asked for, at most what's left of MAX_WAIT since the call began. */
-  const waitFor = (fallback: number, least: number) => Math.min(MAX_WAIT - (Date.now() - began) / 1000, Math.max(least, Number(args.seconds) || fallback))
+  const waitFor = (fallback: number) => Math.min(MAX_WAIT - (Date.now() - began) / 1000, Math.max(0, num(args, 'seconds') ?? fallback))
   switch (name) {
-    case 'read_document':
+    case 'list_documents':
+      return { text: `${listDocuments(session, copy.tab)}\nWhere everyone is:\n${whereIsEveryone(copy, engine)}` }
+    case 'read_document': {
+      // The key to a Word reading comes with the first one only.
+      const legend = !copy.read
+      copy.read = true
       return {
         text:
           copy.kind === 'docx'
-            ? readWord(engine as WordEngine, args, { history: copy.history, chat: messagesOn() ? chatOf(copy.id) : undefined, version: appliedSeq(copy.id) })
+            ? readWord(engine as WordEngine, args, { history: copy.history, chat: messagesOn() ? chatOf(copy.id) : undefined, version: appliedSeq(copy.id), legend })
             : copy.kind === 'pptx'
               ? readSlides(engine as SlidesEngine, args)
               : readSheets(engine as SheetsEngine, args),
       }
+    }
     case 'view_document':
       return copy.kind === 'pptx' ? viewSlide(engine as SlidesEngine, args) : copy.kind === 'xlsx' ? await viewSheet(engine as SheetsEngine, args) : viewPage(engine as WordEngine, args)
-    case 'where_is_everyone':
-      return { text: whereIsEveryone(copy, engine) }
-    case 'wait_for_changes':
-      return { text: await waitForChanges(copy, engine, Math.max(0, Math.round(waitFor(30, 1))), began, bool(args, 'full') === true) }
+    case 'wait_for_changes': {
+      const seconds = Math.max(0, Math.round(waitFor(30)))
+      if (bool(args, 'messages_only') === true) {
+        if (!messagesOn()) throw new ToolError(OFF)
+        return { text: await readMessages(copy.id, seconds, () => nextComing(copy.id)) }
+      }
+      if (!seconds) return { text: comings(copy.id).length || (messagesOn() && unread(copy.id).length) ? 'Since your last call:' : 'Nothing new since your last call.' }
+      return { text: await waitForChanges(copy, engine, seconds, began, bool(args, 'full') === true) }
+    }
     case 'send_message':
       return { text: sendMessage(copy.id, args) }
-    case 'read_messages':
-      return { text: await readMessages(copy.id, Math.max(0, Math.round(waitFor(0, 0))), () => nextComing(copy.id)) }
     case 'find_text': {
       const find = need(str(args, 'text'), 'the text to find')
       if (!find) throw new ToolError('Give the text to find.')
@@ -455,16 +513,19 @@ async function runOn(session: AgentSession, copy: Copy, engine: Engine, name: st
       break
     }
     case 'replace_text':
-      if (copy.kind === 'xlsx') throw new ToolError('In a workbook, use write_cells.')
-      answer = { text: replaceText(engine as WordEngine | SlidesEngine, need(str(args, 'find'), 'find'), str(args, 'replace') ?? '', args.match_case === true) }
+      answer = { text: copy.kind === 'xlsx' ? replaceInSheets(engine as SheetsEngine, need(str(args, 'find'), 'find'), str(args, 'replace') ?? '') : replaceText(engine as WordEngine | SlidesEngine, need(str(args, 'find'), 'find'), str(args, 'replace') ?? '', bool(args, 'match_case') === true) }
       break
-    default:
+    default: {
+      if (copy.kind === 'xlsx' && (name === 'format_text' || name === 'add_picture')) throw new ToolError(name === 'format_text' ? 'In a workbook, use format_cells.' : 'add_picture works in Word documents and presentations, not workbooks.')
+      const kind = KIND_OF.get(name)
+      if (kind && !(kind === 'Word documents' ? copy.kind === 'docx' : kind === 'presentations' ? copy.kind === 'pptx' : copy.kind === 'xlsx')) throw new ToolError(`${name} is for ${kind}, and this is ${KIND_NAME[copy.kind]}.`)
       answer =
         copy.kind === 'docx'
           ? await wordTool(engine as WordEngine, name, args, local, copy.history)
           : copy.kind === 'pptx'
             ? await slidesTool(engine as SlidesEngine, name, args, local)
             : sheetsTool(engine as SheetsEngine, name, args)
+    }
   }
   // What changed is this agent's, in the change after the last it has.
   copy.history?.saw(copy.id, appliedSeq(copy.id) + 1)
@@ -498,9 +559,10 @@ function peopleIn(id: string): Peer[] {
   return s ? [...(s.you ? [s.you] : []), ...s.peers] : []
 }
 
-function listDocuments(session: AgentSession): string {
-  const docs = documents()
-  if (!docs.length) return 'No Word document, presentation or workbook is open in Writan right now. Ask the person to open one, or open_document one.'
+/** list_documents: every document, or just `only`. */
+function listDocuments(session: AgentSession, only?: string): string {
+  const docs = documents().filter((d) => !only || d.document === only)
+  if (!docs.length) return 'No Word document, presentation or workbook is open in Writan. Open one with open_document, or ask the person to.'
   const roles = { sharing: 'shared from here', joined: 'joined from here', open: 'not shared: only the person here and agents on this computer' }
   return docs
     .map((d) => {

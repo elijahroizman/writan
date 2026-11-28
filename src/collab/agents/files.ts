@@ -4,7 +4,7 @@
 import { KINDS, kindFromPath } from '../../lib/kinds'
 import { pathExists } from '../../lib/platform'
 import { getEditor, useWorkspace, wakeTab } from '../../state/workspace'
-import { type Args, str, type Tool, ToolError } from './common'
+import { type Args, doc, str, type Tool, ToolError } from './common'
 
 const KIND_NAMES = { docx: 'Word document', pptx: 'presentation', xlsx: 'workbook' } as const
 type Kind = keyof typeof KIND_NAMES
@@ -13,24 +13,24 @@ export const FILE_TOOLS: Tool[] = [
   {
     name: 'open_document',
     description:
-      'Opens a Word document, presentation or workbook in Writan, in a tab the person sees, and gives its document id: a file by its full `path` (agents on this computer only), or a new, empty one with `new` ("docx", "pptx" or "xlsx"). A file already open isn’t opened twice.',
+      'Opens a file, or a new empty document, in a Writan tab the person sees, and returns its id.',
     inputSchema: {
       type: 'object',
       properties: {
-        path: { type: 'string', description: 'The file’s full path, like /Users/ada/Report.docx.' },
-        new: { type: 'string', enum: ['docx', 'pptx', 'xlsx'], description: 'A new, empty document of this kind.' },
+        path: { type: 'string', description: 'An absolute path. Agents on this computer only.' },
+        new: { type: 'string', enum: ['docx', 'pptx', 'xlsx'], description: 'An empty one of this kind.' },
       },
     },
   },
   {
     name: 'save_document',
     description:
-      'Saves a document open in Writan to its file, or to `path` (a full path that doesn’t exist yet, with the right extension), which becomes its file from then on. Agents on this computer only. A document someone else shared is theirs to save. Save when your person asks you to, or when you made a new document for them.',
+      'Saves a document to its file, or to `path`. Agents on this computer only. A document someone else shared is theirs to save. Save when your person asks, or after you made a new document for them.',
     inputSchema: {
       type: 'object',
       properties: {
-        document: { type: 'string', description: 'The document, as list_documents gives it.' },
-        path: { type: 'string', description: 'Where to save a document that has no file yet, or a new file for it.' },
+        document: doc,
+        path: { type: 'string', description: 'A new absolute path, which becomes its file. Agents on this computer only.' },
       },
       required: ['document'],
     },
