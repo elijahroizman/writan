@@ -14,7 +14,7 @@ const NIGHTLY_FEED: &str =
     "https://github.com/elijahroizman/writan/releases/download/nightly/latest.json";
 
 /// Where a nightly's files are: the pre-release tagged `v<version>`.
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", test))]
 const DOWNLOADS: &str = "https://github.com/elijahroizman/writan/releases/download";
 
 /// Which releases this copy follows. The app keeps the choice (src/lib/updateChannel.ts).
