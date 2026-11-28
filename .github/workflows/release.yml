@@ -298,7 +298,8 @@ jobs:
         # writan.db there. The Arch package's install script adds that section and puts the key in
         # pacman's keyring, and `SigLevel = Required` makes pacman check the detached signature
         # (<file>.sig) on the database and on each package. scripts/pacman-repo.sh writes the
-        # database. The app's Update button installs the package file with `pacman -U`.
+        # database. The app's Update button downloads the package file and its signature, checks
+        # them against the key, and installs the file with `pacman -U` (src-tauri/linux/pacman-install.sh).
         run: |
           set -euo pipefail
           for arch in x86_64 aarch64; do

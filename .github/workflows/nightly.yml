@@ -155,8 +155,8 @@ jobs:
             npx --yes "@tauri-apps/cli@$cli" signer sign "$file"
           done
       - name: Sign the Arch packages
-        # With the repositories' key, which the Arch package added to pacman's keyring.
-        # `pacman -U <url>` fetches <url>.sig and checks it.
+        # With the repositories' key, which the Arch package installs. The app downloads <file>.sig
+        # with the package and checks it against that key (src-tauri/linux/pacman-install.sh).
         env:
           APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
         run: |
