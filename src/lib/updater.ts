@@ -1,11 +1,16 @@
-// Keeps the app current. A check runs shortly after launch and every few hours, and again
-// when the title-bar button is opened. A new version downloads in the background. Installing
-// it on Windows hands off to the installer. On macOS the app quits and the same bundle is
-// opened again, so the Dock icon stays put instead of a second copy appearing beside it.
+// Keeps the app current. A check runs shortly after launch and every few hours, again when the
+// title-bar button is opened, and when the update channel changes (src/state/updateChannel.ts).
+// A new version downloads in the background. Installing it on Windows hands off to the
+// installer. On macOS the app quits and the same bundle is opened again, so the Dock icon stays
+// put instead of a second copy appearing beside it.
 
 import type { Update } from '@tauri-apps/plugin-updater'
 import { create } from 'zustand'
+import { getUpdateChannel, onUpdateChannelChange, type UpdateChannel } from '../state/updateChannel'
 import { isLinux, isMac, isTauri } from './platform'
+import { compareVersions, isNightlyVersion, newer } from './versions'
+
+export { compareVersions, newer } from './versions'
 
 const FIRST_CHECK = 10_000
 const CHECK_EVERY = 4 * 60 * 60_000
@@ -15,9 +20,14 @@ export const RELEASES_PAGE = 'https://github.com/elijahroizman/writan/releases'
 
 export type UpdatePhase = 'idle' | 'checking' | 'downloading' | 'ready' | 'installing' | 'current' | 'error'
 
-/** How a Linux copy was installed, and whether Writan's APT, dnf or pacman repository can update it. */
+/**
+ * How a Linux copy was installed: `manager` says apt, dnf or pacman is there, which is enough for a
+ * nightly (it installs from its GitHub release), and `repo` says Writan's repository is there and on
+ * as well, which a stable release comes from.
+ */
 export interface LinuxPackage {
   format: 'deb' | 'rpm' | 'pacman' | null
+  manager: boolean
   repo: boolean
 }
 
@@ -72,18 +82,18 @@ export const useUpdate = create<UpdateSnapshot>(() => ({
 
 let downloaded: Update | null = null
 let checking = false
+/** Goes up when the channel changes, so a check that started on the other channel is dropped. */
+let generation = 0
 
 /**
- * Release builds on a Mac or Windows can download and install. On Linux the .deb adds Writan's
- * APT repository and the .rpm its dnf repository, and those install new versions (see `linuxPackage`). Dev and the browser can still
- * read the notes.
+ * Release builds on a Mac or Windows can download and install. On Linux apt, dnf or pacman install
+ * new versions (see `linuxPackage`). Dev and the browser can still read the notes.
  */
-export const updatesInstallable = isTauri && !import.meta.env.DEV && !isLinux && !import.meta.env.VITE_DEV_PREVIEW
+export const updatesInstallable = isTauri && !import.meta.env.DEV && !isLinux
 
-/** Dev preview builds (the dev-preview workflow) don't check: a release would replace the preview. */
-const checksUpdates = isTauri && !import.meta.env.DEV && !import.meta.env.VITE_DEV_PREVIEW
+const checksUpdates = isTauri && !import.meta.env.DEV
 
-const NO_PACKAGE: LinuxPackage = { format: null, repo: false }
+const NO_PACKAGE: LinuxPackage = { format: null, manager: false, repo: false }
 let linuxSource: Promise<LinuxPackage> | null = null
 /** How this Linux copy was installed. With its repository there, the Update button can use apt or dnf. */
 function linuxPackage(): Promise<LinuxPackage> {
@@ -92,24 +102,10 @@ function linuxPackage(): Promise<LinuxPackage> {
   return linuxSource
 }
 
-/** Orders versions (both like 0.7.2): negative, zero or positive as `a` is older, equal or newer. */
-export function compareVersions(a: string, b: string): number {
-  const pa = a.split(/[.-]/).map((n) => parseInt(n, 10) || 0)
-  const pb = b.split(/[.-]/).map((n) => parseInt(n, 10) || 0)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const x = pa[i] ?? 0
-    const y = pb[i] ?? 0
-    if (x !== y) return x > y ? 1 : -1
-  }
-  return 0
-}
+/** Whether apt, dnf or pacman can install `version`: a nightly from its release, a stable release from Writan's repository. */
+const linuxCanInstall = (linux: LinuxPackage, version: string) => (isNightlyVersion(version) ? linux.manager : linux.repo)
 
-/** Whether version `a` is newer than `b` (both like 0.7.2). */
-export function newer(a: string, b: string): boolean {
-  return compareVersions(a, b) > 0
-}
-
-/** On Linux nothing downloads first: a newer release with the repository is ready for apt or dnf. */
+/** On Linux nothing downloads first: a newer release that apt, dnf or pacman can install is ready. */
 let packageReady = false
 
 interface GithubRelease {
@@ -124,12 +120,15 @@ interface GithubRelease {
 
 const versionFromTag = (tag: string) => (/^v\d/.test(tag) ? tag.slice(1) : tag)
 
-// The release's version, for real releases only. Drafts never reach the API; pre-releases are
-// the pacman arch/* repositories, and a tag that isn't a version isn't one either.
-const realVersion = (release: GithubRelease): string | null => {
-  if (release.draft || release.prerelease) return null
+// The release's version, for the releases `channel` follows. Drafts never reach the API. The
+// other pre-releases are the APT, dnf and pacman repositories, the nightly feed, plugins and old
+// dev builds, whose tags aren't versions, and the nightlies, which only the nightly channel lists.
+const realVersion = (release: GithubRelease, channel: UpdateChannel): string | null => {
+  if (release.draft) return null
   const version = versionFromTag(release.tag_name ?? '')
-  return /^\d/.test(version) ? version : null
+  if (!/^\d/.test(version)) return null
+  const nightly = isNightlyVersion(version)
+  return (release.prerelease ? nightly && channel === 'nightly' : !nightly) ? version : null
 }
 
 const releaseName = (release: GithubRelease, version: string) => release.name?.trim() || `Writan ${version}`
@@ -144,9 +143,9 @@ const stripTrailer = (body: string) =>
     .trim()
 
 /** The releases list, newest first: the latest release's notes plus every release newer than this copy. */
-function releaseNotesFromList(data: GithubRelease[], current: string, truncated: boolean): ReleaseNotes {
+function releaseNotesFromList(data: GithubRelease[], current: string, truncated: boolean, channel: UpdateChannel): ReleaseNotes {
   const releases = data
-    .map((release) => ({ release, version: realVersion(release) }))
+    .map((release) => ({ release, version: realVersion(release, channel) }))
     .filter((e): e is { release: GithubRelease; version: string } => e.version !== null)
     .sort((a, b) => compareVersions(b.version, a.version))
   const latest = releases[0]
@@ -177,10 +176,10 @@ function nextPage(link: string | null): string | null {
   return null
 }
 
-async function fetchRelease(): Promise<ReleaseNotes> {
+async function fetchRelease(channel: UpdateChannel): Promise<ReleaseNotes> {
   if (isTauri) {
     const { invoke } = await import('@tauri-apps/api/core')
-    return invoke<ReleaseNotes>('release_notes')
+    return invoke<ReleaseNotes>('release_notes', { channel })
   }
   const current = __APP_VERSION__
   const releases: GithubRelease[] = []
@@ -207,7 +206,7 @@ async function fetchRelease(): Promise<ReleaseNotes> {
     releases.push(...page)
     url = next
   }
-  return releaseNotesFromList(releases, current, url !== null)
+  return releaseNotesFromList(releases, current, url !== null, channel)
 }
 
 function remember(release: ReleaseNotes | null, update: Update | null) {
@@ -221,27 +220,45 @@ function remember(release: ReleaseNotes | null, update: Update | null) {
   }
 }
 
-async function findUpdate(): Promise<Update | null> {
+/**
+ * Asks the channel's update feed for a newer version. The plugin's own `check()` only reads the feed
+ * in tauri.conf.json, so `check_update` (src-tauri/src/update.rs) builds the updater with the
+ * nightly feed when that's the channel, and hands back the plugin's `Update` to download and install.
+ */
+async function findUpdate(channel: UpdateChannel): Promise<Update | null> {
   if (!updatesInstallable) return null
-  const { check } = await import('@tauri-apps/plugin-updater')
-  return check({ timeout: 15_000 })
+  const [{ invoke }, { Update }] = await Promise.all([import('@tauri-apps/api/core'), import('@tauri-apps/plugin-updater')])
+  const metadata = await invoke<ConstructorParameters<typeof Update>[0] | null>('check_update', { channel, timeout: 15_000 })
+  return metadata ? new Update(metadata) : null
 }
 
 /** Read the latest release notes and, in a release build, download a newer version. */
 export async function checkForUpdates(): Promise<void> {
   if (checking || downloaded || packageReady) return
   checking = true
+  const run = generation
+  const stale = () => run !== generation
+  const channel = getUpdateChannel()
   useUpdate.setState({ phase: 'checking', error: null })
   try {
-    const [release, found] = await Promise.allSettled([fetchRelease(), findUpdate()])
+    const [release, found] = await Promise.allSettled([fetchRelease(channel), findUpdate(channel)])
     if (found.status === 'rejected') console.warn('Update check failed', found.reason)
     const update = found.status === 'fulfilled' ? found.value : null
+    if (stale()) {
+      void update?.close()
+      return
+    }
     const info = remember(release.status === 'fulfilled' ? release.value : null, update)
     const releaseError = release.status === 'rejected' ? "Couldn't reach GitHub. Check your connection and try again." : null
 
     const linux = await linuxPackage()
+    // The channel can change while the first probe runs; this check's result is the old channel's.
+    if (stale()) {
+      void update?.close()
+      return
+    }
     if (isLinux) useUpdate.setState({ linux })
-    if (release.status === 'fulfilled' && newer(release.value.version, __APP_VERSION__) && linux.repo) {
+    if (release.status === 'fulfilled' && newer(release.value.version, __APP_VERSION__) && linuxCanInstall(linux, release.value.version)) {
       packageReady = true
       useUpdate.setState({ phase: 'ready', ...info, error: null })
       return
@@ -252,12 +269,16 @@ export async function checkForUpdates(): Promise<void> {
       try {
         // Tauri would otherwise reuse the short manifest timeout for the whole bundle.
         await update.download(undefined, { timeout: 15 * 60_000 })
+        if (stale()) {
+          void update.close()
+          return
+        }
         downloaded = update
         useUpdate.setState({ phase: 'ready', ...info, error: null })
       } catch (err) {
         console.warn('Update download failed', err)
         void update.close()
-        useUpdate.setState({ phase: 'error', ...info, error: "The update couldn't be downloaded." })
+        if (!stale()) useUpdate.setState({ phase: 'error', ...info, error: "The update couldn't be downloaded." })
       }
       return
     }
@@ -267,8 +288,27 @@ export async function checkForUpdates(): Promise<void> {
     else useUpdate.setState({ phase: 'current', ...info, error: releaseError })
   } finally {
     checking = false
+    // The channel changed during this check: check the new one.
+    if (stale()) void checkForUpdates()
   }
 }
+
+// A new channel drops what the old one found: a downloaded version waiting to install on quit, or a
+// Linux package ready for apt, dnf or pacman. Then it checks the new channel. Moving to stable from a
+// nightly finds nothing until a stable release newer than this copy is out, since only a newer
+// version installs.
+onUpdateChannelChange(() => {
+  // An install already running finishes; the next scheduled check reads the new channel.
+  if (useUpdate.getState().phase === 'installing') return
+  generation++
+  if (downloaded) {
+    void downloaded.close()
+    downloaded = null
+  }
+  packageReady = false
+  if (!checking) useUpdate.setState({ phase: 'idle', error: null })
+  if (checksUpdates || useUpdate.getState().open) void checkForUpdates()
+})
 
 export function openUpdatePanel(): void {
   useUpdate.setState({ open: true })
@@ -359,14 +399,31 @@ export async function installUpdate({ restart }: { restart: boolean }): Promise<
   }
 }
 
+/** How `package_upgrade` says the password prompt was dismissed (`pkexec` in src-tauri/src/tex.rs). */
+const cancelled = (message: string) => message.endsWith(' was cancelled.')
+
 async function installPackage(): Promise<void> {
+  const version = useUpdate.getState().version
   useUpdate.setState({ phase: 'installing', error: null })
   const { invoke } = await import('@tauri-apps/api/core')
   try {
-    await invoke('package_upgrade', { version: useUpdate.getState().version })
+    await invoke('package_upgrade', { version })
   } catch (err) {
     console.warn('Package upgrade failed', err)
-    useUpdate.setState({ phase: 'ready', error: String(err) })
+    const error = String(err)
+    // A dismissed password prompt leaves the same version ready to try again.
+    if (cancelled(error)) {
+      useUpdate.setState({ phase: 'ready', error })
+      return
+    }
+    // Anything else may mean the version is gone: only the newest nightlies are kept, so a nightly
+    // that was ready a while ago can 404. Check again, which finds what's there now, and show the
+    // error only if the same version comes back.
+    packageReady = false
+    useUpdate.setState({ phase: 'error', error })
+    await checkForUpdates()
+    const now = useUpdate.getState()
+    if (now.phase === 'ready' && now.version === version) useUpdate.setState({ error })
     return
   }
   packageReady = false

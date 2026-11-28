@@ -1,19 +1,77 @@
 # Releases and signing
 
-## Releasing a version
+## Channels
 
-1. Add the version's section to the top of [CHANGELOG.md](../../CHANGELOG.md), headed `## 0.7.2 — 2026-10-18`. The release workflow copies that section into the GitHub release, and the app's update panel shows it. A version without a section isn't released.
-2. Bump the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (and `package-lock.json`, `src-tauri/Cargo.lock`).
-3. If a downloaded plugin's version in `plugins/<id>/plugin.json` changed, check that its `plugin-<id>-<version>` pre-release exists. The Plugins workflow makes it when the change reaches `main`; if it didn't run, push the tag.
-4. Push a tag like `v0.7.2`.
+Writan has two update channels. Each copy follows one, chosen in Settings › General › Updates and kept in localStorage as `workspace.updateChannel` (`stable` or `nightly`). A nightly build follows nightly until someone picks a channel; every other build follows stable.
 
-The **Release** workflow (`.github/workflows/release.yml`) builds a Mac `.dmg` for Apple silicon and one for Intel (on two runners at once), the Windows x64 `.exe`, and the Debian/Ubuntu `.deb`, the Fedora `.rpm` and the Arch Linux `.pkg.tar.zst` for x86_64 and ARM64, and attaches them to a single draft release. After every build passes, the **Update feed** job checks the Mac and Windows bundles and signatures, uploads `latest.json`, then publishes the draft. Until then, installed copies still see the previous complete release. If a build or feed upload fails, rerun the failed jobs; do not publish the draft by hand. It lists the Apple silicon update bundle under `darwin-aarch64` and the Intel one under `darwin-x86_64`, so the universal app (0.11 to 0.15) updates to the build for the Mac it runs on. The build jobs don't write `latest.json` themselves: the two Mac jobs finish at about the same moment, and tauri-action's read, add and replace of the file could drop one of them. The two Linux jobs (`ubuntu-22.04` and `ubuntu-22.04-arm`, both native) upload their packages to the release and hand them to the **Linux repositories** job, which refreshes the APT, dnf and pacman repositories with both architectures at once. It runs when a Mac or Windows job failed as well, and fails if either Linux job did. Running the workflow from the Actions tab only builds, unless "publish" is ticked.
+- **Stable** is the tested releases, from 1.0 on. Tags are `vX.Y.Z`, each with a CHANGELOG.md section. The Mac and Windows feed is `releases/latest/download/latest.json`. Linux copies update from the APT, dnf and pacman repositories.
+- **Nightly** is a build of `main`, made whenever something new lands. Each one is a GitHub pre-release tagged `v<version>`. The Mac and Windows feed is `releases/download/nightly/latest.json`, an asset of the pre-release tagged `nightly`. Linux copies install the packages attached to the nightly's pre-release. Nightlies never go into the stable feed or the APT, dnf and pacman repositories.
 
-The **Plugins** workflow (`.github/workflows/plugins.yml`) publishes downloaded plugins. When a `plugin.json` changes on `main`, it builds, zips and signs every plugin version that has no pre-release yet, and attaches it to a new `plugin-<id>-<version>` pre-release. A `plugin-*` tag publishes that one version.
+Both channels build with the same workflow (`.github/workflows/build.yml`), app ID and signing keys, so a copy switches channel in place. The updater only installs a version newer than the running one. Moving from stable to nightly installs the newest nightly at the next check, which the switch starts. Moving from nightly to stable leaves the nightly in place until a stable release newer than it comes out.
+
+## Version scheme
+
+A stable release is `X.Y.Z`. A nightly is the latest stable tag's next patch release with the build's UTC date and time as a pre-release: after `v1.0.0`, a nightly built on 28 November 2026 at 09:30 UTC is `1.0.1-nightly.202611280930`. SemVer sorts it after 1.0.0, before 1.0.1, and before any later nightly. The stamp is one number because SemVer forbids leading zeros in a numeric identifier, which `nightly.20261128.0930` would have. The app shows it as "Nightly, 28 Nov 2026 09:30", in local time.
+
+The version comparison in `src/lib/versions.ts` and `version_cmp` in `src-tauri/src/update.rs` follow SemVer's precedence rules, and the updater plugin compares with the `semver` crate.
+
+Linux packages can't all hold that version, and dpkg, rpm and pacman each sort pre-releases their own way. Each nightly package gets a version its package manager sorts between the two stable releases:
+
+| Package | Field | Nightly 1.0.1-nightly.202611280930 | Why |
+| --- | --- | --- | --- |
+| .deb | Version | `1.0.1~nightly.202611280930` | dpkg reads the last hyphen as the start of the Debian revision, so `1.0.1-nightly.…` would sort after 1.0.1. A tilde sorts before anything, so `1.0.1~…` is older than 1.0.1. `scripts/debian-repack.sh` makes the change. |
+| .rpm | Version, Release | `1.0.1`, `0.nightly.202611280930` | rpm forbids a hyphen in Version and would sort `1.0.1.nightly` after 1.0.1. Release `0.nightly.…` sorts before the stable release's `1`. The Linux jobs build the binary and .deb with `tauri build --bundles deb`, then package the same binary with `tauri bundle --bundles rpm` and a config that sets the version and `bundle.linux.rpm.release`. |
+| Arch | pkgver | `1.0.1nightly.202611280930` | pacman forbids a hyphen and, unlike dpkg and rpm, sorts `1.0.1~x` after 1.0.1. A letter straight after the last number sorts before the release (`1.0rc < 1.0`). `scripts/arch-package.sh` drops the separator. |
+
+These orderings were checked against dpkg, the rpmvercmp and pacman vercmp sources, and `scripts/check-linux-packages.sh` checks the deb and pacman ones on every packaging change. So a Linux nightly upgrades the stable release before it, and the next stable release from the repository upgrades the nightly. The app on a nightly still reports the SemVer version.
+
+## Cutting a stable release
+
+1. Open a release PR titled `chore(release): 1.0.0` that adds the version's section to the top of [CHANGELOG.md](../../CHANGELOG.md), headed `## 1.0.0 — 2026-12-01`, and bumps the version in `package.json`, `src-tauri/Cargo.toml` and `src-tauri/tauri.conf.json` (and `package-lock.json`, `src-tauri/Cargo.lock`). The release workflow copies that section into the GitHub release, and the app's update panel shows it. A version without a section isn't released.
+2. If a downloaded plugin's version in `plugins/<id>/plugin.json` changed, check that its `plugin-<id>-<version>` pre-release exists. The Plugins workflow makes it when the change reaches `main`; if it didn't run, push the tag.
+3. Merge the PR, then push a tag like `v1.0.0` on the merge commit.
+
+The **Release** workflow (`.github/workflows/release.yml`) calls the build workflow, which builds a Mac `.dmg` for Apple silicon and one for Intel (on two runners at once), the Windows x64 `.exe`, and the Debian/Ubuntu `.deb`, the Fedora `.rpm` and the Arch Linux `.pkg.tar.zst` for x86_64 and ARM64, and attaches them to a single draft release. After every build passes, the **Update feed** job checks the Mac and Windows bundles and signatures, uploads `latest.json` (`scripts/update-feed.sh`), then publishes the draft. Until then, installed copies still see the previous complete release. If a build or feed upload fails, rerun the failed jobs; do not publish the draft by hand. Once the release is public, a rerun of the Update feed job leaves it alone. It lists the Apple silicon update bundle under `darwin-aarch64` and the Intel one under `darwin-x86_64`, so the universal app (0.11 to 0.15) updates to the build for the Mac it runs on. The build jobs don't write `latest.json` themselves: the two Mac jobs finish at about the same moment, and tauri-action's read, add and replace of the file could drop one of them. The **Nightly feed** job then copies the published release's `latest.json` to the nightly feed when the release is newer than the version there, so nightly copies move onto it (`scripts/promote-feed.sh`, below). The two Linux jobs (`ubuntu-22.04` and `ubuntu-22.04-arm`, both native) upload their packages to the release and hand them to the **Linux repositories** job, which refreshes the APT, dnf and pacman repositories with both architectures at once. It runs when a Mac or Windows job failed as well, and fails if either Linux job did. Running the workflow from the Actions tab only builds, unless "publish" is ticked. A tag like `v1.0.1-nightly.202611280930` doesn't start it.
+
+## Cutting a nightly
+
+Run the **Nightly** workflow (`.github/workflows/nightly.yml`) on `main`:
+
+```
+gh workflow run nightly.yml --ref main
+```
+
+Add `-f notes='Try the new welcome tour.'` to put a paragraph above the list of changes, or `-f publish=false` to build without publishing anything. A build-only run can use another branch as `--ref`; a publishing run fails on anything but `main`.
+
+The **Prepare nightly** job works out the version with `scripts/nightly.mjs` and writes the notes: the PR titles merged since the previous stable or nightly tag, grouped by type (Features, Fixes, Performance and so on), after the `notes` input. It creates a draft pre-release tagged `v<version>` with those notes. A draft has no git tag yet, so a nightly that fails leaves the next one's list of changes starting at the same tag. The build workflow then builds the same platforms as a stable release, with the nightly's version written into `package.json`, `tauri.conf.json` and `Cargo.toml`, and uploads the Mac and Windows files to the draft. The **Publish nightly** job, which runs only when every build passed:
+
+1. checks the six Linux packages have the names `src-tauri/src/update.rs` downloads (`nightly_package_url`);
+2. signs the .deb and .rpm files with the updater key (`tauri signer sign`, giving `<file>.sig`) and the Arch packages with `APT_SIGNING_KEY` (a GPG `<file>.sig`, which the app downloads beside the package), and uploads them;
+3. writes `latest.json` from the draft's update bundles, uploads it to the draft and publishes the pre-release;
+4. deletes every nightly pre-release and its tag except the newest 10, along with drafts that failed runs left.
+
+Once the pre-release is public, a rerun of the job skips the first three steps. The **Nightly feed** job after it copies the pre-release's `latest.json` to the `nightly` pre-release, unless the feed already has a newer version, such as a stable release published during the build.
+
+On Linux the update button on the nightly channel downloads the package and its signature, checks it against the updater key, and runs apt or dnf on a copy that the root shell checks against the same SHA-256 (`package_upgrade` in `update.rs`). For an Arch package the root shell downloads the package and its signature itself and checks them with gpgv against the key the Arch package installed (`/usr/share/pacman/keyrings/writan.gpg`) before `pacman -U` installs the file (`src-tauri/linux/pacman-install.sh`). It doesn't give pacman the URL: pacman would check a download at pacman.conf's `RemoteFileSigLevel`, which can be `Optional`, and against any key in its keyring. None of this needs Writan's repository to be on, so a copy with updates turned off in `writan.list`, `writan.repo` or `pacman.conf` can still take nightlies after someone picks the nightly channel.
+
+## PR titles
+
+PR titles follow Conventional Commits: `type(scope): summary` or `type: summary`, with `!` before the colon for a breaking change. The types are `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` and `style`. The scope is optional and lowercase, for example `fix(excel)`, `perf(collaboration)` or `feat(pdf)`. The **PR title** check in `.github/workflows/pr-checks.yml` fails a PR whose title doesn't match. PRs are squash-merged with the PR title as the commit title, which is what the nightly notes read.
+
+## Feeds
+
+| Feed | URL | Written by |
+| --- | --- | --- |
+| Stable | `https://github.com/elijahroizman/writan/releases/latest/download/latest.json` | Release |
+| Nightly | `https://github.com/elijahroizman/writan/releases/download/nightly/latest.json` | Nightly, and Release when the stable release is newer |
+
+Both workflows write the nightly feed with `scripts/promote-feed.sh <tag>`, in a job in the concurrency group `writan-update-feed` with `cancel-in-progress: false`, so one run's read, comparison and upload finish before another's start. Without it, a nightly that started before a stable release of the same version and finished after it could replace the release in the feed with the older pre-release. The script copies the published release's own `latest.json` asset, rereads the feed and only uploads a newer version, so a rerun is safe. A read that fails for any reason other than a 404 is retried and then fails the job, rather than being taken for an empty feed.
+
+The app reads the stable feed from `plugins.updater.endpoints` in `tauri.conf.json`. The updater plugin's JS `check()` can only read that, so the app checks through its own `check_update` command, which builds the updater with the channel's feed and returns the plugin's `Update` resource for the plugin's JS `Update` class to download and install. The update panel's release notes come from the GitHub releases list: on the nightly channel they include the nightly pre-releases, and on either channel they skip the other pre-releases (`apt`, `rpm/*`, `arch/*`, `nightly`, `plugin-*` and the old `dev-*` builds).
 
 ## Build caches
 
-A tag run can only read caches saved on `main`, so the **Release cache** workflow (`release-cache.yml`) builds the app on `main` for every release platform and saves the caches the Release workflow restores: the document engine (`src/engine/wasm`, keyed on the Rust version and the contents of `crates/`), the Rust dependencies (rust-cache with the shared key `release`) and npm's cache. It runs when `crates/`, the Tauri crate's manifest or lockfile, `package-lock.json` or either workflow changes on `main`, every three days (GitHub drops a cache nobody reads for 7 days, and a new stable Rust changes the keys), and by hand. When every cache already hit exactly, it skips the build, since an exact hit is never saved again. The Release workflow only restores these caches, since anything a tag run saved would be invisible to the next tag. With warm caches the build step takes about 1 to 3 minutes per platform instead of 5 to 9. If the release workflow's matrix, toolchain or cache steps change, change the cache workflow the same way, or releases go back to cold builds. Run it by hand before tagging if `main` changed the engine or the Rust dependencies since its last run.
+A tag run can only read caches saved on `main`, so the **Release cache** workflow (`release-cache.yml`) builds the app on `main` for every release platform and saves the caches the build workflow (`build.yml`) restores for Release and Nightly: the document engine (`src/engine/wasm`, keyed on the Rust version and the contents of `crates/`), the Rust dependencies (rust-cache with the shared key `release`) and npm's cache. It runs when `crates/`, the Tauri crate's manifest or lockfile, `package-lock.json`, `build.yml` or `release-cache.yml` changes on `main`, every three days (GitHub drops a cache nobody reads for 7 days, and a new stable Rust changes the keys), and by hand. When every cache already hit exactly, it skips the build, since an exact hit is never saved again. The Release workflow only restores these caches, since anything a tag run saved would be invisible to the next tag. With warm caches the build step takes about 1 to 3 minutes per platform instead of 5 to 9. If the build workflow's matrix, toolchain or cache steps change, change the cache workflow the same way, or releases go back to cold builds. Run it by hand before tagging if `main` changed the engine or the Rust dependencies since its last run.
 
 ## The Arch package
 
@@ -21,7 +79,7 @@ Tauri has no pacman bundle. `scripts/arch-package.sh` takes the built `.deb`, dr
 
 ## The pacman repository
 
-One repository per architecture, in the assets of the pre-releases tagged `arch/x86_64` and `arch/aarch64`: the newest package and the one before it, a detached signature (`<file>.sig`) for each, `writan.db` and `writan.db.sig`. `scripts/pacman-repo.sh` writes `writan.db` the way `repo-add` would, from each package's `.PKGINFO`, without needing pacman on the Ubuntu runner. pacman.conf's `SigLevel = Required` makes pacman check both signatures. `linux_package` in `src-tauri/src/update.rs` reports pacman when `pacman -Qo` owns the executable and pacman.conf has an uncommented `[writan]` line. The Update button runs `pacman -U <the new version's package URL>` through pkexec rather than `pacman -Sy writan`, since pacman can't refresh one repository and `-Sy` without `-u` leaves the rest of the system partly upgraded. `scripts/check-linux-packages.sh` installs, upgrades (both ways) and removes two made-up versions on a real pacman in Arch's container image, with a throwaway key; CI runs it when the packaging scripts change. The binaries are built on Ubuntu 22.04; Arch's and Arch Linux ARM's newer glibc and webkit2gtk run them. It hasn't been installed on a real Arch system by this repository's tests.
+One repository per architecture, in the assets of the pre-releases tagged `arch/x86_64` and `arch/aarch64`: the newest package and the one before it, a detached signature (`<file>.sig`) for each, `writan.db` and `writan.db.sig`. `scripts/pacman-repo.sh` writes `writan.db` the way `repo-add` would, from each package's `.PKGINFO`, without needing pacman on the Ubuntu runner. pacman.conf's `SigLevel = Required` makes pacman check both signatures. `linux_package` in `src-tauri/src/update.rs` reports pacman when `pacman -Qo` owns the executable and pacman.conf has an uncommented `[writan]` line. The Update button installs the new version's package file with `pacman -U` through pkexec rather than `pacman -Sy writan`, since pacman can't refresh one repository and `-Sy` without `-u` leaves the rest of the system partly upgraded. It downloads the file and its signature first and checks them against Writan's key alone (`src-tauri/linux/pacman-install.sh`), the same as for a nightly. `scripts/check-linux-packages.sh` installs, upgrades (both ways) and removes two made-up versions on a real pacman in Arch's container image, with a throwaway key, checks that the update command refuses a package with no signature, a wrong one or another trusted key's even where pacman.conf allows unsigned files, then upgrades the second to a made-up nightly and the nightly to the stable release after it; CI runs it when the packaging scripts change. The binaries are built on Ubuntu 22.04; Arch's and Arch Linux ARM's newer glibc and webkit2gtk run them. It hasn't been installed on a real Arch system by this repository's tests.
 
 ## Signing keys
 
@@ -29,10 +87,10 @@ All of these are Actions secrets. None is in the repository.
 
 | Secret | Signs | Public half | If it's lost |
 | --- | --- | --- | --- |
-| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Mac and Windows update bundles, and plugin archives | `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` | Installed copies can't verify new versions or plugins. Everyone reinstalls by hand once. |
+| `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` | Mac and Windows update bundles, plugin archives, and the nightly .deb and .rpm packages | `plugins.updater.pubkey` in `src-tauri/tauri.conf.json` | Installed copies can't verify new versions or plugins. Everyone reinstalls by hand once. |
 | `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD` | The Mac app (Developer ID Application) | Apple | Make a new certificate in the Apple Developer account. |
 | `APPLE_API_KEY`, `APPLE_API_KEY_ID`, `APPLE_API_ISSUER` | Notarizing the app and the `.dmg` | Apple | Make a new App Store Connect API key. |
-| `APT_SIGNING_KEY` | The APT repository's `InRelease` and `Release.gpg`, and the dnf repository's `repomd.xml.asc` (GPG, RSA 4096) | `src-tauri/linux/writan-archive-keyring.gpg` (installed by the .deb) and its armored copy `src-tauri/linux/RPM-GPG-KEY-writan` (installed by the .rpm) | apt and dnf refuse updates. Ship a new key in a .deb and .rpm that people install by hand. |
+| `APT_SIGNING_KEY` | The APT repository's `InRelease` and `Release.gpg`, the dnf repository's `repomd.xml.asc`, and the Arch packages in the pacman repository and on each nightly (GPG, RSA 4096) | `src-tauri/linux/writan-archive-keyring.gpg` (installed by the .deb) and its armored copy `src-tauri/linux/RPM-GPG-KEY-writan` (installed by the .rpm) | apt and dnf refuse updates. Ship a new key in a .deb and .rpm that people install by hand. |
 
 Keep an offline copy of the updater and APT private keys. Windows builds aren't code-signed, so SmartScreen warns on first run.
 

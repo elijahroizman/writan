@@ -1,0 +1,239 @@
+name: Nightly
+
+# A nightly: main built for every platform the Release workflow builds (build.yml), as version
+# <latest stable tag's next patch>-nightly.<UTC date and time>, for example
+# 1.0.1-nightly.202611280930. That sorts after the stable release it follows and before the next
+# one, so a nightly copy moves onto the next stable release by itself. Same app ID and signing as
+# a stable release, so a copy switches channel in place.
+#
+# Run it whenever something new lands on main:
+#
+#   gh workflow run nightly.yml --ref main
+#
+# It publishes a GitHub pre-release tagged v<version> holding the installers, the update bundles
+# and the Linux packages, with notes listing the PR titles merged since the previous nightly or
+# stable tag, grouped by type (scripts/nightly.mjs), after the "notes" input, and deletes all but
+# the newest 10 nightlies. Then the feed job points the nightly update feed (latest.json on the
+# pre-release tagged "nightly") at it, unless the feed already has a newer version. It never touches the stable feed or the APT, dnf and pacman
+# repositories. Linux copies on the nightly channel install the packages from the pre-release:
+# the .deb and .rpm are signed with the updater key (`tauri signer sign`), the Arch package with
+# the repositories' key (APT_SIGNING_KEY), as pacman expects.
+#
+# Untick "publish" to build without publishing anything.
+on:
+  workflow_dispatch:
+    inputs:
+      notes:
+        description: Notes for this nightly, shown above the list of changes
+        type: string
+        default: ''
+      publish:
+        description: Publish the nightly (untick to only build)
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: writan-nightly
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Prepare nightly
+    runs-on: ubuntu-24.04
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      release_id: ${{ steps.draft.outputs.id }}
+    steps:
+      - name: Only from main
+        # A build-only run (publish unticked) can test a branch.
+        if: github.ref != 'refs/heads/main' && inputs.publish
+        run: |
+          echo "::error::Nightlies publish from main: gh workflow run nightly.yml --ref main"
+          exit 1
+      - uses: actions/checkout@v4
+        with:
+          # The tags give the version and where the list of changes starts.
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Version and notes
+        id: version
+        env:
+          NOTES: ${{ inputs.notes }}
+        run: |
+          set -euo pipefail
+          version="$(node scripts/nightly.mjs version)"
+          node scripts/nightly.mjs notes > "$RUNNER_TEMP/notes.md"
+          cat "$RUNNER_TEMP/notes.md"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          stamp="${version##*.}"
+          echo "TITLE=Writan nightly ${stamp:0:4}-${stamp:4:2}-${stamp:6:2} ${stamp:8:2}:${stamp:10:2} UTC" >> "$GITHUB_ENV"
+          echo "TAG=v$version" >> "$GITHUB_ENV"
+      - name: Create the draft
+        id: draft
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # A draft has no tag yet, so a nightly that fails leaves the next one's list of changes
+          # starting where this one's did.
+          if ! gh release view "$TAG" -R "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release create "$TAG" -R "$GITHUB_REPOSITORY" --draft --prerelease --latest=false \
+              --target "$GITHUB_SHA" --title "$TITLE" --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+          release="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json databaseId,isDraft)"
+          if ! jq -e '.isDraft' <<< "$release" > /dev/null; then
+            echo "::error::$TAG is already public."
+            exit 1
+          fi
+          echo "id=$(jq -r .databaseId <<< "$release")" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build
+    needs: prepare
+    uses: ./.github/workflows/build.yml
+    with:
+      release_id: ${{ needs.prepare.outputs.release_id }}
+      version: ${{ needs.prepare.outputs.version }}
+    secrets: inherit
+
+  publish:
+    # Runs only when every build passed. A failed build leaves the draft private and the feed
+    # on the previous nightly; rerun the failed jobs. Once the nightly is public, a rerun skips
+    # straight to the pruning, so a later step or the feed job can be rerun on its own.
+    name: Publish nightly
+    needs: [prepare, build]
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      VERSION: ${{ needs.prepare.outputs.version }}
+      TAG: v${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Draft or public
+        id: state
+        run: |
+          set -euo pipefail
+          draft="$(gh release view "$TAG" -R "$GITHUB_REPOSITORY" --json isDraft --jq .isDraft)"
+          echo "draft=$draft" >> "$GITHUB_OUTPUT"
+          [ "$draft" = true ] || echo "$TAG is public already; leaving its files as they are."
+      - uses: actions/download-artifact@v4
+        if: steps.state.outputs.draft == 'true'
+        with:
+          pattern: linux-*
+          path: ${{ runner.temp }}/packages
+          merge-multiple: true
+      - name: Check the Linux packages
+        if: steps.state.outputs.draft == 'true'
+        # The names src-tauri/src/update.rs (nightly_package_url) downloads.
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packages"
+          ls -l
+          base="${VERSION%%-*}"
+          stamp="${VERSION##*.}"
+          files=(
+            "Writan_${VERSION}_amd64.deb"
+            "Writan_${VERSION}_arm64.deb"
+            "Writan-${base}-0.nightly.${stamp}.x86_64.rpm"
+            "Writan-${base}-0.nightly.${stamp}.aarch64.rpm"
+            "writan-${base}nightly.${stamp}-1-x86_64.pkg.tar.zst"
+            "writan-${base}nightly.${stamp}-1-aarch64.pkg.tar.zst"
+          )
+          for file in "${files[@]}"; do
+            if [ ! -s "$file" ]; then
+              echo "::error::Missing $file"
+              exit 1
+            fi
+          done
+          [ "$(dpkg-deb -f "Writan_${VERSION}_amd64.deb" Version)" = "${base}~nightly.${stamp}" ]
+      - name: Sign the .deb and .rpm packages
+        if: steps.state.outputs.draft == 'true'
+        # With the updater key, which the app checks them against before apt or dnf installs one.
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cli="$(node -p "require('./package-lock.json').packages['node_modules/@tauri-apps/cli'].version")"
+          for file in "$RUNNER_TEMP"/packages/*.deb "$RUNNER_TEMP"/packages/*.rpm; do
+            npx --yes "@tauri-apps/cli@$cli" signer sign "$file"
+          done
+      - name: Sign the Arch packages
+        if: steps.state.outputs.draft == 'true'
+        # With the repositories' key, which the Arch package installs. The app downloads <file>.sig
+        # with the package and checks it against that key (src-tauri/linux/pacman-install.sh).
+        env:
+          APT_SIGNING_KEY: ${{ secrets.APT_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          export GNUPGHOME="$RUNNER_TEMP/gnupg"
+          mkdir -m 700 "$GNUPGHOME"
+          printf '%s\n' "$APT_SIGNING_KEY" | gpg --batch --import
+          for file in "$RUNNER_TEMP"/packages/*.pkg.tar.zst; do
+            gpg --batch --yes --detach-sign -o "$file.sig" "$file"
+          done
+          gpgconf --kill gpg-agent 2> /dev/null || true
+          rm -rf "$GNUPGHOME"
+      - name: Upload the Linux packages
+        if: steps.state.outputs.draft == 'true'
+        run: |
+          set -euo pipefail
+          cd "$RUNNER_TEMP/packages"
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" ./*.deb ./*.rpm ./*.pkg.tar.zst ./*.sig --clobber
+      - name: Publish the nightly
+        # Its latest.json goes up first, and the feed job copies it to the nightly feed once the
+        # pre-release is public, since the URLs in it only download then.
+        if: steps.state.outputs.draft == 'true'
+        run: |
+          set -euo pipefail
+          scripts/update-feed.sh "$TAG" "$VERSION" "$RUNNER_TEMP"
+          gh release upload "$TAG" -R "$GITHUB_REPOSITORY" "$RUNNER_TEMP/latest.json" --clobber
+          gh release edit "$TAG" -R "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+      - name: Keep the newest 10 nightlies
+        # Older nightlies and their tags go, along with drafts left by runs that failed. The
+        # stamp orders them by build time.
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/$GITHUB_REPOSITORY/releases?per_page=100" \
+            --jq '.[] | select(.tag_name | test("^v[0-9]+\\.[0-9]+\\.[0-9]+-nightly\\.[0-9]{12}$")) | [(.tag_name | split(".") | last), .tag_name, .draft] | @tsv' \
+            | sort -r > "$RUNNER_TEMP/nightlies.tsv"
+          kept=0
+          while IFS=$'\t' read -r _ tag draft; do
+            if [ "$draft" = true ]; then
+              [ "$tag" = "$TAG" ] || gh release delete "$tag" -R "$GITHUB_REPOSITORY" --yes
+            elif [ "$kept" -lt 10 ]; then
+              kept=$((kept + 1))
+            else
+              gh release delete "$tag" -R "$GITHUB_REPOSITORY" --cleanup-tag --yes
+            fi
+          done < "$RUNNER_TEMP/nightlies.tsv"
+
+  feed:
+    # Points the nightly feed at this nightly unless it has a newer version, such as a stable
+    # release published while this built (scripts/promote-feed.sh). The Release workflow's feed
+    # job shares the concurrency group, so the two never read and write the feed at once. Each
+    # workflow runs one at a time, so the group holds one job from each at most, and a waiting one
+    # is never replaced by a newer one. Rerunning it is safe.
+    name: Nightly feed
+    needs: [prepare, publish]
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    concurrency:
+      group: writan-update-feed
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TAG: v${{ needs.prepare.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Point the nightly feed at this nightly
+        run: scripts/promote-feed.sh "$TAG"

@@ -143,6 +143,7 @@ function fakeTauri() {
           return []
         case 'release_notes':
         case 'plugin:updater|check':
+        case 'check_update':
           throw 'offline'
         default:
           return null
