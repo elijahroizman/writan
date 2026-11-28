@@ -5,13 +5,14 @@ name: PR checks
 #
 # The title is `type(scope): summary` or `type: summary`, with a `!` before the colon for a
 # breaking change: `fix(excel): keep merged cells on paste`, `feat(pdf)!: drop the old signature
-# format`. The scope is optional and lowercase. Pull requests are squash-merged with the title as
-# the commit subject, and the nightly notes group those subjects by type. Release pull requests
-# are `chore(release): 1.0.0`.
+# format`. The scope is optional and has only lowercase letters, digits and hyphens, starting with
+# a letter or digit. One space follows the colon, then a summary that isn't blank. Pull requests
+# are squash-merged with the title as the commit subject, and the nightly notes group those
+# subjects by type. Release pull requests are `chore(release): 1.0.0`.
 #
 # The description has the four sections What changed, Screenshots, Evidence and Known
-# limitations, and ends with the Model, Reasoning and Harness lines in that order. Someone who
-# wrote the change without a model writes `Model: none` instead of the three lines.
+# limitations, each with something in it, and ends with the Model, Reasoning and Harness lines.
+# Someone who wrote the change without a model writes `Model: none` instead of the three lines.
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
@@ -28,11 +29,11 @@ jobs:
           TITLE: ${{ github.event.pull_request.title }}
         run: |
           types='feat|fix|perf|refactor|docs|test|build|ci|chore|revert|style'
-          if printf '%s' "$TITLE" | grep -Eqx "($types)(\([a-z0-9][a-z0-9-]*\))?!?: [^ ].*"; then
+          if printf '%s' "$TITLE" | grep -Eqx "($types)(\([a-z0-9][a-z0-9-]*\))?!?: [^[:space:]].*"; then
             echo "OK: $TITLE"
             exit 0
           fi
-          echo "::error::The PR title must be 'type(scope): summary' or 'type: summary', with type one of ${types//|/, } and an optional lowercase scope, for example 'fix(excel): keep merged cells on paste'. It is: $TITLE"
+          echo "::error::The PR title must be 'type(scope): summary' or 'type: summary', with type one of ${types//|/, }, an optional scope of lowercase letters, digits and hyphens, and a summary after one space, for example 'fix(excel): keep merged cells on paste'. It is: $TITLE"
           exit 1
 
   description:
@@ -44,31 +45,117 @@ jobs:
       - name: Check the description
         env:
           BODY: ${{ github.event.pull_request.body }}
+        shell: python3 {0}
         run: |
-          body="$(printf '%s\n' "$BODY" | tr -d '\r')"
-          missing=()
-          for heading in 'What changed' 'Screenshots' 'Evidence' 'Known limitations'; do
-            printf '%s\n' "$body" | grep -Eqx "## $heading[[:space:]]*" || missing+=("a '## $heading' section")
-          done
-          # The model lines, in order: Model, Reasoning, Harness, each with a value. `Model: none`
-          # stands alone. Several models give several sets.
-          lines="$(printf '%s\n' "$body" | grep -E '^(Model|Reasoning|Harness):' || true)"
-          if ! printf '%s\n' "$lines" | grep -Eq '^Model: [^ ]'; then
-            missing+=("the 'Model:', 'Reasoning:' and 'Harness:' lines")
-          elif ! printf '%s\n' "$lines" | awk '
-              /^Model: none[[:space:]]*$/ { if (want != "" && want != "Model") bad = 1; want = "Model"; next }
-              /^Model: [^ ]/ { if (want != "" && want != "Model") bad = 1; want = "Reasoning"; next }
-              /^Reasoning: [^ ]/ { if (want != "Reasoning") bad = 1; want = "Harness"; next }
-              /^Harness: [^ ]/ { if (want != "Harness") bad = 1; want = "Model"; next }
-              { bad = 1 }
-              END { exit (bad || want != "Model") }'; then
-            missing+=("'Model:', 'Reasoning:' and 'Harness:' lines, each filled in and in that order")
-          fi
-          if [ "${#missing[@]}" -eq 0 ]; then
-            echo "OK"
-            exit 0
-          fi
-          for m in "${missing[@]}"; do
-            echo "::error::The PR description needs $m. See .github/pull_request_template.md and CONTRIBUTING.md."
-          done
-          exit 1
+          import os
+          import re
+
+          SECTIONS = ["What changed", "Screenshots", "Evidence", "Known limitations"]
+          FENCE = re.compile(r" {0,3}(`{3,}|~{3,})")
+          HEADING = re.compile(r" {0,3}#{1,6}(\s|$)")
+          # An empty bullet or number, as the template has under each heading.
+          PLACEHOLDER = re.compile(r"([-*+]|\d+[.)])")
+          MODEL_LINE = re.compile(r"(Model|Reasoning|Harness):(.*)")
+          FOOTER = "🤖 Generated with"
+
+          def shown_lines(text):
+              """The lines GitHub shows as text: HTML comments and fenced code blocks are dropped.
+              A dropped line becomes a blank one, and an unclosed comment or fence runs to the end."""
+              out, fence, comment = [], None, False
+              for line in text.split("\n"):
+                  if fence:
+                      m = FENCE.match(line)
+                      if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence) and not line[m.end():].strip():
+                          fence = None
+                      out.append("")
+                      continue
+                  if not comment:
+                      m = FENCE.match(line)
+                      if m:
+                          fence = m.group(1)
+                          out.append("")
+                          continue
+                  kept, rest = "", line
+                  while rest:
+                      if comment:
+                          end = rest.find("-->")
+                          if end < 0:
+                              break
+                          rest, comment = rest[end + 3:], False
+                      else:
+                          start = rest.find("<!--")
+                          if start < 0:
+                              kept, rest = kept + rest, ""
+                          else:
+                              kept, rest, comment = kept + rest[:start], rest[start + 4:], True
+                  out.append(kept.rstrip())
+              return out
+
+          def model_block(lines):
+              """Where the final block of Model, Reasoning and Harness lines starts and ends. Blank
+              lines and one footer line that harnesses add, such as Claude Code's
+              `🤖 Generated with [Claude Code](…)`, may follow it."""
+              end = len(lines)
+              while end and not lines[end - 1].strip():
+                  end -= 1
+              if end and lines[end - 1].strip().startswith(FOOTER):
+                  end -= 1
+                  while end and not lines[end - 1].strip():
+                      end -= 1
+              start = end
+              while start and (MODEL_LINE.fullmatch(lines[start - 1]) or not lines[start - 1].strip()):
+                  start -= 1
+              while start < end and not lines[start].strip():
+                  start += 1
+              return start, end
+
+          def model_lines_ok(block):
+              """Either `Model: none` alone, or one or more complete sets of Model, Reasoning and
+              Harness lines in that order, each with a value. Blank lines may separate the sets."""
+              entries = []
+              for line in block:
+                  m = MODEL_LINE.fullmatch(line)
+                  entries.append((m.group(1), m.group(2).strip()) if m else None)
+              if entries == [("Model", "none")]:
+                  return True
+              sets, i = 0, 0
+              while i < len(entries):
+                  if entries[i] is None:
+                      i += 1
+                      continue
+                  group = entries[i:i + 3]
+                  if [e and e[0] for e in group] != ["Model", "Reasoning", "Harness"]:
+                      return False
+                  if any(not value for _, value in group) or group[0][1].lower() == "none":
+                      return False
+                  sets, i = sets + 1, i + 3
+              return sets > 0
+
+          body = os.environ.get("BODY", "").replace("\r\n", "\n").replace("\r", "\n")
+          lines = shown_lines(body)
+          start, end = model_block(lines)
+          problems = []
+          if not model_lines_ok(lines[start:end]):
+              problems.append("to end with 'Model:', 'Reasoning:' and 'Harness:' lines, each filled in and in that order, or with 'Model: none' alone")
+          text = lines[:start]
+          for section in SECTIONS:
+              found = filled = False
+              for i, line in enumerate(text):
+                  if re.fullmatch(rf"## {re.escape(section)}\s*", line):
+                      found = True
+                      for under in text[i + 1:]:
+                          if HEADING.match(under):
+                              break
+                          if under.strip() and not PLACEHOLDER.fullmatch(under.strip()):
+                              filled = True
+                              break
+              if not found:
+                  problems.append(f"a '## {section}' section")
+              elif not filled:
+                  problems.append(f"something under '## {section}'")
+          if not problems:
+              print("OK")
+              raise SystemExit(0)
+          for problem in problems:
+              print(f"::error::The PR description needs {problem}. See .github/pull_request_template.md and CONTRIBUTING.md.")
+          raise SystemExit(1)
