@@ -54,7 +54,7 @@ On Linux the update button on the nightly channel downloads the package and its 
 
 ## PR titles
 
-PR titles follow Conventional Commits: `type(scope): summary` or `type: summary`, with `!` before the colon for a breaking change. The types are `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` and `style`. The scope is optional and lowercase, for example `fix(excel)`, `perf(collaboration)` or `feat(pdf)`. The **PR title** workflow (`.github/workflows/pr-title.yml`) fails a PR whose title doesn't match. PRs are squash-merged with the PR title as the commit title, which is what the nightly notes read.
+PR titles follow Conventional Commits: `type(scope): summary` or `type: summary`, with `!` before the colon for a breaking change. The types are `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` and `style`. The scope is optional and lowercase, for example `fix(excel)`, `perf(collaboration)` or `feat(pdf)`. The **PR title** check in `.github/workflows/pr-checks.yml` fails a PR whose title doesn't match. PRs are squash-merged with the PR title as the commit title, which is what the nightly notes read.
 
 ## Feeds
 

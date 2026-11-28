@@ -71,7 +71,7 @@ export function nightlyVersion(stable, now = new Date()) {
   return `${major}.${minor}.${patch + 1}-nightly.${stamp}`
 }
 
-// PR titles follow Conventional Commits (.github/workflows/pr-title.yml), and squash merges make
+// PR titles follow Conventional Commits (.github/workflows/pr-checks.yml), and squash merges make
 // them the commit subjects.
 const TYPES = [
   ['feat', 'Features'],
