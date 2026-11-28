@@ -56,7 +56,7 @@ The `writan` command opens files and folders from a terminal: `writan .` opens t
 
 ### Connect an agent
 
-Install an agent such as [Claude Code](https://claude.com/product/claude-code) or [Codex](https://developers.openai.com/codex/cli) and sign in to it. Then open **Settings › AI** in Writan, click **Add MCP server** and **Add skill** next to the agent, and start a new session in it. Any other agent that takes a remote MCP server can use the address shown there.
+Install an agent such as [Claude Code](https://claude.com/product/claude-code) or [Codex](https://developers.openai.com/codex/cli) and sign in to it. The first time Writan opens, its welcome screens list the agents on your computer with a **Connect** button for each. Later, open **Settings › AI**, click **Add MCP server** and **Add skill** next to the agent, and start a new session in it. Any other agent that takes a remote MCP server can use the address shown there.
 
 ## Why another document app?
 
