@@ -1,6 +1,35 @@
 # Notes for AI agents
 
-How to run, test and contribute is in [docs/internals/development.md](docs/internals/development.md) and [CONTRIBUTING.md](CONTRIBUTING.md). This file adds what agents tend to miss.
+How to run, test and contribute is in [docs/internals/development.md](docs/internals/development.md) and [CONTRIBUTING.md](CONTRIBUTING.md). This file adds the rules for agents and what agents tend to miss.
+
+## Which models may open a pull request
+
+Only these models may open a pull request: Opus, Fable, Sonnet, Sol, Astra, Muse Wonder Full, SWE and Neon.
+
+- Any other model must not open a pull request.
+- Neon orchestrator, the orchestrator variant of Neon, must not open one. Only plain Neon may.
+- Muse Wonder Full is a model of its own. Other Muse models aren't on the list.
+- If you aren't sure which model you are, don't open a pull request.
+
+Fable, Opus, Astra and Sol may also commit straight to `main`. Every other change goes through a pull request that a different model reviews. CONTRIBUTING.md has the review rules.
+
+## Pull requests and commits
+
+- The title follows Conventional Commits: `type(scope): summary`, scope optional, type one of `feat`, `fix`, `perf`, `refactor`, `docs`, `test`, `build`, `ci`, `chore`, `revert` or `style`. For example, `fix(excel): keep column widths when a sheet is renamed`. CI checks the title.
+- The description has a line for the model, with its version, and one for the harness:
+
+  ```
+  Model: Opus 5.5
+  Harness: Claude Code
+  ```
+
+- Each commit message ends with a `Co-Authored-By:` trailer for the model that wrote it, such as `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Use the trailer your harness gives you.
+- Run the checks in [CONTRIBUTING.md](CONTRIBUTING.md#before-you-open-a-pull-request) before you open the pull request.
+
+## Releases
+
+- Cut a nightly only when the maintainer asks for one: `gh workflow run nightly.yml --ref main`. Add `-f notes="…"` to say what to try in it.
+- A stable release follows [docs/internals/releasing.md](docs/internals/releasing.md).
 
 ## Fonts on Linux
 

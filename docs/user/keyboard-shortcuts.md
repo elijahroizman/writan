@@ -2,7 +2,7 @@
 
 These are the defaults. **Settings › Keyboard Shortcuts** (⌘,) lists every shortcut, including the document and presentation ones, and lets you change any of them: click it and press the new keys.
 
-On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. Ctrl+Tab and Ctrl+Shift+Tab also switch tabs, and F11 toggles full screen.
+On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. There, Ctrl+Tab and Ctrl+Shift+Tab go to the next and previous tab, and F11 toggles full screen. On a Mac, full screen is ⌃⌘F.
 
 | | |
 | --- | --- |
@@ -14,12 +14,13 @@ On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. Ctrl+Tab 
 | Reload the file from disk (asks first if that loses changes or stops sharing) | ⌘R |
 | Close tab / Reopen closed tab | ⌘W / ⇧⌘T |
 | Home tab | ⌘T or ⌘1 |
-| Switch tabs | ⌘1–⌘9, ⇧⌘] / ⇧⌘[ |
+| Go to a tab by its place / next tab / previous tab | ⌘1 to ⌘9 / ⇧⌘] / ⇧⌘[ |
 | Find / find and replace | ⌘F / ⌃H (Ctrl+H on Windows and Linux) |
 | Toggle sidebar / inspector | ⌘\ / ⌥⌘\ |
 | Split view | ⇧⌘\ |
 | Zoom in / out / reset | ⌘+ / ⌘− / ⌘0 |
-| Print (and Save as PDF from the print panel) | ⌘P |
+| Print, or save as PDF from the print panel | ⌘P |
+| Recognize text in a PDF or picture (OCR) | ⌥⌘O |
 | Duplicate tab | ⇧⌘D |
 | Markdown, LaTeX: next view / read / edit with preview / edit source | ⌘E / ⌥⌘1 / ⌥⌘2 / ⌥⌘3 |
 | Zoom (Word, PowerPoint, PDF) | Pinch on the trackpad, or ⌘ + scroll |
@@ -27,8 +28,10 @@ On Windows and Linux, use Ctrl for ⌘, Alt for ⌥ and Shift for ⇧. Ctrl+Tab 
 | Light / dark appearance | ⇧⌘L |
 | Change theme | ⌃⌘T (Ctrl+Alt+A on Windows and Linux) |
 | Word: add a link to the selected text | ⇧⌘K (⌘K opens the command palette) |
-| Word: add comment | ⌥⌘A (Ctrl+Alt+M on Windows) |
-| Word: open a link in the browser | ⌘-click (Ctrl+click on Windows) |
+| Word: add comment | ⌥⌘A (Ctrl+Alt+M on Windows and Linux) |
+| Word: open a link in the browser | ⌘-click (Ctrl+click on Windows and Linux) |
+| Word, PowerPoint: insert LaTeX math | ⌥= |
+| PowerPoint: new slide / duplicate | ⌘M / ⌘D |
 | PowerPoint: bring to front / send to back | ⇧⌘F / ⇧⌘B |
 | PowerPoint: bring forward / send backward | ⌥⇧⌘F / ⌥⇧⌘B |
 | PowerPoint: group / ungroup | ⌘G / ⇧⌘G |

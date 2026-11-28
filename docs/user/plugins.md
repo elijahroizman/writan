@@ -1,22 +1,22 @@
 # Plugins
 
-Word, PowerPoint, PDF, Markdown, text and images are built in. LaTeX is optional and off until you turn it on, in the welcome tour on first launch or later in **Settings › General**.
+Word, PowerPoint, Excel, CSV, PDF, Markdown, text and images are built in. LaTeX is optional, and it's off until you turn it on in the welcome tour on first launch or later in **Settings › General**.
 
 | Plugin | Opens | Size | How it arrives |
 | --- | --- | --- | --- |
 | LaTeX | `.tex` documents | about 140 KB (TeX itself is separate) | Downloaded |
 
-Writan checks every downloaded plugin's signature before installing it. Turning a downloaded plugin off removes its files; turning it back on downloads it again. Tabs using a plugin close first (Writan asks about unsaved changes).
+Writan checks every downloaded plugin's signature before installing it. Turning a downloaded plugin off removes its files; turning it back on downloads it again. Tabs using the plugin close first, and Writan asks about unsaved changes.
 
 ## Images
 
-A plain viewer for PNG, JPEG and HEIC. Pinch or ⌘-scroll to zoom, double-click to switch between fitting the window and 100%, and drag to move around.
+A plain viewer for PNG, JPEG, HEIC and WebP. Pinch or ⌘-scroll to zoom, double-click to switch between fitting the window and 100%, and drag to move around.
 
 The toolbar has a few touch-ups: **highlight**, **draw**, **line**, **arrow**, **box**, **select** (to crop, or to copy part of the picture), and **turn** left or right. Hold Shift while highlighting or drawing for a straight line, or while drawing a line or arrow to keep it level, upright or at 45°. ⌘Z undoes, ⌘C copies the picture (or the selection). Changes save into the same file and format; a file you haven't changed is saved back exactly as it was. **⋯** saves a copy as PNG or JPEG, or prints.
 
-Writan can read HEIC photos but can't write them, so they open for viewing. **Edit a JPEG copy** opens a copy in a new tab to mark up and save. Outside Safari's engine on recent Macs, HEIC is decoded by [libheif](https://github.com/strukturag/libheif) (LGPL-3.0), loaded the first time you open one.
+Writan can read HEIC and WebP pictures but can't write them, so they open for viewing. **Edit a JPEG copy** opens a copy in a new tab to mark up and save. Outside Safari's engine on recent Macs, [libheif](https://github.com/strukturag/libheif), under the LGPL-3.0, decodes HEIC. It loads the first time you open one.
 
-It doesn't pick out text in pictures (OCR).
+**Find** (⌘F, or Ctrl+F on Windows and Linux) finds words in the picture. Writan reads the picture's text on your computer the first time you search it, and highlights every match. **Show Recognized Text** in the **⋯** menu shows the text to copy, or saves it as a Word document or a searchable PDF.
 
 ## LaTeX
 
@@ -36,4 +36,4 @@ If there's no TeX when you turn LaTeX on, Writan offers to install it:
 
 You can hide the install window while it runs; **Settings › General** shows the progress. When you turn LaTeX off, Writan asks whether to remove TeX too (only if it knows how it was installed). It's unticked unless you choose it.
 
-LaTeX on Windows is still being tested. If installing or removing TeX fails, the message includes what winget or the installer said; please put that in an [issue](https://github.com/elijahroizman/writan/issues).
+Installing and removing TeX on Windows are still being tested. If either fails, the message includes what winget or the installer said. Put that in an [issue](https://github.com/elijahroizman/writan/issues).
